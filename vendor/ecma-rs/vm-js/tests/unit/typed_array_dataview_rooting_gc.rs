@@ -1069,3 +1069,132 @@ fn typed_array_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn array_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const arr = [0, 1, 2, 3];
+      const begin = { valueOf() { ({});
+        return 1;
+      }};
+      const end = { valueOf() { return 4; } };
+      return [arr, begin, end];
+    })()"#,
+  )?;
+
+  let [arr_val, begin_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [begin_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_slice(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    arr_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array.prototype.slice to trigger GC under tiny heap limits"
+  );
+
+  // Verify the slice result contents.
+  scope.push_root(out)?;
+  let Value::Object(out_arr) = out else {
+    return Err(VmError::InvariantViolation(
+      "Array.prototype.slice returned non-object",
+    ));
+  };
+  assert_eq!(
+    scope
+      .heap()
+      .array_fast_own_data_element_value(out_arr, 0)?
+      .ok_or(VmError::InvariantViolation("missing result[0]"))?,
+    Value::Number(1.0)
+  );
+  assert_eq!(
+    scope
+      .heap()
+      .array_fast_own_data_element_value(out_arr, 1)?
+      .ok_or(VmError::InvariantViolation("missing result[1]"))?,
+    Value::Number(2.0)
+  );
+  assert_eq!(
+    scope
+      .heap()
+      .array_fast_own_data_element_value(out_arr, 2)?
+      .ok_or(VmError::InvariantViolation("missing result[2]"))?,
+    Value::Number(3.0)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn string_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const s = "abcd";
+      const begin = { valueOf() { ({});
+        return 1;
+      }};
+      const end = { valueOf() { return 4; } };
+      return [s, begin, end];
+    })()"#,
+  )?;
+
+  let [s_val, begin_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [begin_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_slice(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    s_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.slice to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype.slice returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "bcd");
+
+  Ok(())
+}

@@ -292,8 +292,15 @@ fn slice_range_from_args(
   let begin = args.get(0).copied().unwrap_or(Value::Undefined);
   let end = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let start = slice_index_from_value(vm, scope, host, hooks, begin, len, 0)?;
-  let mut finish = slice_index_from_value(vm, scope, host, hooks, end, len, len)?;
+  // Root both arguments across coercion. Converting `begin`/`end` can invoke user code
+  // (`@@toPrimitive`, `valueOf`, `toString`) and allocate, which can trigger GC. Host callers may
+  // invoke builtins without `Vm::call_impl` argument rooting, so any GC handles in `args` must be
+  // kept alive explicitly.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[begin, end])?;
+
+  let start = slice_index_from_value(vm, &mut scope, host, hooks, begin, len, 0)?;
+  let mut finish = slice_index_from_value(vm, &mut scope, host, hooks, end, len, len)?;
   if finish < start {
     finish = start;
   }
@@ -14373,6 +14380,13 @@ pub fn array_prototype_slice(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
+  // Root `this` and slice arguments before `ToObject` / `LengthOfArrayLike`, both of which can
+  // allocate and trigger GC. Host callers may invoke this builtin without `Vm::call_impl` argument
+  // rooting.
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[this, begin, end])?;
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
@@ -18872,6 +18886,12 @@ pub fn string_prototype_slice(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` and slice arguments across `ToString` and index coercion, which can invoke user
+  // code and trigger GC. Host callers may invoke this builtin directly without pre-rooting.
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[this, begin, end])?;
+
   let o = crate::spec_ops::require_object_coercible(this)?;
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
