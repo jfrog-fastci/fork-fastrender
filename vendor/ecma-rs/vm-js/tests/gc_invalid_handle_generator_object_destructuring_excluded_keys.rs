@@ -54,3 +54,49 @@ fn generator_object_destructuring_roots_excluded_keys_across_gc() -> Result<(), 
   Ok(())
 }
 
+#[test]
+fn generator_object_destructuring_roots_computed_key_across_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_frequent_gc();
+
+  // Similar to the test above, but exercises the `GenFrame::BindObjAfterKey` resumption path:
+  // - `yield` occurs while evaluating a computed key.
+  // - after resumption, the computed key is converted via `ToPropertyKey`, producing a fresh string
+  //   that is *not* reachable from any object.
+  // - we then allocate/GC before reaching the next `yield`, so the key must be rooted even though it
+  //   is only held in Rust locals + the in-progress `excluded` vector.
+  let value = rt.exec_script(
+    r#"
+      'use strict';
+
+      function churn() {
+        let junk = [];
+        for (let i = 0; i < 200; i++) {
+          junk.push(new Uint8Array(1024));
+        }
+        return junk.length;
+      }
+
+      function* g() {
+        let x;
+        ({ [(yield 0)]: x = (churn(), (yield 1)) } = {});
+        return x;
+      }
+
+      let it = g();
+      let r0 = it.next();
+      // Stress GC while suspended after the computed-key `yield`.
+      churn();
+      let r1 = it.next(12345);
+      // Stress GC while suspended at the default-value `yield`, so the continuation is traced.
+      churn();
+      let r2 = it.next(42);
+
+      r0.value === 0 && r0.done === false &&
+      r1.value === 1 && r1.done === false &&
+      r2.value === 42 && r2.done === true;
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

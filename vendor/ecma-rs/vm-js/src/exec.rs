@@ -41316,6 +41316,12 @@ fn gen_resume_from_frames(
             }
           };
           excluded.push(key);
+          // Root the newly-added excluded key across subsequent allocations/GC (boxing the source
+          // value, default initializers, etc) until we either suspend again or finish binding.
+          let key_root = match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(sym) => Value::Symbol(sym),
+          };
 
           let pat_ref = unsafe { &*pat };
           let prop = pat_ref
@@ -41328,7 +41334,7 @@ fn gen_resume_from_frames(
 
           // Recreate the boxed object wrapper for property access (GetV semantics).
           let mut obj_scope = scope.reborrow();
-          obj_scope.push_root(value)?;
+          obj_scope.push_roots(&[value, key_root])?;
           let obj = match obj_scope.to_object(
             evaluator.vm,
             &mut *evaluator.host,
