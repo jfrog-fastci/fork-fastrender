@@ -189,9 +189,12 @@ fn compiled_constructor_body_construct(
       // If the derived constructor explicitly returns an object, that becomes the result of
       // construction (even if `super()` was never called).
       Value::Object(o) => Ok(Value::Object(o)),
-      // Any non-object return value is ignored and `this` is returned instead. If `this` was never
-      // initialized via `super()`, this must throw a ReferenceError.
-      _ => {
+
+      // `return;` / no explicit return (or `return undefined;`).
+      //
+      // `this` is returned instead. If `this` was never initialized via `super()`, this must throw
+      // a ReferenceError.
+      Value::Undefined => {
         let state = scope.heap().get_derived_constructor_state(state_obj)?;
         match state.this_value {
           Some(this_obj) => Ok(Value::Object(this_obj)),
@@ -202,6 +205,13 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
+
+      // Derived constructors may not return primitives/null.
+      _ => Err(throw_type_error(
+        vm,
+        &mut scope,
+        "Derived constructors may only return object or undefined",
+      )?),
     }
   }
 }
