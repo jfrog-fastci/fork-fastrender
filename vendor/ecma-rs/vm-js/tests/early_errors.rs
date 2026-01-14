@@ -725,6 +725,36 @@ fn function_constructor_early_errors_are_catchable_syntax_error() {
 }
 
 #[test]
+fn function_constructor_for_head_lexical_var_conflict_is_catchable_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try { new Function("for (const x = 0; false; ) { var x; }"); } catch (e) { ok = e && e.name === "SyntaxError"; }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn function_constructor_param_body_lexical_conflict_is_catchable_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try { new Function("bar", "let bar;"); } catch (e) { ok = e && e.name === "SyntaxError"; }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn lexical_declaration_may_not_bind_let_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("let let = 0;").unwrap_err();
