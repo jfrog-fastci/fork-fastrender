@@ -10,6 +10,36 @@
 //! `javascript:` targets so chrome HTML cannot smuggle script URLs into the navigation pipeline.
 //!
 //! For scheme-level constraints and trust-boundary context, see `docs/renderer_chrome_schemes.md`.
+//!
+//! ## URL grammar
+//!
+//! The accepted grammar is intentionally narrow (fail closed):
+//!
+//! ```text
+//! chrome-action:<action-name>[?<query>]
+//! ```
+//!
+//! - The scheme (`chrome-action`) is case-insensitive.
+//! - Only the opaque form `chrome-action:<action>` is accepted (no `chrome-action://...`).
+//! - URL fragments (`#...`) are rejected.
+//! - The query string uses `application/x-www-form-urlencoded` decoding rules (i.e. `+` → space,
+//!   percent decoding).
+//!
+//! ## Canonical parameter names
+//!
+//! - `url`: nested URL string for navigation actions.
+//!   - Example: `chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F`
+//!   - Parser also accepts legacy `input`.
+//! - `tab`: tab id for tab-scoped actions.
+//!   - Example: `chrome-action:close-tab?tab=123`
+//!   - Parser also accepts legacy `tab_id`.
+//! - `show`: boolean used by `set-show-menu-bar`.
+//! - `has_focus`: boolean used by `address-bar-focus-changed` (legacy: `focused`).
+//! - `query`: used by `find-query` (find-in-page text). An empty query clears highlights.
+//! - `case_sensitive`: used by `find-query` (boolean).
+//!
+//! Boolean parameters accept `1`, `0`, `true`, or `false` (case-insensitive). The formatter uses
+//! `1`/`0`.
 
 use crate::ui::bookmarks::BookmarkId;
 use crate::ui::messages::TabId;
@@ -125,6 +155,9 @@ impl ChromeActionUrl {
     if !url.cannot_be_a_base() {
       return Err("chrome-action URLs must use the opaque form `chrome-action:<action>` (no `//`)".to_string());
     }
+    if url.fragment().is_some() {
+      return Err("chrome-action URLs must not include a fragment".to_string());
+    }
 
     let action = trim_ascii_whitespace(url.path()).trim_start_matches('/');
     if action.is_empty() {
@@ -148,51 +181,51 @@ impl ChromeActionUrl {
 
       // Find in page (per-tab).
       "find-query" => Ok(Self::FindQuery {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
         query: required_param(&params, "query")?.to_string(),
-        case_sensitive: parse_bool_param(optional_param(&params, "case_sensitive"))?,
+        case_sensitive: parse_bool_param(optional_param(&params, "case_sensitive")?)?,
       }),
       "find-next" => Ok(Self::FindNext {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "find-prev" => Ok(Self::FindPrev {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "close-find-in-page" => Ok(Self::CloseFindInPage {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
 
       // Tab management.
       "new-tab" => Ok(Self::NewTab),
       "close-tab" => Ok(Self::CloseTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "detach-tab" => Ok(Self::DetachTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "reload-tab" => Ok(Self::ReloadTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "duplicate-tab" => Ok(Self::DuplicateTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "close-other-tabs" => Ok(Self::CloseOtherTabs {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "close-tabs-to-right" => Ok(Self::CloseTabsToRight {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "reopen-closed-tab" => Ok(Self::ReopenClosedTab),
       "activate-tab" => Ok(Self::ActivateTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
       "toggle-pin-tab" => Ok(Self::TogglePinTab {
-        tab_id: parse_tab_id(required_param(&params, "tab_id")?)?,
+        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
       }),
 
       // Navigations.
       "navigate" => {
-        let target = trim_ascii_whitespace(required_param(&params, "url")?);
+        let target = trim_ascii_whitespace(required_param_any(&params, &["url", "input"], "url")?);
         if target.is_empty() {
           return Err("navigate requires a non-empty url".to_string());
         }
@@ -202,7 +235,7 @@ impl ChromeActionUrl {
         })
       }
       "open-url-in-new-tab" => {
-        let target = trim_ascii_whitespace(required_param(&params, "url")?);
+        let target = trim_ascii_whitespace(required_param_any(&params, &["url", "input"], "url")?);
         if target.is_empty() {
           return Err("open-url-in-new-tab requires a non-empty url".to_string());
         }
@@ -229,8 +262,8 @@ impl ChromeActionUrl {
         show: parse_bool_param(Some(required_param(&params, "show")?))?,
       }),
       "address-bar-focus-changed" => {
-        let raw_focus = optional_param(&params, "has_focus").or_else(|| optional_param(&params, "focused"));
-        let raw_focus = raw_focus.ok_or_else(|| "missing chrome-action param: has_focus".to_string())?;
+        let raw_focus =
+          required_param_any(&params, &["has_focus", "focused"], "has_focus")?;
         Ok(Self::AddressBarFocusChanged {
           has_focus: parse_bool_param(Some(raw_focus))?,
         })
@@ -276,57 +309,57 @@ impl ChromeActionUrl {
       } => {
         out.push_str("find-query");
         append_query(&mut out, &[
-          ("tab_id", tab_id.0.to_string()),
+          ("tab", tab_id.0.to_string()),
           ("query", query.clone()),
           ("case_sensitive", bool_to_string(*case_sensitive)),
         ]);
       }
       Self::FindNext { tab_id } => {
         out.push_str("find-next");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::FindPrev { tab_id } => {
         out.push_str("find-prev");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::CloseFindInPage { tab_id } => {
         out.push_str("close-find-in-page");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
 
       Self::NewTab => out.push_str("new-tab"),
       Self::CloseTab { tab_id } => {
         out.push_str("close-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::DetachTab { tab_id } => {
         out.push_str("detach-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::ReloadTab { tab_id } => {
         out.push_str("reload-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::DuplicateTab { tab_id } => {
         out.push_str("duplicate-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::CloseOtherTabs { tab_id } => {
         out.push_str("close-other-tabs");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::CloseTabsToRight { tab_id } => {
         out.push_str("close-tabs-to-right");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::ReopenClosedTab => out.push_str("reopen-closed-tab"),
       Self::ActivateTab { tab_id } => {
         out.push_str("activate-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
       Self::TogglePinTab { tab_id } => {
         out.push_str("toggle-pin-tab");
-        append_query(&mut out, &[("tab_id", tab_id.0.to_string())]);
+        append_query(&mut out, &[("tab", tab_id.0.to_string())]);
       }
 
       Self::Navigate { url } => {
@@ -377,6 +410,13 @@ impl ChromeActionUrl {
     }
 
     out
+  }
+
+  /// Format this action into a canonical `chrome-action:` URL string.
+  ///
+  /// This is an alias for [`ChromeActionUrl::format`].
+  pub fn to_url(&self) -> String {
+    self.format()
   }
 
   /// Convenience wrapper for UI HTML templates.
@@ -492,14 +532,41 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn required_param<'a>(params: &'a [(String, String)], key: &str) -> Result<&'a str, String> {
-  optional_param(params, key).ok_or_else(|| format!("missing chrome-action param: {key}"))
+  required_param_any(params, &[key], key)
 }
 
-fn optional_param<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
-  params
-    .iter()
-    .find(|(k, _)| k == key)
-    .map(|(_, v)| v.as_str())
+fn optional_param<'a>(params: &'a [(String, String)], key: &str) -> Result<Option<&'a str>, String> {
+  optional_param_any(params, &[key])
+}
+
+fn required_param_any<'a>(
+  params: &'a [(String, String)],
+  keys: &[&str],
+  canonical: &str,
+) -> Result<&'a str, String> {
+  optional_param_any(params, keys)?.ok_or_else(|| format!("missing chrome-action param: {canonical}"))
+}
+
+fn optional_param_any<'a>(params: &'a [(String, String)], keys: &[&str]) -> Result<Option<&'a str>, String> {
+  let mut found_key: Option<&str> = None;
+  let mut found_val: Option<&'a str> = None;
+
+  for &key in keys {
+    let mut iter = params.iter().filter(|(k, _)| k == key);
+    let val = iter.next().map(|(_, v)| v.as_str());
+    if val.is_some() && iter.next().is_some() {
+      return Err(format!("duplicate chrome-action param: {key}"));
+    }
+    if let Some(val) = val {
+      if let Some(prev) = found_key {
+        return Err(format!("conflicting chrome-action params: {prev} and {key}"));
+      }
+      found_key = Some(key);
+      found_val = Some(val);
+    }
+  }
+
+  Ok(found_val)
 }
 
 fn all_params(params: &[(String, String)], key: &str) -> Vec<String> {
@@ -514,9 +581,9 @@ fn parse_tab_id(raw: &str) -> Result<TabId, String> {
   let raw = trim_ascii_whitespace(raw);
   let parsed: u64 = raw
     .parse()
-    .map_err(|_| format!("invalid tab_id value: {raw:?}"))?;
+    .map_err(|_| format!("invalid tab value: {raw:?}"))?;
   if parsed == 0 {
-    return Err("invalid tab_id value: 0".to_string());
+    return Err("invalid tab value: 0".to_string());
   }
   Ok(TabId(parsed))
 }
@@ -743,6 +810,28 @@ mod tests {
         .into_chrome_action()
         .is_err()
     );
+  }
+
+  #[test]
+  fn allows_empty_find_query() {
+    let tab_id = TabId(1);
+    let action = ChromeActionUrl::FindQuery {
+      tab_id,
+      query: String::new(),
+      case_sensitive: false,
+    };
+
+    assert_eq!(
+      action.clone().into_chrome_action().unwrap(),
+      ChromeAction::FindQuery {
+        tab_id,
+        query: String::new(),
+        case_sensitive: false,
+      }
+    );
+
+    let url = action.to_url();
+    assert_eq!(ChromeActionUrl::parse(&url).unwrap(), action);
   }
 
   #[test]

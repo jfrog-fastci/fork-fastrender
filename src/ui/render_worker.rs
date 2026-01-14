@@ -10063,7 +10063,6 @@ impl BrowserRuntime {
       tab.request_non_scroll_repaint();
     }
   }
-
   fn handle_a11y_activate(&mut self, tab_id: TabId, node_id: usize) {
     self.handle_a11y_set_focus(tab_id, node_id);
 

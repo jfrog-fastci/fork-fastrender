@@ -1564,10 +1564,54 @@ impl BrowserTabController {
     anchor: usize,
     focus: usize,
   ) -> Result<Vec<WorkerToUi>> {
+    fn dom_input_type(node: &DomNode) -> &str {
+      node
+        .get_attribute_ref("type")
+        .map(crate::ui::url::trim_ascii_whitespace)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("text")
+    }
+
+    fn dom_is_text_input(node: &DomNode) -> bool {
+      if !node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      {
+        return false;
+      }
+      let t = dom_input_type(node);
+      !t.eq_ignore_ascii_case("checkbox")
+        && !t.eq_ignore_ascii_case("radio")
+        && !t.eq_ignore_ascii_case("button")
+        && !t.eq_ignore_ascii_case("submit")
+        && !t.eq_ignore_ascii_case("reset")
+        && !t.eq_ignore_ascii_case("hidden")
+        && !t.eq_ignore_ascii_case("range")
+        && !t.eq_ignore_ascii_case("color")
+        && !t.eq_ignore_ascii_case("file")
+        && !t.eq_ignore_ascii_case("image")
+    }
+
+    fn dom_is_textarea(node: &DomNode) -> bool {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+    }
+
     let changed = self.document.mutate_dom(|dom| {
-      self
+      let is_text_control = match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+        Some(node) if node.is_element() => dom_is_text_input(node) || dom_is_textarea(node),
+        _ => false,
+      };
+      if !is_text_control {
+        return false;
+      }
+
+      let (focus_changed, _) = self.interaction.focus_node_id(dom, Some(node_id), true);
+      let selection_changed = self
         .interaction
-        .a11y_set_text_selection_range(dom, node_id, anchor, focus)
+        .a11y_set_text_selection_range(dom, node_id, anchor, focus);
+      focus_changed || selection_changed
     });
     if changed {
       self.paint_if_needed()

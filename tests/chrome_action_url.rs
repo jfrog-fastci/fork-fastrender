@@ -35,35 +35,35 @@ fn parse_round_trip_basic_navigation_actions() {
 fn parse_round_trip_tab_actions() {
   round_trip("chrome-action:new-tab", ChromeActionUrl::NewTab);
   round_trip(
-    "chrome-action:close-tab?tab_id=1",
+    "chrome-action:close-tab?tab=1",
     ChromeActionUrl::CloseTab { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:detach-tab?tab_id=1",
+    "chrome-action:detach-tab?tab=1",
     ChromeActionUrl::DetachTab { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:reload-tab?tab_id=1",
+    "chrome-action:reload-tab?tab=1",
     ChromeActionUrl::ReloadTab { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:duplicate-tab?tab_id=1",
+    "chrome-action:duplicate-tab?tab=1",
     ChromeActionUrl::DuplicateTab { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:close-other-tabs?tab_id=1",
+    "chrome-action:close-other-tabs?tab=1",
     ChromeActionUrl::CloseOtherTabs { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:close-tabs-to-right?tab_id=1",
+    "chrome-action:close-tabs-to-right?tab=1",
     ChromeActionUrl::CloseTabsToRight { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:activate-tab?tab_id=1",
+    "chrome-action:activate-tab?tab=1",
     ChromeActionUrl::ActivateTab { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:toggle-pin-tab?tab_id=1",
+    "chrome-action:toggle-pin-tab?tab=1",
     ChromeActionUrl::TogglePinTab { tab_id: TabId(1) },
   );
 }
@@ -232,7 +232,7 @@ fn parse_round_trip_reorder_bookmarks_bar() {
 #[test]
 fn parse_round_trip_find_query_and_next_prev_close() {
   round_trip(
-    "chrome-action:find-query?tab_id=1&query=hello&case_sensitive=1",
+    "chrome-action:find-query?tab=1&query=hello&case_sensitive=1",
     ChromeActionUrl::FindQuery {
       tab_id: TabId(1),
       query: "hello".to_string(),
@@ -240,15 +240,15 @@ fn parse_round_trip_find_query_and_next_prev_close() {
     },
   );
   round_trip(
-    "chrome-action:find-next?tab_id=1",
+    "chrome-action:find-next?tab=1",
     ChromeActionUrl::FindNext { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:find-prev?tab_id=1",
+    "chrome-action:find-prev?tab=1",
     ChromeActionUrl::FindPrev { tab_id: TabId(1) },
   );
   round_trip(
-    "chrome-action:close-find-in-page?tab_id=1",
+    "chrome-action:close-find-in-page?tab=1",
     ChromeActionUrl::CloseFindInPage { tab_id: TabId(1) },
   );
 }

@@ -436,7 +436,6 @@ impl DriftResampler {
 
     out_samples
   }
-
   #[inline]
   fn pop_frame(queue: &mut PcmF32QueueConsumer, dst: &mut [f32], channels: usize) -> bool {
     debug_assert_eq!(dst.len(), channels);
