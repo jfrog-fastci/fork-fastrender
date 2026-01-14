@@ -1,8 +1,37 @@
 use crate::geometry::{Point, Rect};
-use crate::interaction::dom_index::DomIndex;
+use crate::dom::DomNode;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxNode;
 use crate::PreparedDocument;
+
+fn preorder_id_for_element_id(dom: &DomNode, element_id: &str) -> Option<usize> {
+  // Match `crate::dom::enumerate_dom_ids` preorder traversal and `DomIndex` semantics:
+  // - IDs are assigned to every node in pre-order (including `<template>` contents)
+  // - `id` attribute lookup ignores inert `<template>` subtrees (matching `getElementById`)
+  //
+  // We intentionally traverse `children` (not `traversal_children`) so template contents still count
+  // towards stable preorder ids.
+  let mut next_id: usize = 0;
+  let mut stack: Vec<(&DomNode, bool)> = vec![(dom, false)];
+  while let Some((node, in_template_contents)) = stack.pop() {
+    next_id += 1;
+
+    if !in_template_contents {
+      if let Some(id) = node.get_attribute_ref("id") {
+        if id == element_id {
+          return Some(next_id);
+        }
+      }
+    }
+
+    let child_in_template_contents = in_template_contents || node.is_template_element();
+    for child in node.children.iter().rev() {
+      stack.push((child, child_in_template_contents));
+    }
+  }
+
+  None
+}
 
 pub fn element_border_rect_by_id(prepared: &PreparedDocument, element_id: &str) -> Option<Rect> {
   let scroll_state = prepared.default_scroll_state();
@@ -14,9 +43,7 @@ pub fn element_border_rect_by_id_with_scroll_state(
   element_id: &str,
   scroll_state: &ScrollState,
 ) -> Option<Rect> {
-  let mut dom = prepared.dom().clone();
-  let dom_index = DomIndex::build(&mut dom);
-  let node_id = *dom_index.id_by_element_id.get(element_id)?;
+  let node_id = preorder_id_for_element_id(prepared.dom(), element_id)?;
 
   // Convert the fragment tree into paint-time geometry coordinates (element scroll offsets +
   // sticky adjustments). The returned tree is still in page coordinates; convert it to
