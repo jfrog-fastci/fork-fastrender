@@ -1120,7 +1120,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
     ctx: &mut dyn vm_js::VmJobContext,
     job: vm_js::Job,
     realm: Option<vm_js::RealmId>,
-  ) -> Result<(), VmError> {
+  ) -> std::result::Result<(), VmError> {
     self.inner.host_enqueue_promise_job_fallible(ctx, job, realm)
   }
 
