@@ -37713,7 +37713,6 @@ fn range_insert_node_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let mut scope = scope.reborrow();
   let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -37962,7 +37961,6 @@ fn range_surround_contents_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let mut scope = scope.reborrow();
   let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
 
   let new_parent_value = args.get(0).copied().unwrap_or(Value::Undefined);

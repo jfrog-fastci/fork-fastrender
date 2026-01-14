@@ -2423,6 +2423,64 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(())
   }
 
+  fn sync_cached_children_for_wrapper(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    wrapper_obj: GcObject,
+    node_id: NodeId,
+    document_id: DocumentId,
+  ) -> Result<(), VmError>
+  where
+    Host: DomHost,
+  {
+    let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
+    let Some(Value::Object(collection_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &children_key)?
+    else {
+      return Ok(());
+    };
+
+    #[derive(Debug)]
+    enum SyncChildrenError {
+      Dom(DomError),
+      OutOfMemory,
+    }
+
+    let children: Result<Vec<(NodeId, DomInterface)>, SyncChildrenError> =
+      self.with_dom_host(vm, |host| {
+        Ok(host.with_dom(|dom| {
+          if node_id.index() >= dom.nodes_len() {
+            return Err(SyncChildrenError::Dom(DomError::NotFoundError));
+          }
+
+          let child_ids = dom.children_elements(node_id);
+          let mut out: Vec<(NodeId, DomInterface)> = Vec::new();
+          out
+            .try_reserve(child_ids.len())
+            .map_err(|_| SyncChildrenError::OutOfMemory)?;
+          for child_id in child_ids {
+            let primary = if child_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+            };
+            out.push((child_id, primary));
+          }
+          Ok(out)
+        }))
+      })?;
+
+    let children = match children {
+      Ok(v) => v,
+      Err(SyncChildrenError::Dom(err)) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+      Err(SyncChildrenError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    };
+
+    sync_dom_node_collection_object(vm, scope, collection_obj, document_id, &children)
+  }
+
   fn try_delegate_dom_call_operation(
     &mut self,
     vm: &mut Vm,
@@ -9092,86 +9150,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(()) => {
-            // NOTE: `with_dom_host` takes a `&mut Vm`; avoid borrowing `vm` again inside the closure.
-            // We first snapshot the relevant child lists from the DOM, then sync the cached JS
-            // collections using `vm`.
-            let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
-            let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
-
-            let child_nodes_obj = scope
-              .heap()
-              .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
-              .and_then(|v| match v {
-                Value::Object(obj) => Some(obj),
-                _ => None,
-              });
-            let children_obj = scope
-              .heap()
-              .object_get_own_data_property_value(wrapper_obj, &children_key)?
-              .and_then(|v| match v {
-                Value::Object(obj) => Some(obj),
-                _ => None,
-              });
-
-            if child_nodes_obj.is_some() || children_obj.is_some() {
-              let snapshot: Result<(Vec<(NodeId, DomInterface)>, Vec<(NodeId, DomInterface)>), VmError> =
-                self.with_dom_host(vm, |host| {
-                Ok(host.with_dom(|dom| {
-                  let node_in_range = parent_id.index() < dom.nodes_len();
-
-                  let child_nodes = if child_nodes_obj.is_some() && node_in_range {
-                    let mut children: Vec<(NodeId, DomInterface)> = Vec::new();
-                    children
-                      .try_reserve(dom.node(parent_id).children.len())
-                      .map_err(|_| VmError::OutOfMemory)?;
-                    for &child_id in dom.node(parent_id).children.iter() {
-                      if child_id.index() >= dom.nodes_len() {
-                        continue;
-                      }
-                      let child = dom.node(child_id);
-                      if child.parent != Some(parent_id) {
-                        continue;
-                      }
-                      if matches!(child.kind, NodeKind::ShadowRoot { .. }) {
-                        continue;
-                      }
-                      let primary = DomInterface::primary_for_node_kind(&child.kind);
-                      children.push((child_id, primary));
-                    }
-                    children
-                  } else {
-                    Vec::new()
-                  };
-
-                  let children = if children_obj.is_some() && node_in_range {
-                    dom
-                      .children_elements(parent_id)
-                      .into_iter()
-                      .map(|child_id| {
-                        let primary = if child_id.index() >= dom.nodes_len() {
-                          DomInterface::Node
-                        } else {
-                          DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
-                        };
-                        (child_id, primary)
-                      })
-                      .collect()
-                  } else {
-                    Vec::new()
-                  };
-
-                  Ok((child_nodes, children))
-                }))
-              })?;
-
-              let (child_nodes, children) = snapshot?;
-              if let Some(obj) = child_nodes_obj {
-                sync_dom_node_collection_object(vm, scope, obj, document_id, &child_nodes)?;
-              }
-              if let Some(obj) = children_obj {
-                sync_dom_node_collection_object(vm, scope, obj, document_id, &children)?;
-              }
-            }
+            self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
+            self.sync_cached_children_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
