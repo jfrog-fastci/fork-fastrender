@@ -65,7 +65,7 @@ fn compiled_script_await_using_in_nested_block_falls_back() -> Result<(), VmErro
 }
 
 #[test]
-fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
+fn compiled_script_top_level_logical_assignment_with_await_suspends_and_resumes() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(
@@ -79,8 +79,12 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
   )?;
   assert!(script.contains_top_level_await);
   assert!(
-    script.top_level_await_requires_ast_fallback,
-    "logical assignment with await is not supported by the HIR async classic-script executor"
+    !script.top_level_await_requires_ast_fallback,
+    "logical assignment with await should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "logical assignment with await should not trigger a full AST fallback"
   );
 
   let completion = rt.exec_compiled_script(script)?;
@@ -113,7 +117,7 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_script_with_host_and_hooks_falls_back_for_top_level_await() -> Result<(), VmError> {
+fn compiled_script_with_host_and_hooks_falls_back_for_await_in_nested_stmt_list() -> Result<(), VmError> {
   // Regression test for `exec_compiled_script_with_host_and_hooks`: unsupported top-level await
   // patterns must execute via the AST interpreter and enqueue Promise jobs via the provided
   // `hooks`.
@@ -124,14 +128,16 @@ fn compiled_script_with_host_and_hooks_falls_back_for_top_level_await() -> Resul
     "compiled_top_level_await_fallback_with_hooks.js",
     r#"
       var out = "";
-      out ||= await Promise.resolve("ok");
+      if (true) {
+        out = await Promise.resolve("ok");
+      }
       out
     "#,
   )?;
   assert!(script.contains_top_level_await);
   assert!(
     script.top_level_await_requires_ast_fallback,
-    "logical assignment with await is not supported by the HIR async classic-script executor"
+    "await inside nested statement lists is not supported by the HIR async classic-script executor"
   );
   assert!(
     script.requires_ast_fallback,
