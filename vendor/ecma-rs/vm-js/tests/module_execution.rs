@@ -214,16 +214,38 @@ fn module_evaluate_sync_rejects_top_level_await_in_dependencies() -> Result<(), 
       &mut hooks,
     )
     .expect_err("sync module evaluation should reject graphs that contain top-level await");
+  let mut scope = heap.scope();
   match err {
+    // Host-facing APIs coerce internal throw-completion errors (including `Unimplemented`) into a
+    // JavaScript `Error` instance when intrinsics exist.
+    VmError::ThrowWithStack { value, .. } | VmError::Throw(value) => {
+      let Value::Object(err_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "expected sync module evaluation failure to throw an Error object",
+        ));
+      };
+      scope.push_root(Value::Object(err_obj))?;
+      let Value::String(message) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, err_obj, "message")?
+      else {
+        return Err(VmError::InvariantViolation(
+          "expected sync module evaluation rejection Error to have a string `message` property",
+        ));
+      };
+      let msg = scope.heap().get_string(message)?.to_utf8_lossy();
+      assert!(
+        msg.contains("top-level await"),
+        "error message should mention top-level await (got {msg:?})"
+      );
+    }
+    // Best-effort fallback when no intrinsics exist.
     VmError::Unimplemented(msg) => assert!(
       msg.contains("top-level await"),
       "error message should mention top-level await (got {msg:?})"
     ),
-    other => panic!("expected VmError::Unimplemented, got {other:?}"),
+    other => panic!("unexpected module evaluation failure: {other:?}"),
   }
 
   // Ensure we failed fast (no module bodies executed).
-  let mut scope = heap.scope();
   let key_s = scope.alloc_string("dep_executed")?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
