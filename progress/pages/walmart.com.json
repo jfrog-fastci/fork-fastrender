@@ -14,7 +14,7 @@
     "layout": 67.94032355947137,
     "paint": 192.83062422026433
   },
-  "notes": "",
+  "notes": "Fixture is a Walmart Next.js 404/edge response (see __NEXT_DATA__.page=/404) with PerimeterX/Akamai bot-defense scripts; not the normal homepage.\nLow diff is expected because the captured page is mostly static navigation/chrome; remaining diffs are minor.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 16287,

@@ -16,7 +16,7 @@
     "layout": 6.047993388888888,
     "paint": 23.183974657407404
   },
-  "notes": "",
+  "notes": "Fixture is Figma’s “unsupported browser / update or switch browsers” interstitial, not the Figma editor.\nLow diff is expected because the page is a simple static modal; remaining mismatches are minor text AA.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 39835,

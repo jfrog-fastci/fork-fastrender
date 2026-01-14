@@ -14,7 +14,7 @@
     "layout": 7.02908691509434,
     "paint": 57.23685059433963
   },
-  "notes": "",
+  "notes": "Fixture is mostly the JS “slippy map” UI; without executing JS/tiles the map area is blank (noscript warning).\nLow diff is expected because we’re comparing a mostly-static shell; remaining mismatch is minor styling/text AA noise.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 13125,

@@ -14,7 +14,7 @@
     "layout": 65.96259283431468,
     "paint": 92.72625612559484
   },
-  "notes": "",
+  "notes": "Fixture is a Reddit network-security / anti-bot block page (\"You’ve been blocked by network security\"), not the real homepage.\nLow diff is expected because we’re comparing an interstitial; remaining mismatch is minor raster/text AA noise.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 13330,
