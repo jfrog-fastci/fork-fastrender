@@ -12,24 +12,56 @@ cd "${repo_root}"
 
 mode_only_paths() {
   local diff_args=("$@")
-  # `git diff --raw` format:
-  #   :<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>
-  git diff --raw --no-renames "${diff_args[@]}" | awk '
-    /^:/ {
-      oldmode = substr($1, 2);
-      newmode = $2;
-      oldsha = $3;
-      newsha = $4;
-      status = $5;
-      path = $6;
+  # We use `--raw -z` so paths with spaces are handled correctly, and `--no-abbrev` so blob ids are
+  # full-length (needed when comparing to `git hash-object`, which outputs full object ids).
+  #
+  # `git diff --raw -z` format (no renames):
+  #   :<oldmode> <newmode> <oldsha> <newsha> <status>\0<path>\0
+  #
+  # For *unstaged* diffs (index ↔ worktree), Git may print the "newsha" as all zeros instead of
+  # hashing the working-tree file content. When that happens, we compute the worktree blob id via
+  # `git hash-object -- <path>` and only treat it as mode-only if it matches <oldsha> from the index.
+  local header path
+  local -a needs_hash_paths=()
+  local -a needs_hash_oldshas=()
 
-      # Mode-only change: same blob hash, different mode. `M` (modified) is typical, but `T` (type
-      # change) is also possible; handle both.
-      if ((status == "M" || status == "T") && oldmode != newmode && oldsha == newsha) {
-        print path;
-      }
-    }
-  '
+  while IFS= read -r -d '' header; do
+    IFS= read -r -d '' path || break
+
+    header="${header#:}"
+    local oldmode newmode oldsha newsha status
+    read -r oldmode newmode oldsha newsha status <<<"${header}"
+
+    # Mode-only change: same blob hash, different mode. `M` (modified) is typical, but `T` (type
+    # change) is also possible; handle both.
+    [[ "${status}" != "M" && "${status}" != "T" ]] && continue
+    [[ "${oldmode}" == "${newmode}" ]] && continue
+
+    # Staged diffs (`--cached`) have a real <newsha> so the straight comparison works.
+    if [[ "${oldsha}" == "${newsha}" ]]; then
+      printf '%s\n' "${path}"
+      continue
+    fi
+
+    # Unstaged diffs may report an all-zero <newsha>; hash the worktree file to verify content.
+    if [[ "${newsha}" =~ ^0+$ ]]; then
+      needs_hash_paths+=("${path}")
+      needs_hash_oldshas+=("${oldsha}")
+    fi
+  done < <(git diff --raw -z --no-renames --no-abbrev "${diff_args[@]}")
+
+  if ((${#needs_hash_paths[@]} == 0)); then
+    return 0
+  fi
+
+  local -a worktree_shas=()
+  mapfile -t worktree_shas < <(git hash-object -- "${needs_hash_paths[@]}")
+  local i
+  for i in "${!needs_hash_paths[@]}"; do
+    if [[ "${worktree_shas[${i}]}" == "${needs_hash_oldshas[${i}]}" ]]; then
+      printf '%s\n' "${needs_hash_paths[${i}]}"
+    fi
+  done
 }
 
 unstaged="$(mode_only_paths)"
