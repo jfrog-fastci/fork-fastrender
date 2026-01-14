@@ -16864,6 +16864,32 @@ pub(crate) enum GenFrame {
     units: Vec<u16>,
   },
 
+  /// Continue a tagged template after evaluating the tag expression.
+  TaggedTemplateAfterFunction {
+    expr: *const Node<TaggedTemplateExpr>,
+  },
+  /// Continue a tagged template after evaluating a member base expression.
+  TaggedTemplateMemberAfterBase {
+    expr: *const Node<TaggedTemplateExpr>,
+  },
+  /// Continue a tagged template after evaluating a computed member base expression.
+  TaggedTemplateComputedMemberAfterBase {
+    expr: *const Node<TaggedTemplateExpr>,
+  },
+  /// Continue a tagged template after evaluating a computed member key expression.
+  TaggedTemplateComputedMemberAfterMember {
+    expr: *const Node<TaggedTemplateExpr>,
+    base: Value,
+  },
+  /// Continue a tagged template while evaluating substitutions.
+  TaggedTemplateAfterSubstitution {
+    expr: *const Node<TaggedTemplateExpr>,
+    callee: Value,
+    this: Value,
+    args: Vec<Value>,
+    next_part_index: usize,
+  },
+
   /// Continue a dynamic `import()` expression after evaluating the specifier expression.
   ImportAfterSpecifier { expr: *const ImportExpr },
   /// Continue a dynamic `import()` expression after evaluating the options expression.
@@ -16995,6 +17021,16 @@ impl Trace for GenFrame {
       }
       GenFrame::NewArgs { callee, args, .. } => {
         tracer.trace_value(*callee);
+        for v in args.iter().copied() {
+          tracer.trace_value(v);
+        }
+      }
+      GenFrame::TaggedTemplateComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::TaggedTemplateAfterSubstitution {
+        callee, this, args, ..
+      } => {
+        tracer.trace_value(*callee);
+        tracer.trace_value(*this);
         for v in args.iter().copied() {
           tracer.trace_value(v);
         }
@@ -37744,6 +37780,7 @@ fn gen_eval_expr_chain(
     },
     Expr::Call(call) => gen_eval_call(evaluator, scope, &call.stx),
     Expr::Import(import) => gen_eval_import_expr(evaluator, scope, &import.stx),
+    Expr::TaggedTemplate(tag) => gen_eval_tagged_template(evaluator, scope, tag),
     Expr::Cond(cond) => match gen_eval_expr(evaluator, scope, &cond.stx.test)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -41460,6 +41497,325 @@ fn gen_call_store_arg_value(
   Ok(())
 }
 
+fn gen_eval_tagged_template(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+) -> Result<GenEval<Completion>, VmError> {
+  match &*expr.stx.function.stx {
+    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_tagged_template_member_after_base(
+          evaluator,
+          scope,
+          expr,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::TaggedTemplateMemberAfterBase {
+            expr: expr as *const Node<TaggedTemplateExpr>,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_tagged_template_computed_member_after_base(
+          evaluator,
+          scope,
+          expr,
+          &member.stx,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::TaggedTemplateComputedMemberAfterBase {
+            expr: expr as *const Node<TaggedTemplateExpr>,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    _ => match gen_eval_expr(evaluator, scope, &expr.stx.function)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_tagged_template_with_callee(
+          evaluator,
+          scope,
+          expr,
+          v.unwrap_or(Value::Undefined),
+          Value::Undefined,
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::TaggedTemplateAfterFunction {
+            expr: expr as *const Node<TaggedTemplateExpr>,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+  }
+}
+
+fn gen_eval_tagged_template_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member: &MemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+  if is_nullish(base) {
+    let err = throw_type_error(
+      evaluator.vm,
+      scope,
+      "Cannot convert undefined or null to object",
+    )?;
+    return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+  }
+
+  let callee_value = {
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(base)?;
+    let reference = if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        receiver: base,
+        key: PropertyKey::from_string(key_s),
+      }
+    };
+    evaluator.get_value_from_reference(&mut key_scope, &reference)
+  };
+  let callee_value = match callee_value {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  gen_eval_tagged_template_with_callee(evaluator, scope, expr, callee_value, base)
+}
+
+fn gen_eval_tagged_template_computed_member_after_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member: &ComputedMemberExpr,
+  base: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining && is_nullish(base) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  match gen_eval_expr(evaluator, scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_eval_tagged_template_computed_member_after_member(
+        evaluator,
+        scope,
+        expr,
+        member,
+        base,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      // Root the base value so it survives until the next yield boundary.
+      scope.push_root(base)?;
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::TaggedTemplateComputedMemberAfterMember {
+          expr: expr as *const Node<TaggedTemplateExpr>,
+          base,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_tagged_template_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member: &ComputedMemberExpr,
+  base: Value,
+  member_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(base)?;
+  key_scope.push_root(member_value)?;
+  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
+    Ok(k) => k,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  if !member.optional_chaining && is_nullish(base) {
+    let err = throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?;
+    return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+  }
+
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
+  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(key_scope);
+  gen_eval_tagged_template_with_callee(evaluator, scope, expr, callee_value, base)
+}
+
+fn gen_eval_tagged_template_with_callee(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  callee_value: Value,
+  this_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut call_scope = scope.reborrow();
+  call_scope.push_roots(&[callee_value, this_value])?;
+
+  let template_parts = template_string_parts(&expr.assoc).ok_or(VmError::InvariantViolation(
+    "TaggedTemplateExpr is missing TemplateStringParts association",
+  ))?;
+  let rel_start = expr
+    .loc
+    .start_u32()
+    .saturating_sub(evaluator.env.prefix_len());
+  let rel_end = expr
+    .loc
+    .end_u32()
+    .saturating_sub(evaluator.env.prefix_len());
+  let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+  let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+  let template_obj = evaluator.vm.get_or_create_template_object(
+    &mut call_scope,
+    evaluator.env.source(),
+    span_start,
+    span_end,
+    template_parts.raw.as_ref(),
+    template_parts.cooked.as_ref(),
+  )?;
+  call_scope.push_root(Value::Object(template_obj))?;
+
+  let mut args: Vec<Value> = Vec::new();
+  args
+    .try_reserve_exact(expr.stx.parts.len().saturating_add(1))
+    .map_err(|_| VmError::OutOfMemory)?;
+  args.push(Value::Object(template_obj));
+
+  gen_eval_tagged_template_from_parts(
+    evaluator,
+    &mut call_scope,
+    expr,
+    callee_value,
+    this_value,
+    args,
+    0,
+  )
+}
+
+fn gen_eval_tagged_template_from_parts(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  callee_value: Value,
+  this_value: Value,
+  mut args: Vec<Value>,
+  start_part_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  for (part_index, part) in expr.stx.parts.iter().enumerate().skip(start_part_index) {
+    let LitTemplatePart::Substitution(sub_expr) = part else {
+      continue;
+    };
+
+    match gen_eval_expr(evaluator, scope, sub_expr)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          scope.push_root(value)?;
+          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          args.push(value);
+        }
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        // Root the callee/this/args so they survive until the next yield boundary.
+        let mut roots: Vec<Value> = Vec::new();
+        roots
+          .try_reserve_exact(args.len().saturating_add(2))
+          .map_err(|_| VmError::OutOfMemory)?;
+        roots.push(callee_value);
+        roots.push(this_value);
+        roots.extend_from_slice(&args);
+        scope.push_roots(&roots)?;
+
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::TaggedTemplateAfterSubstitution {
+            expr: expr as *const Node<TaggedTemplateExpr>,
+            callee: callee_value,
+            this: this_value,
+            args,
+            next_part_index: part_index.saturating_add(1),
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let res = evaluator.call(scope, callee_value, this_value, &args);
+  match res {
+    Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+    }
+  }
+}
+
 fn gen_start_body(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -43939,6 +44295,140 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::TaggedTemplateAfterFunction { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_eval_tagged_template_with_callee(
+            evaluator,
+            scope,
+            expr,
+            v.unwrap_or(Value::Undefined),
+            Value::Undefined,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::TaggedTemplateMemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let Expr::Member(member) = &*expr.stx.function.stx else {
+            return Err(VmError::InvariantViolation(
+              "tagged template member base frame for non-member callee",
+            ));
+          };
+          match gen_eval_tagged_template_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::TaggedTemplateComputedMemberAfterBase { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let Expr::ComputedMember(member) = &*expr.stx.function.stx else {
+            return Err(VmError::InvariantViolation(
+              "tagged template computed member base frame for non-computed member callee",
+            ));
+          };
+          match gen_eval_tagged_template_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::TaggedTemplateComputedMemberAfterMember { expr, base } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let Expr::ComputedMember(member) = &*expr.stx.function.stx else {
+            return Err(VmError::InvariantViolation(
+              "tagged template computed member after member frame for non-computed member callee",
+            ));
+          };
+          match gen_eval_tagged_template_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::TaggedTemplateAfterSubstitution {
+        expr,
+        callee,
+        this,
+        mut args,
+        next_part_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          scope.push_root(value)?;
+          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          args.push(value);
+
+          let expr = unsafe { &*expr };
+          match gen_eval_tagged_template_from_parts(
+            evaluator,
+            scope,
+            expr,
+            callee,
+            this,
+            args,
+            next_part_index,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::ImportAfterSpecifier { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -43979,7 +44469,6 @@ fn gen_resume_from_frames(
         }
         abrupt => state = abrupt,
       },
-
       GenFrame::StmtList {
         stmts,
         next_index,
@@ -44777,6 +45266,12 @@ fn gen_root_values_for_continuation(
           .saturating_add(usize::from(key.is_some()))
           .saturating_add(usize::from(receiver.is_some()));
       }
+      GenFrame::TaggedTemplateComputedMemberAfterMember { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::TaggedTemplateAfterSubstitution { args, .. } => {
+        needed = needed.saturating_add(2).saturating_add(args.len());
+      }
       _ => {}
     }
   }
@@ -44922,6 +45417,14 @@ fn gen_root_values_for_continuation(
         });
       }
       GenFrame::ImportAfterOptions { specifier, .. } => values.push(*specifier),
+      GenFrame::TaggedTemplateComputedMemberAfterMember { base, .. } => values.push(*base),
+      GenFrame::TaggedTemplateAfterSubstitution {
+        callee, this, args, ..
+      } => {
+        values.push(*callee);
+        values.push(*this);
+        values.extend_from_slice(args);
+      }
       _ => {}
     }
   }
