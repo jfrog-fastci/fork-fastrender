@@ -8906,10 +8906,6 @@ impl<'a> Evaluator<'a> {
           PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
         };
 
-        // Keep the class constructor object accessible even in branches that bind `func_obj` for
-        // class element function objects.
-        let class_ctor = func_obj;
-
         match &member.stx.val {
           ClassOrObjVal::Method(method) => {
             let func_node = &method.stx.func;
@@ -9099,7 +9095,7 @@ impl<'a> Evaluator<'a> {
             let closure_env = Some(self.env.lexical_env);
 
             let name_string = member_scope.alloc_string("")?;
-            let func_obj = member_scope.alloc_ecma_function(
+            let getter_func_obj = member_scope.alloc_ecma_function(
               code,
               /* is_constructable */ false,
               name_string,
@@ -9110,7 +9106,7 @@ impl<'a> Evaluator<'a> {
             )?;
             member_scope
               .heap_mut()
-              .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+              .set_function_meta_property_context(getter_func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = self
               .vm
@@ -9118,29 +9114,29 @@ impl<'a> Evaluator<'a> {
               .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
             member_scope
               .heap_mut()
-              .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+              .object_set_prototype(getter_func_obj, Some(intr.function_prototype()))?;
             member_scope
               .heap_mut()
-              .set_function_realm(func_obj, self.env.global_object())?;
+              .set_function_realm(getter_func_obj, self.env.global_object())?;
             if let Some(realm) = self.vm.current_realm() {
               member_scope
                 .heap_mut()
-                .set_function_job_realm(func_obj, realm)?;
+                .set_function_job_realm(getter_func_obj, realm)?;
             }
             if let Some(script_or_module) = self.vm.get_active_script_or_module() {
               let token = self.vm.intern_script_or_module(script_or_module)?;
               member_scope
                 .heap_mut()
-                .set_function_script_or_module_token(func_obj, Some(token))?;
+                .set_function_script_or_module_token(getter_func_obj, Some(token))?;
             }
             member_scope
               .heap_mut()
-              .set_function_home_object(func_obj, Some(target_obj))?;
-            member_scope.push_root(Value::Object(func_obj))?;
+              .set_function_home_object(getter_func_obj, Some(target_obj))?;
+            member_scope.push_root(Value::Object(getter_func_obj))?;
 
             crate::function_properties::set_function_name(
               &mut member_scope,
-              func_obj,
+              getter_func_obj,
               key,
               Some("get"),
             )?;
@@ -9149,7 +9145,7 @@ impl<'a> Evaluator<'a> {
               target_obj,
               key,
               PropertyDescriptorPatch {
-                get: Some(Value::Object(func_obj)),
+                get: Some(Value::Object(getter_func_obj)),
                 enumerable: Some(false),
                 // Private accessors may appear as a getter/setter pair, defined as distinct class
                 // elements in source order. Using `configurable: false` would reject the second
@@ -9194,7 +9190,7 @@ impl<'a> Evaluator<'a> {
             let closure_env = Some(self.env.lexical_env);
 
             let name_string = member_scope.alloc_string("")?;
-            let func_obj = member_scope.alloc_ecma_function(
+            let setter_func_obj = member_scope.alloc_ecma_function(
               code,
               /* is_constructable */ false,
               name_string,
@@ -9205,7 +9201,7 @@ impl<'a> Evaluator<'a> {
             )?;
             member_scope
               .heap_mut()
-              .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+              .set_function_meta_property_context(setter_func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = self
               .vm
@@ -9213,29 +9209,29 @@ impl<'a> Evaluator<'a> {
               .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
             member_scope
               .heap_mut()
-              .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+              .object_set_prototype(setter_func_obj, Some(intr.function_prototype()))?;
             member_scope
               .heap_mut()
-              .set_function_realm(func_obj, self.env.global_object())?;
+              .set_function_realm(setter_func_obj, self.env.global_object())?;
             if let Some(realm) = self.vm.current_realm() {
               member_scope
                 .heap_mut()
-                .set_function_job_realm(func_obj, realm)?;
+                .set_function_job_realm(setter_func_obj, realm)?;
             }
             if let Some(script_or_module) = self.vm.get_active_script_or_module() {
               let token = self.vm.intern_script_or_module(script_or_module)?;
               member_scope
                 .heap_mut()
-                .set_function_script_or_module_token(func_obj, Some(token))?;
+                .set_function_script_or_module_token(setter_func_obj, Some(token))?;
             }
             member_scope
               .heap_mut()
-              .set_function_home_object(func_obj, Some(target_obj))?;
-            member_scope.push_root(Value::Object(func_obj))?;
+              .set_function_home_object(setter_func_obj, Some(target_obj))?;
+            member_scope.push_root(Value::Object(setter_func_obj))?;
 
             crate::function_properties::set_function_name(
               &mut member_scope,
-              func_obj,
+              setter_func_obj,
               key,
               Some("set"),
             )?;
@@ -9244,7 +9240,7 @@ impl<'a> Evaluator<'a> {
               target_obj,
               key,
               PropertyDescriptorPatch {
-                set: Some(Value::Object(func_obj)),
+                set: Some(Value::Object(setter_func_obj)),
                 enumerable: Some(false),
                 configurable: Some(true),
                 ..Default::default()
