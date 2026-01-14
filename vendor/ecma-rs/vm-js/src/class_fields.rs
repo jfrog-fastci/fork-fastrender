@@ -74,21 +74,23 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
   let mut init_scope = scope.reborrow();
   init_scope.push_roots(&[Value::Object(receiver), Value::Object(class_ctor)])?;
 
-  // Initialize private instance methods/accessors.
+  // Initialize private instance accessors (and any other internal-symbol keyed elements defined on
+  // the prototype).
   //
   // `vm-js` represents class-private names (`#x`, `#m`, ...) via internal symbols scoped to the
-  // class's lexical environment. Private fields are stored in the class constructor's native-slot
-  // field list (and initialized below), but private methods/accessors are defined on the class's
-  // prototype object during class definition evaluation.
+  // class's lexical environment. Private instance fields and private instance methods are stored
+  // in the class constructor's native-slot element list, but private accessors are currently
+  // defined on the class's prototype object during class definition evaluation.
   //
   // For spec-correct per-instance privacy (brand checks) these private methods/accessors must also
   // be installed as **own** properties on each constructed instance. Otherwise, `this.#m()` would
   // fail the private brand check in `Evaluator::private_get`, which intentionally does not consult
   // the prototype chain.
   //
-  // We implement this by copying any internal-symbol keyed properties from the class prototype
-  // object onto the instance before evaluating any field initializers. This matches the observable
-  // behavior of `InitializeInstanceElements` where private methods are available to field
+  // Private methods are handled via the native-slot list below. For accessors, we copy any
+  // internal-symbol keyed properties from the class prototype object onto the instance before
+  // evaluating any field initializers. This matches the observable behavior of
+  // `InitializeInstanceElements` where private methods/accessors are available to field
   // initializers.
   let prototype_obj = {
     let prototype_key = PropertyKey::from_string(init_scope.common_key_prototype()?);
