@@ -5186,19 +5186,23 @@ impl<'a> Evaluator<'a> {
         }
       }
 
-      for (i, v) in args.iter().copied().enumerate() {
-        if i % PROLOGUE_TICK_EVERY == 0 {
-          self.tick()?;
-        }
-        let mut idx_scope = scope.reborrow();
-        idx_scope.push_root(v)?;
-        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
-        let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
-        if use_mapped_arguments
-          && i < func.stx.parameters.len()
-          && *map_param_index
-            .get(i)
-            .ok_or(VmError::InvariantViolation(
+        for (i, v) in args.iter().copied().enumerate() {
+          if i % PROLOGUE_TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          let mut idx_scope = scope.reborrow();
+          idx_scope.push_root(v)?;
+          let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+          // Root the index string because we may allocate (and GC) while constructing mapped
+          // `arguments` accessors before we use it in `define_property`.
+          let key_s = idx_scope.alloc_u32_index_string(i_u32)?;
+          idx_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+          if use_mapped_arguments
+            && i < func.stx.parameters.len()
+            && *map_param_index
+              .get(i)
+              .ok_or(VmError::InvariantViolation(
               "arguments mapping index out of bounds",
             ))?
         {
@@ -5210,7 +5214,10 @@ impl<'a> Evaluator<'a> {
 
           let getter_call_id = self.vm.arguments_param_map_getter_call_id()?;
           let setter_call_id = self.vm.arguments_param_map_setter_call_id()?;
+          // Root the function name string because we allocate other strings before passing it into
+          // `alloc_native_function_with_slots_and_env`, which can trigger GC.
           let name = idx_scope.alloc_string("")?;
+          idx_scope.push_root(Value::String(name))?;
 
           let param_name_s = idx_scope.alloc_string(id.stx.name.as_str())?;
           let slots = [Value::String(param_name_s)];
