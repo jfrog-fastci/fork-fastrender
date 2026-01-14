@@ -159,6 +159,14 @@ impl SizeHintMediaFrameProvider {
     Self { videos, scaler }
   }
 
+  /// Clears all cached frames and size hints.
+  ///
+  /// This is intended for document navigations: decoded frame caches are document-scoped and must
+  /// not leak between pages.
+  pub fn clear(&self) {
+    self.videos.lock().clear();
+  }
+
   /// Publishes a decoded video frame for (`box_id`, `src`).
   ///
   /// This method is expected to be called from a background decode thread. It may perform
@@ -172,6 +180,28 @@ impl SizeHintMediaFrameProvider {
     let scaled = downscale_frame_to_hint(&frame, hint).unwrap_or_else(|| Arc::clone(&frame));
 
     let mut guard = self.videos.lock();
+    if box_id.is_none() {
+      // When callers publish frames without a `box_id`, treat the update as applying to all
+      // `<video>` elements that reference this `src`. This accommodates host code paths that only
+      // know the selected media URL string (e.g. DOM-driven media loading) without access to layout
+      // `box_id`s.
+      //
+      // We intentionally clear any per-element scaled caches so subsequent paint calls will:
+      // - immediately fall back to the updated generic frame, and
+      // - schedule fresh size-hint downscales on demand.
+      {
+        // Ensure the generic entry exists before iterating.
+        let _ = video_entry_mut(&mut guard, None, src);
+      }
+      for entry in guard.values_mut() {
+        if entry.src.as_ref() == src {
+          entry.frame = None;
+          entry.pending_scale = None;
+          entry.revision = entry.revision.wrapping_add(1);
+        }
+      }
+    }
+
     let entry = video_entry_mut(&mut guard, box_id, src);
     entry.frame = Some(scaled);
     entry.pending_scale = None;
@@ -195,31 +225,56 @@ impl MediaFrameProvider for SizeHintMediaFrameProvider {
     let mut job: Option<ScaleJob> = None;
     let frame = {
       let mut guard = self.videos.lock();
-      let entry = video_entry_mut(&mut guard, box_id, src);
-      if size_hint.is_some() && entry.last_size_hint != size_hint {
-        entry.last_size_hint = size_hint;
-        entry.pending_scale = None;
-        entry.revision = entry.revision.wrapping_add(1);
+      {
+        let entry = video_entry_mut(&mut guard, box_id, src);
+        if size_hint.is_some() && entry.last_size_hint != size_hint {
+          entry.last_size_hint = size_hint;
+          entry.pending_scale = None;
+          entry.revision = entry.revision.wrapping_add(1);
+        }
       }
 
-      let frame = entry.frame.as_ref().map(Arc::clone);
-      if let (Some(hint), Some(frame)) = (entry.last_size_hint, frame.as_ref()) {
+      let (src_arc, hint, revision, pending_scale, mut frame) = {
+        let entry = video_entry_mut(&mut guard, box_id, src);
+        (
+          Arc::clone(&entry.src),
+          entry.last_size_hint,
+          entry.revision,
+          entry.pending_scale,
+          entry.frame.as_ref().map(Arc::clone),
+        )
+      };
+
+      // Fall back to a "generic" (no-`box_id`) entry when callers published frames without access
+      // to layout `box_id`s. This enables host-driven media loading paths to key frames purely by
+      // the selected `src`.
+      if frame.is_none() && box_id.is_some() {
+        if let Some(entry) = guard.get(&VideoKey {
+          box_id: None,
+          src: Arc::clone(&src_arc),
+        }) {
+          frame = entry.frame.as_ref().map(Arc::clone);
+        }
+      }
+
+      if let (Some(hint), Some(frame_ref)) = (hint, frame.as_ref()) {
         if let Some((max_w, max_h)) = hint_device_pixel_bounds(hint) {
-          if should_downscale(frame.width, frame.height, max_w, max_h) {
+          if should_downscale(frame_ref.width, frame_ref.height, max_w, max_h) {
             let pending = PendingScale {
-              revision: entry.revision,
+              revision,
               max_w,
               max_h,
             };
-            if entry.pending_scale != Some(pending) {
+            if pending_scale != Some(pending) {
+              let entry = video_entry_mut(&mut guard, box_id, src);
               entry.pending_scale = Some(pending);
               job = Some(ScaleJob {
                 box_id,
-                src: Arc::clone(&entry.src),
-                revision: entry.revision,
+                src: src_arc,
+                revision,
                 max_w,
                 max_h,
-                frame: Arc::clone(frame),
+                frame: Arc::clone(frame_ref),
               });
             }
           }
@@ -487,5 +542,23 @@ mod tests {
       out.width,
       out.height
     );
+  }
+
+  #[test]
+  fn generic_updates_are_visible_without_box_id() {
+    let provider = SizeHintMediaFrameProvider::new();
+    let src = "v.mp4";
+
+    let pixels = vec![0u8, 255, 0, 255].repeat(4 * 4);
+    let frame = Arc::new(ImageData::new_premultiplied(4, 4, 4.0, 4.0, pixels));
+    provider.update_video_frame(None, src, Arc::clone(&frame));
+
+    // Paint calls provide a `box_id`, but host decode paths may not. Ensure the provider falls
+    // back to the generic entry.
+    let fetched = provider
+      .video_frame(Some(123), src, None)
+      .expect("expected generic frame to be visible for specific box id");
+    assert_eq!(fetched.width, 4);
+    assert_eq!(fetched.height, 4);
   }
 }
