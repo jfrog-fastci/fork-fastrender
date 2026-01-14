@@ -230,55 +230,6 @@ status = "pass"
 #
 # Async generator execution is mostly implemented; keep the remaining failures narrow so the passing
 # surface stays regression-tested.
-[[expectations]]
-id = "language/statements/async-generator/dstr/ary-init-iter-close.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/ary-ptrn-elem-ary-elision-init.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/ary-ptrn-elem-ary-empty-init.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-ary-init-iter-close.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elem-ary-elision-init.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elem-ary-empty-init.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elision.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-ary-ptrn-rest-ary-elision.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/dflt-obj-ptrn-rest-getter.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/dstr/obj-ptrn-rest-getter.js"
-status = "xfail"
-reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
 
 [[expectations]]
 id = "language/statements/async-generator/generator-created-after-decl-inst.js"
