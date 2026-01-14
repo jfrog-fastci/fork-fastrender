@@ -237,6 +237,80 @@ fn generator_yield_in_nested_array_destructuring_yields_twice() {
 }
 
 #[test]
+fn generator_yield_in_object_destructuring_default_suspends_before_next_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        function* g(){
+          let a = 0;
+          let b = 0;
+          let rhs = new Proxy({b: 2}, {
+            get: function(t, k, r) {
+              steps.push("get:" + String(k));
+              return Reflect.get(t, k, r);
+            }
+          });
+          let res = ({a = (steps.push("default"), (yield 1)), b} = rhs);
+          return res === rhs && a === 3 && b === 2 && steps.join("|") === "get:a|default|get:b";
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.join("|") !== "get:a|default") return false;
+        var r2 = it.next(3);
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_array_destructuring_default_suspends_before_next_element() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        function* g(){
+          let a = 0;
+          let b = 0;
+          let rhs = new Proxy([undefined, 2], {
+            get: function(t, k, r) {
+              steps.push(String(k));
+              return Reflect.get(t, k, r);
+            }
+          });
+          let res = ([a = (steps.push("default"), (yield 1)), b] = rhs);
+          return (
+            res === rhs &&
+            a === 3 &&
+            b === 2 &&
+            steps.indexOf("default") !== -1 &&
+            steps.indexOf("1") > steps.indexOf("default")
+          );
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.indexOf("1") !== -1) return false;
+        var r2 = it.next(3);
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_then_default_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
