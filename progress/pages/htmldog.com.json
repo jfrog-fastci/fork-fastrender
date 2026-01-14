@@ -14,12 +14,13 @@
     "layout": 14.076561984496124,
     "paint": 20.109374263565893
   },
-  "notes": "",
+  "notes": "Minor text rasterization/antialiasing differences vs Chrome; layout and paint are otherwise close.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 110163,
-    "diff_percent": 11.4753,
-    "perceptual": 0.4665,
+    "diff_pixels": 62588,
+    "diff_percent": 6.5196,
+    "perceptual": 0.1004,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1070,
       "y": 7,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9e24292ca15621df5a653745fb3bfd6a3ae5d053"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
