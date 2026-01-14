@@ -1253,3 +1253,104 @@ fn generator_for_of_yield_in_array_pattern_rest_assignment_target_member_base_yi
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_elem_assignment_target_member_base_yield_happens_before_rhs_iterator_step()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCalls = 0;
+          var rhs = {
+            [Symbol.iterator]() {
+              return {
+                next() {
+                  nextCalls++;
+                  if (nextCalls === 1) return { value: 3, done: false };
+                  return { value: undefined, done: true };
+                },
+              };
+            },
+          };
+          var yielded = { name: "yielded" };
+          var resumed = {};
+          function* g() {
+            for ([(yield yielded).k] of [rhs]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== yielded || nextCalls !== 0) return false;
+          var r2 = it.next(resumed);
+          return r2.done === true && r2.value === 0 && resumed.k === 3 && nextCalls === 1;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_elem_assignment_target_computed_member_key_yield_happens_before_rhs_iterator_step()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCalls = 0;
+          var rhs = {
+            [Symbol.iterator]() {
+              return {
+                next() {
+                  nextCalls++;
+                  if (nextCalls === 1) return { value: 3, done: false };
+                  return { value: undefined, done: true };
+                },
+              };
+            },
+          };
+          function* g() {
+            var obj = {};
+            for ([obj[yield 1]] of [rhs]) { return nextCalls + ":" + obj.k; }
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || nextCalls !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "1:3";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_prop_assignment_target_computed_member_key_yield_happens_before_getv()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var gets = 0;
+          var src = {
+            get a() { gets++; return 3; },
+          };
+          function* g() {
+            var obj = {};
+            for ({a: obj[yield 1]} of [src]) { return gets + ":" + obj.k; }
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || gets !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "1:3";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
