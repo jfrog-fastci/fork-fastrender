@@ -4,7 +4,7 @@ use crate::debug::runtime::RuntimeToggles;
 use crate::dom::DomNode;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
-use crate::interaction::InteractionState;
+use crate::interaction::{form_controls, InteractionState};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::style::cascade::StyledNode;
@@ -158,10 +158,7 @@ fn apply_form_control_paint_state(
       *caret_affinity = next_affinity;
       *selection = next_selection;
 
-      control.ime_preedit = interaction_state
-        .and_then(|state| state.ime_preedit_for(node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
+      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
     }
     FormControlKind::TextArea {
       value,
@@ -183,24 +180,10 @@ fn apply_form_control_paint_state(
       *caret_affinity = next_affinity;
       *selection = next_selection;
 
-      control.ime_preedit = interaction_state
-        .and_then(|state| state.ime_preedit_for(node_id))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
+      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
     }
     FormControlKind::File { value } => {
-      let next_value = interaction_state
-        .and_then(|state| state.form_state.files_for(node_id))
-        .and_then(|files| {
-          if files.is_empty() {
-            None
-          } else if files.len() == 1 {
-            Some(files[0].path.to_string_lossy().to_string())
-          } else {
-            Some(format!("{} files", files.len()))
-          }
-        });
-      *value = next_value;
+      *value = form_controls::file_input_display_value(interaction_state, node_id);
       control.ime_preedit = None;
     }
     _ => {
