@@ -545,69 +545,90 @@ fn compiled_module_top_level_await_compound_assignment_reads_lhs_before_await() 
   let mut host = ();
 
   let mut graph = ModuleGraph::new();
+  let mut m: Option<ModuleId> = None;
+  let mut eval_promise_root: Option<vm_js::RootId> = None;
 
-  let script = CompiledScript::compile_module(
-    &mut heap,
-    "m.js",
-    r#"
-      export let x = 1;
-      const p = Promise.resolve().then(() => { x = 100; return 2; });
-      x += await p;
-    "#,
-  )?;
-  assert!(
-    !script.top_level_await_requires_ast_fallback,
-    "compound assignment-await should be supported by the compiled (HIR) module top-level await evaluator"
-  );
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), VmError> {
+    let script = CompiledScript::compile_module(
+      &mut heap,
+      "m.js",
+      r#"
+        export let x = 1;
+        const p = Promise.resolve().then(() => { x = 100; return 2; });
+        x += await p;
+      "#,
+    )?;
+    assert!(
+      !script.top_level_await_requires_ast_fallback,
+      "compound assignment-await should be supported by the compiled (HIR) module top-level await evaluator"
+    );
 
-  let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
-  record.compiled = Some(script);
-  let m = graph.add_module_with_specifier("m.js", record)?;
+    let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
+    record.compiled = Some(script);
+    let module_id = graph.add_module_with_specifier("m.js", record)?;
+    m = Some(module_id);
 
-  graph.link_all_by_specifier();
+    graph.link_all_by_specifier();
 
-  let eval_promise = graph.evaluate(
-    &mut vm,
-    &mut heap,
-    realm.global_object(),
-    realm.id(),
-    m,
-    &mut host,
-    &mut hooks,
-  )?;
-  let eval_promise_root = heap.add_root(eval_promise)?;
+    let eval_promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      module_id,
+      &mut host,
+      &mut hooks,
+    )?;
+    let root = heap.add_root(eval_promise)?;
+    eval_promise_root = Some(root);
 
-  let eval_promise_obj = match eval_promise {
-    Value::Object(obj) => obj,
-    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
-  };
-  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+    let eval_promise_obj = match eval_promise {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "module evaluation must return a promise object",
+        ));
+      }
+    };
+    assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
 
-  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+    hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
 
-  let mut scope = heap.scope();
-  let eval_promise_value = scope
-    .heap()
-    .get_root(eval_promise_root)
-    .ok_or_else(|| VmError::invalid_handle())?;
-  let Value::Object(eval_promise_obj) = eval_promise_value else {
-    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
-  };
-  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+    let mut scope = heap.scope();
+    let eval_promise_value = scope
+      .heap()
+      .get_root(root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Value::Object(eval_promise_obj) = eval_promise_value else {
+      return Err(VmError::InvariantViolation(
+        "evaluation promise root must reference an object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
 
-  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
-  assert_eq!(
-    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "x")?,
-    Value::Number(3.0)
-  );
+    let ns = graph.get_module_namespace(module_id, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "x")?,
+      Value::Number(3.0)
+    );
 
-  drop(scope);
-  heap.remove_root(eval_promise_root);
-  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+    Ok(())
+  }));
+
+  if let Some(root) = eval_promise_root.take() {
+    heap.remove_root(root);
+  }
+  if let Some(module_id) = m {
+    graph.abort_tla_evaluation(&mut vm, &mut heap, module_id);
+  }
   hooks.teardown_jobs(&mut vm, &mut heap);
   graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
-  Ok(())
+
+  match result {
+    Ok(inner) => inner,
+    Err(panic) => std::panic::resume_unwind(panic),
+  }
 }
 
 #[test]

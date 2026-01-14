@@ -23155,6 +23155,16 @@ fn instantiate_compiled_module_decls_inner(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
+  // Module environments provide the top-level lexical `this` binding (`undefined`) which arrow
+  // functions capture lexically. Mark the module environment as the current "this environment" so
+  // arrow functions created within it resolve the correct lexical `this` value.
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
   env.set_source_info(script.source.clone(), 0, 0);
 
