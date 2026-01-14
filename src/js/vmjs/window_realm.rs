@@ -14233,45 +14233,12 @@ fn element_query_selector_native(
     ));
   };
 
-  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
-  let node_index = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.querySelector must be called on a node object",
-      ));
-    }
-  };
-
-  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.querySelector requires a DOM-backed element",
-      ));
-    }
-  };
-
-  let node_id = {
-    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-      "Element.querySelector requires a DOM-backed element",
-    ))?;
-    match dom.node_id_from_index(node_index) {
-      Ok(id) => id,
-      Err(_) => {
-        return Err(VmError::TypeError(
-          "Element.querySelector must be called on a node object",
-        ));
-      }
-    }
-  };
+  let handle = parent_node_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.querySelector must be called on a node object",
+  )?;
 
   let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let selector_value = scope.heap_mut().to_string(selector_value)?;
@@ -14281,16 +14248,34 @@ fn element_query_selector_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let result = mutate_dom_for_vm_host(host, |dom| (dom.query_selector(&selector, Some(node_id)), false))
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      (dom.query_selector(&selector, Some(handle.node_id)), false)
+    })
     .ok_or(VmError::TypeError(
       "Element.querySelector requires a DOM-backed element",
-    ))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError(
-    "Element.querySelector requires a DOM-backed element",
-  ))?;
+    ))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError(
+        "Element.querySelector requires a DOM-backed element",
+      ));
+    };
+    // SAFETY: `dom_ptr` points at a realm-owned document stored in VM user data. We have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom.query_selector(&selector, Some(handle.node_id))
+  };
 
   match result {
-    Ok(Some(found)) => get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found),
+    Ok(Some(found)) => {
+      let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(
+        VmError::TypeError("Element.querySelector requires a DOM-backed element"),
+      )?;
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_ref() };
+      get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), found)
+    }
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {

@@ -54,11 +54,40 @@ test(() => {
 }, "DocumentFragment.querySelector(All) searches within the fragment subtree");
 
 test(() => {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+
+  const a = document.createElement("span");
+  a.id = "a";
+  a.className = "x";
+  shadow.appendChild(a);
+
+  const b = document.createElement("div");
+  b.className = "x";
+  host.appendChild(b);
+
+  assert_equals(shadow.querySelector("#a"), a);
+
+  const matches = shadow.querySelectorAll(".x");
+  assert_equals(matches.length, 1);
+  assert_equals(matches[0], a);
+}, "ShadowRoot.querySelector(All) searches within the shadow root subtree");
+
+test(() => {
   const frag = document.createDocumentFragment();
   const a = document.createElement("span");
   frag.appendChild(a);
   assert_equals(frag.querySelector(":scope > span"), a);
 }, "DocumentFragment.querySelector supports :scope child combinators");
+
+test(() => {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+
+  const a = document.createElement("span");
+  shadow.appendChild(a);
+  assert_equals(shadow.querySelector(":scope > span"), a);
+}, "ShadowRoot.querySelector supports :scope child combinators");
 
 test(() => {
   const frag = document.createDocumentFragment();
@@ -73,3 +102,18 @@ test(() => {
   assert_true(threw);
   assert_equals(name, "SyntaxError");
 }, "DocumentFragment.querySelector throws SyntaxError for invalid selectors");
+
+test(() => {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+  let threw = false;
+  let name = "";
+  try {
+    shadow.querySelector("div[");
+  } catch (e) {
+    threw = true;
+    name = e.name;
+  }
+  assert_true(threw);
+  assert_equals(name, "SyntaxError");
+}, "ShadowRoot.querySelector throws SyntaxError for invalid selectors");
