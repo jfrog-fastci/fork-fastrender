@@ -36,13 +36,30 @@ pub fn tree_update_from_accessibility_tree(
   let mut used_ids: FxHashSet<NodeId> = FxHashSet::default();
   let mut classes = NodeClassSet::default();
 
+  fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+  }
+
   fn role_for_accessibility(node: &AccessibilityNode) -> Role {
     // The exported accessibility roles are currently stringly-typed. Map the common ones we need
     // for chrome/content integration and fall back to a generic container role.
     match node.role.as_str() {
       "button" => Role::Button,
-      // AccessKit does not have a dedicated "document" role; `RootWebArea` is the standard web root.
+      // AccessKit's `Document` role is useful for standalone trees; `RootWebArea` is the common web
+      // root role. Use `RootWebArea` so assistive technologies treat it like a web document.
       "document" => Role::RootWebArea,
+      "link" => Role::Link,
+      "heading" => Role::Heading,
+      "checkbox" => Role::CheckBox,
+      "radio" => Role::RadioButton,
+      "img" | "image" => Role::Image,
+      "list" => Role::List,
+      "listitem" => Role::ListItem,
+      "paragraph" => Role::Paragraph,
+      "statictext" => Role::StaticText,
+      // Text inputs.
+      "textbox" | "textbox-multiline" | "combobox" => Role::TextField,
+      "searchbox" => Role::SearchBox,
       _ => Role::GenericContainer,
     }
   }
@@ -91,14 +108,31 @@ pub fn tree_update_from_accessibility_tree(
 
     let mut builder = NodeBuilder::new(role_for_accessibility(node));
     builder.set_children(child_ids);
-    if let Some(name) = node
-      .name
-      .as_ref()
-      .map(|s| s.trim())
-      .filter(|s| !s.is_empty())
-    {
-      builder.set_name(name.to_string());
+
+    if let Some(name) = normalize_optional_text(node.name.as_deref()) {
+      builder.set_name(name);
     }
+
+    if let Some(role_description) = normalize_optional_text(node.role_description.as_deref()) {
+      builder.set_role_description(role_description);
+    }
+
+    if let Some(description) = normalize_optional_text(node.description.as_deref()) {
+      builder.set_description(description);
+    }
+
+    // For editable text controls, preserve empty-string values (screen readers expect to query the
+    // current value even when empty). The JSON accessibility tree omits empty `value`s, so treat
+    // `None` as empty for editable controls.
+    if matches!(
+      node.role.as_str(),
+      "textbox" | "textbox-multiline" | "searchbox" | "combobox"
+    ) {
+      builder.set_value(node.value.clone().unwrap_or_default());
+    } else if let Some(value) = normalize_optional_text(node.value.as_deref()) {
+      builder.set_value(value);
+    }
+
     nodes.push((id, builder.build(classes)));
     vec![id]
   }
@@ -118,5 +152,60 @@ pub fn tree_update_from_accessibility_tree(
     nodes,
     tree: Some(Tree::new(root_id)),
     focus: None,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use accesskit::Role;
+
+  fn first_node_by_role<'a>(update: &'a TreeUpdate, role: Role) -> &'a accesskit::Node {
+    update
+      .nodes
+      .iter()
+      .find_map(|(_id, node)| (node.role() == role).then_some(node))
+      .expect("missing node")
+  }
+
+  #[test]
+  fn accesskit_bridge_exposes_text_input_value() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <input value="abc" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let update = tree_update_from_accessibility_tree(&tree, None);
+    let node = first_node_by_role(&update, Role::TextField);
+    assert_eq!(node.value(), Some("abc"));
+  }
+
+  #[test]
+  fn accesskit_bridge_exposes_aria_describedby_as_description() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <div id="d">Helpful hint</div>
+          <input aria-describedby="d" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let update = tree_update_from_accessibility_tree(&tree, None);
+    let node = first_node_by_role(&update, Role::TextField);
+    assert_eq!(node.description(), Some("Helpful hint"));
   }
 }
