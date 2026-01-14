@@ -6606,6 +6606,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let show_safe_mode_toast = matches!(source, StartupSessionSource::SafeMode);
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
+
+  // Startup toasts are only meaningful for the windowed UI. Headless modes exit before any window
+  // is created, so avoid even formatting the user-facing messages.
+  let record_startup_profile_notifications = !cli.exit_immediately
+    && !cli.headless_smoke
+    && !cli.headless_crash_smoke
+    && std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_none()
+    && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_none()
+    && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_none();
+
   let mut startup_profile_notifications: Vec<String> = Vec::new();
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
     Ok(outcome) => outcome.value,
@@ -6614,14 +6624,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "failed to load bookmarks from {}: {err}",
         bookmarks_path.display()
       );
-      if let Some(msg) =
-        fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
-          "bookmarks",
-          &bookmarks_path,
-          &err,
-        )
-      {
-        startup_profile_notifications.push(msg);
+      if record_startup_profile_notifications {
+        if let Some(msg) =
+          fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
+            "bookmarks",
+            &bookmarks_path,
+            &err,
+          )
+        {
+          startup_profile_notifications.push(msg);
+        }
       }
       fastrender::ui::BookmarkStore::default()
     }
@@ -6633,14 +6645,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "failed to load history from {}: {err}",
         history_path.display()
       );
-      if let Some(msg) =
-        fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
-          "history",
-          &history_path,
-          &err,
-        )
-      {
-        startup_profile_notifications.push(msg);
+      if record_startup_profile_notifications {
+        if let Some(msg) =
+          fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
+            "history",
+            &history_path,
+            &err,
+          )
+        {
+          startup_profile_notifications.push(msg);
+        }
       }
       fastrender::ui::GlobalHistoryStore::default()
     }
