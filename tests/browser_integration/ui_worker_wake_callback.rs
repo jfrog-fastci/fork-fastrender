@@ -1,4 +1,6 @@
-use fastrender::ui::{spawn_browser_ui_worker, TabId, UiToWorker, WorkerToUi, WorkerWakeCallback};
+use fastrender::ui::{
+  spawn_browser_ui_worker, TabId, UiToWorker, WorkerToUi, WorkerToUiInbox, WorkerWakeCallback,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,6 +20,7 @@ fn ui_worker_wake_callback_invoked_on_successful_send() {
   let (ui_tx, ui_rx, join) =
     spawn_browser_ui_worker("ui-worker-wake-callback-ok", Some(wake))
       .expect("spawn_browser_ui_worker");
+  let ui_rx = WorkerToUiInbox::new(ui_rx);
 
   let tab_id = TabId::new();
   ui_tx
@@ -90,4 +93,3 @@ fn ui_worker_wake_callback_not_invoked_after_receiver_drop() {
     "wake callback should not run after worker receiver disconnect"
   );
 }
-

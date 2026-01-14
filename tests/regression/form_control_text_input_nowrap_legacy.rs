@@ -107,7 +107,6 @@ fn legacy_text_input_forces_single_line_value_no_wrap() {
         .allow_https(false),
     )
     .paint_parallelism(PaintParallelism::disabled())
-    .layout_parallelism(LayoutParallelism::disabled())
     .build()
     .expect("renderer");
 
@@ -134,7 +133,8 @@ fn legacy_text_input_forces_single_line_value_no_wrap() {
 
   let options = RenderOptions::new()
     .with_viewport(120, 120)
-    .with_runtime_toggles(toggles);
+    .with_runtime_toggles(toggles)
+    .with_layout_parallelism(LayoutParallelism::disabled());
   let pixmap = renderer
     .render_html_with_options(html, options)
     .expect("render");
@@ -176,7 +176,6 @@ fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
         .allow_https(false),
     )
     .paint_parallelism(PaintParallelism::disabled())
-    .layout_parallelism(LayoutParallelism::disabled())
     .build()
     .expect("renderer");
 
@@ -207,7 +206,8 @@ fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
 
   let options = RenderOptions::new()
     .with_viewport(120, 120)
-    .with_runtime_toggles(toggles);
+    .with_runtime_toggles(toggles)
+    .with_layout_parallelism(LayoutParallelism::disabled());
   let pixmap = renderer
     .render_html_with_options(html, options)
     .expect("render");

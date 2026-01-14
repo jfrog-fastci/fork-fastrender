@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use fastrender::ui::messages::{KeyAction, RepaintReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::BrowserTabController;
 use fastrender::Result;

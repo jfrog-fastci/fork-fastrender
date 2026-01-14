@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use super::support;
 use fastrender::ui::messages::{
   PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
@@ -175,4 +177,3 @@ fn range_input_pointer_drag_updates_value_and_clamps() -> Result<()> {
 
   Ok(())
 }
-

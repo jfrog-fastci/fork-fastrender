@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use super::support;
 use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{

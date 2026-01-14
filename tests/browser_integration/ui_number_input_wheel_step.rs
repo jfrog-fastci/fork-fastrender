@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use super::support;
 use fastrender::ui::messages::{
   PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker, WorkerToUi,
