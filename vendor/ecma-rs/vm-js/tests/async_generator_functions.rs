@@ -43,12 +43,12 @@ fn async_generator_default_params_are_evaluated_on_call() -> Result<(), VmError>
 
   let value = rt.exec_script(
     r#"
-      var called = false;
-      function f(){ called = true; return 1; }
+      var calls = 0;
+      function f(){ calls = calls + 1; return 1; }
       var body = false;
       async function* g(x = f()) { body = true; yield x; }
       var it = g();
-      called === true && body === false && typeof it.next === "function"
+      calls === 1 && body === false && typeof it.next === "function"
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -81,7 +81,12 @@ fn async_generator_param_array_pattern_closes_iterator_once() -> Result<(), VmEr
         callCount = callCount + 1;
       };
 
-      f(iter).next().then(
+      var it = f(iter);
+      // Ensure binding happens before returning the generator object.
+      if (doneCallCount !== 1) throw doneCallCount;
+      if (callCount !== 0) throw callCount;
+
+      it.next().then(
         function () { ok = (doneCallCount === 1 && callCount === 1); },
         function () { ok = false; }
       );
