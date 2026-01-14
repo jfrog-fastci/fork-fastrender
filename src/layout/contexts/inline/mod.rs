@@ -7860,8 +7860,8 @@ impl InlineFormattingContext {
     // alignment/justification measurement and let the other half hang outside the line box.
     //
     // This implementation is intentionally conservative:
-    // - Does not split text runs: only recognizes punctuation that appears at the start/end of an
-    //   inline item (including nested inline boxes).
+    // - Splits shaped text runs around recognized punctuation during fragment construction, so the
+    //   trimming rules can apply within a single text node.
     // - Only a small subset of the spec's character classes is recognized.
     // - `space-first` trims line-start punctuation except on the first line and after forced breaks.
     // - `normal`/`trim-start`/`space-first` trim line-end punctuation only if it would otherwise
@@ -7947,12 +7947,72 @@ impl InlineFormattingContext {
     // Like the rest of this MVP implementation, this runs during fragment construction rather than
     // line building, so it affects alignment/justification and glyph positioning but does not
     // perturb earlier line-breaking decisions.
-    if !items.is_empty() {
+    fn split_text_item_on_punctuation(
+      item: &TextItem,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+    ) -> Option<Vec<TextItem>> {
+      let len = item.text.len();
+      if len <= 1 {
+        return None;
+      }
+
+      let mut split_points: Vec<usize> = Vec::new();
+      for (off, ch) in item.text.char_indices() {
+        if is_fullwidth_opening_punctuation(ch) || is_fullwidth_closing_punctuation(ch) {
+          split_points.push(off);
+          split_points.push(off + ch.len_utf8());
+        }
+      }
+      split_points.sort_unstable();
+      split_points.dedup();
+      split_points.retain(|o| *o > 0 && *o < len);
+      if split_points.is_empty() {
+        return None;
+      }
+
+      let mut segments: Vec<TextItem> = Vec::new();
+      let mut remaining = item.clone();
+      let mut consumed = 0usize;
+      for point in split_points {
+        if point <= consumed || point >= len {
+          continue;
+        }
+        let local = point - consumed;
+        let Some((before, after)) =
+          remaining.split_at(local, false, shaper, font_context, reshape_cache)
+        else {
+          return None;
+        };
+        segments.push(before);
+        remaining = after;
+        consumed = point;
+      }
+      segments.push(remaining);
+
+      if segments.len() <= 1 {
+        return None;
+      }
+      Some(segments)
+    }
+
+    fn split_inline_items_on_punctuation(
+      items: &mut Vec<InlineItem>,
+      shaper: &ShapingPipeline,
+      font_context: &FontContext,
+      reshape_cache: &mut ReshapeCache,
+    ) {
       let mut idx = 0usize;
       while idx < items.len() {
-        let baseline_offset = items[idx].baseline_offset;
-        let should_split = match &items[idx].item {
-          InlineItem::Text(t) => !t.is_marker && !matches!(t.style.text_spacing_trim, TextSpacingTrim::SpaceAll),
+        if let InlineItem::InlineBox(b) = &mut items[idx] {
+          split_inline_items_on_punctuation(&mut b.children, shaper, font_context, reshape_cache);
+        }
+
+        let should_split = match &items[idx] {
+          InlineItem::Text(t) => {
+            !t.is_marker && !matches!(t.style.text_spacing_trim, TextSpacingTrim::SpaceAll)
+          }
           _ => false,
         };
         if !should_split {
@@ -7960,64 +8020,66 @@ impl InlineFormattingContext {
           continue;
         }
 
-        let InlineItem::Text(original_text) = &items[idx].item else {
+        let InlineItem::Text(original_text) = items[idx].clone() else {
           idx += 1;
           continue;
         };
 
-        let len = original_text.text.len();
-        if len <= 1 {
+        let Some(segments) =
+          split_text_item_on_punctuation(&original_text, shaper, font_context, reshape_cache)
+        else {
           idx += 1;
           continue;
-        }
+        };
 
-        let mut split_points: Vec<usize> = Vec::new();
-        for (off, ch) in original_text.text.char_indices() {
-          if is_fullwidth_opening_punctuation(ch) || is_fullwidth_closing_punctuation(ch) {
-            split_points.push(off);
-            split_points.push(off + ch.len_utf8());
-          }
-        }
-        split_points.sort_unstable();
-        split_points.dedup();
-        split_points.retain(|o| *o > 0 && *o < len);
-        if split_points.is_empty() {
-          idx += 1;
-          continue;
-        }
-
-        let mut segments: Vec<TextItem> = Vec::new();
-        let mut remaining = original_text.clone();
-        let mut consumed = 0usize;
-        let mut failed = false;
-        for point in split_points {
-          if point <= consumed || point >= len {
+        items[idx] = InlineItem::Text(segments[0].clone());
+        let mut insert_at = idx + 1;
+        for seg in segments.into_iter().skip(1) {
+          if seg.text.is_empty() {
             continue;
           }
-          let local = point - consumed;
-          let Some((before, after)) = remaining.split_at(
-            local,
-            false,
-            &self.pipeline,
-            &self.font_context,
-            &mut reshape_cache,
-          ) else {
-            failed = true;
-            break;
-          };
-          segments.push(before);
-          remaining = after;
-          consumed = point;
+          items.insert(insert_at, InlineItem::Text(seg));
+          insert_at += 1;
         }
-        if failed {
+        idx = insert_at;
+      }
+    }
+
+    if !items.is_empty() {
+      let mut idx = 0usize;
+      while idx < items.len() {
+        // Split punctuation inside inline boxes as well, so adjacent-pairs trimming can work
+        // within styled spans.
+        if let InlineItem::InlineBox(b) = &mut items[idx].item {
+          split_inline_items_on_punctuation(&mut b.children, &self.pipeline, &self.font_context, &mut reshape_cache);
+        }
+
+        let baseline_offset = items[idx].baseline_offset;
+        let should_split = match &items[idx].item {
+          InlineItem::Text(t) => {
+            !t.is_marker && !matches!(t.style.text_spacing_trim, TextSpacingTrim::SpaceAll)
+          }
+          _ => false,
+        };
+        if !should_split {
           idx += 1;
           continue;
         }
-        segments.push(remaining);
-        if segments.len() <= 1 {
+
+        let InlineItem::Text(original_text) = items[idx].item.clone() else {
           idx += 1;
           continue;
-        }
+        };
+
+        let Some(segments) = split_text_item_on_punctuation(
+          &original_text,
+          &self.pipeline,
+          &self.font_context,
+          &mut reshape_cache,
+        ) else {
+          idx += 1;
+          continue;
+        };
 
         items[idx].item = InlineItem::Text(segments[0].clone());
         let mut insert_at = idx + 1;
@@ -8039,7 +8101,6 @@ impl InlineFormattingContext {
       }
     }
 
-    let mut inline_shifts: Vec<f32> = vec![0.0; items.len()];
     if !items.is_empty() {
       const FIT_EPSILON: f32 = 0.01;
 
@@ -8119,6 +8180,7 @@ impl InlineFormattingContext {
       fn apply_start_hang(
         item: &mut InlineItem,
         hang: f32,
+        rtl: bool,
         is_first_formatted_line: bool,
         starts_after_forced_break: bool,
       ) -> bool {
@@ -8138,7 +8200,17 @@ impl InlineFormattingContext {
             {
               return false;
             }
-            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            let target = (t.advance - hang).max(0.0);
+            let applied_hang = (t.advance_for_layout - target).max(0.0);
+            if applied_hang > 0.0 {
+              t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+              // For LTR lines, shift left so the trimmed half hangs outward and does not overlap the
+              // following content. For RTL lines, placement already causes the trimmed half to hang
+              // outward at the inline-start edge.
+              if !rtl {
+                t.layout_shift -= applied_hang;
+              }
+            }
             true
           }
           InlineItem::InlineBox(b) => {
@@ -8147,7 +8219,13 @@ impl InlineFormattingContext {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
                 other => {
-                  return apply_start_hang(other, hang, is_first_formatted_line, starts_after_forced_break);
+                  return apply_start_hang(
+                    other,
+                    hang,
+                    rtl,
+                    is_first_formatted_line,
+                    starts_after_forced_break,
+                  );
                 }
               }
             }
@@ -8268,13 +8346,26 @@ impl InlineFormattingContext {
         }
       }
 
-      fn apply_opening_punct_hang(item: &mut InlineItem, hang: f32) -> bool {
+      fn apply_opening_punct_hang(item: &mut InlineItem, hang: f32, rtl: bool) -> bool {
         match item {
           InlineItem::Text(t) => {
-            if t.is_marker || !t.text.chars().next().is_some_and(is_fullwidth_opening_punctuation) {
+            if t.is_marker
+              || !t
+                .text
+                .chars()
+                .next()
+                .is_some_and(is_fullwidth_opening_punctuation)
+            {
               return false;
             }
-            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            let target = (t.advance - hang).max(0.0);
+            let applied_hang = (t.advance_for_layout - target).max(0.0);
+            if applied_hang > 0.0 {
+              t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+              if !rtl {
+                t.layout_shift -= applied_hang;
+              }
+            }
             true
           }
           InlineItem::InlineBox(b) => {
@@ -8282,7 +8373,7 @@ impl InlineFormattingContext {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return apply_opening_punct_hang(other, hang),
+                other => return apply_opening_punct_hang(other, hang, rtl),
               }
             }
             false
@@ -8304,7 +8395,11 @@ impl InlineFormattingContext {
             {
               return false;
             }
-            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            let target = (t.advance - hang).max(0.0);
+            let applied_hang = (t.advance_for_layout - target).max(0.0);
+            if applied_hang > 0.0 {
+              t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+            }
             true
           }
           InlineItem::InlineBox(b) => {
@@ -8344,16 +8439,10 @@ impl InlineFormattingContext {
           apply_start_hang(
             &mut positioned.item,
             hang,
+            rtl,
             is_first_formatted_line,
             starts_after_forced_break,
           );
-        }
-        // When the inline-start edge is the physical left edge (`direction:ltr`), shift the glyph
-        // left so the hanging half does not overlap the following content.
-        if !rtl {
-          if let Some(shift) = inline_shifts.get_mut(idx) {
-            *shift -= hang;
-          }
         }
       }
 
@@ -8398,11 +8487,7 @@ impl InlineFormattingContext {
             {
               if let Some((hang, _)) = opening_punct_hang_and_trim(&items[idx].item) {
                 if let Some(positioned) = items.get_mut(idx) {
-                  if apply_opening_punct_hang(&mut positioned.item, hang) {
-                    if let Some(shift) = inline_shifts.get_mut(idx) {
-                      *shift -= hang;
-                    }
-                  }
+                  apply_opening_punct_hang(&mut positioned.item, hang, rtl);
                 }
               }
             }
@@ -8436,11 +8521,7 @@ impl InlineFormattingContext {
             if let Some((hang, trim)) = opening_punct_hang_and_trim(&items[idx].item) {
               if matches!(trim, TextSpacingTrim::TrimAll) {
                 if let Some(positioned) = items.get_mut(idx) {
-                  if apply_opening_punct_hang(&mut positioned.item, hang) {
-                    if let Some(shift) = inline_shifts.get_mut(idx) {
-                      *shift -= hang;
-                    }
-                  }
+                  apply_opening_punct_hang(&mut positioned.item, hang, rtl);
                 }
               }
             }
@@ -8456,6 +8537,84 @@ impl InlineFormattingContext {
                 }
               }
             }
+          }
+        }
+
+        fn apply_inline_box_children(
+          children: &mut Vec<InlineItem>,
+          rtl: bool,
+        ) {
+          // Recurse first so nested inline boxes have their punctuation split/trimmed before we
+          // apply adjacency rules at this level.
+          for child in children.iter_mut() {
+            if let InlineItem::InlineBox(b) = child {
+              apply_inline_box_children(&mut b.children, rtl);
+            }
+          }
+
+          // Adjacent-pairs collapsing within this inline box.
+          let mut prev_idx_opt: Option<usize> = None;
+          for idx in 0..children.len() {
+            if matches!(
+              children[idx],
+              InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+            ) {
+              continue;
+            }
+            let Some(prev_idx) = prev_idx_opt else {
+              prev_idx_opt = Some(idx);
+              continue;
+            };
+
+            let prev_info = last_char_and_trim(&children[prev_idx]);
+            let curr_info = first_char_and_trim(&children[idx]);
+            if let (Some((prev_ch, prev_trim)), Some((curr_ch, curr_trim))) = (prev_info, curr_info) {
+              if is_fullwidth_opening_punctuation(curr_ch)
+                && allows_adjacent_pairs(curr_trim)
+                && prev_allows_opening_trim(prev_ch)
+              {
+                if let Some((hang, _)) = opening_punct_hang_and_trim(&children[idx]) {
+                  apply_opening_punct_hang(&mut children[idx], hang, rtl);
+                }
+              }
+
+              if is_fullwidth_closing_punctuation(prev_ch)
+                && allows_adjacent_pairs(prev_trim)
+                && next_allows_closing_trim(curr_ch)
+              {
+                if let Some((hang, _)) = closing_punct_hang_and_trim(&children[prev_idx]) {
+                  apply_closing_punct_hang(&mut children[prev_idx], hang);
+                }
+              }
+            }
+
+            prev_idx_opt = Some(idx);
+          }
+
+          // `trim-all` inside the inline box: trim punctuation at inline-item edges.
+          for idx in 0..children.len() {
+            if matches!(
+              children[idx],
+              InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+            ) {
+              continue;
+            }
+            if let Some((hang, trim)) = opening_punct_hang_and_trim(&children[idx]) {
+              if matches!(trim, TextSpacingTrim::TrimAll) {
+                apply_opening_punct_hang(&mut children[idx], hang, rtl);
+              }
+            }
+            if let Some((hang, trim)) = closing_punct_hang_and_trim(&children[idx]) {
+              if matches!(trim, TextSpacingTrim::TrimAll) {
+                apply_closing_punct_hang(&mut children[idx], hang);
+              }
+            }
+          }
+        }
+
+        for positioned in &mut items {
+          if let InlineItem::InlineBox(b) = &mut positioned.item {
+            apply_inline_box_children(&mut b.children, rtl);
           }
         }
       }
@@ -8498,7 +8657,7 @@ impl InlineFormattingContext {
         }
       }
 
-      fn apply_end_hang(item: &mut InlineItem, hang: f32, end_overflow: bool) -> bool {
+      fn apply_end_hang(item: &mut InlineItem, hang: f32, rtl: bool, end_overflow: bool) -> bool {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker
@@ -8507,7 +8666,17 @@ impl InlineFormattingContext {
             {
               return false;
             }
-            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            let target = (t.advance - hang).max(0.0);
+            let applied_hang = (t.advance_for_layout - target).max(0.0);
+            if applied_hang > 0.0 {
+              t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+              // For RTL lines, shift left so the trimmed half hangs outward at the physical left
+              // edge (inline end). For LTR lines the trimmed closing punctuation naturally hangs to
+              // the right due to the reduced layout advance.
+              if rtl {
+                t.layout_shift -= applied_hang;
+              }
+            }
             true
           }
           InlineItem::InlineBox(b) => {
@@ -8515,7 +8684,7 @@ impl InlineFormattingContext {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return apply_end_hang(other, hang, end_overflow),
+                other => return apply_end_hang(other, hang, rtl, end_overflow),
               }
             }
             false
@@ -8536,14 +8705,7 @@ impl InlineFormattingContext {
 
       if let Some((idx, hang)) = end_info {
         if let Some(positioned) = items.get_mut(idx) {
-          apply_end_hang(&mut positioned.item, hang, end_overflow);
-        }
-        // When the inline-end edge is the physical left edge (`direction:rtl`), shift the glyph
-        // left so the hanging half protrudes outward rather than overlapping preceding content.
-        if rtl {
-          if let Some(shift) = inline_shifts.get_mut(idx) {
-            *shift -= hang;
-          }
+          apply_end_hang(&mut positioned.item, hang, rtl, end_overflow);
         }
       }
     }
@@ -9029,11 +9191,6 @@ impl InlineFormattingContext {
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
-      if let Some(delta) = inline_shifts.get(i).copied() {
-        if delta != 0.0 {
-          inline_pos += delta;
-        }
-      }
       let mut block_pos = line.baseline + positioned.baseline_offset
         - positioned.item.baseline_metrics().baseline_offset;
       if let InlineItem::InlineBox(box_item) = &positioned.item {
@@ -9387,6 +9544,7 @@ impl InlineFormattingContext {
     match item {
       InlineItem::Text(text_item) => {
         let paint_offset = text_item.paint_offset;
+        inline_pos += text_item.layout_shift;
         let box_id = (text_item.box_id != 0).then_some(text_item.box_id);
         let bounds = Rect::from_xywh(
           inline_pos + paint_offset,

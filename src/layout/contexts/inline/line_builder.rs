@@ -712,6 +712,11 @@ pub struct TextItem {
   pub is_marker: bool,
   /// Additional paint offset applied at fragment creation (used for outside markers)
   pub paint_offset: f32,
+  /// Extra inline-axis shift applied during fragment construction.
+  ///
+  /// This is used by CSS Text features (e.g. `text-spacing-trim`) to hang/trim glyphs without
+  /// affecting earlier line breaking.
+  pub layout_shift: f32,
 
   /// Extra offset for emphasis mark placement.
   pub emphasis_offset: TextEmphasisOffset,
@@ -907,6 +912,7 @@ impl TextItem {
       explicit_bidi: None,
       is_marker: false,
       paint_offset: 0.0,
+      layout_shift: 0.0,
       emphasis_offset: TextEmphasisOffset::default(),
       cluster_advances,
       source_range,
@@ -6940,6 +6946,7 @@ fn slice_text_item(
       explicit_bidi: bidi_context,
       is_marker: item.is_marker,
       paint_offset: item.paint_offset,
+      layout_shift: item.layout_shift,
       emphasis_offset: item.emphasis_offset,
       cluster_advances,
       source_range: item.source_range.start + range.start..item.source_range.start + range.end,
@@ -7868,6 +7875,7 @@ mod tests {
       explicit_bidi: None,
       is_marker: false,
       paint_offset: 0.0,
+      layout_shift: 0.0,
       emphasis_offset: TextEmphasisOffset::default(),
       cluster_advances,
       source_range: 0..text.len(),

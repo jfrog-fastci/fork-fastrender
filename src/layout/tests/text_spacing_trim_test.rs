@@ -389,3 +389,44 @@ fn text_spacing_trim_trim_all_trims_mid_line_punctuation_within_text_run() {
     "expected trim-all to trim punctuation inside a single text run (space-all x={space_open_x:.3} trim-all x={trim_all_open_x:.3})"
   );
 }
+
+#[test]
+fn text_spacing_trim_normal_collapses_adjacent_punctuation_within_span() {
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span>」「H</span>",
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    "<span>」「H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+
+  assert!(
+    normal_open_x < space_open_x - 0.1,
+    "expected normal to collapse adjacent punctuation within a span (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_trim_all_trims_mid_line_punctuation_within_span() {
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span>H「H</span>",
+  );
+  let trim_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-all;",
+    "<span>H「H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let trim_all_open_x =
+    text_x_in_line(&trim_all[0], "「").expect("x for opening punct (trim-all)");
+
+  assert!(
+    trim_all_open_x < space_open_x - 0.1,
+    "expected trim-all to trim punctuation within a span (space-all x={space_open_x:.3} trim-all x={trim_all_open_x:.3})"
+  );
+}
