@@ -6277,6 +6277,22 @@ impl BrowserRuntime {
     tab: &mut TabState,
     generation_before_dispatch: u64,
   ) {
+    Self::pump_js_event_loop_after_dom_event_dispatch_inner(
+      ui_tx,
+      debug_log_enabled,
+      tab_id,
+      tab,
+      generation_before_dispatch,
+    );
+  }
+
+  fn pump_js_event_loop_after_dom_event_dispatch_inner(
+    ui_tx: &Sender<WorkerToUiMsg>,
+    debug_log_enabled: bool,
+    tab_id: TabId,
+    tab: &mut TabState,
+    generation_before_dispatch: u64,
+  ) {
     let Some(js_tab) = tab.js_tab.as_mut() else {
       return;
     };

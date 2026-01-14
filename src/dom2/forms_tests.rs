@@ -465,6 +465,11 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   let mut snapshot = doc.to_renderer_dom_with_mapping();
 
+  // Helper: round-trip a dom2 NodeId to a renderer preorder id and back, then find the snapshot
+  // node and assert we got the expected element.
+  //
+  // Implemented as a nested function so it can return a reference with an explicit lifetime;
+  // closures cannot return references to captured variables.
   fn get_snapshot_node<'a>(
     snapshot: &'a mut super::RendererDomSnapshot,
     node_id: NodeId,
@@ -485,11 +490,6 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
     assert_eq!(node.get_attribute_ref("id"), Some(expected_id));
     node
   }
-
-  // Helper: round-trip a dom2 NodeId to a renderer preorder id and back, then find the snapshot
-  // node and assert we got the expected element.
-  // (Helper now implemented as a nested function so it can return a reference with an explicit
-  // lifetime; closures cannot return references to captured variables.)
 
   // <input>: current value must be reflected into the snapshot.
   {

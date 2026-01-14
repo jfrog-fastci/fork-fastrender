@@ -3233,7 +3233,9 @@ mod tests {
       let (vm_host, window_realm) = host_state.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
+      // Take the module loader handle before borrowing the realm mutably via `vm_and_heap_mut`.
       let module_loader = window_realm.module_loader_handle();
+
       let (vm, heap) = window_realm.vm_and_heap_mut();
       let Some(modules_ptr) = vm.module_graph_ptr() else {
         return Err(crate::error::Error::Other(
