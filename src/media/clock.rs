@@ -340,6 +340,12 @@ pub struct PlaybackClock {
   last_now: AtomicU64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 impl std::fmt::Debug for PlaybackClock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("PlaybackClock")

@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::geometry::{Point, Rect, Size};
+use crate::style::display::Display;
 use crate::style::types::{Direction, Overflow, OverflowAnchor, WritingMode};
 use crate::style::ComputedStyle;
 use crate::style::{block_axis_positive, inline_axis_is_horizontal, inline_axis_positive};
@@ -134,8 +135,23 @@ fn fragment_excludes_scroll_anchoring(node: &FragmentNode) -> bool {
     .is_some_and(|style| style.overflow_anchor == OverflowAnchor::None)
 }
 
+fn fragment_is_non_atomic_inline(node: &FragmentNode) -> bool {
+  // CSS Scroll Anchoring §2.2: "An anchor node can be any box except one for a non-atomic inline."
+  //
+  // In FastRender, inline box fragments report `content.is_inline()`. Atomic inline-level boxes
+  // (e.g. `display:inline-block`) may still produce an inline fragment; use `display:inline` to
+  // identify non-atomic inlines.
+  node.content.is_inline()
+    && node
+      .style
+      .as_deref()
+      .is_none_or(|style| style.display == Display::Inline)
+}
+
 fn fragment_is_anchor_candidate(node: &FragmentNode) -> bool {
-  node.box_id().is_some() && !fragment_excludes_scroll_anchoring(node)
+  node.box_id().is_some()
+    && !fragment_excludes_scroll_anchoring(node)
+    && !fragment_is_non_atomic_inline(node)
 }
 
 fn find_fragment_with_box_id<'a>(root: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
@@ -386,7 +402,7 @@ fn best_anchor_for_box_id_in_subtree(
   start_origin: Point,
   include_root: bool,
   target_point: Option<Point>,
-) -> Option<(Point, f32)> {
+) -> Option<(ScrollAnchor, f32)> {
   if !point_is_finite(start_origin) || !rect_is_finite(scrollport) {
     return None;
   }
@@ -400,7 +416,7 @@ fn best_anchor_for_box_id_in_subtree(
     excluded: bool,
   }
 
-  let mut best: Option<(Point, f32)> = None;
+  let mut best: Option<(ScrollAnchor, f32)> = None;
   let mut stack = vec![Frame {
     node: root,
     origin: start_origin,
@@ -409,32 +425,57 @@ fn best_anchor_for_box_id_in_subtree(
     excluded: fragment_excludes_scroll_anchoring(root),
   }];
 
-  while let Some(frame) = stack.last_mut() {
-    if frame.next_child == 0
-      && frame.consider
-      && !frame.excluded
-      && frame.node.box_id() == Some(box_id)
-      && fragment_is_anchor_candidate(frame.node)
-    {
-      if let Some(rect) = checked_rect_for_node(frame.origin, frame.node) {
-        if rect.intersects(scrollport) {
-          let score = target_point.map_or(0.0, |p| {
-            score_origin_relative_to_point(frame.origin, rect, p)
-          });
-          if !score.is_finite() {
-            // Ignore non-finite scores rather than letting NaN poison comparisons.
-            // This can happen when upstream layout produces non-finite geometry.
-            // Suppress this candidate and keep scanning.
+  while !stack.is_empty() {
+    // Index-based traversal so we can scan ancestor frames without conflicting borrows.
+    let last_idx = stack.len() - 1;
+    let (node, origin, next_child, consider, excluded) = {
+      let frame = &stack[last_idx];
+      (frame.node, frame.origin, frame.next_child, frame.consider, frame.excluded)
+    };
+
+    if next_child == 0 && consider && !excluded && node.box_id() == Some(box_id) {
+      // CSS Scroll Anchoring §2.2: "An anchor node can be any box except one for a non-atomic
+      // inline." If the priority candidate is a non-atomic inline, walk up to the nearest ancestor
+      // that is not a non-atomic inline (spec note).
+      let promoted = if fragment_is_anchor_candidate(node) {
+        Some((node, origin))
+      } else if fragment_is_non_atomic_inline(node) {
+        stack.iter().rev().find_map(|frame| {
+          if frame.consider && !frame.excluded && fragment_is_anchor_candidate(frame.node) {
+            Some((frame.node, frame.origin))
           } else {
-            let replace = match best {
-              None => true,
-              Some((_, best_score)) => score < best_score,
-            };
-            if replace {
-              best = Some((frame.origin, score));
-              if score == 0.0 {
-                // We found a fragment that actually contains the probe point; this is as good as it gets.
-                // Continue scanning so we keep deterministic traversal order for ties.
+            None
+          }
+        })
+      } else {
+        None
+      };
+
+      if let Some((candidate, candidate_origin)) = promoted {
+        if let Some(rect) = checked_rect_for_node(candidate_origin, candidate) {
+          if rect.intersects(scrollport) {
+            let score = target_point.map_or(0.0, |p| {
+              score_origin_relative_to_point(candidate_origin, rect, p)
+            });
+            if !score.is_finite() {
+              // Ignore non-finite scores rather than letting NaN poison comparisons.
+              // This can happen when upstream layout produces non-finite geometry.
+              // Suppress this candidate and keep scanning.
+            } else {
+              let replace = match best {
+                None => true,
+                Some((_, best_score)) => score < best_score,
+              };
+              if replace {
+                if let Some(candidate_box_id) = candidate.box_id() {
+                  best = Some((
+                    ScrollAnchor {
+                      box_id: candidate_box_id,
+                      origin: candidate_origin,
+                    },
+                    score,
+                  ));
+                }
               }
             }
           }
@@ -442,23 +483,23 @@ fn best_anchor_for_box_id_in_subtree(
       }
     }
 
-    if frame.excluded {
+    if excluded {
       stack.pop();
       continue;
     }
 
-    if frame.next_child < frame.node.children.len() {
-      let idx = frame.next_child;
-      frame.next_child += 1;
-      let child = &frame.node.children[idx];
-      let Some(origin) =
-        checked_translate(frame.origin, Point::new(child.bounds.x(), child.bounds.y()))
+    if next_child < node.children.len() {
+      let child_idx = next_child;
+      stack[last_idx].next_child += 1;
+      let child = &node.children[child_idx];
+      let Some(child_origin) =
+        checked_translate(origin, Point::new(child.bounds.x(), child.bounds.y()))
       else {
         continue;
       };
       stack.push(Frame {
         node: child,
-        origin,
+        origin: child_origin,
         next_child: 0,
         consider: true,
         excluded: fragment_excludes_scroll_anchoring(child),
@@ -492,10 +533,7 @@ fn viewport_anchor_for_box_id(
     false,
     target_point,
   )?;
-  Some(ScrollAnchor {
-    box_id,
-    origin: best.0,
-  })
+  Some(best.0)
 }
 
 fn viewport_anchor_for_point(
@@ -1199,6 +1237,12 @@ mod tests {
   use crate::ComputedStyle;
   use std::sync::Arc;
 
+  fn style_with_display(display: Display) -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.display = display;
+    Arc::new(style)
+  }
+
   #[test]
   fn overflow_anchor_none_excludes_subtree() {
     let mut excluded_style = ComputedStyle::default();
@@ -1222,5 +1266,88 @@ mod tests {
 
     let anchor = select_viewport_anchor(&tree, Point::ZERO);
     assert!(anchor.is_none(), "excluded subtree should produce no anchor");
+  }
+
+  #[test]
+  fn anchor_selection_skips_non_atomic_inline_fragments() {
+    // The viewport scrollport is 0..100 in Y. The line spans 90..110 so it's partially visible. It
+    // contains an inline fragment first and a block fragment second; without excluding non-atomic
+    // inline boxes, the inline fragment would be chosen as the anchor node.
+    let inline = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      FragmentContent::Inline {
+        box_id: Some(2),
+        fragment_index: 0,
+      },
+      vec![],
+      style_with_display(Display::Inline),
+    );
+    let block = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      FragmentContent::Block { box_id: Some(1) },
+      vec![],
+      style_with_display(Display::Block),
+    );
+    let line = FragmentNode::new_line(
+      Rect::from_xywh(0.0, 90.0, 50.0, 20.0),
+      0.0,
+      vec![inline, block],
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), vec![line]);
+    let tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+
+    let anchor = select_viewport_anchor(&tree, Point::ZERO).expect("expected an anchor selection");
+    assert_eq!(
+      anchor.box_id, 1,
+      "expected the block fragment (box_id=1) to be selected, got {anchor:?}"
+    );
+  }
+
+  #[test]
+  fn priority_candidate_non_atomic_inline_is_promoted_to_ancestor() {
+    // Priority candidates (e.g. focused elements) that land on non-atomic inline fragments must be
+    // promoted to the nearest ancestor that is not a non-atomic inline (§2.2 note).
+    let inline = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      FragmentContent::Inline {
+        box_id: Some(2),
+        fragment_index: 0,
+      },
+      vec![],
+      style_with_display(Display::Inline),
+    );
+    let target_block = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 90.0, 50.0, 20.0),
+      FragmentContent::Block { box_id: Some(1) },
+      vec![inline],
+      style_with_display(Display::Block),
+    );
+
+    // Place a different anchor candidate earlier in traversal order so we can ensure the priority
+    // candidate is actually used (i.e. we don't just fall back to default anchor selection).
+    let earlier_block = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      FragmentContent::Block { box_id: Some(10) },
+      vec![],
+      style_with_display(Display::Block),
+    );
+
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      vec![earlier_block, target_block],
+    );
+    let tree = FragmentTree::with_viewport(root, Size::new(100.0, 100.0));
+    let scroll = ScrollState::with_viewport(Point::ZERO);
+
+    let snapshot = capture_scroll_anchors_with_priority(
+      &tree,
+      &scroll,
+      Some(ScrollAnchoringPriorityCandidate::BoxId {
+        box_id: 2,
+        point: None,
+      }),
+    );
+    let anchor = snapshot.viewport.expect("expected a viewport anchor selection");
+    assert_eq!(anchor.box_id, 1);
   }
 }
