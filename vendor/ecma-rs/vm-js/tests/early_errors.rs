@@ -477,6 +477,24 @@ fn super_call_in_arrow_function_outside_derived_constructor_is_syntax_error() {
 }
 
 #[test]
+fn super_property_access_in_nested_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { m() { function f(){ super.x; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_call_in_nested_function_in_derived_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { constructor() { function f(){ super(); } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn with_statement_in_strict_mode_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; with ({}) {}"#).unwrap_err();
