@@ -1783,7 +1783,7 @@ impl TextItem {
       if run.glyphs.is_empty() {
         continue;
       }
-
+ 
       let axis = run_inline_axis(run);
       // `cluster.glyph_end` is derived from shaping output; clamp defensively so out-of-range
       // cluster indices (e.g. after glyph compaction) still apply spacing to the last glyph.

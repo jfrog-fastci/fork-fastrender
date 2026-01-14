@@ -253,7 +253,7 @@ fn bundled_generics_prefer_bundled_text_fonts() {
     .expect("monospace bundled fallback");
 
   // Bundled generics should resolve to stable text faces (not emoji fonts).
-  assert_eq!(db.load_font(sans).unwrap().family, "Roboto Flex");
+  assert_eq!(db.load_font(sans).unwrap().family, "Noto Sans");
   assert_eq!(db.load_font(serif).unwrap().family, "STIX Two Math");
   assert_eq!(db.load_font(mono).unwrap().family, "Noto Sans Mono");
 

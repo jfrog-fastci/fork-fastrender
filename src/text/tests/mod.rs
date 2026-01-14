@@ -22,6 +22,7 @@ mod bundled_emoji_last_resort;
 mod bundled_emoji_render;
 mod bundled_helvetica_neue_alias_prefers_roboto_flex;
 mod bundled_multiscript_render;
+mod bundled_sans_serif_prefers_noto_sans;
 mod bundled_script_coverage;
 mod bundled_system_ui_prefers_roboto_flex;
 mod cluster_test;

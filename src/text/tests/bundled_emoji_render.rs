@@ -93,7 +93,7 @@ fn generic_fallback_uses_text_font_when_emoji_bundled() {
 
   let font = db.load_font(primary).expect("load primary font");
   assert!(
-    font.family == "Roboto Flex",
+    font.family == "Noto Sans",
     "text generic should continue using the bundled text face; got {}",
     font.family
   );

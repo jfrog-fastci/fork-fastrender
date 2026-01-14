@@ -471,9 +471,13 @@ fn set_bundled_generic_fallbacks(db: &mut FontDbDatabase) {
   // omit webfonts and rely on the UA default `serif` font for line wrapping (e.g. microsoft.com).
   let serif = first_matching_family(&["STIX Two Math", "FastRender Serif", "Noto Serif"])
     .unwrap_or_else(|| primary_family.clone());
-  // Prefer Roboto Flex: its metrics are closer to Chrome's typical Linux sans-serif fallback
-  // (narrower than Noto Sans), reducing wrap-driven layout drift in offline fixtures.
-  let sans = first_matching_family(&["Roboto Flex", "Noto Sans", "DejaVu Sans"])
+  // Prefer Noto Sans: it matches the default `sans-serif` font on many Linux/fontconfig setups
+  // (including our CI containers), and therefore aligns better with headless Chrome baselines for
+  // pages that request the generic `sans-serif` family directly (notably Wikipedia).
+  //
+  // Roboto Flex is still kept around as a deterministic alias for common named "system" faces
+  // (Helvetica/Arial/etc) where sites explicitly request those families.
+  let sans = first_matching_family(&["Noto Sans", "Roboto Flex", "DejaVu Sans"])
     .unwrap_or_else(|| primary_family.clone());
   let monospace =
     first_matching_family(&["Noto Sans Mono"]).unwrap_or_else(|| primary_family.clone());
