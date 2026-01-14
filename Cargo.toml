@@ -263,9 +263,9 @@ directories = { version = "5", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
 egui-winit = { version = "0.23", default-features = false, features = ["x11", "clipboard", "accesskit"], optional = true }
-# `rfd` is an optional dependency intended for native file/color dialogs in the windowed browser UI.
-# (The current windowed `browser` app uses an in-app file picker popup; native dialogs are not wired
-# up yet.)
+# `rfd` is an optional dependency used for native file/color dialogs in the windowed browser UI.
+# (The windowed `browser` app uses it for file inputs, bookmarks import/export, and page export save
+# dialogs.)
 #
 # On Linux we explicitly select the `xdg-portal` backend and keep default features off so we don't
 # pull in GTK system dependencies (CI-friendly on minimal hosts).
