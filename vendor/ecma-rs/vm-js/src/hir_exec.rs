@@ -1950,6 +1950,7 @@ impl<'vm> HirEvaluator<'vm> {
     visited: &mut HashSet<hir_js::BodyId>,
   ) -> Result<bool, VmError> {
     let expr = self.get_expr(body, expr_id)?;
+    #[allow(unreachable_patterns)]
     match &expr.kind {
       hir_js::ExprKind::Await { .. } => Ok(true),
       hir_js::ExprKind::Unary { op, .. } if matches!(op, hir_js::UnaryOp::Await) => Ok(true),
