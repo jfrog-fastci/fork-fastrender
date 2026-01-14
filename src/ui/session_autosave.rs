@@ -319,7 +319,11 @@ impl SessionAutosave {
   }
 
   #[cfg(test)]
-  fn new_with_debounce_and_saver(path: PathBuf, debounce: Duration, save_fn: SaveSessionFn) -> Self {
+  fn new_with_debounce_and_saver(
+    path: PathBuf,
+    debounce: Duration,
+    save_fn: SaveSessionFn,
+  ) -> Self {
     let (tx, rx) = mpsc::channel::<Command>();
     let write_count = Arc::new(AtomicUsize::new(0));
     let status = Arc::new(SessionAutosaveStatusShared::default());
@@ -333,7 +337,18 @@ impl SessionAutosave {
         let write_count = Arc::clone(&write_count);
         let status = Arc::clone(&status);
         let save_fn = Arc::clone(&save_fn);
-        move || session_writer_thread(path, debounce, None, rx, write_count, status, save_fn)
+        move || {
+          session_writer_thread(
+            path,
+            debounce,
+            MAX_WRITE_INTERVAL,
+            None,
+            rx,
+            write_count,
+            status,
+            save_fn,
+          )
+        }
       })
       .ok();
 
@@ -453,7 +468,8 @@ impl SessionAutosave {
         "timed out after {timeout:?} waiting for session autosave shutdown save"
       )),
       Err(mpsc::RecvTimeoutError::Disconnected) => Err(
-        "session autosave thread disconnected while waiting for shutdown acknowledgement".to_string(),
+        "session autosave thread disconnected while waiting for shutdown acknowledgement"
+          .to_string(),
       ),
     };
 
@@ -606,7 +622,8 @@ fn session_writer_thread(
     // maximum write interval, persist it now.
     if let Some((session, updated_at, first_pending_at)) = pending.take() {
       let now = Instant::now();
-      if now.duration_since(updated_at) >= debounce || now.duration_since(first_pending_at) >= max_write_interval
+      if now.duration_since(updated_at) >= debounce
+        || now.duration_since(first_pending_at) >= max_write_interval
       {
         let mut to_write = session;
         to_write.did_exit_cleanly = false;
@@ -811,11 +828,13 @@ mod tests {
     let session = load_session(&path).unwrap().unwrap();
     assert_eq!(session.windows.len(), 1);
     assert_eq!(
-      session.windows[0].tabs[0].url,
-      "about:error",
+      session.windows[0].tabs[0].url, "about:error",
       "expected only the final snapshot to be persisted"
     );
-    assert!(!session.did_exit_cleanly, "expected running sessions to be unclean");
+    assert!(
+      !session.did_exit_cleanly,
+      "expected running sessions to be unclean"
+    );
     assert_eq!(session.unclean_exit_streak, 1);
     assert_eq!(
       autosave.successful_write_count(),
@@ -914,12 +933,18 @@ mod tests {
     autosave.flush(Duration::from_secs(2)).unwrap();
 
     let session = load_session(&path).unwrap().unwrap();
-    assert!(!session.did_exit_cleanly, "startup should mark session as unclean");
+    assert!(
+      !session.did_exit_cleanly,
+      "startup should mark session as unclean"
+    );
     assert_eq!(session.unclean_exit_streak, 1);
 
     autosave.shutdown(Duration::from_secs(2)).unwrap();
     let session = load_session(&path).unwrap().unwrap();
-    assert!(session.did_exit_cleanly, "clean shutdown should mark session as clean");
+    assert!(
+      session.did_exit_cleanly,
+      "clean shutdown should mark session as clean"
+    );
     assert_eq!(session.unclean_exit_streak, 0);
   }
 
@@ -1010,7 +1035,8 @@ mod tests {
     std::fs::write(&path, "not valid json\n").unwrap();
 
     let save_fn: SaveSessionFn = Arc::new(|_path, _session| Err("disk full".to_string()));
-    let autosave = SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
+    let autosave =
+      SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
 
     autosave.request_save(BrowserSession::single("about:blank".to_string()));
     assert!(autosave.flush(Duration::from_secs(2)).is_err());
@@ -1043,19 +1069,28 @@ mod tests {
         }
       }
     });
-    let autosave = SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
+    let autosave =
+      SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
 
     autosave.request_save(BrowserSession::single("about:blank".to_string()));
     assert!(autosave.flush(Duration::from_secs(2)).is_err());
     let status = autosave.status_handle().snapshot();
     assert_eq!(status.consecutive_failures, 1);
-    assert!(status.last_error.as_deref().unwrap_or_default().contains("fail"));
+    assert!(status
+      .last_error
+      .as_deref()
+      .unwrap_or_default()
+      .contains("fail"));
 
     autosave.request_save(BrowserSession::single("about:newtab".to_string()));
     assert!(autosave.flush(Duration::from_secs(2)).is_err());
     let status = autosave.status_handle().snapshot();
     assert_eq!(status.consecutive_failures, 2);
-    assert!(status.last_error.as_deref().unwrap_or_default().contains("fail"));
+    assert!(status
+      .last_error
+      .as_deref()
+      .unwrap_or_default()
+      .contains("fail"));
 
     autosave.request_save(BrowserSession::single("about:error".to_string()));
     autosave.flush(Duration::from_secs(2)).unwrap();
@@ -1084,7 +1119,10 @@ mod tests {
     failing.consecutive_failures = 2;
     failing.last_attempt_at = Some(start + Duration::from_secs(1));
     let update = ui.update(&failing, start + Duration::from_secs(1));
-    assert!(update.show_warning, "expected warning after repeated failures");
+    assert!(
+      update.show_warning,
+      "expected warning after repeated failures"
+    );
     assert!(ui.warning_visible());
 
     ui.dismiss();
@@ -1107,6 +1145,9 @@ mod tests {
     failing_again.last_error = Some("disk full".to_string());
     failing_again.failed_since = Some(start + Duration::from_secs(4));
     let update = ui.update(&failing_again, start + Duration::from_secs(4));
-    assert!(!update.show_warning, "expected warning cooldown to suppress spam");
+    assert!(
+      !update.show_warning,
+      "expected warning cooldown to suppress spam"
+    );
   }
 }
