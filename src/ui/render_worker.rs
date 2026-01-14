@@ -10133,7 +10133,7 @@ impl BrowserRuntime {
         &scroll_snapshot,
         node_id,
       );
-      (false, (changed, focus_scroll))
+      (changed, (changed, focus_scroll))
     }) {
       Ok((changed, scroll)) => (changed, scroll),
       Err(_) => {
