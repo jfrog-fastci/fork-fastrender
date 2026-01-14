@@ -1,13 +1,11 @@
-use serde::Serialize;
 use serde::ser::SerializeMap;
+use serde::Serialize;
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-use serde_json::Value as JsonValue;
 
 const DEFAULT_MAX_TRACE_EVENTS: usize = 200_000;
 const TRACE_MAX_EVENTS_ENV: &str = "FASTR_TRACE_MAX_EVENTS";
@@ -38,7 +36,31 @@ struct TraceArgs {
 #[derive(Clone)]
 struct TraceArg {
   key: &'static str,
-  value: JsonValue,
+  value: TraceValue,
+}
+
+#[derive(Clone)]
+enum TraceValue {
+  U64(u64),
+  I64(i64),
+  Bool(bool),
+  String(String),
+  StaticStr(&'static str),
+}
+
+impl Serialize for TraceValue {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    match self {
+      TraceValue::U64(value) => serializer.serialize_u64(*value),
+      TraceValue::I64(value) => serializer.serialize_i64(*value),
+      TraceValue::Bool(value) => serializer.serialize_bool(*value),
+      TraceValue::String(value) => serializer.serialize_str(value),
+      TraceValue::StaticStr(value) => serializer.serialize_str(value),
+    }
+  }
 }
 
 impl TraceArgs {
@@ -51,7 +73,7 @@ impl TraceArgs {
   }
 
   #[inline]
-  fn insert(&mut self, key: &'static str, value: JsonValue) {
+  fn insert(&mut self, key: &'static str, value: TraceValue) {
     // Preserve the previous `serde_json::Map` semantics: later inserts overwrite earlier values for
     // the same key (and avoid emitting duplicate keys in the serialized JSON object).
     for entry in &mut self.entries {
@@ -291,7 +313,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key, JsonValue::Number(value.into()));
+    args.insert(key, TraceValue::U64(value));
   }
 
   #[inline]
@@ -300,7 +322,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key, JsonValue::Number(value.into()));
+    args.insert(key, TraceValue::I64(value));
   }
 
   #[inline]
@@ -309,7 +331,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key, JsonValue::Bool(value));
+    args.insert(key, TraceValue::Bool(value));
   }
 
   #[inline]
@@ -318,7 +340,16 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key, JsonValue::String(cap_trace_string(value)));
+    args.insert(key, TraceValue::String(cap_trace_string(value)));
+  }
+
+  #[inline]
+  pub fn arg_static_str(&mut self, key: &'static str, value: &'static str) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    let args = self.args.get_or_insert_with(TraceArgs::new);
+    args.insert(key, TraceValue::StaticStr(value));
   }
 }
 
@@ -391,9 +422,7 @@ mod tests {
 
     let json = std::fs::read_to_string(&path).expect("read trace");
     let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
-    let trace_events = value["traceEvents"]
-      .as_array()
-      .expect("traceEvents array");
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
     assert_eq!(trace_events.len(), max_events);
     assert_eq!(
       value["fastrenderTraceMaxEvents"]
@@ -407,5 +436,26 @@ mod tests {
         .expect("dropped events metadata"),
       (generated_events - max_events) as u64
     );
+  }
+
+  #[test]
+  fn trace_span_static_str_arg_roundtrips() {
+    let handle = TraceHandle::enabled_with_max_events(8);
+    {
+      let mut span = handle.span("test", "cat");
+      span.arg_static_str("source", "Microtask");
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    handle.write_chrome_trace(&path).expect("write trace");
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
+    let event = trace_events
+      .iter()
+      .find(|event| event["name"].as_str() == Some("test"))
+      .expect("expected test span");
+    assert_eq!(event["args"]["source"].as_str(), Some("Microtask"));
   }
 }

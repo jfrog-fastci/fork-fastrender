@@ -1300,7 +1300,7 @@ impl<Host: 'static> EventLoop<Host> {
     };
 
     let mut trace_span = self.trace.span("js.task.run", "js");
-    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_static_str("source", task_source_name(task.source));
     trace_span.arg_u64("seq", task.seq);
 
     let previous_timer_nesting_level = self.timer_nesting_level;
@@ -1691,7 +1691,7 @@ impl<Host: 'static> EventLoop<Host> {
     };
 
     let mut trace_span = self.trace.span("js.task.run", "js");
-    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_static_str("source", task_source_name(task.source));
     trace_span.arg_u64("seq", task.seq);
 
     let previous_timer_nesting_level = self.timer_nesting_level;
@@ -1757,7 +1757,7 @@ impl<Host: 'static> EventLoop<Host> {
     };
 
     let mut trace_span = self.trace.span("js.task.run", "js");
-    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_static_str("source", task_source_name(task.source));
     trace_span.arg_u64("seq", task.seq);
 
     let previous_timer_nesting_level = self.timer_nesting_level;
