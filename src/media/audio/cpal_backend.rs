@@ -20,8 +20,7 @@ use crate::debug::trace::TraceHandle;
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use crate::media::audio_clock::InterpolatedAudioClock;
 use crate::media::audio_engine::{
-  AudioBackend as IdleBackend, AudioEngine as IdleEngine, AudioEngineTelemetry,
-  AudioStreamHandle as IdleStreamHandle,
+  IdleBackend, IdleEngine, IdleEngineTelemetry, IdleStreamHandle,
 };
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -651,7 +650,7 @@ impl CpalAudioBackend {
   }
 
   /// Snapshot of the debounced output-stream lifecycle state (useful for telemetry/debugging).
-  pub fn idle_telemetry(&self) -> AudioEngineTelemetry {
+  pub fn idle_telemetry(&self) -> IdleEngineTelemetry {
     self.idle_engine.telemetry()
   }
 }

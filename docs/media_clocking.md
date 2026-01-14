@@ -17,7 +17,7 @@ Implementation map (keep these modules aligned with this doc):
 * `src/media/audio/mod.rs` — `AudioBackend` + `AudioClock` + `AudioOutputInfo` (backend time + output-latency estimate)
 * `src/media/audio/config.rs` — `AudioEngineConfig` (`FASTR_AUDIO_*` tuning + deterministic overrides for tests)
 * `src/media/audio/engine.rs` — `AudioEngine` (backend selection, sink grouping/volume, exposes a device clock for A/V sync)
-* `src/media/audio_engine.rs` — output-stream idle controller (debounced start/stop; used by the CPAL backend)
+* `src/media/audio_engine.rs` — output-stream idle controller (`IdleEngine`): debounced start/stop of the OS/device output stream; used by the CPAL backend (not `crate::media::audio::AudioEngine`)
 * `src/media/master_clock.rs` — `MasterClock` (chooses audio vs system master clock, keeps time continuous)
 * `src/media/clock.rs` — `MediaClock` abstraction + `PlaybackClock` (play/pause/seek/rate timeline mapping)
   + `AudioStreamClock` (map a shared device clock into a per-element timeline)

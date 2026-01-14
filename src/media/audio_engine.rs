@@ -1,5 +1,20 @@
-use parking_lot::Mutex;
+//! Output-stream idle controller.
+//!
+//! This module is **not** the high-level audio mixer/engine (`crate::media::audio::AudioEngine`).
+//! Instead, it is a small utility used by output backends (notably the CPAL backend) to start/stop
+//! an OS audio stream based on whether any logical audio streams are currently producing non-silent
+//! samples.
+//!
+//! Keeping an output device stream open while nothing is playing can:
+//! - waste power (especially on laptops),
+//! - keep hardware “awake”, and
+//! - prevent other apps from taking exclusive control on some systems.
+//!
+//! The [`IdleEngine`] provides a debounced “idle timeout” so brief silence does not cause rapid
+//! start/stop churn.
+
 use crate::media::audio::AudioError;
+use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -7,7 +22,7 @@ use std::time::{Duration, Instant};
 
 /// Default debounce before suspending the audio output stream after the last active audio stream
 /// becomes silent.
-pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_millis(1500);
+pub const DEFAULT_IDLE_STREAM_TIMEOUT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStreamState {
@@ -16,7 +31,7 @@ pub enum OutputStreamState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AudioEngineTelemetry {
+pub struct IdleEngineTelemetry {
   pub output_state: OutputStreamState,
   pub active_streams: usize,
   pub idle_for: Option<Duration>,
@@ -25,12 +40,12 @@ pub struct AudioEngineTelemetry {
 /// Backend abstraction for platform-specific audio output.
 ///
 /// For CPAL this typically corresponds to starting/stopping (dropping) the output stream.
-pub trait AudioBackend: Send + 'static {
+pub trait IdleBackend: Send + 'static {
   fn start_stream(&mut self) -> Result<(), AudioError>;
   fn stop_stream(&mut self);
 }
 
-impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
+impl<T: IdleBackend + ?Sized> IdleBackend for Box<T> {
   fn start_stream(&mut self) -> Result<(), AudioError> {
     (**self).start_stream()
   }
@@ -40,7 +55,7 @@ impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
   }
 }
 
-struct AudioEngineInner<B: AudioBackend> {
+struct IdleEngineInner<B: IdleBackend> {
   backend: Mutex<B>,
   idle_timeout: Duration,
   backend_running: AtomicBool,
@@ -56,19 +71,19 @@ struct AudioEngineInner<B: AudioBackend> {
 /// currently producing non-silent samples, and stops the output backend after a short idle
 /// period to avoid keeping the OS audio device open unnecessarily.
 #[derive(Clone)]
-pub struct AudioEngine<B: AudioBackend> {
-  inner: Arc<AudioEngineInner<B>>,
+pub struct IdleEngine<B: IdleBackend> {
+  inner: Arc<IdleEngineInner<B>>,
 }
 
-impl<B: AudioBackend> AudioEngine<B> {
+impl<B: IdleBackend> IdleEngine<B> {
   pub fn new(backend: B) -> Self {
-    Self::with_idle_timeout(backend, DEFAULT_IDLE_TIMEOUT)
+    Self::with_idle_timeout(backend, DEFAULT_IDLE_STREAM_TIMEOUT)
   }
 
   pub fn with_idle_timeout(backend: B, idle_timeout: Duration) -> Self {
     let start = Instant::now();
     Self {
-      inner: Arc::new(AudioEngineInner {
+      inner: Arc::new(IdleEngineInner {
         backend: Mutex::new(backend),
         idle_timeout,
         backend_running: AtomicBool::new(false),
@@ -83,8 +98,8 @@ impl<B: AudioBackend> AudioEngine<B> {
   ///
   /// The returned handle is initially inactive; call `set_active(true)` when it begins producing
   /// non-silent output (e.g. when a media element starts playing).
-  pub fn register_stream(&self) -> AudioStreamHandle<B> {
-    AudioStreamHandle {
+  pub fn register_stream(&self) -> IdleStreamHandle<B> {
+    IdleStreamHandle {
       inner: Arc::downgrade(&self.inner),
       active: AtomicBool::new(false),
     }
@@ -98,10 +113,10 @@ impl<B: AudioBackend> AudioEngine<B> {
     tick_inner(&self.inner, now);
   }
 
-  /// Spawn a background watchdog that periodically calls [`AudioEngine::tick`].
+  /// Spawn a background watchdog that periodically calls [`IdleEngine::tick`].
   ///
   /// This is useful for integrations that don't have a central "main loop" tick driving audio
-  /// housekeeping. The thread exits automatically once the [`AudioEngine`] is dropped.
+  /// housekeeping. The thread exits automatically once the [`IdleEngine`] is dropped.
   pub fn spawn_idle_watcher(&self) {
     let interval = (self.inner.idle_timeout / 4)
       .max(Duration::from_millis(50))
@@ -117,11 +132,11 @@ impl<B: AudioBackend> AudioEngine<B> {
     });
   }
 
-  pub fn telemetry(&self) -> AudioEngineTelemetry {
+  pub fn telemetry(&self) -> IdleEngineTelemetry {
     self.telemetry_at(Instant::now())
   }
 
-  fn telemetry_at(&self, now: Instant) -> AudioEngineTelemetry {
+  fn telemetry_at(&self, now: Instant) -> IdleEngineTelemetry {
     let output_state = if self.inner.backend_running.load(Ordering::Relaxed) {
       OutputStreamState::Running
     } else {
@@ -135,7 +150,7 @@ impl<B: AudioBackend> AudioEngine<B> {
     } else {
       None
     };
-    AudioEngineTelemetry {
+    IdleEngineTelemetry {
       output_state,
       active_streams,
       idle_for,
@@ -143,12 +158,12 @@ impl<B: AudioBackend> AudioEngine<B> {
   }
 }
 
-pub struct AudioStreamHandle<B: AudioBackend> {
-  inner: Weak<AudioEngineInner<B>>,
+pub struct IdleStreamHandle<B: IdleBackend> {
+  inner: Weak<IdleEngineInner<B>>,
   active: AtomicBool,
 }
 
-impl<B: AudioBackend> AudioStreamHandle<B> {
+impl<B: IdleBackend> IdleStreamHandle<B> {
   pub fn set_active(&self, active: bool) -> Result<(), AudioError> {
     self.set_active_at(active, Instant::now())
   }
@@ -213,14 +228,14 @@ impl<B: AudioBackend> AudioStreamHandle<B> {
   }
 }
 
-impl<B: AudioBackend> Drop for AudioStreamHandle<B> {
+impl<B: IdleBackend> Drop for IdleStreamHandle<B> {
   fn drop(&mut self) {
     // Best-effort: dropping a handle should never panic.
     let _ = self.set_active(false);
   }
 }
 
-fn maybe_start_backend<B: AudioBackend>(inner: &AudioEngineInner<B>) -> Result<(), AudioError> {
+fn maybe_start_backend<B: IdleBackend>(inner: &IdleEngineInner<B>) -> Result<(), AudioError> {
   if inner.backend_running.load(Ordering::Relaxed) {
     return Ok(());
   }
@@ -253,7 +268,7 @@ fn maybe_start_backend<B: AudioBackend>(inner: &AudioEngineInner<B>) -> Result<(
   }
 }
 
-fn tick_inner<B: AudioBackend>(inner: &AudioEngineInner<B>, now: Instant) {
+fn tick_inner<B: IdleBackend>(inner: &IdleEngineInner<B>, now: Instant) {
   if inner.active_streams.load(Ordering::Relaxed) > 0 {
     inner
       .last_non_silent_nanos
@@ -295,11 +310,11 @@ fn instant_to_nanos_u64(start: Instant, now: Instant) -> u64 {
 
 /// A backend that does nothing; useful for headless runs and unit tests.
 #[derive(Debug, Default)]
-pub struct NullAudioBackend {
+pub struct NullIdleBackend {
   running: bool,
 }
 
-impl NullAudioBackend {
+impl NullIdleBackend {
   pub fn new() -> Self {
     Self::default()
   }
@@ -309,7 +324,7 @@ impl NullAudioBackend {
   }
 }
 
-impl AudioBackend for NullAudioBackend {
+impl IdleBackend for NullIdleBackend {
   fn start_stream(&mut self) -> Result<(), AudioError> {
     self.running = true;
     Ok(())
@@ -326,12 +341,12 @@ impl AudioBackend for NullAudioBackend {
 /// touch the OS audio device. The current implementation only manages the file resource lifetime;
 /// writing actual samples is owned by the audio mixer layer.
 #[derive(Debug)]
-pub struct WavAudioBackend {
+pub struct WavIdleBackend {
   path: PathBuf,
   file: Option<std::fs::File>,
 }
 
-impl WavAudioBackend {
+impl WavIdleBackend {
   pub fn new(path: impl Into<PathBuf>) -> Self {
     Self {
       path: path.into(),
@@ -344,7 +359,7 @@ impl WavAudioBackend {
   }
 }
 
-impl AudioBackend for WavAudioBackend {
+impl IdleBackend for WavIdleBackend {
   fn start_stream(&mut self) -> Result<(), AudioError> {
     if self.file.is_some() {
       return Ok(());
@@ -390,7 +405,7 @@ mod tests {
     }
   }
 
-  impl AudioBackend for FakeBackend {
+  impl IdleBackend for FakeBackend {
     fn start_stream(&mut self) -> Result<(), AudioError> {
       self.started.fetch_add(1, Ordering::SeqCst);
       self.running.store(true, Ordering::SeqCst);
@@ -408,7 +423,7 @@ mod tests {
     let idle_timeout = Duration::from_millis(10);
     let backend = FakeBackend::default();
     let probe = backend.clone();
-    let engine = AudioEngine::with_idle_timeout(backend, idle_timeout);
+    let engine = IdleEngine::with_idle_timeout(backend, idle_timeout);
 
     let t0 = Instant::now();
     let stream = engine.register_stream();
