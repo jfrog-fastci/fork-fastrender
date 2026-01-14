@@ -719,6 +719,9 @@ pub struct BrowserTabState {
   tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
   #[cfg(any(test, feature = "browser_ui"))]
   tab_close_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
+  #[cfg(any(test, feature = "browser_ui"))]
+  tab_search_row_a11y_label_cache:
+    crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache,
 }
 
 impl BrowserTabState {
@@ -775,6 +778,9 @@ impl BrowserTabState {
       #[cfg(any(test, feature = "browser_ui"))]
       tab_close_a11y_label_cache:
         crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
+      #[cfg(any(test, feature = "browser_ui"))]
+      tab_search_row_a11y_label_cache:
+        crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache::default(),
     }
   }
 
@@ -828,6 +834,17 @@ impl BrowserTabState {
     self
       .tab_close_a11y_label_cache
       .get_or_update(close_label, title)
+  }
+
+  #[cfg(any(test, feature = "browser_ui"))]
+  pub(crate) fn tab_search_row_accessible_label(
+    &mut self,
+    title: &str,
+    secondary: &str,
+  ) -> std::sync::Arc<str> {
+    self
+      .tab_search_row_a11y_label_cache
+      .get_or_update(title, secondary)
   }
 
   /// Returns a deterministic monotonic progress fraction for a chrome loading indicator.

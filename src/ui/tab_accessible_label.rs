@@ -148,6 +148,22 @@ pub(crate) fn format_title_prefixed_accessible_label(prefix: &str, title: &str) 
   out
 }
 
+fn format_tab_search_row_accessible_label(title: &str, secondary: &str) -> String {
+  if secondary.trim().is_empty() {
+    return format_title_prefixed_accessible_label("Switch to tab", title);
+  }
+
+  let prefix = "Switch to tab";
+  let mut out = String::with_capacity(prefix.len() + 2 + title.len() + 2 + secondary.len() + 1);
+  out.push_str(prefix);
+  out.push_str(": ");
+  out.push_str(title);
+  out.push_str(" (");
+  out.push_str(secondary);
+  out.push(')');
+  out
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TitlePrefixedLabelCache {
   entry: Option<TitlePrefixedLabelCacheEntry>,
@@ -175,6 +191,45 @@ impl TitlePrefixedLabelCache {
       title: title_arc,
       label: Arc::clone(&label_arc),
     });
+    label_arc
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TabSearchRowAccessibleLabelCache {
+  entry: Option<TabSearchRowAccessibleLabelCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct TabSearchRowAccessibleLabelCacheEntry {
+  title: Arc<str>,
+  secondary: Arc<str>,
+  label: Arc<str>,
+}
+
+impl TabSearchRowAccessibleLabelCache {
+  pub fn get_or_update(&mut self, title: &str, secondary: &str) -> Arc<str> {
+    let secondary_for_cache = if secondary.trim().is_empty() { "" } else { secondary };
+
+    if let Some(entry) = &self.entry {
+      if entry.title.as_ref() == title && entry.secondary.as_ref() == secondary_for_cache {
+        return Arc::clone(&entry.label);
+      }
+    }
+
+    let title_arc: Arc<str> = Arc::from(title);
+    let secondary_arc: Arc<str> = Arc::from(secondary_for_cache);
+    let label_arc: Arc<str> = Arc::from(format_tab_search_row_accessible_label(
+      title,
+      secondary_for_cache,
+    ));
+
+    self.entry = Some(TabSearchRowAccessibleLabelCacheEntry {
+      title: title_arc,
+      secondary: secondary_arc,
+      label: Arc::clone(&label_arc),
+    });
+
     label_arc
   }
 }
@@ -361,5 +416,35 @@ mod tests {
       "expected cache miss when prefix changes"
     );
     assert_eq!(d.as_ref(), "New tab: Other");
+  }
+
+  #[test]
+  fn tab_search_row_accessible_label_cache_formats_secondary_optional() {
+    let mut cache = TabSearchRowAccessibleLabelCache::default();
+
+    let no_secondary = cache.get_or_update("Example", "");
+    assert_eq!(no_secondary.as_ref(), "Switch to tab: Example");
+
+    let with_secondary = cache.get_or_update("Example", "example.com");
+    assert_eq!(
+      with_secondary.as_ref(),
+      "Switch to tab: Example (example.com)"
+    );
+  }
+
+  #[test]
+  fn tab_search_row_accessible_label_cache_reuses_allocation_until_inputs_change() {
+    let mut cache = TabSearchRowAccessibleLabelCache::default();
+    let a = cache.get_or_update("Example", "example.com");
+    let b = cache.get_or_update("Example", "example.com");
+    assert!(Arc::ptr_eq(&a, &b), "expected cache hit");
+
+    let c = cache.get_or_update("Example", "");
+    assert!(!Arc::ptr_eq(&b, &c), "expected cache miss when secondary changes");
+    assert_eq!(c.as_ref(), "Switch to tab: Example");
+
+    let d = cache.get_or_update("Other", "");
+    assert!(!Arc::ptr_eq(&c, &d), "expected cache miss when title changes");
+    assert_eq!(d.as_ref(), "Switch to tab: Other");
   }
 }

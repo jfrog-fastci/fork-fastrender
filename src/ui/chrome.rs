@@ -650,11 +650,12 @@ fn tab_search_overlay_ui(
 
               for idx in row_range {
                 let m = matches[idx];
-                let tab = &app.tabs[m.tab_index];
+                let tab = &mut app.tabs[m.tab_index];
                 let is_selected = idx == selected;
 
                 let title = tab.display_title();
                 let secondary = tab_search_secondary_text(tab);
+                let a11y_label = tab.tab_search_row_accessible_label(title, secondary);
 
                 // Use an explicit per-tab widget id so the AccessKit node id remains stable even if
                 // the filtered matches list reorders while the overlay is open.
@@ -663,11 +664,7 @@ fn tab_search_overlay_ui(
                   ui.allocate_space(egui::vec2(ui.available_width().max(0.0), row_height));
                 let response = ui.interact(rect, row_id, egui::Sense::click());
                 response.widget_info({
-                  let label = if secondary.trim().is_empty() {
-                    format!("Switch to tab: {title}")
-                  } else {
-                    format!("Switch to tab: {title} ({secondary})")
-                  };
+                  let label = a11y_label.clone();
                   let selected = is_selected;
                   move || {
                     egui::WidgetInfo::selected(egui::WidgetType::Button, selected, label.clone())
