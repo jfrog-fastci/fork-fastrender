@@ -123,3 +123,43 @@ fn parenthesized_optional_chain_base_is_valid_computed_member_assignment_target(
 fn unparenthesized_optional_chain_is_invalid_computed_member_assignment_target() {
   assert_syntax_error("var o = { x: { y: 0 } }; o?.x['y'] = 1;");
 }
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_postfix_update_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; o?.x.y++;");
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_compound_assignment_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; o?.x.y += 1;");
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_for_of_lhs_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; for (o?.x.y of [1]) {}");
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_for_in_lhs_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; for (o?.x.y in { a: 1 }) {}");
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_destructuring_assignment_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; ({ a: (o?.x).y } = { a: 1 }); o.x.y", 1.0);
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_destructuring_assignment_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; ({ a: o?.x.y } = { a: 1 });");
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_array_destructuring_assignment_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; [(o?.x).y] = [1]; o.x.y", 1.0);
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_array_destructuring_assignment_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; [o?.x.y] = [1];");
+}
