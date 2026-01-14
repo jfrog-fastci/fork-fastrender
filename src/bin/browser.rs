@@ -16727,28 +16727,9 @@ impl App {
     kind: PageExportKind,
     tab: &fastrender::ui::BrowserTabState,
   ) -> String {
-    use fastrender::ui::downloads::sanitize_download_filename;
-
-    let base = tab
-      .title
-      .as_deref()
-      .filter(|t| !t.trim().is_empty())
-      .or_else(|| tab.current_url.as_deref())
-      .unwrap_or("page");
-
-    // Keep the name reasonably short and filesystem-safe.
-    let mut name = sanitize_download_filename(base);
-    name = truncate_utf8_str_to_bytes(&name, 120);
-    if name.trim().is_empty() {
-      name = "page".to_string();
-    }
-
-    let ext = kind.extension();
-    let name_lower = name.to_ascii_lowercase();
-    if name_lower.ends_with(&format!(".{ext}")) {
-      name
-    } else {
-      format!("{name}.{ext}")
+    match kind {
+      PageExportKind::SavePage => fastrender::ui::suggested_save_page_filename(tab),
+      PageExportKind::Print => fastrender::ui::suggested_print_filename(tab),
     }
   }
 

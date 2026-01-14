@@ -1,8 +1,21 @@
 use crate::ui::downloads::sanitize_download_filename;
 use crate::ui::BrowserTabState;
 
+const MAX_SUGGESTED_FILENAME_BYTES: usize = 120;
+
 fn raw_is_effectively_empty(raw: &str) -> bool {
   raw.chars().all(|c| matches!(c, '/' | '\\' | '.' | ' ') || c.is_control())
+}
+
+fn strip_extension_ignore_case<'a>(name: &'a str, ext: &str) -> &'a str {
+  let ext = ext.strip_prefix('.').unwrap_or(ext);
+  let suffix = format!(".{ext}");
+  if let Some(tail) = name.get(name.len().saturating_sub(suffix.len())..) {
+    if tail.eq_ignore_ascii_case(&suffix) {
+      return &name[..name.len() - suffix.len()];
+    }
+  }
+  name
 }
 
 fn url_basename(url: &str) -> Option<String> {
@@ -78,7 +91,21 @@ fn suggested_filename_with_ext(tab: &BrowserTabState, ext: &str) -> String {
     .unwrap_or_else(|| "page".to_string());
 
   let sanitized = sanitize_download_filename(&raw);
-  ensure_extension_lowercase(&sanitized, ext)
+  let stem = strip_extension_ignore_case(&sanitized, ext);
+  let stem = crate::ui::clipboard::truncate_utf8_to_max_bytes(stem, MAX_SUGGESTED_FILENAME_BYTES);
+
+  // Truncation can re-introduce a Windows-incompatible trailing dot/space. Trim those again.
+  let mut stem = stem.to_string();
+  while stem.ends_with('.') || stem.ends_with(' ') {
+    stem.pop();
+  }
+  if stem.trim().is_empty() {
+    stem = "page".to_string();
+  }
+
+  // Re-sanitize after truncation to preserve Windows reserved device name handling.
+  let stem = sanitize_download_filename(&stem);
+  ensure_extension_lowercase(&stem, ext)
 }
 
 /// Suggested default filename for "Save Page…", ending in `.html`.
