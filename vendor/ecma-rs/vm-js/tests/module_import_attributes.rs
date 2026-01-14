@@ -248,3 +248,25 @@ fn import_attributes_from_options_preserves_unpaired_surrogate_key() {
     other => panic!("expected unsupported attribute TypeError, got {other:?}"),
   }
 }
+
+#[test]
+fn module_requests_equal_distinguishes_surrogate_and_replacement_in_attribute_value() {
+  // `ModuleRequestsEqual` compares attribute keys/values by UTF-16 code units. An unpaired surrogate
+  // must not compare equal to U+FFFD.
+  let specifier = JsString::from_str("m").unwrap();
+  let key = JsString::from_str("type").unwrap();
+  let surrogate = JsString::from_code_units(&[0xD800u16]).unwrap();
+  let replacement = JsString::from_str("\u{FFFD}").unwrap();
+
+  let left = ModuleRequest::new(
+    specifier.clone(),
+    vec![ImportAttribute::new(key.clone(), surrogate)],
+  );
+  let right = ModuleRequest::new(
+    specifier,
+    vec![ImportAttribute::new(key, replacement)],
+  );
+
+  assert!(!vm_js::module_requests_equal(&left, &right));
+  assert_ne!(left, right);
+}
