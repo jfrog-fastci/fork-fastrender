@@ -191,7 +191,10 @@ impl OmniboxProvider for AboutPagesProvider {
       Cow::Borrowed(input)
     };
 
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(
+      about_pages::user_facing_about_pages().len()
+        + if input_lower.starts_with("about:test") { 4 } else { 0 },
+    );
     for (url, title) in about_pages::user_facing_about_pages() {
       if !contains_ascii_case_insensitive(url, input_lower.as_ref())
         && !contains_ascii_case_insensitive(title, input_lower.as_ref())
@@ -245,7 +248,7 @@ pub struct OpenTabsProvider;
 
 impl OmniboxProvider for OpenTabsProvider {
   fn suggestions(&self, ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(ctx.open_tabs.len());
     for tab in ctx.open_tabs {
       if ctx.active_tab_id == Some(tab.id) {
         continue;
@@ -280,7 +283,7 @@ pub struct ClosedTabsProvider;
 
 impl OmniboxProvider for ClosedTabsProvider {
   fn suggestions(&self, ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(ctx.closed_tabs.len());
     for closed in ctx.closed_tabs {
       if closed.url.trim().is_empty() {
         continue;
@@ -313,8 +316,9 @@ impl OmniboxProvider for VisitedProvider {
     // Cap the number of visited records we consider per query so omnibox completion stays cheap.
     const VISITED_LIMIT: usize = 200;
 
-    let mut out = Vec::new();
-    for record in ctx.visited.search(input, VISITED_LIMIT) {
+    let matches = ctx.visited.search(input, VISITED_LIMIT);
+    let mut out = Vec::with_capacity(matches.len());
+    for record in matches {
       if record.url.trim().is_empty() {
         continue;
       }
@@ -419,7 +423,7 @@ impl OmniboxProvider for RemoteSearchSuggestProvider {
       return Vec::new();
     }
 
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(cache.suggestions.len());
     for s in &cache.suggestions {
       let trimmed = s.trim();
       if trimmed.is_empty() {
