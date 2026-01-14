@@ -165,6 +165,13 @@ pub struct Parser<'a> {
   new_target_allowed: u32,
   super_prop_allowed: u32,
   super_call_allowed: u32,
+  /// Disallow `arguments` identifier references in class field initializers and static blocks.
+  ///
+  /// This implements the `ContainsArguments` early error from ECMA-262 for class initialization
+  /// code, preventing class initialization expressions from capturing an outer `arguments` binding.
+  ///
+  /// Note: this is a counter so nested class init contexts compose naturally.
+  disallow_arguments_in_class_init: u32,
   class_is_derived: Vec<bool>,
   in_iteration: u32,
   in_switch: u32,
@@ -202,6 +209,7 @@ impl<'a> Parser<'a> {
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
+      disallow_arguments_in_class_init: 0,
       class_is_derived: Vec::new(),
       in_iteration: 0,
       in_switch: 0,
@@ -228,6 +236,7 @@ impl<'a> Parser<'a> {
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
+      disallow_arguments_in_class_init: 0,
       class_is_derived: Vec::new(),
       in_iteration: 0,
       in_switch: 0,
@@ -354,6 +363,46 @@ impl<'a> Parser<'a> {
       || Self::is_strict_mode_restricted_binding_identifier(string_value.as_ref())
     {
       return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    }
+    Ok(())
+  }
+
+  /// Runs `f` with the `ContainsArguments` early error enabled for class initialization code.
+  ///
+  /// When enabled, identifier references to `arguments` are rejected (unless they occur inside a
+  /// nested non-arrow function body, which introduces its own `arguments` binding).
+  pub(crate) fn with_disallow_arguments_in_class_init<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Self) -> R,
+  {
+    self.disallow_arguments_in_class_init += 1;
+    let res = f(self);
+    self.disallow_arguments_in_class_init -= 1;
+    res
+  }
+
+  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
+    &self,
+    loc: Loc,
+    name: &str,
+  ) -> SyntaxResult<()> {
+    if self.disallow_arguments_in_class_init == 0 {
+      return Ok(());
+    }
+
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      // Identifier names should already have been validated by the lexer; treat decode failures as a
+      // syntax error rather than silently accepting malformed escapes.
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+
+    if string_value.as_ref() == "arguments" {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "`arguments` is not allowed in class field initializers or static initialization blocks",
+        ),
+        None,
+      ));
     }
     Ok(())
   }
