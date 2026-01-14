@@ -9,9 +9,11 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn compiled_script_with_host_and_hooks_falls_back_for_async_functions() -> Result<(), VmError> {
-  // Regression test for a previously-broken `exec_compiled_script_with_hooks` gate: it must fall
-  // back to the AST interpreter for async function scripts (not just async generators).
+fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_defs() -> Result<(), VmError> {
+  // Regression test for `exec_compiled_script_with_host_and_hooks`: scripts which only *define*
+  // async functions (no top-level await) should still execute via the compiled (HIR) executor.
+  //
+  // Async function bodies are executed later via the AST interpreter at call-time.
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(
@@ -24,15 +26,32 @@ fn compiled_script_with_host_and_hooks_falls_back_for_async_functions() -> Resul
         return 1;
       }
 
-      f().then(v => { result = v; });
+      const g = async function () {
+        return 2;
+      };
+
+      const h = async () => 3;
+
+      f().then(v => { result += v; });
+      g().then(v => { result += v; });
+      h().then(v => { result += v; });
     "#,
   )?;
+
+  assert!(
+    script.contains_async_functions,
+    "test script should contain at least one async function"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that only *define* async functions should be able to execute via the compiled (HIR) executor"
+  );
 
   let mut host = ();
   let mut hooks = MicrotaskQueue::new();
 
-  // This exercises `JsRuntime::exec_compiled_script_with_hooks` (via the public alias) and ensures
-  // it uses `script.requires_ast_fallback` rather than only checking `contains_async_generators`.
+  // This exercises `JsRuntime::exec_compiled_script_with_host_and_hooks` and ensures Promise jobs
+  // are enqueued via the provided `hooks`.
   rt.exec_compiled_script_with_host_and_hooks(&mut host, &mut hooks, script)?;
 
   // Promise jobs were enqueued via `hooks`; run a microtask checkpoint so the `.then` callback runs.
@@ -42,7 +61,6 @@ fn compiled_script_with_host_and_hooks_falls_back_for_async_functions() -> Resul
   }
 
   let value = rt.exec_script("result")?;
-  assert_eq!(value, Value::Number(1.0));
+  assert_eq!(value, Value::Number(6.0));
   Ok(())
 }
-
