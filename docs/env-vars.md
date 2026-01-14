@@ -315,7 +315,7 @@ interpret the metrics.
 
 CLI equivalents (override env vars): `browser --perf-log` (stdout),
 `browser --perf-log-out <path>` (write JSONL to a file), and `browser --trace-out <path>` (write a
-Perfetto/Chrome trace on exit).
+Perfetto/Chrome trace on exit; cap retention with `FASTR_TRACE_MAX_EVENTS=<N>`).
 
 For an interactive capture helper (runs under `run_limited`, passes `browser --perf-log`, and tees
 the stdout JSONL stream to a file; also supports `--trace-out <path>` to capture a browser UI trace),
