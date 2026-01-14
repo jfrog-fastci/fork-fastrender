@@ -39343,7 +39343,17 @@ fn gen_eval_lit_arr(
   arr_scope
     .heap_mut()
     .object_set_prototype(arr, Some(intr.array_prototype()))?;
-  gen_eval_lit_arr_from(evaluator, &mut arr_scope, expr, arr, 0, 0)
+  match gen_eval_lit_arr_from(evaluator, &mut arr_scope, expr, arr, 0, 0)? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+    GenEval::Suspend(suspend) => {
+      // Root the partially-constructed array so it survives until the next yield boundary. When
+      // `arr_scope` is dropped, `arr` would otherwise only be held by the continuation frames (Rust
+      // locals), which are not traced by the GC.
+      drop(arr_scope);
+      scope.push_root(Value::Object(arr))?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_eval_lit_arr_from(
