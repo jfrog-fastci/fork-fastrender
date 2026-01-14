@@ -68,6 +68,7 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
     "      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\">\n",
   );
 
+  let setsize = omnibox.suggestions.len();
   for (idx, suggestion) in omnibox.suggestions.iter().enumerate() {
     let href = omnibox_suggestion_href(suggestion).unwrap_or_default();
 
@@ -113,9 +114,10 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
 
     let row_id = format!("omnibox-suggestion-{idx}");
 
+    let posinset = idx + 1;
     write!(
       out,
-      "        <a id=\"{row_id}\" class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" href=\"{safe_href}\"><span class=\"omnibox-icon\" aria-hidden=\"true\"></span><span class=\"omnibox-text\"><span class=\"omnibox-title\">{safe_title}</span>"
+      "        <a id=\"{row_id}\" class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" aria-posinset=\"{posinset}\" aria-setsize=\"{setsize}\" href=\"{safe_href}\"><span class=\"omnibox-icon\" aria-hidden=\"true\"></span><span class=\"omnibox-text\"><span class=\"omnibox-title\">{safe_title}</span>"
     )
     .expect("write omnibox suggestion row"); // fastrender-allow-unwrap
 
@@ -538,6 +540,8 @@ mod tests {
     assert!(
       html.contains(r#"id="omnibox-suggestion-1""#)
         && html.contains(r#"aria-selected="true""#)
+        && html.contains(r#"aria-posinset="2""#)
+        && html.contains(r#"aria-setsize="4""#)
         && html.contains(
           r#"class="omnibox-suggestion omnibox-type-tab omnibox-source-open-tab selected""#
         ),
