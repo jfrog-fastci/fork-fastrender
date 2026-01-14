@@ -95,3 +95,69 @@ fn for_in_let_default_initializer_has_tdz() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn async_for_of_let_default_initializer_has_tdz() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var out = "pending";
+      async function f() {
+        var a = 99;
+        for (let [a = a] of [[undefined]]) {}
+      }
+      f().then(() => out = "resolved", e => out = e && e.name);
+      out
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "pending");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let value = rt.exec_script("out")?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn async_for_in_let_default_initializer_has_tdz() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var out = "pending";
+      async function f() {
+        var a = 99;
+        for (let [a = a] in {"": 0}) {}
+      }
+      f().then(() => out = "resolved", e => out = e && e.name);
+      out
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "pending");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let value = rt.exec_script("out")?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn async_for_await_of_let_default_initializer_has_tdz() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var out = "pending";
+      async function f() {
+        var a = 99;
+        for await (let [a = a] of [[undefined]]) {}
+      }
+      f().then(() => out = "resolved", e => out = e && e.name);
+      out
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "pending");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let value = rt.exec_script("out")?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}

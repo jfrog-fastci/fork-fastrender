@@ -25106,7 +25106,7 @@ fn async_for_in_loop_from(
     }
 
     let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+    if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
       if matches!(
         *mode,
         VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -25120,6 +25120,22 @@ fn async_for_in_loop_from(
         };
         evaluator.env.set_lexical_env(scope.heap_mut(), env);
         iter_env_created = true;
+
+        // Per-iteration environment must contain uninitialized bindings for BoundNames(ForDecl)
+        // *before* evaluating binding initializers, so defaults observe TDZ correctly.
+        let mutable = *mode == VarDeclMode::Let;
+        let inst_res = evaluator.instantiate_lexical_names_from_pat(
+          scope,
+          env,
+          &pat_decl.stx.pat.stx,
+          pat_decl.loc,
+          mutable,
+        );
+        if let Err(err) = inst_res {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+          return Err(err);
+        }
       }
     }
 
@@ -25655,7 +25671,7 @@ fn async_for_await_of_handle_iter_value(
 
   // Per-iteration lexical environments for `let`/`const` loop bindings.
   let mut iter_env_created = false;
-  if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
     if matches!(
       *mode,
       VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -25669,6 +25685,40 @@ fn async_for_await_of_handle_iter_value(
       };
       evaluator.env.set_lexical_env(bind_scope.heap_mut(), env);
       iter_env_created = true;
+
+      // Per-iteration environment must contain uninitialized bindings for BoundNames(ForDecl)
+      // *before* evaluating binding initializers, so defaults observe TDZ correctly.
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        &mut bind_scope,
+        env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(bind_scope.heap_mut(), outer_lex);
+
+        let err = coerce_error_to_throw_for_async(evaluator.vm, &mut bind_scope, err);
+        match err {
+          VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+            let completion = completion_from_expr_result(Err(err))?;
+            return async_for_await_of_close(
+              evaluator,
+              &mut bind_scope,
+              v_root,
+              iterator_root,
+              next_method_root,
+              &iterator_record,
+              completion,
+            );
+          }
+          other => {
+            async_for_await_of_cleanup(&mut bind_scope, v_root, iterator_root, next_method_root);
+            return Err(other);
+          }
+        }
+      }
     }
   }
 
@@ -26260,7 +26310,7 @@ fn async_for_of_loop(
     };
 
     let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+    if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
       if matches!(
         *mode,
         VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -26278,6 +26328,26 @@ fn async_for_of_loop(
         };
         evaluator.env.set_lexical_env(scope.heap_mut(), env);
         iter_env_created = true;
+
+        // Per-iteration environment must contain uninitialized bindings for BoundNames(ForDecl)
+        // *before* evaluating binding initializers, so defaults observe TDZ correctly.
+        let mutable = *mode == VarDeclMode::Let;
+        let inst_res = evaluator.instantiate_lexical_names_from_pat(
+          scope,
+          env,
+          &pat_decl.stx.pat.stx,
+          pat_decl.loc,
+          mutable,
+        );
+        if let Err(err) = inst_res {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          let err = {
+            let mut close_scope = scope.reborrow();
+            async_iterator_close_on_error(evaluator, &mut close_scope, &iterator_record, err)
+          };
+          async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+          return Err(err);
+        }
       }
     }
 
