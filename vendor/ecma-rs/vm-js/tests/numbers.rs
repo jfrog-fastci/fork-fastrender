@@ -162,16 +162,20 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
 }
 
 #[test]
-fn number_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primitive() -> Result<(), VmError> {
+fn number_prototype_symbol_to_primitive_exists_and_ignores_ordinary_to_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
     rt.exec_script(
       r#"
-        // Per ES spec / Node.js: Number.prototype does *not* define @@toPrimitive; number wrapper
-        // objects use OrdinaryToPrimitive (valueOf/toString).
-        Number.prototype[Symbol.toPrimitive] === undefined &&
-        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive) === undefined
+        typeof Number.prototype[Symbol.toPrimitive] === "function" &&
+        (function () {
+          const desc = Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive);
+          return desc &&
+            desc.writable === false &&
+            desc.enumerable === false &&
+            desc.configurable === true;
+        })()
       "#,
     )?,
     Value::Bool(true)
@@ -180,13 +184,13 @@ fn number_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primit
   assert_eq!(
     rt.exec_script(
       r#"
-        // OrdinaryToPrimitive with number hint tries valueOf first.
+        // `@@toPrimitive` takes precedence over `valueOf`/`toString` overrides.
         (function () {
           let calls = "";
           const n = new Number(1);
           n.valueOf = function () { calls += "v"; return 2; };
           n.toString = function () { calls += "s"; return "3"; };
-          return Number(n) === 2 && calls === "v";
+          return Number(n) === 1 && String(n) === "1" && calls === "";
         })()
       "#,
     )?,

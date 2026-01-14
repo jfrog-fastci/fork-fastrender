@@ -14,7 +14,7 @@ fn as_utf8_lossy(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn string_prototype_value_of_works_and_symbol_to_primitive_is_undefined() -> Result<(), VmError> {
+fn string_prototype_value_of_works_and_symbol_to_primitive_exists() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
@@ -34,10 +34,30 @@ fn string_prototype_value_of_works_and_symbol_to_primitive_is_undefined() -> Res
   assert_eq!(
     rt.exec_script(
       r#"
-        // Per ES spec / Node.js: String.prototype does *not* define @@toPrimitive; string wrapper
-        // objects use OrdinaryToPrimitive (toString/valueOf).
-        String.prototype[Symbol.toPrimitive] === undefined &&
-        Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive) === undefined
+        typeof String.prototype[Symbol.toPrimitive] === "function" &&
+        (function () {
+          const desc = Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive);
+          return desc &&
+            desc.writable === false &&
+            desc.enumerable === false &&
+            desc.configurable === true;
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        // `@@toPrimitive` takes precedence over `toString`/`valueOf` overrides.
+        (function () {
+          let calls = "";
+          const s = Object("x");
+          s.toString = function () { calls += "s"; return "y"; };
+          s.valueOf = function () { calls += "v"; return "z"; };
+          return String(s) === "x" && calls === "";
+        })()
       "#,
     )?,
     Value::Bool(true)

@@ -51,31 +51,19 @@ fn boolean_prototype_to_string_and_value_of_work() -> Result<(), VmError> {
 }
 
 #[test]
-fn boolean_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primitive() -> Result<(), VmError> {
+fn boolean_prototype_symbol_to_primitive_exists_and_ignores_ordinary_to_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
     rt.exec_script(
       r#"
-        // Per ES spec / Node.js: Boolean.prototype does *not* define @@toPrimitive; boolean wrapper
-        // objects use OrdinaryToPrimitive (toString/valueOf).
-        Boolean.prototype[Symbol.toPrimitive] === undefined &&
-        Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive) === undefined
-      "#,
-    )?,
-    Value::Bool(true)
-  );
-
-  assert_eq!(
-    rt.exec_script(
-      r#"
-        // OrdinaryToPrimitive with string hint tries toString first.
+        typeof Boolean.prototype[Symbol.toPrimitive] === "function" &&
         (function () {
-          let calls = "";
-          const b = new Boolean(true);
-          b.toString = function () { calls += "s"; return "ok"; };
-          b.valueOf = function () { calls += "v"; return true; };
-          return String(b) === "ok" && calls === "s";
+          const desc = Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive);
+          return desc &&
+            desc.writable === false &&
+            desc.enumerable === false &&
+            desc.configurable === true;
         })()
       "#,
     )?,
@@ -85,13 +73,29 @@ fn boolean_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primi
   assert_eq!(
     rt.exec_script(
       r#"
-        // OrdinaryToPrimitive with number hint tries valueOf first.
+        // `@@toPrimitive` takes precedence over `toString`/`valueOf` overrides.
+        (function () {
+          let calls = "";
+          const b = new Boolean(true);
+          b.toString = function () { calls += "s"; return "ok"; };
+          b.valueOf = function () { calls += "v"; return false; };
+          return String(b) === "true" && calls === "";
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        // `@@toPrimitive` takes precedence over `toString`/`valueOf` overrides.
         (function () {
           let calls = "";
           const b = new Boolean(false);
           b.valueOf = function () { calls += "v"; return true; };
-          b.toString = function () { calls += "s"; return "0"; };
-          return Number(b) === 1 && calls === "v";
+          b.toString = function () { calls += "s"; return "1"; };
+          return Number(b) === 0 && calls === "";
         })()
       "#,
     )?,
