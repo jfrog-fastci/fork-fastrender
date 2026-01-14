@@ -3075,7 +3075,7 @@ fn rtl_direction_reverses_subgrid_inline_axis() {
 }
 
 #[test]
-fn subgrid_uses_parent_direction_even_when_local_differs() {
+fn subgrid_uses_local_direction_even_when_parent_differs() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.direction = Direction::Rtl;
@@ -3129,13 +3129,13 @@ fn subgrid_uses_parent_direction_even_when_local_differs() {
   assert_approx(first.bounds.width(), 28.0, "first track width");
   assert_approx(second.bounds.width(), 22.0, "second track width");
   assert!(
-    first.bounds.x() > second.bounds.x(),
-    "direction is inherited from the parent grid"
+    first.bounds.x() < second.bounds.x(),
+    "subgrid layout uses the subgrid's own direction"
   );
   assert_approx(
-    first.bounds.x() - second.bounds.x(),
-    22.0,
-    "tracks remain adjacent in rtl ordering",
+    second.bounds.x() - first.bounds.x(),
+    28.0,
+    "tracks remain adjacent in ltr ordering",
   );
 }
 
@@ -3205,10 +3205,11 @@ fn row_subgrid_respects_local_direction_for_columns() {
 }
 
 #[test]
-fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_horizontal() {
+fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_vertical() {
   let col1 = 20.0;
   let col2 = 30.0;
-  let row = 40.0;
+  let row1 = 40.0;
+  let row2 = 50.0;
   let item = 10.0;
 
   let mut parent_style = ComputedStyle::default();
@@ -3219,22 +3220,23 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_horizontal() {
     GridTrack::Length(Length::px(col1)),
     GridTrack::Length(Length::px(col2)),
   ];
-  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(row1)),
+    GridTrack::Length(Length::px(row2)),
+  ];
   parent_style.width = Some(Length::px(col1 + col2));
-  parent_style.height = Some(Length::px(row));
+  parent_style.height = Some(Length::px(row1 + row2));
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.writing_mode = WritingMode::VerticalRl;
-  // Intentionally differ from the parent so we can assert that column subgrids inherit `direction`
-  // (inline base direction) across a writing-mode mismatch.
-  subgrid_style.direction = Direction::Ltr;
+  subgrid_style.direction = Direction::Rtl;
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_row_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
-  subgrid_style.grid_row_end = 2;
+  subgrid_style.grid_row_end = 3;
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
@@ -3284,35 +3286,45 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_horizontal() {
   );
   assert_approx(
     subgrid_fragment.bounds.height(),
-    row,
+    row1 + row2,
     "subgrid height inherits parent rows",
   );
 
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
 
-  // In horizontal writing mode, `direction: rtl` mirrors the inline axis on physical X. The subgrid
-  // must keep using the parent grid's axes even though its own `writing-mode` is vertical.
-  assert_approx(first.bounds.y(), 0.0, "block-start is top");
-  assert_approx(second.bounds.y(), 0.0, "block-start is top");
+  // The subgrid has a different writing mode than its parent. Subgrid indexing rules use the
+  // subgrid's own axes, so here its inline axis is vertical. With `direction: rtl` that means the
+  // inline-start edge is at the bottom (physical Y).
   assert_approx(
     first.bounds.x(),
     col1 + col2 - item,
-    "column 1 aligns to inline-start (right) in rtl",
+    "block-start is right in vertical-rl",
   );
   assert_approx(
     second.bounds.x(),
-    col2 - item,
-    "column 2 aligns to its inline-start (right edge) in rtl",
+    col1 + col2 - item,
+    "block-start is right in vertical-rl",
   );
-  assert!(first.bounds.x() > second.bounds.x(), "rtl mirrors column ordering");
+  assert_approx(
+    first.bounds.y(),
+    row1 + row2 - item,
+    "column 1 aligns to inline-start (bottom) in rtl vertical mode",
+  );
+  assert_approx(
+    second.bounds.y(),
+    row1 - item,
+    "column 2 aligns just above column 1",
+  );
+  assert!(first.bounds.y() > second.bounds.y(), "rtl mirrors column ordering on the Y axis");
 }
 
 #[test]
-fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
+fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_horizontal() {
   let col1 = 20.0;
   let col2 = 30.0;
-  let row = 40.0;
+  let row1 = 40.0;
+  let row2 = 50.0;
   let item = 10.0;
 
   let mut parent_style = ComputedStyle::default();
@@ -3323,22 +3335,23 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
     GridTrack::Length(Length::px(col1)),
     GridTrack::Length(Length::px(col2)),
   ];
-  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
-  parent_style.width = Some(Length::px(row));
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(row1)),
+    GridTrack::Length(Length::px(row2)),
+  ];
+  parent_style.width = Some(Length::px(row1 + row2));
   parent_style.height = Some(Length::px(col1 + col2));
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.writing_mode = WritingMode::HorizontalTb;
-  // Intentionally differ from the parent so we can assert that column subgrids inherit `direction`
-  // (inline base direction) across a writing-mode mismatch.
-  subgrid_style.direction = Direction::Ltr;
+  subgrid_style.direction = Direction::Rtl;
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_row_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
-  subgrid_style.grid_row_end = 2;
+  subgrid_style.grid_row_end = 3;
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
@@ -3383,8 +3396,8 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
     subgrid_fragment.bounds.width(),
-    row,
-    "subgrid width uses parent's vertical-mode row track",
+    row1 + row2,
+    "subgrid width uses parent's vertical-mode row tracks",
   );
   assert_approx(
     subgrid_fragment.bounds.height(),
@@ -3395,21 +3408,22 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
 
-  // In vertical writing modes, `direction: rtl` mirrors the inline axis on physical Y. The subgrid
-  // must keep using the parent grid's axes even though its own `writing-mode` is horizontal.
-  assert_approx(first.bounds.x(), row - item, "block-start is right in vertical-rl");
-  assert_approx(second.bounds.x(), row - item, "block-start is right in vertical-rl");
+  // Here the subgrid flips back to horizontal writing mode, so its inline axis is physical X.
+  // `direction: rtl` must therefore mirror the column ordering on physical X even though its parent
+  // has a vertical inline axis.
+  assert_approx(first.bounds.y(), 0.0, "block-start is top in horizontal writing mode");
+  assert_approx(second.bounds.y(), 0.0, "block-start is top in horizontal writing mode");
   assert_approx(
-    first.bounds.y(),
-    col1 + col2 - item,
-    "column 1 aligns to inline-start (bottom) in rtl vertical mode",
+    first.bounds.x(),
+    row1 + row2 - item,
+    "column 1 aligns to inline-start (right) in rtl horizontal mode",
   );
   assert_approx(
-    second.bounds.y(),
-    col2 - item,
-    "column 2 aligns just above column 1",
+    second.bounds.x(),
+    row2 - item,
+    "column 2 aligns just left of column 1",
   );
-  assert!(first.bounds.y() > second.bounds.y(), "rtl mirrors column ordering");
+  assert!(first.bounds.x() > second.bounds.x(), "rtl mirrors column ordering on the X axis");
 }
 
 // Per CSS Writing Modes, `direction` affects the inline base direction even when the inline axis is
