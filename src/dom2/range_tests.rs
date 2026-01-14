@@ -644,6 +644,67 @@ fn live_range_pre_insert_translates_raw_index_when_parent_has_shadow_root_pseudo
 }
 
 #[test]
+fn live_range_replace_child_runs_insert_steps_for_single_node_replacement() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  // Place the replaced child at index 0 so a missing pre-insert update would leave a visible
+  // `-1` offset shift for ranges after it.
+  let old_child = doc.create_element("old", "");
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  doc.append_child(parent, old_child).unwrap();
+  doc.append_child(parent, a).unwrap();
+  doc.append_child(parent, b).unwrap();
+
+  // Boundary point after all children.
+  let range = doc.create_range();
+  doc.range_set_start(range, parent, 3).unwrap();
+  doc.range_set_end(range, parent, 3).unwrap();
+
+  let replacement = doc.create_element("x", "");
+  assert!(doc.replace_child(parent, replacement, old_child).unwrap());
+
+  // 1-for-1 replacement should leave the boundary point after all children unchanged.
+  assert_range_collapsed(&doc, range, parent, 3);
+}
+
+#[test]
+fn live_range_replace_child_runs_insert_steps_for_fragment_replacement() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  // Place the replaced child at index 0 to make the combined pre-remove + pre-insert offset delta
+  // easy to reason about.
+  let old_child = doc.create_element("old", "");
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  doc.append_child(parent, old_child).unwrap();
+  doc.append_child(parent, a).unwrap();
+  doc.append_child(parent, b).unwrap();
+
+  // Boundary point after all children.
+  let range = doc.create_range();
+  doc.range_set_start(range, parent, 3).unwrap();
+  doc.range_set_end(range, parent, 3).unwrap();
+
+  let frag = doc.create_document_fragment();
+  let x = doc.create_element("x", "");
+  let y = doc.create_element("y", "");
+  doc.append_child(frag, x).unwrap();
+  doc.append_child(frag, y).unwrap();
+
+  assert!(doc.replace_child(parent, frag, old_child).unwrap());
+
+  // Replacing 1 node with 2 nodes increases boundary offsets after the replacement position by 1.
+  assert_range_collapsed(&doc, range, parent, 4);
+}
+
+#[test]
 fn range_offsets_ignore_shadow_root_pseudo_child() {
   let html = concat!(
     "<!doctype html>",
