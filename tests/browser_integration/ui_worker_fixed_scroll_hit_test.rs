@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::{
   CursorKind, NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
@@ -10,8 +9,8 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use super::support::{
-  create_tab_msg, navigate_msg, pointer_down, pointer_move, pointer_up, rgba_at, scroll_msg,
-  viewport_changed_msg, wait_for_frame_and_scroll_state_updated, TempSite,
+  create_tab_msg, drain_for, navigate_msg, pointer_down, pointer_move, pointer_up, rgba_at,
+  scroll_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated, TempSite,
 };
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
@@ -168,9 +167,10 @@ fn click_fixed_link_after_scroll_hits_link() {
     "expected pixel to be red before scroll, got rgba={px_before_scroll:?}"
   );
 
-  // Drain any follow-up navigation messages so the scroll assertions below only observe the scroll
-  // interaction.
-  while ui_rx.try_recv().is_ok() {}
+  // Older worker versions could emit an initial `ScrollStateUpdated` after navigation, but the
+  // protocol no longer guarantees this. Drain briefly so later waits observe the scroll state
+  // produced by the scroll message below (without hanging if no such update is sent).
+  let _ = drain_for(&ui_rx, Duration::from_millis(200));
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))
