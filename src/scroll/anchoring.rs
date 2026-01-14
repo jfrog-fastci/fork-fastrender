@@ -42,14 +42,6 @@ pub struct ScrollAnchorSnapshot {
   pub elements: HashMap<usize, ScrollAnchor>,
 }
 
-fn point_add(a: Point, b: Point) -> Point {
-  Point::new(a.x + b.x, a.y + b.y)
-}
-
-fn point_sub(a: Point, b: Point) -> Point {
-  Point::new(a.x - b.x, a.y - b.y)
-}
-
 fn sanitize_point(p: Point) -> Point {
   Point::new(
     if p.x.is_finite() { p.x.max(0.0) } else { 0.0 },
@@ -87,6 +79,40 @@ fn axis_signs_for_scroll_state(writing_mode: WritingMode, direction: Direction) 
     if x_positive { 1.0 } else { -1.0 },
     if y_positive { 1.0 } else { -1.0 },
   )
+}
+
+fn point_is_finite(p: Point) -> bool {
+  p.x.is_finite() && p.y.is_finite()
+}
+
+fn rect_is_finite(rect: Rect) -> bool {
+  point_is_finite(rect.origin) && rect.size.width.is_finite() && rect.size.height.is_finite()
+}
+
+fn checked_point_add(a: Point, b: Point) -> Option<Point> {
+  let x = a.x + b.x;
+  let y = a.y + b.y;
+  (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
+}
+
+fn checked_point_sub(a: Point, b: Point) -> Option<Point> {
+  let x = a.x - b.x;
+  let y = a.y - b.y;
+  (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
+}
+
+fn checked_translate(origin: Point, delta: Point) -> Option<Point> {
+  checked_point_add(origin, delta)
+}
+
+fn checked_rect_for_node(origin: Point, node: &FragmentNode) -> Option<Rect> {
+  let width = node.bounds.width();
+  let height = node.bounds.height();
+  if point_is_finite(origin) && width.is_finite() && height.is_finite() {
+    Some(Rect::from_xywh(origin.x, origin.y, width, height))
+  } else {
+    None
+  }
 }
 
 fn approx_eq_point(a: Point, b: Point, epsilon: f32) -> bool {
@@ -136,6 +162,10 @@ fn select_anchor_in_subtree(
   start_origin: Point,
   include_root: bool,
 ) -> Option<ScrollAnchor> {
+  if !point_is_finite(start_origin) || !rect_is_finite(scrollport) {
+    return None;
+  }
+
   #[derive(Clone, Copy)]
   struct Frame<'a> {
     node: &'a FragmentNode,
@@ -156,18 +186,14 @@ fn select_anchor_in_subtree(
   while let Some(frame) = stack.last_mut() {
     if frame.next_child == 0 {
       if frame.consider && !frame.excluded && fragment_is_anchor_candidate(frame.node) {
-        let rect = Rect::from_xywh(
-          frame.origin.x,
-          frame.origin.y,
-          frame.node.bounds.width(),
-          frame.node.bounds.height(),
-        );
-        if rect.intersects(scrollport) {
-          if let Some(box_id) = frame.node.box_id() {
-            return Some(ScrollAnchor {
-              box_id,
-              origin: frame.origin,
-            });
+        if let Some(rect) = checked_rect_for_node(frame.origin, frame.node) {
+          if rect.intersects(scrollport) {
+            if let Some(box_id) = frame.node.box_id() {
+              return Some(ScrollAnchor {
+                box_id,
+                origin: frame.origin,
+              });
+            }
           }
         }
       }
@@ -183,7 +209,11 @@ fn select_anchor_in_subtree(
       let idx = frame.next_child;
       frame.next_child += 1;
       let child = &frame.node.children[idx];
-      let origin = Point::new(frame.origin.x + child.bounds.x(), frame.origin.y + child.bounds.y());
+      let Some(origin) =
+        checked_translate(frame.origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
       stack.push(Frame {
         node: child,
         origin,
@@ -205,6 +235,10 @@ fn find_anchor_origin_in_subtree(
   start_origin: Point,
   include_root: bool,
 ) -> Option<Point> {
+  if !point_is_finite(start_origin) {
+    return None;
+  }
+
   #[derive(Clone, Copy)]
   struct Frame<'a> {
     node: &'a FragmentNode,
@@ -247,7 +281,11 @@ fn find_anchor_origin_in_subtree(
       let idx = frame.next_child;
       frame.next_child += 1;
       let child = &frame.node.children[idx];
-      let origin = Point::new(frame.origin.x + child.bounds.x(), frame.origin.y + child.bounds.y());
+      let Some(origin) =
+        checked_translate(frame.origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
       stack.push(Frame {
         node: child,
         origin,
@@ -341,6 +379,10 @@ fn best_anchor_for_box_id_in_subtree(
   include_root: bool,
   target_point: Option<Point>,
 ) -> Option<(Point, f32)> {
+  if !point_is_finite(start_origin) || !rect_is_finite(scrollport) {
+    return None;
+  }
+
   #[derive(Clone, Copy)]
   struct Frame<'a> {
     node: &'a FragmentNode,
@@ -366,23 +408,27 @@ fn best_anchor_for_box_id_in_subtree(
       && frame.node.box_id() == Some(box_id)
       && fragment_is_anchor_candidate(frame.node)
     {
-      let rect = Rect::from_xywh(
-        frame.origin.x,
-        frame.origin.y,
-        frame.node.bounds.width(),
-        frame.node.bounds.height(),
-      );
-      if rect.intersects(scrollport) {
-        let score = target_point.map_or(0.0, |p| score_origin_relative_to_point(frame.origin, rect, p));
-        let replace = match best {
-          None => true,
-          Some((_, best_score)) => score < best_score,
-        };
-        if replace {
-          best = Some((frame.origin, score));
-          if score == 0.0 {
-            // We found a fragment that actually contains the probe point; this is as good as it gets.
-            // Continue scanning so we keep deterministic traversal order for ties.
+      if let Some(rect) = checked_rect_for_node(frame.origin, frame.node) {
+        if rect.intersects(scrollport) {
+          let score = target_point.map_or(0.0, |p| {
+            score_origin_relative_to_point(frame.origin, rect, p)
+          });
+          if !score.is_finite() {
+            // Ignore non-finite scores rather than letting NaN poison comparisons.
+            // This can happen when upstream layout produces non-finite geometry.
+            // Suppress this candidate and keep scanning.
+          } else {
+            let replace = match best {
+              None => true,
+              Some((_, best_score)) => score < best_score,
+            };
+            if replace {
+              best = Some((frame.origin, score));
+              if score == 0.0 {
+                // We found a fragment that actually contains the probe point; this is as good as it gets.
+                // Continue scanning so we keep deterministic traversal order for ties.
+              }
+            }
           }
         }
       }
@@ -397,7 +443,11 @@ fn best_anchor_for_box_id_in_subtree(
       let idx = frame.next_child;
       frame.next_child += 1;
       let child = &frame.node.children[idx];
-      let origin = Point::new(frame.origin.x + child.bounds.x(), frame.origin.y + child.bounds.y());
+      let Some(origin) =
+        checked_translate(frame.origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
       stack.push(Frame {
         node: child,
         origin,
@@ -422,6 +472,10 @@ fn viewport_anchor_for_box_id(
   // Walk the main fragment root only; additional fragment roots represent viewport-fixed layers and
   // do not participate in viewport scroll anchoring.
   let root_origin = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
+  if !point_is_finite(root_origin) {
+    return None;
+  }
+  let target_point = target_point.filter(|p| point_is_finite(*p));
   let best = best_anchor_for_box_id_in_subtree(
     &tree.root,
     box_id,
@@ -441,7 +495,10 @@ fn viewport_anchor_for_point(
   scrollport: Rect,
   point: Point,
 ) -> Option<ScrollAnchor> {
-  if !point.x.is_finite() || !point.y.is_finite() || !scrollport.contains_point(point) {
+  if !rect_is_finite(scrollport)
+    || !point_is_finite(point)
+    || !scrollport.contains_point(point)
+  {
     return None;
   }
 
@@ -458,6 +515,9 @@ fn viewport_anchor_for_point(
   }
   let mut parent_origin = Point::ZERO;
   let mut current_bounds = current.bounds.translate(parent_origin);
+  if !point_is_finite(current_bounds.origin) {
+    return None;
+  }
   let mut best = current
     .box_id()
     .filter(|_| fragment_is_anchor_candidate(current))
@@ -473,6 +533,9 @@ fn viewport_anchor_for_point(
       return None;
     }
     current_bounds = current.bounds.translate(parent_origin);
+    if !point_is_finite(current_bounds.origin) {
+      return None;
+    }
     if let Some(id) = current.box_id() {
       if fragment_is_anchor_candidate(current) {
         best = Some((id, current_bounds.origin));
@@ -490,9 +553,15 @@ fn select_element_anchor(
 ) -> Option<ScrollAnchor> {
   let container = find_fragment_by_box_id(tree, container_box_id)?;
   let scrollport = element_scrollport(container, scroll);
+  if !rect_is_finite(scrollport) {
+    return None;
+  }
   // Container local coordinates start at (0,0) for its children.
   for child in &container.children {
     let origin = Point::new(child.bounds.x(), child.bounds.y());
+    if !point_is_finite(origin) {
+      continue;
+    }
     if let Some(anchor) = select_anchor_in_subtree(child, scrollport, origin, true) {
       // Adjust origin to be relative to the container.
       return Some(ScrollAnchor {
@@ -539,12 +608,19 @@ fn apply_one_adjustment(
   writing_mode: WritingMode,
   direction: Direction,
 ) -> Point {
-  let delta = point_sub(new_anchor_origin, prev_anchor.origin);
+  // Both `current_scroll` and the anchor positions originate from layout and can be polluted by
+  // upstream NaN/±inf geometry. Treat any non-finite intermediate as a signal to suppress scroll
+  // anchoring for this container (i.e. 0 adjustment).
+  let current_scroll = sanitize_point(current_scroll);
+  let Some(delta) = checked_point_sub(new_anchor_origin, prev_anchor.origin) else {
+    return current_scroll;
+  };
   let (x_sign, y_sign) = axis_signs_for_scroll_state(writing_mode, direction);
-  sanitize_point(point_add(
-    current_scroll,
-    Point::new(x_sign * delta.x, y_sign * delta.y),
-  ))
+  let signed_delta = Point::new(x_sign * delta.x, y_sign * delta.y);
+  let Some(adjusted) = checked_point_add(current_scroll, signed_delta) else {
+    return current_scroll;
+  };
+  sanitize_point(adjusted)
 }
 
 /// Apply scroll anchoring adjustments to a scroll state given anchors captured from the previous
@@ -559,12 +635,20 @@ pub fn apply_scroll_anchoring(
   scroll: &ScrollState,
 ) -> (ScrollState, ScrollAnchorSnapshot) {
   let mut next_scroll = scroll.clone();
+  next_scroll.viewport = sanitize_point(next_scroll.viewport);
+  next_scroll.viewport_delta = sanitize_point(next_scroll.viewport_delta);
+  for offset in next_scroll.elements.values_mut() {
+    *offset = sanitize_point(*offset);
+  }
+  for delta in next_scroll.elements_delta.values_mut() {
+    *delta = sanitize_point(*delta);
+  }
   let mut next_snapshot = ScrollAnchorSnapshot::default();
   let (viewport_writing_mode, viewport_direction) =
     writing_mode_and_direction_from_style(new_tree.root.style.as_deref());
 
   // Viewport scroll anchoring.
-  if let Some(prev_anchor) = previous.viewport {
+  if let Some(prev_anchor) = previous.viewport.filter(|a| point_is_finite(a.origin)) {
     let root_origin = Point::new(new_tree.root.bounds.x(), new_tree.root.bounds.y());
     let new_origin = find_anchor_origin_in_subtree(
       &new_tree.root,
@@ -574,7 +658,7 @@ pub fn apply_scroll_anchoring(
     );
     if let Some(new_origin) = new_origin {
       next_scroll.viewport = apply_one_adjustment(
-        sanitize_point(next_scroll.viewport),
+        next_scroll.viewport,
         prev_anchor,
         new_origin,
         viewport_writing_mode,
@@ -586,17 +670,22 @@ pub fn apply_scroll_anchoring(
       });
     } else {
       // Anchor missing/ineligible; no adjustment.
-      next_scroll.viewport = sanitize_point(next_scroll.viewport);
       next_snapshot.viewport = select_viewport_anchor(new_tree, next_scroll.viewport);
     }
   } else {
-    next_scroll.viewport = sanitize_point(next_scroll.viewport);
     next_snapshot.viewport = select_viewport_anchor(new_tree, next_scroll.viewport);
   }
 
   // Element scroll container anchoring.
   for (&container_id, &prev_anchor) in &previous.elements {
-    let current_offset = sanitize_point(next_scroll.elements.get(&container_id).copied().unwrap_or(Point::ZERO));
+    if !point_is_finite(prev_anchor.origin) {
+      continue;
+    }
+    let current_offset = next_scroll
+      .elements
+      .get(&container_id)
+      .copied()
+      .unwrap_or(Point::ZERO);
     let Some(container) = find_fragment_by_box_id(new_tree, container_id) else {
       continue;
     };
@@ -711,6 +800,9 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
   // Mirror paint-time viewport clamping so callers that only flush layout (no paint) still see a
   // stable scroll state.
   next_scroll.viewport = sanitize_point(next_scroll.viewport);
+  for offset in next_scroll.elements.values_mut() {
+    *offset = sanitize_point(*offset);
+  }
   if let Some(bounds) = super::build_scroll_chain(&new_tree.root, scrollport_viewport, &[])
     .first()
     .map(|state| state.bounds)
