@@ -1265,6 +1265,138 @@ fn union_object_string_object_special_case_prefers_string_over_object() {
 }
 
 #[test]
+fn union_record_enum_string_object_special_case_does_not_probe_properties() {
+  let mut rt = VmJsRuntime::new();
+
+  let mut ctx = TypeContext::default();
+  ctx.add_enum("MyEnumForRecordUnion", ["hello", "world"]);
+
+  let enum_ty = IdlType::Named(NamedType {
+    name: "MyEnumForRecordUnion".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+
+  let union_ty = IdlType::Union(vec![
+    IdlType::Record(
+      Box::new(IdlType::String(StringType::DomString)),
+      Box::new(IdlType::Any),
+    ),
+    enum_ty.clone(),
+  ]);
+
+  // Create a String object wrapper.
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  // If the union conversion tried to treat the value as a record/object and enumerate properties,
+  // it would access this enumerable accessor and throw. The special-case (d) must treat String
+  // objects as strings (including enums) when a string member is present.
+  let throwing_getter = rt
+    .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+    .unwrap();
+  let key_value = rt.alloc_string_value("x").unwrap();
+  let Value::String(key) = key_value else {
+    panic!("expected string key");
+  };
+  rt.define_accessor_property(
+    string_obj,
+    PropertyKey::String(key),
+    throwing_getter,
+    Value::Undefined,
+    true,
+  )
+  .unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, enum_ty);
+  assert_eq!(*value, ConvertedValue::Enum("hello".to_string()));
+}
+
+#[test]
+fn union_dictionary_enum_string_object_special_case_does_not_probe_members() {
+  let mut rt = VmJsRuntime::new();
+
+  let mut ctx = TypeContext::default();
+  ctx.add_dictionary(DictionarySchema {
+    name: "TestDictForEnumUnion".to_string(),
+    inherits: None,
+    members: vec![DictionaryMemberSchema {
+      name: "req".to_string(),
+      required: true,
+      ty: IdlType::String(StringType::DomString),
+      default: None,
+    }],
+  });
+  ctx.add_enum("MyEnumForDictUnion", ["hello", "world"]);
+
+  let dict_ty = IdlType::Named(NamedType {
+    name: "TestDictForEnumUnion".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+  let enum_ty = IdlType::Named(NamedType {
+    name: "MyEnumForDictUnion".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+
+  let union_ty = IdlType::Union(vec![dict_ty, enum_ty.clone()]);
+
+  // Create a String object wrapper.
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  // If the union conversion tried to select the dictionary member, it would attempt to read the
+  // required `req` member and trigger this getter.
+  let throwing_getter = rt
+    .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+    .unwrap();
+  let req_key = rt.property_key_from_str("req").unwrap();
+  rt.define_accessor_property(
+    string_obj,
+    req_key,
+    throwing_getter,
+    Value::Undefined,
+    true,
+  )
+  .unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, enum_ty);
+  assert_eq!(*value, ConvertedValue::Enum("hello".to_string()));
+}
+
+#[test]
+fn union_object_enum_string_object_special_case_prefers_enum_over_object() {
+  let mut rt = VmJsRuntime::new();
+
+  let mut ctx = TypeContext::default();
+  ctx.add_enum("MyEnumForObjectUnion", ["hello", "world"]);
+
+  // Without the special-case (d), the union algorithm would pick the `object` branch for a String
+  // object before reaching the string fallback.
+  let enum_ty = IdlType::Named(NamedType {
+    name: "MyEnumForObjectUnion".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+  let union_ty = IdlType::Union(vec![IdlType::Object, enum_ty.clone()]);
+
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, enum_ty);
+  assert_eq!(*value, ConvertedValue::Enum("hello".to_string()));
+}
+
+#[test]
 fn union_sequence_enum_string_object_special_case_does_not_probe_iterator() {
   let mut rt = VmJsRuntime::new();
 
