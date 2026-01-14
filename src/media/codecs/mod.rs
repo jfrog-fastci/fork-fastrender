@@ -105,3 +105,28 @@ pub mod vp9 {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::media::MediaError;
+
+  #[cfg(not(feature = "codec_opus"))]
+  #[test]
+  fn opus_feature_disabled_errors_are_stable() {
+    const MSG: &str =
+      "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)";
+
+    let err = super::opus::OpusHead::parse(&[]).unwrap_err();
+    match err {
+      MediaError::Unsupported(msg) => assert_eq!(msg.as_ref(), MSG),
+      other => panic!("expected MediaError::Unsupported, got {other:?}"),
+    }
+
+    let head = super::opus::OpusHead;
+    let err = super::opus::OpusDecoder::new(&head).unwrap_err();
+    match err {
+      MediaError::Unsupported(msg) => assert_eq!(msg.as_ref(), MSG),
+      other => panic!("expected MediaError::Unsupported, got {other:?}"),
+    }
+  }
+}
