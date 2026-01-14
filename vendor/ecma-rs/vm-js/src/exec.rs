@@ -41876,15 +41876,29 @@ fn gen_eval_assignment_apply_reference(
           };
 
           // Root the reference components so they survive until the next yield boundary.
+          //
+          // Root them together so a GC triggered by root-stack growth cannot collect the
+          // not-yet-pushed entry.
           drop(rhs_scope);
+          let mut roots: Vec<Value> = Vec::new();
+          roots
+            .try_reserve_exact(
+              usize::from(base.is_some())
+                .saturating_add(usize::from(key.is_some()))
+                .saturating_add(usize::from(receiver.is_some())),
+            )
+            .map_err(|_| VmError::OutOfMemory)?;
           if let Some(b) = base {
-            scope.push_root(b)?;
+            roots.push(b);
           }
           if let Some(k) = key {
-            scope.push_root(k)?;
+            roots.push(k);
           }
           if let Some(r) = receiver {
-            scope.push_root(r)?;
+            roots.push(r);
+          }
+          if !roots.is_empty() {
+            scope.push_roots(&roots)?;
           }
 
           gen_frames_push(
@@ -41966,17 +41980,30 @@ fn gen_eval_assignment_apply_reference(
 
           // Root the reference components (and the saved left value) so they survive until the next
           // yield boundary.
+          //
+          // Root them together so a GC triggered by root-stack growth cannot collect the
+          // not-yet-pushed entry.
           drop(op_scope);
+          let mut roots: Vec<Value> = Vec::new();
+          roots
+            .try_reserve_exact(
+              usize::from(base.is_some())
+                .saturating_add(usize::from(key.is_some()))
+                .saturating_add(usize::from(receiver.is_some()))
+                .saturating_add(1), // `left`
+            )
+            .map_err(|_| VmError::OutOfMemory)?;
           if let Some(b) = base {
-            scope.push_root(b)?;
+            roots.push(b);
           }
           if let Some(k) = key {
-            scope.push_root(k)?;
+            roots.push(k);
           }
           if let Some(r) = receiver {
-            scope.push_root(r)?;
+            roots.push(r);
           }
-          scope.push_root(left)?;
+          roots.push(left);
+          scope.push_roots(&roots)?;
 
           gen_frames_push(
             &mut suspend.frames,
@@ -42054,15 +42081,29 @@ fn gen_eval_assignment_apply_reference(
           };
 
           // Root the reference components so they survive until the next yield boundary.
+          //
+          // Root them together so a GC triggered by root-stack growth cannot collect the
+          // not-yet-pushed entry.
           drop(op_scope);
+          let mut roots: Vec<Value> = Vec::new();
+          roots
+            .try_reserve_exact(
+              usize::from(base.is_some())
+                .saturating_add(usize::from(key.is_some()))
+                .saturating_add(usize::from(receiver.is_some())),
+            )
+            .map_err(|_| VmError::OutOfMemory)?;
           if let Some(b) = base {
-            scope.push_root(b)?;
+            roots.push(b);
           }
           if let Some(k) = key {
-            scope.push_root(k)?;
+            roots.push(k);
           }
           if let Some(r) = receiver {
-            scope.push_root(r)?;
+            roots.push(r);
+          }
+          if !roots.is_empty() {
+            scope.push_roots(&roots)?;
           }
  
           gen_frames_push(
