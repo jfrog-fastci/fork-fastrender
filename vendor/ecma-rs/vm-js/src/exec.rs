@@ -4723,10 +4723,17 @@ impl<'a> Evaluator<'a> {
     let home_object = self.home_object.ok_or(VmError::InvariantViolation(
       "super property reference requires an active [[HomeObject]]",
     ))?;
-    // `GetSuperBase` uses `[[HomeObject]].[[Prototype]]`. We intentionally do not eagerly `ToObject`
-    // or throw if the prototype is `null`; `GetValue`/`PutValue` is responsible for the TypeError
-    // when the reference is dereferenced.
-    let proto = scope.object_get_prototype(home_object)?;
+    // `GetSuperBase` uses `[[GetPrototypeOf]]([[HomeObject]])`. We intentionally do not eagerly
+    // `ToObject` or throw if the prototype is `null`; `GetValue`/`PutValue` is responsible for the
+    // TypeError when the reference is dereferenced.
+    //
+    // This must *not* consult the `"__proto__"` property, which is observable/mutable user code.
+    let proto = scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      home_object,
+    )?;
     Ok(match proto {
       Some(p) => Value::Object(p),
       None => Value::Null,
