@@ -144,9 +144,9 @@ impl AudioStreamFactory for CpalStreamFactory {
       // If the user-selected device disappears (hotplug), try to keep the browser usable by
       // switching to the host's default output device instead of immediately failing back to
       // silence.
-      Err(
-        AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed(_),
-      ) if matches!(&self.selector, DeviceSelector::Device(_)) => {
+      Err(AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed { .. })
+        if matches!(&self.selector, DeviceSelector::Device(_)) =>
+      {
         let device = host
           .default_output_device()
           .ok_or(AudioError::NoOutputDevice)?;
