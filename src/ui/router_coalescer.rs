@@ -49,6 +49,17 @@ impl TabPending {
       || self.find_query.is_some()
       || self.request_repaint.is_some()
   }
+
+  fn has_pending_without_ticks(&self) -> bool {
+    self.viewport_changed.is_some()
+      || self.scroll_to.is_some()
+      || self.scroll.is_some()
+      || self.pointer_move.is_some()
+      || self.text_input.is_some()
+      || self.ime_preedit.is_some()
+      || self.find_query.is_some()
+      || self.request_repaint.is_some()
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +110,14 @@ impl UiToWorkerRouterCoalescer {
     self.tabs.values().any(|tab| tab.has_pending())
   }
 
+  fn has_pending_ticks(&self) -> bool {
+    self.tabs.values().any(|tab| tab.tick.is_some())
+  }
+
+  fn has_pending_non_ticks(&self) -> bool {
+    self.tabs.values().any(|tab| tab.has_pending_without_ticks())
+  }
+
   fn next_seq(&mut self) -> u64 {
     let seq = self.next_seq;
     self.next_seq = self.next_seq.wrapping_add(1);
@@ -121,6 +140,10 @@ impl UiToWorkerRouterCoalescer {
         button,
         modifiers,
       } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).pointer_move = Some(Pending {
           seq,
@@ -130,31 +153,53 @@ impl UiToWorkerRouterCoalescer {
             modifiers,
           },
         });
-        Vec::new()
+        out
       }
       UiToWorker::ViewportChanged {
         tab_id,
         viewport_css,
         dpr,
       } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).viewport_changed = Some(Pending {
           seq,
           value: ViewportChanged { viewport_css, dpr },
         });
-        Vec::new()
+        out
       }
       UiToWorker::ScrollTo { tab_id, pos_css } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).scroll_to = Some(Pending { seq, value: pos_css });
-        Vec::new()
+        out
       }
       UiToWorker::Scroll {
         tab_id,
         delta_css,
         pointer_css,
-      } => self.push_scroll(tab_id, delta_css, pointer_css),
+      } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
+        out.extend(self.push_scroll(tab_id, delta_css, pointer_css));
+        out
+      }
       UiToWorker::Tick { tab_id, delta } => {
+        let mut out = Vec::new();
+        if self.has_pending_non_ticks() {
+          // A non-tick message breaks tick coalescing. Flush any pending state (pointer moves,
+          // viewport changes, scroll deltas, etc) so the tick remains ordered relative to other UI
+          // inputs.
+          out = self.flush();
+        }
         let seq = self.next_seq();
         let tab = self.tab_mut(tab_id);
         let delta = delta.min(MAX_COALESCED_TICK_DELTA);
@@ -173,9 +218,13 @@ impl UiToWorkerRouterCoalescer {
             tab.tick = Some(Pending { seq, value: delta });
           }
         }
-        Vec::new()
+        out
       }
       UiToWorker::TextInput { tab_id, text } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         let tab = self.tab_mut(tab_id);
         match tab.text_input.as_mut() {
@@ -187,25 +236,33 @@ impl UiToWorkerRouterCoalescer {
             tab.text_input = Some(Pending { seq, value: text });
           }
         }
-        Vec::new()
+        out
       }
       UiToWorker::ImePreedit {
         tab_id,
         text,
         cursor,
       } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).ime_preedit = Some(Pending {
           seq,
           value: ImePreedit { text, cursor },
         });
-        Vec::new()
+        out
       }
       UiToWorker::FindQuery {
         tab_id,
         query,
         case_sensitive,
       } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).find_query = Some(Pending {
           seq,
@@ -214,15 +271,23 @@ impl UiToWorkerRouterCoalescer {
             case_sensitive,
           },
         });
-        Vec::new()
+        out
       }
       UiToWorker::RequestRepaint { tab_id, reason } => {
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
         let seq = self.next_seq();
         self.tab_mut(tab_id).request_repaint = Some(Pending { seq, value: reason });
-        Vec::new()
+        out
       }
       barrier => {
-        let mut out = self.flush();
+        let mut out = Vec::new();
+        if self.has_pending_ticks() {
+          out = self.flush();
+        }
+        out.extend(self.flush());
         out.push(barrier);
         out
       }
@@ -621,6 +686,45 @@ mod tests {
     assert_eq!(out.len(), 1);
     assert!(
       matches!(out[0], UiToWorker::Tick { tab_id: TabId(1), delta } if delta == MAX_COALESCED_TICK_DELTA)
+    );
+  }
+
+  #[test]
+  fn does_not_coalesce_tick_across_coalescible_messages() {
+    let mut c = UiToWorkerRouterCoalescer::new();
+
+    let out1 = c.push(UiToWorker::Tick {
+      tab_id: TabId(1),
+      delta: Duration::from_millis(5),
+    });
+    assert!(out1.is_empty());
+
+    // PointerMove is coalescible, but it still acts as a barrier for tick coalescing (ticks must
+    // only coalesce when no non-tick messages intervene).
+    let out2 = c.push(pm(TabId(1), 1.0, 2.0));
+    assert_eq!(out2.len(), 1);
+    assert!(
+      matches!(out2[0], UiToWorker::Tick { tab_id: TabId(1), delta } if delta == Duration::from_millis(5))
+    );
+
+    // Sending another tick should flush the pending PointerMove before the tick is stored.
+    let out3 = c.push(UiToWorker::Tick {
+      tab_id: TabId(1),
+      delta: Duration::from_millis(7),
+    });
+    assert_eq!(out3.len(), 1);
+    match &out3[0] {
+      UiToWorker::PointerMove { tab_id, pos_css, .. } => {
+        assert_eq!(*tab_id, TabId(1));
+        assert_eq!(*pos_css, (1.0, 2.0));
+      }
+      other => panic!("expected PointerMove, got {other:?}"),
+    }
+
+    let out4 = c.flush();
+    assert_eq!(out4.len(), 1);
+    assert!(
+      matches!(out4[0], UiToWorker::Tick { tab_id: TabId(1), delta } if delta == Duration::from_millis(7))
     );
   }
 
