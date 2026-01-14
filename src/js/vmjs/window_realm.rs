@@ -49934,29 +49934,35 @@ fn init_window_globals(
   )?;
 
   // document.body
-  let document_body_key = alloc_key(&mut scope, "body")?;
-  let document_body_call_id = vm.register_native_call(document_body_get_native)?;
-  let document_body_name = scope.alloc_string("get body")?;
-  scope.push_root(Value::String(document_body_name))?;
-  let document_body_func =
-    scope.alloc_native_function(document_body_call_id, None, document_body_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    document_body_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(document_body_func))?;
-  scope.define_property(
-    document_obj,
-    document_body_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: true,
-      kind: PropertyKind::Accessor {
-        get: Value::Object(document_body_func),
-        set: Value::Undefined,
+  //
+  // NOTE: When using WebIDL bindings, `Document.prototype.body` already exists and includes a
+  // setter. Defining an own accessor with no setter shadows the WebIDL attribute and breaks
+  // `document.body = ...`.
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let document_body_key = alloc_key(&mut scope, "body")?;
+    let document_body_call_id = vm.register_native_call(document_body_get_native)?;
+    let document_body_name = scope.alloc_string("get body")?;
+    scope.push_root(Value::String(document_body_name))?;
+    let document_body_func =
+      scope.alloc_native_function(document_body_call_id, None, document_body_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      document_body_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(document_body_func))?;
+    scope.define_property(
+      document_obj,
+      document_body_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(document_body_func),
+          set: Value::Undefined,
+        },
       },
-    },
-  )?;
+    )?;
+  }
 
   // document.doctype
   let document_doctype_key = alloc_key(&mut scope, "doctype")?;

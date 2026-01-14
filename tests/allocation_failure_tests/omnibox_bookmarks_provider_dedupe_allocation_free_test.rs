@@ -1,5 +1,7 @@
 use super::{lock_allocator, start_counting, stop_counting};
-use fastrender::ui::{BookmarkStore, BookmarksProvider, OmniboxContext, OmniboxProvider, VisitedUrlStore};
+use fastrender::ui::{
+  BookmarkStore, BookmarksProvider, OmniboxContext, OmniboxProvider, VisitedUrlStore,
+};
 
 #[test]
 fn bookmarks_provider_url_dedupe_does_not_allocate_per_candidate_lowercase() {

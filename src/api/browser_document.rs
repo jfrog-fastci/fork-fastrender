@@ -168,10 +168,6 @@ fn apply_form_control_paint_state(
     }
     FormControlKind::File { value } => {
       *value = form_controls::file_input_display_value(interaction_state, node_id);
-      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
-    }
-    FormControlKind::File { value } => {
-      *value = form_controls::file_input_display_value(interaction_state, node_id);
       control.ime_preedit = None;
     }
     _ => {
@@ -394,7 +390,6 @@ fn focused_text_editable_priority_candidate(
     point: None,
   })
 }
-
 impl BrowserDocument {
   /// Creates a new live document from an HTML string using a fresh renderer.
   pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {

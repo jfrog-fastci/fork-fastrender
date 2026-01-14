@@ -12106,38 +12106,38 @@ mod window_document_tests {
           root.appendChild(a);
           root.appendChild(b);
 
-          const kids = root.children;
-          const nodes = root.childNodes;
+           const kids = root.children;
+           const nodes = root.childNodes;
 
-          if (kids.length !== 2 || nodes.length !== 2) return false;
-          if (kids[0] !== a || kids[1] !== b) return false;
-          if (nodes[0] !== a || nodes[1] !== b) return false;
+           if (kids.length !== 2 || nodes.length !== 2) return false;
+           if (kids[0] !== a || kids[1] !== b) return false;
+           if (nodes[0] !== a || nodes[1] !== b) return false;
 
-          const c = document.createElement('c');
-          root.insertBefore(c, b);
-          if (kids.length !== 3 || nodes.length !== 3) return false;
-          if (kids[1] !== c || kids[2] !== b) return false;
-          if (nodes[1] !== c || nodes[2] !== b) return false;
+           const c = document.createElement('c');
+           root.insertBefore(c, b);
+           if (kids.length !== 3 || nodes.length !== 3) return false;
+           if (kids[1] !== c || kids[2] !== b) return false;
+           if (nodes[1] !== c || nodes[2] !== b) return false;
 
-          const d = document.createElement('d');
-          root.replaceChild(d, c);
-          if (kids.length !== 3 || nodes.length !== 3) return false;
-          if (kids[1] !== d) return false;
-          if (nodes[1] !== d) return false;
+           const d = document.createElement('d');
+           root.replaceChild(d, c);
+           if (kids.length !== 3 || nodes.length !== 3) return false;
+           if (kids[1] !== d) return false;
+           if (nodes[1] !== d) return false;
 
-          b.remove();
-          if (kids.length !== 2 || nodes.length !== 2) return false;
-          if (kids[0] !== a || kids[1] !== d) return false;
-          if (nodes[0] !== a || nodes[1] !== d) return false;
-          if (kids[2] !== undefined) return false;
-          if (nodes[2] !== undefined) return false;
-          if (nodes.item(2) !== null) return false;
+           b.remove();
+           if (kids.length !== 2 || nodes.length !== 2) return false;
+           if (kids[0] !== a || kids[1] !== d) return false;
+           if (nodes[0] !== a || nodes[1] !== d) return false;
+           if (kids[2] !== undefined) return false;
+           if (nodes[2] !== undefined) return false;
+           if (nodes.item(2) !== null) return false;
 
-          root.innerHTML = 't<span id="x"></span>';
-          if (kids.length !== 1) return false;
-          if (kids[0].id !== 'x') return false;
-          if (nodes.length !== 2) return false;
-          if (nodes.item(1).id !== 'x') return false;
+           root.innerHTML = 't<span id="x"></span>';
+           if (kids.length !== 1) return false;
+           if (kids[0].id !== 'x') return false;
+           if (nodes.length !== 2) return false;
+           if (nodes.item(1).id !== 'x') return false;
 
           // Element.append / ParentNode.append can also move nodes across parents; ensure cached
           // `childNodes` NodeLists on the *old* parent are kept live.
@@ -12145,12 +12145,12 @@ mod window_document_tests {
           const p2 = document.createElement('div');
           const x = document.createElement('x');
           p1.appendChild(x);
-          const p1Nodes = p1.childNodes;
-          const p2Nodes = p2.childNodes;
-          p2.append(x);
-          if (p1Nodes.length !== 0) return false;
-          if (p2Nodes.length !== 1) return false;
-          if (p2Nodes[0] !== x) return false;
+           const p1Nodes = p1.childNodes;
+           const p2Nodes = p2.childNodes;
+           p2.append(x);
+           if (p1Nodes.length !== 0) return false;
+           if (p2Nodes.length !== 1) return false;
+           if (p2Nodes[0] !== x) return false;
 
           // `document.body` setter replaces/appends under `documentElement`. Ensure cached collections
           // on the document element stay live.
@@ -12160,22 +12160,30 @@ mod window_document_tests {
           const body1 = document.createElement('body');
           html.appendChild(head);
           html.appendChild(body1);
-          const htmlKids = html.children;
-          const htmlNodes = html.childNodes;
-          if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
-          if (htmlKids[1] !== body1 || htmlNodes[1] !== body1) return false;
+           const htmlKids = html.children;
+           const htmlNodes = html.childNodes;
+           if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
+           if (htmlKids[1] !== body1 || htmlNodes[1] !== body1) return false;
 
-          const body2 = document.createElement('body');
-          document.body = body2;
-          if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
-          if (htmlKids[1] !== body2 || htmlNodes[1] !== body2) return false;
+           const body2 = document.createElement('body');
+           document.body = body2;
+           if (body2.parentNode !== html) return false;
+           if (body1.parentNode !== null) return false;
+           const gotBody = document.body;
+           if (gotBody === body1) return false;
+           if (gotBody === null) return false;
+           if (gotBody !== body2) return false;
+           if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
+           if (htmlKids[1] === body1) return false;
+           if (htmlKids[1] !== body2) return false;
+           if (htmlNodes[1] !== body2) return false;
 
-          return true;
-        } catch (e) {
-          return false;
-        }
-      })()
-      "#,
+           return true;
+         } catch (e) {
+           return false;
+         }
+       })()
+       "#,
     )?;
     assert_eq!(out, Value::Bool(true));
     Ok(())
