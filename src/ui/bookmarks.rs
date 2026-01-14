@@ -468,17 +468,25 @@ impl BookmarkStore {
 
   /// [`Self::remove_by_url`] but also records the mutation as deltas.
   pub fn remove_by_url_with_deltas(&mut self, url: &str, deltas: &mut Vec<BookmarkDelta>) -> usize {
-    if !self.contains_url(url) {
+    let expected = self.url_index.get(url).copied().unwrap_or(0);
+    if expected == 0 {
       return 0;
     }
-    let ids: Vec<BookmarkId> = self
-      .nodes
-      .iter()
-      .filter_map(|(&id, node)| match node {
-        BookmarkNode::Bookmark(bookmark) if bookmark.url == url => Some(id),
-        _ => None,
-      })
-      .collect();
+
+    // The store maintains an O(1) URL membership index (`url_index`). Use it as an upper bound so we
+    // can stop scanning once we've found all matching IDs, avoiding an O(n) traversal in the common
+    // case where the matching bookmarks are clustered early in the tree.
+    let mut ids: Vec<BookmarkId> = Vec::with_capacity(expected);
+    for (&id, node) in self.nodes.iter() {
+      if let BookmarkNode::Bookmark(bookmark) = node {
+        if bookmark.url == url {
+          ids.push(id);
+          if ids.len() == expected {
+            break;
+          }
+        }
+      }
+    }
     let mut removed = 0;
     for id in ids {
       if self.remove_by_id(id) {
@@ -816,17 +824,22 @@ impl BookmarkStore {
   ///
   /// Returns the number of removed bookmarks.
   pub fn remove_by_url(&mut self, url: &str) -> usize {
-    if !self.contains_url(url) {
+    let expected = self.url_index.get(url).copied().unwrap_or(0);
+    if expected == 0 {
       return 0;
     }
-    let ids: Vec<BookmarkId> = self
-      .nodes
-      .iter()
-      .filter_map(|(&id, node)| match node {
-        BookmarkNode::Bookmark(bookmark) if bookmark.url == url => Some(id),
-        _ => None,
-      })
-      .collect();
+
+    let mut ids: Vec<BookmarkId> = Vec::with_capacity(expected);
+    for (&id, node) in self.nodes.iter() {
+      if let BookmarkNode::Bookmark(bookmark) = node {
+        if bookmark.url == url {
+          ids.push(id);
+          if ids.len() == expected {
+            break;
+          }
+        }
+      }
+    }
     let mut removed = 0;
     for id in ids {
       if self.remove_by_id(id) {
