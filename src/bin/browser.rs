@@ -1307,9 +1307,9 @@ fn about_open_tabs_snapshot_from_browser_state(
         .filter(|s| !s.is_empty())
         .map(|title| fastrender::ui::untrusted::sanitize_untrusted_text(title, MAX_TITLE_BYTES))
         .filter(|t| !t.is_empty());
-      let site_key = fastrender::ui::SiteKey::from_url(&url)
-        .ok()
-        .map(|key| key.to_string());
+      // Prefer the cached site key derived from the navigation URL to avoid re-parsing URLs while
+      // building the snapshot (used by `about:processes`).
+      let site_key = tab.renderer_site_key.as_ref().map(|key| key.to_string());
       let renderer_process = tab.renderer_process.map(|id| id.raw());
       let is_active = active_tab_id == Some(tab.id.0);
       OpenTabSnapshot {
