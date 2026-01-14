@@ -14,12 +14,13 @@
     "layout": 7.110253663894772,
     "paint": 71.08488559783369
   },
-  "notes": "Fixture is a WSJ Next.js /not-found 404 (\"Page Not Found\") response, not the real homepage.\nDiff metrics here are not representative of WSJ rendering quality because we’re comparing a minimal error template.",
+  "notes": "Fixture is a WSJ Next.js /not-found (\"Page Not Found\") error template rather than the real homepage.\nFixed `<img width/height=\"100%\">` being mis-parsed as `100px`, which forced a square intrinsic ratio and caused stretched images/layout shifts. Percentage values for HTML dimension attributes are now treated as invalid so we fall back to probing the resource's real intrinsic size (e.g. AVIF metadata). Remaining diffs are mostly minor per-pixel deltas from image decode/text rasterization (perceptual distance ~0.018).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 161527,
-    "diff_percent": 16.8257,
-    "perceptual": 0.0843,
+    "diff_pixels": 127175,
+    "diff_percent": 13.2474,
+    "perceptual": 0.0183,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1014,
       "y": 8,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

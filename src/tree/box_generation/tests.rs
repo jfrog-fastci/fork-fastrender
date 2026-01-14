@@ -227,6 +227,17 @@ fn marker_leading_decimal(marker: &str) -> i32 {
 }
 
 #[test]
+fn html_dimension_attr_rejects_percent_values() {
+  // `width`/`height` content attributes are integers, not percentages. Some real-world pages
+  // incorrectly use percentage values; treat those as invalid so intrinsic sizing can be taken
+  // from the underlying resource.
+  assert_eq!(parse_html_dimension_attr(Some("100%")), None);
+  assert_eq!(parse_html_dimension_attr(Some("100 %")), None);
+  assert_eq!(parse_html_dimension_attr(Some("100px")), Some(100.0));
+  assert_eq!(parse_html_dimension_attr(Some(" 42 ")), Some(42.0));
+}
+
+#[test]
 fn closed_details_without_summary_renders_default_legend_only() {
   let dom = crate::dom::parse_html("<!doctype html><details><div>Content</div></details>")
     .expect("parse");

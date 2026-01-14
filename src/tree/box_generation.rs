@@ -7832,6 +7832,16 @@ fn parse_html_dimension_attr(raw: Option<&str>) -> Option<f32> {
     return None;
   }
 
+  // Some sites incorrectly set these integer attributes to percentage values
+  // (e.g. `width="100%"`). Browsers treat such values as invalid, so ignore them so replaced
+  // elements can fall back to probing the resource's intrinsic dimensions.
+  while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+    i += 1;
+  }
+  if i < bytes.len() && bytes[i] == b'%' {
+    return None;
+  }
+
   Some(value as f32)
 }
 
