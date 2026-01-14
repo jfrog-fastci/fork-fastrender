@@ -1136,8 +1136,15 @@ fn compiled_tagged_template_uses_base_as_this_for_member_call() -> Result<(), Vm
 }
 
 #[test]
-fn compiled_tagged_template_optional_chaining_short_circuits() -> Result<(), VmError> {
-  let result = compile_and_call0(
+fn compiled_tagged_template_optional_chaining_is_syntax_error() -> Result<(), VmError> {
+  // ES2020+ optional chaining does *not* allow tagged template literals as part of the optional
+  // chain (e.g. `obj?.tag\`x\`` is a SyntaxError).
+  //
+  // Node.js: `SyntaxError: Invalid tagged template on optional chain`.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let result = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
     r#"
       function f() {
         let x = 0;
@@ -1145,11 +1152,16 @@ fn compiled_tagged_template_optional_chaining_short_circuits() -> Result<(), VmE
         let r = obj?.tag`a${x++}b`;
         return r === undefined && x === 0;
       }
+      f();
     "#,
-    "f",
-  )?;
-  assert_eq!(result, Value::Bool(true));
-  Ok(())
+  );
+  match result {
+    Err(VmError::Syntax(_)) => Ok(()),
+    Ok(_) => Err(VmError::InvariantViolation(
+      "expected optional-chain tagged template to be a syntax error",
+    )),
+    Err(other) => Err(other),
+  }
 }
 
 #[test]
