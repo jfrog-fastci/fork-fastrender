@@ -1551,6 +1551,14 @@ impl RuntimeEnv {
           current = outer;
         }
 
+        // If the current lexical environment is the variable environment itself, there may be no
+        // dedicated "var-scope lexical env" record yet (for example, during parameter
+        // initialization). In that case, fall back to checking the current lexical env directly so
+        // direct eval `var` declarations still reject collisions with existing bindings.
+        if var_scope_lex.is_none() && self.lexical_env == var_env {
+          var_scope_lex = Some(self.lexical_env);
+        }
+
         if let Some(var_scope_lex) = var_scope_lex {
           if matches!(
             scope.heap().get_env_record(var_scope_lex)?,
@@ -5007,6 +5015,76 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     const PROLOGUE_TICK_EVERY: usize = 32;
 
+    fn pat_contains_expression(pat: &Pat) -> bool {
+      match pat {
+        Pat::Id(_) => false,
+        // Binding patterns should never use this variant, but treat it as containing expressions for
+        // robustness against parse error recovery.
+        Pat::AssignTarget(_) => true,
+        Pat::Arr(arr) => {
+          for elem in &arr.stx.elements {
+            let Some(elem) = elem else {
+              continue;
+            };
+            if elem.default_value.is_some() {
+              return true;
+            }
+            if pat_contains_expression(&elem.target.stx) {
+              return true;
+            }
+          }
+          if let Some(rest) = &arr.stx.rest {
+            if pat_contains_expression(&rest.stx) {
+              return true;
+            }
+          }
+          false
+        }
+        Pat::Obj(obj) => {
+          for prop in &obj.stx.properties {
+            if matches!(&prop.stx.key, ClassOrObjKey::Computed(_)) {
+              return true;
+            }
+            if prop.stx.default_value.is_some() {
+              return true;
+            }
+            if pat_contains_expression(&prop.stx.target.stx) {
+              return true;
+            }
+          }
+          if let Some(rest) = &obj.stx.rest {
+            if pat_contains_expression(&rest.stx) {
+              return true;
+            }
+          }
+          false
+        }
+      }
+    }
+
+    let simple_parameter_list = func.stx.parameters.iter().all(|param| {
+      !param.stx.rest
+        && param.stx.default_value.is_none()
+        && matches!(&*param.stx.pattern.stx.pat.stx, Pat::Id(_))
+    });
+    let has_parameter_expressions = func.stx.parameters.iter().any(|param| {
+      param.stx.default_value.is_some() || pat_contains_expression(&param.stx.pattern.stx.pat.stx)
+    });
+
+    // Functions with default parameter expressions (and other parameter-list expressions like
+    // computed destructuring keys) evaluate their parameter list in a dedicated Environment Record
+    // nested within the function's `var` Environment.
+    //
+    // This matches ECMA-262's `FunctionDeclarationInstantiation` split between `paramEnv` and
+    // `varEnv`, and ensures direct eval `var` declarations are rejected when they collide with
+    // parameter bindings (test262: `eval-var-scope-syntax-err.js`).
+    if has_parameter_expressions {
+      if let VarEnv::Env(var_env) = self.env.var_env() {
+        let param_env = scope.env_create(Some(var_env))?;
+        self.env.set_lexical_env(scope.heap_mut(), param_env);
+      }
+    }
+
     // Pre-create all parameter bindings before evaluating default initializers so identifier
     // references during parameter evaluation observe TDZ semantics.
     let env_rec = self.env.lexical_env;
@@ -5030,7 +5108,8 @@ impl<'a> Evaluator<'a> {
     // Create a minimal `arguments` object for non-arrow functions.
     //
     // test262's harness expects `arguments` to exist and be array-like (`length`, indexed elements).
-    // We do not implement mapped arguments objects yet.
+    // When the function has a simple parameter list and is non-strict, use a mapped arguments
+    // object so `arguments[i]` aliases the corresponding parameter binding (ECMA-262).
     //
     // `arguments` must be created before default parameter initializers run so defaults can read it.
     if !func.stx.arrow
@@ -5078,6 +5157,35 @@ impl<'a> Evaluator<'a> {
         },
       )?;
 
+      let use_mapped_arguments = !self.strict && simple_parameter_list;
+      let mut map_param_index: Vec<bool> = Vec::new();
+      if use_mapped_arguments {
+        // Per spec, when the parameter list contains duplicates, only the last occurrence is
+        // mapped. Build a bool table over parameter indices to reflect that.
+        map_param_index
+          .try_reserve_exact(func.stx.parameters.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        map_param_index.resize(func.stx.parameters.len(), false);
+        let mut mapped_names: HashSet<&str> = HashSet::new();
+        mapped_names
+          .try_reserve(func.stx.parameters.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        for (idx, param) in func.stx.parameters.iter().enumerate().rev() {
+          let Pat::Id(id) = &*param.stx.pattern.stx.pat.stx else {
+            continue;
+          };
+          let name = id.stx.name.as_str();
+          if mapped_names.contains(name) {
+            continue;
+          }
+          mapped_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          mapped_names.insert(name);
+          map_param_index[idx] = true;
+        }
+      }
+
       for (i, v) in args.iter().copied().enumerate() {
         if i % PROLOGUE_TICK_EVERY == 0 {
           self.tick()?;
@@ -5086,7 +5194,70 @@ impl<'a> Evaluator<'a> {
         idx_scope.push_root(v)?;
         let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
         let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
-        idx_scope.define_property(args_obj, key, global_var_desc(v))?;
+        if use_mapped_arguments
+          && i < func.stx.parameters.len()
+          && *map_param_index
+            .get(i)
+            .ok_or(VmError::InvariantViolation(
+              "arguments mapping index out of bounds",
+            ))?
+        {
+          let Pat::Id(id) = &*func.stx.parameters[i].stx.pattern.stx.pat.stx else {
+            return Err(VmError::InvariantViolation(
+              "simple parameter list contains non-identifier pattern",
+            ));
+          };
+
+          let getter_call_id = self.vm.arguments_param_map_getter_call_id()?;
+          let setter_call_id = self.vm.arguments_param_map_setter_call_id()?;
+          let name = idx_scope.alloc_string("")?;
+
+          let param_name_s = idx_scope.alloc_string(id.stx.name.as_str())?;
+          let slots = [Value::String(param_name_s)];
+
+          let getter = idx_scope.alloc_native_function_with_slots_and_env(
+            getter_call_id,
+            None,
+            name,
+            0,
+            &slots,
+            Some(env_rec),
+          )?;
+          idx_scope.push_root(Value::Object(getter))?;
+          let setter = idx_scope.alloc_native_function_with_slots_and_env(
+            setter_call_id,
+            None,
+            name,
+            1,
+            &slots,
+            Some(env_rec),
+          )?;
+          idx_scope.push_root(Value::Object(setter))?;
+
+          for func_obj in [getter, setter] {
+            idx_scope
+              .heap_mut()
+              .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+            idx_scope
+              .heap_mut()
+              .set_function_realm(func_obj, self.env.global_object())?;
+          }
+
+          idx_scope.define_property(
+            args_obj,
+            key,
+            PropertyDescriptor {
+              enumerable: true,
+              configurable: true,
+              kind: PropertyKind::Accessor {
+                get: Value::Object(getter),
+                set: Value::Object(setter),
+              },
+            },
+          )?;
+        } else {
+          idx_scope.define_property(args_obj, key, global_var_desc(v))?;
+        }
       }
 
       // Strict-mode `arguments` objects have poison-pill `callee`/`caller` accessors.
@@ -17653,6 +17824,98 @@ fn async_handle_body_result(
       async_teardown_continuation(scope, cont);
       Err(err)
     }
+  }
+}
+
+pub(crate) fn arguments_param_map_getter_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env = scope
+    .heap()
+    .get_function_closure_env(callee)?
+    .ok_or(VmError::InvariantViolation(
+      "arguments parameter map getter missing closure env",
+    ))?;
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let name_s = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "arguments parameter map getter missing parameter name",
+      ))
+    }
+  };
+
+  match scope.heap().env_get_binding_value_by_gc_string(env, name_s) {
+    Ok(v) => Ok(v),
+    // TDZ sentinel from `Heap::env_get_binding_value`.
+    Err(VmError::Throw(Value::Null)) => {
+      let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+      let msg = crate::fallible_format::try_format_error_message(
+        "Cannot access '",
+        name.as_ref(),
+        "' before initialization",
+      )?;
+      Err(throw_reference_error(vm, scope, &msg)?)
+    }
+    Err(err) => Err(err),
+  }
+}
+
+pub(crate) fn arguments_param_map_setter_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env = scope
+    .heap()
+    .get_function_closure_env(callee)?
+    .ok_or(VmError::InvariantViolation(
+      "arguments parameter map setter missing closure env",
+    ))?;
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let name_s = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "arguments parameter map setter missing parameter name",
+      ))
+    }
+  };
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  match scope
+    .heap_mut()
+    .env_set_mutable_binding_by_gc_string(env, name_s, value, false)
+  {
+    Ok(()) => Ok(Value::Undefined),
+    // TDZ sentinel from `Heap::env_set_mutable_binding`.
+    Err(VmError::Throw(Value::Null)) => {
+      let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+      let msg = crate::fallible_format::try_format_error_message(
+        "Cannot access '",
+        name.as_ref(),
+        "' before initialization",
+      )?;
+      Err(throw_reference_error(vm, scope, &msg)?)
+    }
+    // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
+    Err(VmError::Throw(Value::Undefined)) => Err(throw_type_error(
+      vm,
+      scope,
+      "Assignment to constant variable.",
+    )?),
+    Err(err) => Err(err),
   }
 }
 
@@ -46148,43 +46411,83 @@ pub(crate) fn run_ecma_function(
     this_initialized,
     this_root_idx,
   };
-  evaluator.instantiate_function(scope, func.as_ref(), args)?;
-
-  // Base class instance fields are initialized immediately after `this` is created (before running
-  // the user-defined constructor body).
-  if let Some(class_ctor) = evaluator.class_constructor {
-    if !evaluator.derived_constructor {
-      let Value::Object(this_obj) = evaluator.this else {
-        return Err(VmError::InvariantViolation(
-          "base class constructor `this` is not an object",
-        ));
-      };
-      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
-        evaluator.vm,
-        scope,
-        &mut *evaluator.host,
-        &mut *evaluator.hooks,
-        this_obj,
-        class_ctor,
-      )?;
-    }
-  }
-
   if func.stx.async_ {
     // Async function invocation returns a Promise and executes the body until the first `await`.
+    //
+    // Per ECMA-262, errors during parameter instantiation must reject the Promise (the call must not
+    // throw synchronously).
+    let mut async_scope = scope.reborrow();
     let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
       evaluator.vm,
-      scope,
+      &mut async_scope,
       &mut *evaluator.host,
       &mut *evaluator.hooks,
     )?;
     let promise = cap.promise;
 
-    let body_result = async_start_body(&mut evaluator, scope, &func);
+    // Root the promise and resolving functions while we instantiate parameters and start the body
+    // (both can allocate and trigger GC).
+    if let Err(err) = async_scope.push_roots(&[cap.promise, cap.resolve, cap.reject]) {
+      evaluator.env.teardown(async_scope.heap_mut());
+      return Err(err);
+    }
+
+    if let Err(err) = evaluator.instantiate_function(&mut async_scope, func.as_ref(), args) {
+      // Parameter instantiation failed; reject the returned Promise instead of throwing.
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut async_scope, err);
+      let reason = match err {
+        VmError::Throw(reason) => reason,
+        VmError::ThrowWithStack { value: reason, .. } => reason,
+        other => {
+          evaluator.env.teardown(async_scope.heap_mut());
+          return Err(other);
+        }
+      };
+      let reason = match async_scope.push_root(reason) {
+        Ok(v) => v,
+        Err(err) => {
+          evaluator.env.teardown(async_scope.heap_mut());
+          return Err(err);
+        }
+      };
+      let reject_result = evaluator.vm.call_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut async_scope,
+        &mut *evaluator.hooks,
+        cap.reject,
+        Value::Undefined,
+        &[reason],
+      );
+      evaluator.env.teardown(async_scope.heap_mut());
+      return reject_result.map(|_| (promise, evaluator.this));
+    }
+
+    // Base class instance fields are initialized immediately after `this` is created (before running
+    // the user-defined constructor body).
+    if let Some(class_ctor) = evaluator.class_constructor {
+      if !evaluator.derived_constructor {
+        let Value::Object(this_obj) = evaluator.this else {
+          evaluator.env.teardown(async_scope.heap_mut());
+          return Err(VmError::InvariantViolation(
+            "base class constructor `this` is not an object",
+          ));
+        };
+        crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+          evaluator.vm,
+          &mut async_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          this_obj,
+          class_ctor,
+        )?;
+      }
+    }
+
+    let body_result = async_start_body(&mut evaluator, &mut async_scope, &func);
 
     return match body_result {
       Ok(AsyncBodyResult::CompleteOk(v)) => {
-        let mut call_scope = scope.reborrow();
+        let mut call_scope = async_scope.reborrow();
         if let Err(err) = call_scope.push_roots(&[cap.resolve, v]) {
           evaluator.env.teardown(call_scope.heap_mut());
           return Err(err);
@@ -46201,7 +46504,7 @@ pub(crate) fn run_ecma_function(
         res.map(|_| (promise, evaluator.this))
       }
       Ok(AsyncBodyResult::CompleteThrow(reason)) => {
-        let mut call_scope = scope.reborrow();
+        let mut call_scope = async_scope.reborrow();
         if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
           evaluator.env.teardown(call_scope.heap_mut());
           return Err(err);
@@ -46234,7 +46537,7 @@ pub(crate) fn run_ecma_function(
           .unwrap_or(Value::Undefined);
 
         // Root all GC-managed values while we create persistent roots and schedule the resumption.
-        let mut root_scope = scope.reborrow();
+        let mut root_scope = async_scope.reborrow();
         if let Err(err) = root_scope.push_roots(&[
           promise,
           cap.resolve,
@@ -46477,10 +46780,32 @@ pub(crate) fn run_ecma_function(
         Ok((promise, evaluator.this))
       }
       Err(err) => {
-        evaluator.env.teardown(scope.heap_mut());
+        evaluator.env.teardown(async_scope.heap_mut());
         Err(err)
       }
     };
+  }
+
+  evaluator.instantiate_function(scope, func.as_ref(), args)?;
+
+  // Base class instance fields are initialized immediately after `this` is created (before running
+  // the user-defined constructor body).
+  if let Some(class_ctor) = evaluator.class_constructor {
+    if !evaluator.derived_constructor {
+      let Value::Object(this_obj) = evaluator.this else {
+        return Err(VmError::InvariantViolation(
+          "base class constructor `this` is not an object",
+        ));
+      };
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+        evaluator.vm,
+        scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        this_obj,
+        class_ctor,
+      )?;
+    }
   }
 
   let value = match body {

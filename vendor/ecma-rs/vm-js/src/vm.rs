@@ -512,6 +512,8 @@ pub struct Vm {
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_rejected_call: Option<NativeFunctionId>,
   module_namespace_getter_call: Option<NativeFunctionId>,
+  arguments_param_map_getter_call: Option<NativeFunctionId>,
+  arguments_param_map_setter_call: Option<NativeFunctionId>,
   async_from_sync_iterator_next_call: Option<NativeFunctionId>,
   async_from_sync_iterator_return_call: Option<NativeFunctionId>,
   async_from_sync_iterator_throw_call: Option<NativeFunctionId>,
@@ -798,6 +800,8 @@ impl Vm {
       dynamic_import_eval_on_fulfilled_call: None,
       dynamic_import_eval_on_rejected_call: None,
       module_namespace_getter_call: None,
+      arguments_param_map_getter_call: None,
+      arguments_param_map_setter_call: None,
       async_from_sync_iterator_next_call: None,
       async_from_sync_iterator_return_call: None,
       async_from_sync_iterator_throw_call: None,
@@ -1258,6 +1262,24 @@ impl Vm {
     }
     let id = self.register_native_call(crate::module_graph::module_namespace_getter)?;
     self.module_namespace_getter_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn arguments_param_map_getter_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.arguments_param_map_getter_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::arguments_param_map_getter_call)?;
+    self.arguments_param_map_getter_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn arguments_param_map_setter_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.arguments_param_map_setter_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::arguments_param_map_setter_call)?;
+    self.arguments_param_map_setter_call = Some(id);
     Ok(id)
   }
 

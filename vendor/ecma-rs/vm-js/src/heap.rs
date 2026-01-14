@@ -7868,6 +7868,59 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     binding.value.get(self)
   }
 
+  pub(crate) fn env_set_mutable_binding_by_gc_string(
+    &mut self,
+    env: GcEnv,
+    name: GcString,
+    value: Value,
+    _strict: bool,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(value));
+
+    let idx = {
+      let rec = self.get_declarative_env(env)?;
+      let needle_units = self.get_string(name)?.as_code_units();
+      let mut found: Option<usize> = None;
+      for (idx, binding) in rec.bindings.iter().enumerate() {
+        let Some(binding_name) = binding.name else {
+          continue;
+        };
+        if self.get_string(binding_name)?.as_code_units() == needle_units {
+          found = Some(idx);
+          break;
+        }
+      }
+      found.ok_or(VmError::Unimplemented("unbound identifier"))?
+    };
+
+    let rec = self.get_declarative_env_mut(env)?;
+    let binding = rec
+      .bindings
+      .get_mut(idx)
+      .ok_or(VmError::Unimplemented(
+        "environment record binding index out of bounds",
+      ))?;
+
+    if !binding.initialized {
+      // TDZ sentinel; see `env_get_binding_value`.
+      return Err(VmError::Throw(Value::Null));
+    }
+
+    if !binding.mutable {
+      // const assignment sentinel; see `env_set_mutable_binding`.
+      return Err(VmError::Throw(Value::Undefined));
+    }
+
+    if let EnvBindingValue::Direct(slot) = &mut binding.value {
+      *slot = value;
+      Ok(())
+    } else {
+      Err(VmError::InvariantViolation(
+        "cannot assign through an indirect env binding",
+      ))
+    }
+  }
+
   pub(crate) fn env_set_mutable_binding(
     &mut self,
     env: GcEnv,
