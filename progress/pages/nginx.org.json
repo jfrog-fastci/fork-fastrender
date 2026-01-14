@@ -19,9 +19,9 @@
   "notes": "Visually good. Progress accuracy compares Chrome (system fonts) vs FastRender (bundled fonts); this page uses generic `sans-serif` and is extremely text-dense, so font selection/hinting differences accumulate and inflate diff_percent/SSIM (perceptual) despite matching layout. Minor header `box-shadow` blur falloff differences remain.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 124586,
-    "diff_percent": 12.9777,
-    "perceptual": 0.1684,
+    "diff_pixels": 122186,
+    "diff_percent": 12.7277,
+    "perceptual": 0.1625,
     "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 96,
@@ -41,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
+    "computed_at_commit": "a599cfa9d868c561bdf15a1423223b0d94104351"
   },
   "hotspot": "paint",
   "failure_stage": null,
