@@ -507,33 +507,6 @@ impl<'a> Parser<'a> {
     self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
-
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    self.disallow_arguments_in_class_init = self.disallow_arguments_in_class_init.saturating_add(1);
-    let res = f(self);
-    self.disallow_arguments_in_class_init = self.disallow_arguments_in_class_init.saturating_sub(1);
-    res
-  }
-
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &mut self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 || name != "arguments" {
-      return Ok(());
-    }
-    Err(loc.error(
-      SyntaxErrorType::ExpectedSyntax("`arguments` is not allowed in class field initializers"),
-      None,
-    ))
-  }
   /// Validate an *assignable reference* (simple assignment target), as required by update
   /// expressions (`++x`, `x--`, etc.).
   ///
