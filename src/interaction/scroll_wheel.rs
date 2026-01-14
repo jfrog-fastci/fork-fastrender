@@ -296,6 +296,8 @@ pub fn apply_wheel_scroll_at_point(
   let options = ScrollOptions {
     source: ScrollSource::User,
     simulate_overscroll: false,
+    // Wheel/trackpad events can arrive as a stream of small deltas; defer scroll snapping until
+    // paint time (or an explicit "scroll end" step) rather than snapping every event.
     apply_snap: false,
   };
 
@@ -364,6 +366,8 @@ pub fn apply_wheel_scroll_at_point_prepared(
   let options = ScrollOptions {
     source: ScrollSource::User,
     simulate_overscroll: false,
+    // Wheel/trackpad events can arrive as a stream of small deltas; defer scroll snapping until
+    // paint time (or an explicit "scroll end" step) rather than snapping every event.
     apply_snap: false,
   };
 
