@@ -27695,7 +27695,14 @@ fn async_call_computed_member_after_base(
     )?));
   }
 
-  match async_eval_expr(evaluator, scope, &member.member)? {
+  // Root the base across evaluation of the computed key expression in case it allocates/GCs.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    async_eval_expr(evaluator, &mut member_scope, &member.member)?
+  };
+
+  match member_eval {
     AsyncEval::Complete(member_value) => {
       async_call_computed_member_after_member(evaluator, scope, call, member, base, member_value)
     }
@@ -37347,7 +37354,14 @@ fn gen_call_computed_member_after_base(
     )));
   }
 
-  match gen_eval_expr(evaluator, scope, &member.member)? {
+  // Root the base across evaluation of the computed key expression in case it allocates/GCs.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    gen_eval_expr(evaluator, &mut member_scope, &member.member)?
+  };
+
+  match member_eval {
     GenEval::Complete(c) => match c {
       Completion::Normal(v) => gen_call_computed_member_after_member(
         evaluator,
