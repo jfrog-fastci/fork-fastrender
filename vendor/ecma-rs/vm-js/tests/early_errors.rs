@@ -174,6 +174,15 @@ fn await_expression_in_class_static_block_in_non_async_function_is_syntax_error(
 }
 
 #[test]
+fn for_await_of_in_class_static_block_in_non_async_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function f(){ class C { static { for await (const x of []) {} } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn yield_expression_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
@@ -202,6 +211,27 @@ fn duplicate_private_name_in_class_is_syntax_error() {
 fn private_name_may_not_be_both_static_and_instance_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("class C { #x; static #x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_private_getter_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { get #x(){} get #x(){} }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_private_setter_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { set #x(v){} set #x(v){} }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_getter_and_field_duplicate_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { get #x(){} #x; }").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -240,6 +270,15 @@ fn super_private_member_access_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("class B {} class A extends B { m() { super.#x; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn nested_class_does_not_inherit_private_names_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { #x; m(){ class D { m(){ this.#x; } } } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
@@ -510,6 +549,29 @@ fn strict_mode_postfix_increment_eval_is_syntax_error() {
 }
 
 #[test]
+fn duplicate_class_constructors_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { constructor(){} constructor(){} }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn generator_class_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { *constructor(){} }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_call_in_non_derived_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { constructor(){ super(); } }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn await_as_binding_identifier_in_module_is_syntax_error() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, "let await = 1;").unwrap_err();
@@ -747,6 +809,29 @@ fn for_in_head_let_decl_conflicts_with_body_var_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("for (let x in { a: 1 }) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_of_head_binding_named_let_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (let let of [1]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_in_head_binding_named_let_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (let let in { a: 1 }) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_in_head_duplicate_destructuring_bound_names_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (let [a, a] in { a: 1 }) {}")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
