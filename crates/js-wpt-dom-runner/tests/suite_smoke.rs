@@ -113,7 +113,7 @@ fn suite_smoke_report_classifies_expected_failures() {
   );
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
-  assert_eq!(mismatches.expected, 8, "expected mismatches");
+  assert_eq!(mismatches.expected, 7, "expected mismatches");
   let unexpected: Vec<String> = report
     .results
     .iter()

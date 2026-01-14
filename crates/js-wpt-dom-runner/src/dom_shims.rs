@@ -307,8 +307,10 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLSlotElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
   Object.setPrototypeOf(Comment.prototype, Node.prototype);
-  // Make NodeList-backed collections usable as arrays in the QuickJS shim (so `childNodes` can be
-  // a real JS Array that is also `instanceof NodeList`).
+  // Make NodeList-backed collections _array-like_ in the QuickJS shim. We intentionally do not
+  // use real JS Arrays for NodeLists (e.g. `childNodes`) so `Array.isArray(node.childNodes)` is
+  // false (matching browsers and WPT expectations), but inheriting from Array.prototype makes the
+  // minimal shim easier to work with (e.g. indexOf/slice in internal helpers).
   Object.setPrototypeOf(NodeList.prototype, Array.prototype);
   Object.setPrototypeOf(MutationObserver.prototype, Object.prototype);
   Object.setPrototypeOf(MutationRecord.prototype, Object.prototype);
@@ -373,15 +375,39 @@ const DOM_SHIM: &str = r##"
   NODE_CACHE.set(0, g.document);
 
   function makeChildNodeList() {
-    var arr = [];
-    Object.setPrototypeOf(arr, NodeList.prototype);
-    return arr;
+    var target = Object.create(NodeList.prototype);
+    target[NODELIST_ITEMS] = [];
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (isArrayIndex(prop)) {
+          var items = t[NODELIST_ITEMS];
+          var idx = Number(prop);
+          if (idx < items.length) return items[idx];
+          return undefined;
+        }
+        return Reflect.get(t, prop, recv);
+      },
+      has: function (t, prop) {
+        if (isArrayIndex(prop)) {
+          var items = t[NODELIST_ITEMS];
+          var idx = Number(prop);
+          return idx >= 0 && idx < items.length;
+        }
+        return prop in t;
+      },
+    });
   }
 
   function ensureArray(o, key) {
-    if (!o[key]) {
-      o[key] = key === "childNodes" ? makeChildNodeList() : [];
+    // `childNodes` is represented as a NodeList proxy whose backing store is an internal array.
+    // Most internal DOM shim operations want the mutable backing array.
+    if (key === "childNodes") {
+      if (!o.childNodes) {
+        o.childNodes = makeChildNodeList();
+      }
+      return nodelistItemsFromThis(o.childNodes);
     }
+    if (!o[key]) o[key] = [];
     return o[key];
   }
 
@@ -465,8 +491,8 @@ const DOM_SHIM: &str = r##"
     if (typeof self !== "object" || self === null) {
       throw new TypeError("Illegal invocation");
     }
-    // In the QuickJS shim, some NodeLists (notably `childNodes`) are backed by real JS arrays with
-    // their prototype set to `NodeList.prototype`.
+    // Historical/defensive: some internal helpers may still pass real JS arrays that are meant to
+    // behave like NodeLists.
     if (Array.isArray(self)) return self;
     var items = self[NODELIST_ITEMS];
     if (!items || typeof items.length !== "number") {
@@ -504,6 +530,14 @@ const DOM_SHIM: &str = r##"
           return undefined;
         }
         return Reflect.get(t, prop, recv);
+      },
+      has: function (t, prop) {
+        if (isArrayIndex(prop)) {
+          var items = t[NODELIST_ITEMS];
+          var idx = Number(prop);
+          return idx >= 0 && idx < items.length;
+        }
+        return prop in t;
       },
     });
   }
@@ -3153,16 +3187,16 @@ const DOM_SHIM: &str = r##"
       nodeIdFromThis(this);
       if (this === g.document) return;
       var created = g.__fastrender_dom_set_text_content(nodeIdFromThis(this), String(value));
-      if (!this.childNodes) this.childNodes = makeChildNodeList();
-      for (var i = 0; i < this.childNodes.length; i++) {
-        var n = this.childNodes[i];
+      var nodes = ensureArray(this, "childNodes");
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
         if (n && typeof n === "object") n.parentNode = null;
       }
-      this.childNodes.length = 0;
+      nodes.length = 0;
       if (typeof created === "number") {
         var text = makeNode(Text.prototype, created);
         text.parentNode = this;
-        this.childNodes.push(text);
+        nodes.push(text);
       }
     },
     configurable: true,
@@ -3182,14 +3216,14 @@ const DOM_SHIM: &str = r##"
       "HTML"
     );
     g.document.documentElement.parentNode = g.document;
-    g.document.childNodes.push(g.document.documentElement);
+    ensureArray(g.document, "childNodes").push(g.document.documentElement);
     if (g.document.head) {
       g.document.head.parentNode = g.document.documentElement;
-      g.document.documentElement.childNodes.push(g.document.head);
+      ensureArray(g.document.documentElement, "childNodes").push(g.document.head);
     }
     if (g.document.body) {
       g.document.body.parentNode = g.document.documentElement;
-      g.document.documentElement.childNodes.push(g.document.body);
+      ensureArray(g.document.documentElement, "childNodes").push(g.document.body);
     }
   } else {
     if (g.document.head) g.document.head.parentNode = g.document;
