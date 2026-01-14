@@ -712,3 +712,152 @@ fn generators_optional_chain_computed_member_call_preserves_this_binding_across_
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_optional_member_optional_call_preserves_this_binding_across_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          const r = o?.m?.(yield 1);
+          return r;
+        }
+
+        const obj = {
+          m: function (x) {
+            'use strict';
+            return this === obj && x === 789;
+          }
+        };
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+        const r3 = it.next(789);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_computed_member_optional_call_short_circuits_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          const r = o?.[(yield "m")]?.(yield "should-not-yield-arg");
+          return r === undefined;
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next({});
+        const r3 = it.next("m");
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === "m" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_member_call_evaluates_yield_in_arg_before_throwing_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          try {
+            o?.m(yield 1);
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next({});
+        const r3 = it.next(0);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === "TypeError" && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_member_optional_call_evaluates_yield_in_arg_before_throwing_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          try {
+            o?.m?.(yield 1);
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next({ m: 0 });
+        const r3 = it.next(0);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === "TypeError" && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_call_evaluates_yield_in_arg_before_throwing_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const f = (yield 0);
+          try {
+            f?.(yield 1);
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(0);
+        const r3 = it.next(0);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === "TypeError" && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
