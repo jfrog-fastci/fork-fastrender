@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde::ser::SerializeMap;
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::Path;
@@ -6,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::Value as JsonValue;
 
 const DEFAULT_MAX_TRACE_EVENTS: usize = 200_000;
 const TRACE_MAX_EVENTS_ENV: &str = "FASTR_TRACE_MAX_EVENTS";
@@ -29,7 +30,44 @@ fn cap_trace_string(value: &str) -> String {
   value[..end].to_string()
 }
 
-type TraceArgs = JsonMap<String, JsonValue>;
+#[derive(Clone, Default)]
+struct TraceArgs {
+  entries: Vec<TraceArg>,
+}
+
+#[derive(Clone)]
+struct TraceArg {
+  key: &'static str,
+  value: JsonValue,
+}
+
+impl TraceArgs {
+  fn new() -> Self {
+    // Most events only record a handful of args; pre-allocate a small fixed size to avoid repeated
+    // growth reallocations in hot paths (including audio callbacks).
+    Self {
+      entries: Vec::with_capacity(8),
+    }
+  }
+
+  #[inline]
+  fn insert(&mut self, key: &'static str, value: JsonValue) {
+    self.entries.push(TraceArg { key, value });
+  }
+}
+
+impl Serialize for TraceArgs {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+    for entry in &self.entries {
+      map.serialize_entry(entry.key, &entry.value)?;
+    }
+    map.end()
+  }
+}
 
 fn max_trace_events_from_env() -> Option<usize> {
   let raw = std::env::var_os(TRACE_MAX_EVENTS_ENV)?;
@@ -237,7 +275,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key.to_string(), JsonValue::Number(value.into()));
+    args.insert(key, JsonValue::Number(value.into()));
   }
 
   #[inline]
@@ -246,7 +284,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key.to_string(), JsonValue::Number(value.into()));
+    args.insert(key, JsonValue::Number(value.into()));
   }
 
   #[inline]
@@ -255,7 +293,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key.to_string(), JsonValue::Bool(value));
+    args.insert(key, JsonValue::Bool(value));
   }
 
   #[inline]
@@ -264,7 +302,7 @@ impl TraceSpan {
       return;
     };
     let args = self.args.get_or_insert_with(TraceArgs::new);
-    args.insert(key.to_string(), JsonValue::String(cap_trace_string(value)));
+    args.insert(key, JsonValue::String(cap_trace_string(value)));
   }
 }
 
