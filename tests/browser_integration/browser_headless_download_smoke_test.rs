@@ -14,6 +14,7 @@ fn browser_headless_download_smoke_mode_downloads_into_configured_directory() {
   let download_dir = tempdir().expect("temp download dir");
   let session_dir = tempdir().expect("temp session dir");
   let session_path = session_dir.path().join("session.json");
+  let trace_path = session_dir.path().join("browser_trace.json");
 
   let payload = b"download smoke payload\n";
   let payload_path = site_dir.path().join("payload.bin");
@@ -51,7 +52,13 @@ fn browser_headless_download_smoke_mode_downloads_into_configured_directory() {
     .arg("--headless-download-smoke")
     .arg("--download-dir")
     .arg(download_dir.path())
+    .arg("--trace-out")
+    .arg(&trace_path)
     .arg(page_url)
+    // Avoid inherited env vars overriding the requested path or changing trace retention behavior.
+    .env_remove("FASTR_BROWSER_TRACE_OUT")
+    .env_remove("FASTR_PERF_TRACE_OUT")
+    .env_remove("FASTR_TRACE_MAX_EVENTS")
     // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
     // pool configured.
     .env("RAYON_NUM_THREADS", "1")
@@ -90,5 +97,13 @@ fn browser_headless_download_smoke_mode_downloads_into_configured_directory() {
     "expected no .part file after completion, but {} exists",
     part_path.display()
   );
-}
 
+  let raw = std::fs::read_to_string(&trace_path)
+    .unwrap_or_else(|err| panic!("expected trace file at {}: {err}", trace_path.display()));
+  let parsed: serde_json::Value =
+    serde_json::from_str(&raw).expect("trace JSON should be parseable");
+  assert!(
+    parsed.get("traceEvents").is_some(),
+    "expected traceEvents key, got: {parsed}"
+  );
+}

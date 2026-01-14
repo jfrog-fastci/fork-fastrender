@@ -6,12 +6,20 @@ use std::process::Command;
 fn browser_headless_crash_smoke_mode_runs_and_reports_success() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
+  let dir = tempfile::tempdir().expect("temp dir");
+  let trace_path = dir.path().join("browser_trace.json");
   let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let output = Command::new("bash")
     .arg(run_limited)
     .args(["--as", "64G", "--"])
     .arg(env!("CARGO_BIN_EXE_browser"))
     .arg("--headless-crash-smoke")
+    .arg("--trace-out")
+    .arg(&trace_path)
+    // Avoid inherited env vars overriding the requested path or changing trace retention behavior.
+    .env_remove("FASTR_BROWSER_TRACE_OUT")
+    .env_remove("FASTR_PERF_TRACE_OUT")
+    .env_remove("FASTR_TRACE_MAX_EVENTS")
     // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
     // pool configured.
     .env("RAYON_NUM_THREADS", "1")
@@ -30,5 +38,14 @@ fn browser_headless_crash_smoke_mode_runs_and_reports_success() {
   assert!(
     stdout.contains("HEADLESS_CRASH_SMOKE_OK"),
     "expected headless crash smoke success marker, got stdout:\n{stdout}"
+  );
+
+  let raw = std::fs::read_to_string(&trace_path)
+    .unwrap_or_else(|err| panic!("expected trace file at {}: {err}", trace_path.display()));
+  let parsed: serde_json::Value =
+    serde_json::from_str(&raw).expect("trace JSON should be parseable");
+  assert!(
+    parsed.get("traceEvents").is_some(),
+    "expected traceEvents key, got: {parsed}"
   );
 }
