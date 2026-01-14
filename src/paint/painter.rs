@@ -10647,6 +10647,14 @@ impl Painter {
           );
         }
 
+        let mut scroll_x = box_id
+          .map(|id| self.scroll_state.element_offset(id).x)
+          .unwrap_or(0.0);
+        if !scroll_x.is_finite() {
+          scroll_x = 0.0;
+        }
+        scroll_x = scroll_x.max(0.0);
+
         let metrics_scaled = self.resolve_scaled_metrics(&text_style);
         let line_height = compute_line_height_with_metrics_viewport(
           &text_style,
@@ -10709,7 +10717,15 @@ impl Painter {
           } else {
             fallback_advance
           };
-          let start_x = Self::aligned_text_start_x(&text_style, rect, total_advance);
+          let max_scroll_x = if total_advance.is_finite() && rect.width().is_finite() {
+            (total_advance - rect.width()).max(0.0)
+          } else {
+            0.0
+          };
+          if max_scroll_x.is_finite() {
+            scroll_x = scroll_x.clamp(0.0, max_scroll_x);
+          }
+          let start_x = Self::aligned_text_start_x(&text_style, rect, total_advance) - scroll_x;
           let max_chars = display_text.chars().count();
           let fallback_char_advance = if max_chars > 0 {
             (fallback_advance / max_chars as f32).max(0.0)
@@ -10799,9 +10815,12 @@ impl Painter {
             } else {
               *caret_affinity
             };
-            let caret_x = start_x
+            let mut caret_x = start_x
               + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
                 .unwrap_or(0.0);
+            if !caret_x.is_finite() {
+              caret_x = rect.x();
+            }
             let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
             let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
@@ -10820,7 +10839,12 @@ impl Painter {
         }
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            let _ = self.paint_alt_text_raw(text, &text_style, centered_rect, clip_mask);
+            let _ = self.paint_alt_text_raw(
+              text,
+              &text_style,
+              centered_rect.translate(Point::new(-scroll_x, 0.0)),
+              clip_mask,
+            );
           }
         }
         if affordance_space > 0.0 {

@@ -14011,6 +14011,15 @@ impl DisplayListBuilder {
           affordance_rect = Some(affordance);
         }
 
+        let mut scroll_x = fragment
+          .box_id()
+          .map(|id| self.scroll_state.element_offset(id).x)
+          .unwrap_or(0.0);
+        if !scroll_x.is_finite() {
+          scroll_x = 0.0;
+        }
+        scroll_x = scroll_x.max(0.0);
+
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
         let line_height = compute_line_height_with_metrics_viewport(
@@ -14081,7 +14090,15 @@ impl DisplayListBuilder {
           } else {
             fallback_advance
           };
-          let start_x = Self::aligned_text_start_x(&text_style, text_rect, total_advance);
+          let max_scroll_x = if total_advance.is_finite() && text_rect.width().is_finite() {
+            (total_advance - text_rect.width()).max(0.0)
+          } else {
+            0.0
+          };
+          if max_scroll_x.is_finite() {
+            scroll_x = scroll_x.clamp(0.0, max_scroll_x);
+          }
+          let start_x = Self::aligned_text_start_x(&text_style, text_rect, total_advance) - scroll_x;
           let max_chars = display_text.chars().count();
           let fallback_char_advance = if max_chars > 0 {
             (fallback_advance / max_chars as f32).max(0.0)
@@ -14172,9 +14189,12 @@ impl DisplayListBuilder {
             } else {
               *caret_affinity
             };
-            let caret_x = start_x
+            let mut caret_x = start_x
               + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
                 .unwrap_or(0.0);
+            if !caret_x.is_finite() {
+              caret_x = text_rect.x();
+            }
             let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
             let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
@@ -14196,7 +14216,11 @@ impl DisplayListBuilder {
         }
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            let _ = self.emit_text_with_style_raw(text, Some(&text_style), centered_text_rect);
+            let _ = self.emit_text_with_style_raw(
+              text,
+              Some(&text_style),
+              centered_text_rect.translate(Point::new(-scroll_x, 0.0)),
+            );
           }
         }
         if let Some(affordance_rect) = affordance_rect {
