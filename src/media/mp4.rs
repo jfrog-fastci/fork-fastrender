@@ -674,7 +674,13 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
   let mut dts_ticks: i64 = 0;
   let mut min_pts_ticks: i64 = i64::MAX;
 
+  let mut deadline_counter = 0usize;
   for _ in 0..sample_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let dur = stts_iter
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
@@ -979,7 +985,10 @@ impl<'a> Cursor<'a> {
     if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4Error::UnexpectedEof)?;
     let arr: [u8; 2] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
     self.pos = end_pos;
     Ok(u16::from_be_bytes(arr))
@@ -990,7 +999,10 @@ impl<'a> Cursor<'a> {
     if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4Error::UnexpectedEof)?;
     let arr: [u8; 4] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
     self.pos = end_pos;
     Ok(u32::from_be_bytes(arr))
@@ -1001,7 +1013,10 @@ impl<'a> Cursor<'a> {
     if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4Error::UnexpectedEof)?;
     let arr: [u8; 8] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
     self.pos = end_pos;
     Ok(u64::from_be_bytes(arr))
@@ -1062,7 +1077,9 @@ fn next_box(cur: &mut Cursor<'_>, end: usize) -> Result<Option<BoxRef>> {
   }
 
   let size_usize = usize::try_from(size).map_err(|_| Mp4Error::InvalidBoxSize)?;
-  let box_end = start.checked_add(size_usize).ok_or(Mp4Error::InvalidBoxSize)?;
+  let box_end = start
+    .checked_add(size_usize)
+    .ok_or(Mp4Error::InvalidBoxSize)?;
   if box_end > end {
     return Err(Mp4Error::InvalidBoxSize);
   }
@@ -1429,7 +1446,17 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(stts.end)? as usize;
+  let entry_count = cur.read_u32(stts.end)?;
+  let remaining_bytes = stts.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("stts entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1458,7 +1485,17 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(ctts.end)? as usize;
+  let entry_count = cur.read_u32(ctts.end)?;
+  let remaining_bytes = ctts.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("ctts entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1491,7 +1528,17 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(stsc.end)? as usize;
+  let entry_count = cur.read_u32(stsc.end)?;
+  let remaining_bytes = stsc.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 12;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("stsc entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1526,10 +1573,23 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
 
   let sample_size = cur.read_u32(stsz.end)?;
   let sample_count = cur.read_u32(stsz.end)?;
+  if u64::from(sample_count) > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::TooManySamples {
+      sample_count: u64::from(sample_count),
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
 
   let mut sample_sizes = Vec::new();
   if sample_size == 0 {
-    sample_sizes = Vec::with_capacity(sample_count as usize);
+    let sample_count_usize = sample_count as usize;
+    let remaining_bytes = stsz.end.saturating_sub(cur.pos);
+    let max_entries_by_bytes = remaining_bytes / 4;
+    if sample_count_usize > max_entries_by_bytes {
+      return Err(Mp4Error::UnexpectedEof);
+    }
+
+    sample_sizes = Vec::with_capacity(sample_count_usize);
     let mut deadline_counter = 0usize;
     for _ in 0..sample_count {
       check_root_periodic(
@@ -1558,7 +1618,17 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
     });
   }
 
-  let entry_count = cur.read_u32(stco.end)? as usize;
+  let entry_count = cur.read_u32(stco.end)?;
+  let remaining_bytes = stco.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 4;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("stco entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1582,7 +1652,17 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
     });
   }
 
-  let entry_count = cur.read_u32(co64.end)? as usize;
+  let entry_count = cur.read_u32(co64.end)?;
+  let remaining_bytes = co64.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("co64 entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1606,7 +1686,17 @@ fn parse_stss(bytes: &[u8], stss: Range<usize>) -> Result<Vec<u32>> {
     });
   }
 
-  let entry_count = cur.read_u32(stss.end)? as usize;
+  let entry_count = cur.read_u32(stss.end)?;
+  let remaining_bytes = stss.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 4;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4Error::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::Invalid("stss entry_count too large"));
+  }
+
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1990,7 +2080,11 @@ mod tests {
       &b"\0\0\0\x01moov\0\0\0\0"[..],
     ] {
       let demux = std::panic::catch_unwind(|| Mp4Demuxer::new(bytes));
-      assert!(demux.is_ok(), "Mp4Demuxer::new panicked for len={}", bytes.len());
+      assert!(
+        demux.is_ok(),
+        "Mp4Demuxer::new panicked for len={}",
+        bytes.len()
+      );
       assert!(demux.unwrap().is_err());
 
       let index = std::panic::catch_unwind(|| Mp4SeekIndex::from_bytes(bytes));
@@ -2022,6 +2116,24 @@ mod tests {
       }
       other => panic!("expected TooManySamples error, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn mp4_table_parsers_reject_excessive_counts_without_panicking_or_allocating() {
+    // A tiny `stts` box that claims an absurd entry_count. Historically this would attempt to
+    // allocate an enormous vector (or panic/abort) before failing with EOF.
+    let stts = [0_u8, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+    let r = std::panic::catch_unwind(|| parse_stts(&stts, 0..stts.len()));
+    assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+
+    // A `stsz` box with `sample_size == 0` (meaning per-sample sizes are present) but a gigantic
+    // sample_count. The parser should reject this up front to avoid OOM.
+    let mut stsz = Vec::new();
+    stsz.extend_from_slice(&[0_u8, 0, 0, 0]); // version + flags
+    stsz.extend_from_slice(&0_u32.to_be_bytes()); // sample_size
+    stsz.extend_from_slice(&u32::MAX.to_be_bytes()); // sample_count
+    let r = std::panic::catch_unwind(|| parse_stsz(&stsz, 0..stsz.len()));
+    assert!(matches!(r, Ok(Err(Mp4Error::TooManySamples { .. }))));
   }
 
   #[test]

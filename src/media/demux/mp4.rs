@@ -1,4 +1,4 @@
-use crate::error::RenderStage;
+use crate::error::{RenderError, RenderStage};
 use crate::media::{
   MediaAudioInfo, MediaCodec, MediaData, MediaError, MediaPacket, MediaResult, MediaTrackInfo,
   MediaTrackType, MediaVideoInfo,
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 const MP4_DEMUX_DEADLINE_STRIDE: usize = 1024;
+const MAX_SAMPLES_PER_TRACK: u64 = 2_000_000;
 
 #[derive(Debug, Error)]
 enum Mp4ParseError {
@@ -17,12 +18,16 @@ enum Mp4ParseError {
   UnexpectedEof,
   #[error("invalid mp4 box size")]
   InvalidBoxSize,
+  #[error("render error: {0}")]
+  Render(#[from] RenderError),
   #[error("invalid mp4: {0}")]
   Invalid(&'static str),
   #[error("unsupported mp4 box version {version} for {box_name}")]
   UnsupportedBoxVersion { box_name: &'static str, version: u8 },
   #[error("missing required mp4 box: {0}")]
   MissingBox(&'static str),
+  #[error("mp4 track has too many samples: {sample_count} (max {max})")]
+  TooManySamples { sample_count: u64, max: u64 },
 }
 
 type ParseResult<T> = std::result::Result<T, Mp4ParseError>;
@@ -320,7 +325,10 @@ impl Mp4Demuxer {
 }
 
 fn map_parse_error(err: Mp4ParseError) -> MediaError {
-  MediaError::Demux(err.to_string())
+  match err {
+    Mp4ParseError::Render(err) => MediaError::from(err),
+    other => MediaError::Demux(other.to_string()),
+  }
 }
 
 #[derive(Debug)]
@@ -335,39 +343,70 @@ impl<'a> Cursor<'a> {
   }
 
   fn read_u8(&mut self, end: usize) -> ParseResult<u8> {
-    if self.pos + 1 > end {
+    let end_pos = self
+      .pos
+      .checked_add(1)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4ParseError::UnexpectedEof);
     }
-    let v = self.data[self.pos];
-    self.pos += 1;
+    let v = *self
+      .data
+      .get(self.pos)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    self.pos = end_pos;
     Ok(v)
   }
 
   fn read_u16(&mut self, end: usize) -> ParseResult<u16> {
-    if self.pos + 2 > end {
+    let end_pos = self
+      .pos
+      .checked_add(2)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4ParseError::UnexpectedEof);
     }
-    let v = u16::from_be_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
-    self.pos += 2;
-    Ok(v)
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    let arr: [u8; 2] = bytes.try_into().map_err(|_| Mp4ParseError::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u16::from_be_bytes(arr))
   }
 
   fn read_u32(&mut self, end: usize) -> ParseResult<u32> {
-    if self.pos + 4 > end {
+    let end_pos = self
+      .pos
+      .checked_add(4)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4ParseError::UnexpectedEof);
     }
-    let v = u32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
-    self.pos += 4;
-    Ok(v)
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| Mp4ParseError::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u32::from_be_bytes(arr))
   }
 
   fn read_u64(&mut self, end: usize) -> ParseResult<u64> {
-    if self.pos + 8 > end {
+    let end_pos = self
+      .pos
+      .checked_add(8)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4ParseError::UnexpectedEof);
     }
-    let v = u64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
-    self.pos += 8;
-    Ok(v)
+    let bytes = self
+      .data
+      .get(self.pos..end_pos)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| Mp4ParseError::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u64::from_be_bytes(arr))
   }
 
   fn read_i32(&mut self, end: usize) -> ParseResult<i32> {
@@ -376,10 +415,14 @@ impl<'a> Cursor<'a> {
   }
 
   fn skip(&mut self, end: usize, len: usize) -> ParseResult<()> {
-    if self.pos + len > end {
+    let end_pos = self
+      .pos
+      .checked_add(len)
+      .ok_or(Mp4ParseError::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4ParseError::UnexpectedEof);
     }
-    self.pos += len;
+    self.pos = end_pos;
     Ok(())
   }
 }
@@ -429,14 +472,17 @@ fn next_box(cur: &mut Cursor<'_>, end: usize) -> ParseResult<Option<BoxRef>> {
     return Err(Mp4ParseError::InvalidBoxSize);
   }
 
+  let size_usize = usize::try_from(size).map_err(|_| Mp4ParseError::InvalidBoxSize)?;
   let box_end = start
-    .checked_add(size as usize)
+    .checked_add(size_usize)
     .ok_or(Mp4ParseError::InvalidBoxSize)?;
   if box_end > end {
     return Err(Mp4ParseError::InvalidBoxSize);
   }
 
-  let content_start = start + header_len;
+  let content_start = start
+    .checked_add(header_len)
+    .ok_or(Mp4ParseError::InvalidBoxSize)?;
   let content_end = box_end;
 
   Ok(Some(BoxRef {
@@ -693,7 +739,10 @@ fn parse_avc_sample_entry(
       break;
     };
     if b.typ == fourcc(b"avcC") {
-      avcc = bytes[b.content.clone()].to_vec();
+      let data = bytes
+        .get(b.content.clone())
+        .ok_or(Mp4ParseError::UnexpectedEof)?;
+      avcc = data.to_vec();
     }
     cur.pos = b.end;
   }
@@ -856,7 +905,9 @@ fn parse_aac_sample_entry(
 }
 
 fn parse_esds_for_asc(bytes: &[u8], esds: Range<usize>) -> ParseResult<Vec<u8>> {
-  let data = &bytes[esds.clone()];
+  let data = bytes
+    .get(esds.clone())
+    .ok_or(Mp4ParseError::UnexpectedEof)?;
   if data.len() < 4 {
     return Err(Mp4ParseError::UnexpectedEof);
   }
@@ -982,9 +1033,28 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> ParseResult<Vec<SttsEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(stts.end)? as usize;
+  let entry_count = cur.read_u32(stts.end)?;
+  let remaining_bytes = stts.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(SttsEntry {
       sample_count: cur.read_u32(stts.end)?,
       sample_delta: cur.read_u32(stts.end)?,
@@ -1003,9 +1073,28 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> ParseResult<Vec<CttsEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(ctts.end)? as usize;
+  let entry_count = cur.read_u32(ctts.end)?;
+  let remaining_bytes = ctts.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let sample_count = cur.read_u32(ctts.end)?;
     let sample_offset = if version == 0 {
       i64::from(cur.read_u32(ctts.end)?)
@@ -1030,9 +1119,28 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> ParseResult<Vec<StscEntry>> {
     });
   }
 
-  let entry_count = cur.read_u32(stsc.end)? as usize;
+  let entry_count = cur.read_u32(stsc.end)?;
+  let remaining_bytes = stsc.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 12;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(StscEntry {
       first_chunk: cur.read_u32(stsc.end)?,
       samples_per_chunk: cur.read_u32(stsc.end)?,
@@ -1057,11 +1165,30 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> ParseResult<StszBox> {
 
   let sample_size = cur.read_u32(stsz.end)?;
   let sample_count = cur.read_u32(stsz.end)?;
+  if u64::from(sample_count) > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: u64::from(sample_count),
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
 
   let mut sample_sizes = Vec::new();
   if sample_size == 0 {
-    sample_sizes = Vec::with_capacity(sample_count as usize);
+    let sample_count_usize = sample_count as usize;
+    let remaining_bytes = stsz.end.saturating_sub(cur.pos);
+    let max_entries_by_bytes = remaining_bytes / 4;
+    if sample_count_usize > max_entries_by_bytes {
+      return Err(Mp4ParseError::UnexpectedEof);
+    }
+
+    sample_sizes = Vec::with_capacity(sample_count_usize);
+    let mut deadline_counter = 0usize;
     for _ in 0..sample_count {
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4_DEMUX_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       sample_sizes.push(cur.read_u32(stsz.end)?);
     }
   }
@@ -1083,9 +1210,28 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> ParseResult<Vec<u64>> {
     });
   }
 
-  let entry_count = cur.read_u32(stco.end)? as usize;
+  let entry_count = cur.read_u32(stco.end)?;
+  let remaining_bytes = stco.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 4;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(u64::from(cur.read_u32(stco.end)?));
   }
   Ok(out)
@@ -1101,9 +1247,28 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> ParseResult<Vec<u64>> {
     });
   }
 
-  let entry_count = cur.read_u32(co64.end)? as usize;
+  let entry_count = cur.read_u32(co64.end)?;
+  let remaining_bytes = co64.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 8;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(cur.read_u64(co64.end)?);
   }
   Ok(out)
@@ -1119,9 +1284,28 @@ fn parse_stss(bytes: &[u8], stss: Range<usize>) -> ParseResult<Vec<u32>> {
     });
   }
 
-  let entry_count = cur.read_u32(stss.end)? as usize;
+  let entry_count = cur.read_u32(stss.end)?;
+  let remaining_bytes = stss.end.saturating_sub(cur.pos);
+  let max_entries_by_bytes = remaining_bytes / 4;
+  let entry_count = entry_count as usize;
+  if entry_count > max_entries_by_bytes {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: entry_count as u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(cur.read_u32(stss.end)?);
   }
   Ok(out)
@@ -1198,6 +1382,14 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
     .ok_or(Mp4ParseError::MissingBox("stco/co64"))?;
   let ctts = t.ctts.unwrap_or_default();
 
+  let sample_count_u64 = u64::from(stsz.sample_count);
+  if sample_count_u64 > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4ParseError::TooManySamples {
+      sample_count: sample_count_u64,
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
+
   let sample_count = stsz.sample_count as usize;
   if sample_count == 0 {
     return Ok(TrackState {
@@ -1213,7 +1405,13 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   match t.stss {
     None => sync_flags.fill(true),
     Some(stss) => {
+      let mut deadline_counter = 0usize;
       for sample_num_1_based in stss {
+        check_root_periodic(
+          &mut deadline_counter,
+          MP4_DEMUX_DEADLINE_STRIDE,
+          RenderStage::Paint,
+        )?;
         let idx = sample_num_1_based
           .checked_sub(1)
           .ok_or(Mp4ParseError::Invalid("stss sample number must be >= 1"))?
@@ -1230,8 +1428,14 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   let mut samples = Vec::with_capacity(sample_count);
   let mut sample_idx = 0usize;
   let mut stsc_idx = 0usize;
+  let mut deadline_counter = 0usize;
 
   for (chunk_idx0, &chunk_base) in chunk_offsets.iter().enumerate() {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     if sample_idx >= sample_count {
       break;
     }
@@ -1244,6 +1448,11 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
 
     let mut offset = chunk_base;
     for _ in 0..samples_per_chunk {
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4_DEMUX_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       if sample_idx >= sample_count {
         break;
       }
@@ -1287,7 +1496,13 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   // Compute the minimum PTS tick value so we can normalize away negative PTS ticks (CTTS v1).
   let mut dts_ticks: i64 = 0;
   let mut min_pts_ticks: i64 = i64::MAX;
+  let mut deadline_counter = 0usize;
   for sample in &mut samples {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let dur_ticks = stts_iter
       .next_u32()
       .ok_or(Mp4ParseError::Invalid("stts shorter than sample_count"))?;
@@ -1311,7 +1526,13 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   let mut stts_iter = TableRunIter::new_stts(&stts);
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
   let mut dts_ticks: i64 = 0;
+  let mut deadline_counter = 0usize;
   for sample in &mut samples {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_DEMUX_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let dur_ticks = stts_iter
       .next_u32()
       .ok_or(Mp4ParseError::Invalid("stts shorter than sample_count"))?;
