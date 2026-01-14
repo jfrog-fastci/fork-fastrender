@@ -7,10 +7,11 @@ use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
-use rustc_hash::FxHashSet;
+use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
@@ -362,8 +363,8 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::with_capacity(matches.len());
-    let mut seen_urls: FxHashSet<AsciiCaseInsensitive<'_>> = FxHashSet::default();
-    seen_urls.reserve(matches.len());
+    let mut seen_urls: HashSet<AsciiCaseInsensitive<'_>, FxBuildHasher> =
+      HashSet::with_capacity_and_hasher(matches.len(), FxBuildHasher::default());
 
     for id in matches {
       let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
@@ -1506,9 +1507,10 @@ mod tests {
     let provider = AboutPagesProvider;
     let suggestions = provider.suggestions(&ctx, "test");
     assert!(
-      !suggestions
-        .iter()
-        .any(|s| s.url.as_deref().is_some_and(|u| u.starts_with("about:test"))),
+      !suggestions.iter().any(|s| s
+        .url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("about:test"))),
       "expected no about:test-* suggestions for input `test`, got {suggestions:?}"
     );
 
