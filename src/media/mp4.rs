@@ -15,6 +15,17 @@ use thiserror::Error;
 
 use super::{MediaData, MediaError, MediaPacket, MediaResult, MediaTrackType};
 
+// Hard cap on per-track sample tables (used for both full demuxing and seek-only indexing).
+//
+// MP4 sample tables can express very large `sample_count` values compactly (e.g. a single `stts`
+// run with `sample_count = 0xFFFF_FFFF`). Building a per-sample `Vec` for such inputs would attempt
+// to allocate tens of gigabytes and can trivially OOM the process.
+//
+// This project currently demuxes MP4s fully in-memory or uses a best-effort seek index. For
+// extremely large tracks, we instead fail index construction (and in the seek-index case, the
+// caller will fall back to the slower linear scan path).
+const MAX_SAMPLES_PER_TRACK: u64 = 2_000_000;
+
 #[derive(Debug, Error)]
 pub enum Mp4Error {
   #[error("unexpected end of file")]
@@ -36,6 +47,8 @@ pub enum Mp4Error {
   UnsupportedBoxVersion { box_name: &'static str, version: u8 },
   #[error("missing required mp4 box: {0}")]
   MissingBox(&'static str),
+  #[error("mp4 track has too many samples: {sample_count} (max {max})")]
+  TooManySamples { sample_count: u64, max: u64 },
 }
 
 type Result<T> = std::result::Result<T, Mp4Error>;
@@ -408,6 +421,12 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
       last_seek_method: None,
     });
   }
+  if u64::from(stsz.sample_count) > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::TooManySamples {
+      sample_count: u64::from(stsz.sample_count),
+      max: MAX_SAMPLES_PER_TRACK,
+    });
+  }
 
   let stts_total: u64 = stts.iter().map(|e| u64::from(e.sample_count)).sum();
   if stts_total != sample_count as u64 {
@@ -597,6 +616,12 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
       timescale,
       pts_ns_by_sample: Vec::new(),
       pts_index: PtsIndex::Monotonic,
+    });
+  }
+  if stts_total > MAX_SAMPLES_PER_TRACK {
+    return Err(Mp4Error::TooManySamples {
+      sample_count: stts_total,
+      max: MAX_SAMPLES_PER_TRACK,
     });
   }
 
@@ -1767,6 +1792,27 @@ mod tests {
           other => panic!("expected Shared packet data, got {other:?}"),
         }
       }
+    }
+  }
+
+  #[test]
+  fn seek_track_rejects_excessive_sample_counts() {
+    let stts = vec![SttsEntry {
+      sample_count: (MAX_SAMPLES_PER_TRACK as u32) + 1,
+      sample_delta: 1,
+    }];
+    let t = SeekTrackBoxes {
+      id: Some(1),
+      timescale: Some(1),
+      stts: Some(stts),
+      ctts: None,
+    };
+
+    match build_seek_track(t) {
+      Err(Mp4Error::TooManySamples { sample_count, max }) => {
+        assert!(sample_count > max);
+      }
+      other => panic!("expected TooManySamples error, got {other:?}"),
     }
   }
 }
