@@ -1934,6 +1934,8 @@ fn deserialize_node_shallow(
         TypedArrayKind::Uint32 => (intr.uint32_array(), intr.uint32_array_prototype()),
         TypedArrayKind::Float32 => (intr.float32_array(), intr.float32_array_prototype()),
         TypedArrayKind::Float64 => (intr.float64_array(), intr.float64_array_prototype()),
+        TypedArrayKind::BigInt64 => (intr.bigint64_array(), intr.bigint64_array_prototype()),
+        TypedArrayKind::BigUint64 => (intr.biguint64_array(), intr.biguint64_array_prototype()),
       };
 
       let args = [
