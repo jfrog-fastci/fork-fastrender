@@ -136,6 +136,9 @@ pub enum ChromeActionUrl {
   ToggleDownloadsPanel,
 }
 
+/// Historical name for the chrome URL scheme (kept for compatibility with older UI code).
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
+
 impl ChromeActionUrl {
   pub const SCHEME: &'static str = "chrome-action";
 
@@ -401,6 +404,14 @@ impl ChromeActionUrl {
 
       other => Err(format!("unknown chrome-action: {other}")),
     }
+  }
+
+  /// Parse a pre-parsed [`Url`] into a [`ChromeActionUrl`].
+  ///
+  /// This is a convenience wrapper around [`ChromeActionUrl::parse`]. Callers that already have a
+  /// parsed URL can avoid re-threading raw strings through their code paths.
+  pub fn parse_url(url: &Url) -> Result<Self, String> {
+    Self::parse(url.as_str())
   }
 
   /// Format this action into a canonical `chrome-action:` URL string.
