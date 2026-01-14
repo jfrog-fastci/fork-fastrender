@@ -195,21 +195,33 @@ fn data_desc(
   }
 }
 
-fn install_to_string_tag(
+fn install_to_string_tag_with_writable(
   scope: &mut Scope<'_>,
   obj: GcObject,
   to_string_tag: GcSymbol,
   tag: &str,
+  writable: bool,
 ) -> Result<(), VmError> {
   let tag_value = scope.alloc_string(tag)?;
   scope.push_root(Value::String(tag_value))?;
   scope.define_property(
     obj,
     PropertyKey::Symbol(to_string_tag),
-    // `@@toStringTag` is non-writable, non-enumerable, and typically configurable.
-    data_desc(Value::String(tag_value), false, false, true),
+    // `@@toStringTag` is non-enumerable and typically configurable. Most are non-writable, but
+    // some (e.g. `Error.prototype` and `RegExp.prototype`) must be writable so instances can
+    // override the tag via assignment.
+    data_desc(Value::String(tag_value), writable, false, true),
   )?;
   Ok(())
+}
+
+fn install_to_string_tag(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  to_string_tag: GcSymbol,
+  tag: &str,
+) -> Result<(), VmError> {
+  install_to_string_tag_with_writable(scope, obj, to_string_tag, tag, false)
 }
 
 fn install_to_string_tag_writable(
@@ -218,17 +230,10 @@ fn install_to_string_tag_writable(
   to_string_tag: GcSymbol,
   tag: &str,
 ) -> Result<(), VmError> {
-  let tag_value = scope.alloc_string(tag)?;
-  scope.push_root(Value::String(tag_value))?;
-  scope.define_property(
-    obj,
-    PropertyKey::Symbol(to_string_tag),
-    // Some prototypes intentionally use a writable `@@toStringTag` so per-instance overrides via
-    // assignment can create an own `@@toStringTag` property (rather than failing due to inheriting a
-    // non-writable data property).
-    data_desc(Value::String(tag_value), true, false, true),
-  )?;
-  Ok(())
+  // Some prototypes intentionally use a writable `@@toStringTag` so per-instance overrides via
+  // assignment can create an own `@@toStringTag` property (rather than failing due to inheriting a
+  // non-writable data property).
+  install_to_string_tag_with_writable(scope, obj, to_string_tag, tag, true)
 }
 
 fn alloc_rooted_object(

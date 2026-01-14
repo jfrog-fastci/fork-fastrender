@@ -4687,7 +4687,7 @@ impl Vm {
     let this = match this_mode {
       ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
         "arrow function missing captured lexical this",
-      ))?,
+        ))?,
       ThisMode::Strict => this,
       ThisMode::Global => match this {
         Value::Undefined | Value::Null => Value::Object(global_object),
@@ -5790,7 +5790,10 @@ mod tests {
     };
     let realm_b_id = realm_b.id();
 
-    let result: Result<(), VmError> = (|| {
+    // Always call `Realm::teardown`, even if assertions below panic. Otherwise, the realm drop guard
+    // will panic and mask the real failure, and persistent roots could leak when the `Heap` is
+    // reused by other tests.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), VmError> {
       // Declare globals in realm A. Realm B was created last, so any "single active realm" bugs
       // will typically clobber realm B state when running this script.
       let _ = eval_in_realm(
@@ -5846,13 +5849,16 @@ mod tests {
       assert_eq!(b_proto_ok, Value::Bool(true));
 
       Ok(())
-    })();
+    }));
 
     // Avoid leaking persistent roots: always tear down realms, even if script evaluation failed.
     realm_a.teardown(&mut heap);
     realm_b.teardown(&mut heap);
 
-    result
+    match result {
+      Ok(result) => result,
+      Err(panic) => std::panic::resume_unwind(panic),
+    }
   }
 
   #[test]

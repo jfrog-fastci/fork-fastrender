@@ -370,9 +370,7 @@ mod tests {
   fn class_initialization_code_disallows_arguments_identifier() {
     let opts = ecma_script_opts();
 
-    let expected = SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or class static initialization blocks",
-    );
+    let expected = SyntaxErrorType::ArgumentsNotAllowedInClassInit;
 
     // `arguments` is an early error in class field initializers.
     let err = parse_with_options("class C { x = arguments; }", opts).unwrap_err();

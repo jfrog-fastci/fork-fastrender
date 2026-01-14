@@ -59081,12 +59081,12 @@ mod tests {
           haystacks.any(|s| {
             // `parse-js` may render the token name with quotes or backticks depending on which layer
             // surfaces the diagnostic.
-            (s.contains("'arguments'") || s.contains("`arguments`") || s.contains("arguments"))
-              && s.contains("not allowed")
-              && s.contains("class field")
-              && s.contains("static initialization block")
-          })
-        });
+             (s.contains("'arguments'") || s.contains("`arguments`") || s.contains("arguments"))
+               && s.contains("not allowed")
+               && s.contains("class field")
+               && (s.contains("static initialization block") || s.contains("static block"))
+           })
+         });
         assert!(
           has_engine_early_error || has_parser_error,
           "expected early error VMJS0004 or parser error PS0002 about disallowed 'arguments', got {diags:?}"

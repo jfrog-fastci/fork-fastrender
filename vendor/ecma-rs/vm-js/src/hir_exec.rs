@@ -21440,9 +21440,50 @@ impl HirAsyncState {
           }
         }
 
-        // The var statement completes; continue with the next statement.
-        self.next_stmt_index = self.next_stmt_index.saturating_add(1);
-        continue;
+      // The var statement completes; continue with the next statement.
+      self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+      continue;
+    }
+
+      // `try` statements may contain nested `for await..of` loops. The synchronous HIR evaluator
+      // cannot execute `for await..of`, so detect this shape and route evaluation through an
+      // async-aware state machine.
+      if let hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } = &stmt.kind
+      {
+        // For now, only handle `try` when the **try block** contains a `for await..of` statement at
+        // the top level. More complex nested `await` usage is expected to trigger per-function AST
+        // fallback.
+        let block_stmt = evaluator.get_stmt(body, *block)?;
+        let hir_js::StmtKind::Block(block_stmts) = &block_stmt.kind else {
+          return Err(VmError::InvariantViolation("try statement block is not a block statement"));
+        };
+        let mut has_for_await: bool = false;
+        for inner_stmt_id in block_stmts {
+          let inner_stmt = evaluator.get_stmt(body, *inner_stmt_id)?;
+          if matches!(
+            inner_stmt.kind,
+            hir_js::StmtKind::ForIn {
+              is_for_of: true,
+              await_: true,
+              ..
+            }
+          ) {
+            has_for_await = true;
+            break;
+          }
+        }
+        if has_for_await {
+          // Budget once for the try statement itself (matching `eval_stmt_labelled`).
+          evaluator.vm.tick()?;
+          let state =
+            TryStmtState::new(evaluator, body, *block, catch.clone(), *finally_block)?;
+          self.active = Some(HirAsyncActive::TryStmt(state));
+          continue;
+        }
       }
 
       // Fast-path `var`/`let`/`const` statements whose initializer is a direct `await` expression

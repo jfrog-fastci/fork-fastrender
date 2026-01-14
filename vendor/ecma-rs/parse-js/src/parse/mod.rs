@@ -500,12 +500,7 @@ impl<'a> Parser<'a> {
     if string_value.as_ref() != "arguments" {
       return Ok(());
     }
-    let message = if self.in_class_static_block > 0 {
-      "`arguments` is not allowed in class field initializers or class static initialization blocks"
-    } else {
-      "`arguments` is not allowed in class field initializers or static initialization blocks"
-    };
-    Err(loc.error(SyntaxErrorType::ExpectedSyntax(message), None))
+    Err(loc.error(SyntaxErrorType::ArgumentsNotAllowedInClassInit, None))
   }
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,

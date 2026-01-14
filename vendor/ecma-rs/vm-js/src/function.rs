@@ -79,6 +79,8 @@ pub enum FunctionData {
   ///
   /// When the function is invoked, the VM delegates execution to the AST interpreter using this
   /// cached [`EcmaFunctionId`].
+  ///
+  /// Note: Async functions use [`FunctionData::AsyncEcmaFallback`] instead of this marker.
   EcmaFallback { code_id: EcmaFunctionId },
   /// A compiled HIR async function whose body is currently executed via the AST interpreter.
   ///

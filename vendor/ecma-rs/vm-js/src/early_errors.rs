@@ -212,7 +212,7 @@ struct ControlContext {
   /// - inside class static initialization blocks.
   ///
   /// Note: This is **not** equivalent to [`ControlContext::await_allowed`]. For example, class static
-  /// blocks reserve `await` as an identifier regardless of whether `await` expressions are permitted
+  /// blocks treat `await` as a reserved identifier even when `await` expressions are not permitted
   /// in the surrounding context.
   await_is_reserved: bool,
   /// Whether `yield` is reserved as an identifier due to being inside a generator function.
