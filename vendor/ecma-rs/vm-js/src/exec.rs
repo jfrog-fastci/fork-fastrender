@@ -11760,21 +11760,22 @@ impl<'a> Evaluator<'a> {
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
 
-      // Computed `super[expr]`:
-      // - `GetThisBinding` must be observed before any key side effects (handled above), so derived
-      //   constructors throw before `super()` returns.
-      // - `ToPropertyKey` must happen before `GetSuperBase`, so prototype mutation during key
-      //   conversion is observable.
+      // Computed `super[expr]` evaluation order (ECMA-262):
+      // - `GetThisBinding` (handled above) must run before any key side effects,
+      // - the key expression is evaluated to a value before `GetSuperBase`, and
+      // - `GetSuperBase` must be observed before `ToPropertyKey` so prototype mutation during key
+      //   coercion does not affect the resolved super base (test262:
+      //   `prop-expr-getsuperbase-before-topropertykey-*`).
+      let super_base = self.super_base(&mut key_scope)?;
+      // Root the base across key coercion / `GetValue` in case it triggers a GC.
+      key_scope.push_root(super_base)?;
+
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
       // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
       match key {
         PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
         PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
       };
-
-      let super_base = self.super_base(&mut key_scope)?;
-      // Root the base across `GetValue` in case it triggers a GC.
-      key_scope.push_root(super_base)?;
 
       let reference = Reference::SuperProperty {
         base: super_base,
@@ -12008,11 +12009,14 @@ impl<'a> Evaluator<'a> {
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
 
-          // Computed `super[expr]`:
-          // - `GetThisBinding` must be observed before any key side effects (handled above), so
-          //   derived constructors throw before `super()` returns.
-          // - `ToPropertyKey` must happen before `GetSuperBase`, so prototype mutation during key
-          //   conversion is observable.
+          // ECMA-262 `SuperProperty : super [ Expression ]`:
+          // - `GetThisBinding` must be observed before any key side effects (handled above),
+          // - the key expression is evaluated to a value before `GetSuperBase`, and
+          // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
+          //   coercion does not affect the resolved super base.
+          let base = self.get_super_base(&mut key_scope)?;
+          // Root the base across key coercion / `GetValue`/`PutValue` in case it triggers a GC.
+          key_scope.push_root(base)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
           // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
@@ -12020,10 +12024,6 @@ impl<'a> Evaluator<'a> {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
           };
-
-          let base = self.get_super_base(&mut key_scope)?;
-          // Root the base across `GetValue`/`PutValue` in case it triggers a GC.
-          key_scope.push_root(base)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
         }
 
@@ -29659,13 +29659,16 @@ fn async_eval_assignment_to_computed_member(
         let base = evaluator
           .get_super_base(&mut key_scope)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-        // Root the captured super base across `ToPropertyKey`, RHS evaluation, and async suspension.
         key_scope.push_root(base)?;
 
         let key = evaluator
           .to_property_key_operator(&mut key_scope, member_value)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
+        // Root the allocated key across RHS evaluation / async suspension handling.
+        match key {
+          PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+          PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+        };
         let reference = Reference::SuperProperty { base, key, receiver };
         async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
       }
@@ -30491,6 +30494,11 @@ fn async_eval_update_expression(
             let key = evaluator
               .to_property_key_operator(&mut key_scope, member_value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+            // Root the allocated key across the subsequent `[[Get]]`/`[[Set]]`.
+            match key {
+              PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+              PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+            };
             let reference = Reference::SuperProperty { base, key, receiver };
             let value =
               async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
@@ -30936,25 +30944,33 @@ fn async_eval_tagged_template_computed_member_after_member(
   let is_super = matches!(&*member.object.stx, Expr::Super(_));
 
   let mut key_scope = scope.reborrow();
-  key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
   if is_super {
-    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+    // Root `this` + key value across super-base capture and key coercion.
+    key_scope.push_roots(&[evaluator.this, member_value])?;
 
-    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
     key_scope.push_root(receiver)?;
+
+    // `super[expr]` evaluation order: capture the super base (`GetSuperBase`) before coercing the
+    // computed key via `ToPropertyKey`.
+    let super_base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    key_scope.push_root(super_base)?;
+
+    let key = evaluator
+      .to_property_key_operator(&mut key_scope, member_value)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     match key {
       PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
       PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
     };
 
-    let base = evaluator
-      .get_super_base(&mut key_scope)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    let reference = Reference::SuperProperty { base, key, receiver };
+    let reference = Reference::SuperProperty {
+      base: super_base,
+      key,
+      receiver,
+    };
     let callee_value = evaluator
       .get_value_from_reference(&mut key_scope, &reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
@@ -30966,6 +30982,11 @@ fn async_eval_tagged_template_computed_member_after_member(
       receiver,
     );
   }
+
+  key_scope.push_roots(&[base, member_value])?;
+  let key = evaluator
+    .to_property_key_operator(&mut key_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
   if !member.optional_chaining && is_nullish(base) {
     return Err(throw_type_error(
@@ -32575,18 +32596,22 @@ fn async_call_computed_member_after_member(
     let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
     key_scope.push_root(receiver)?;
 
-    // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
-    //
-    // Root the captured base across `ToPropertyKey` since key conversion may mutate the home
-    // object's prototype, potentially making the original base unreachable.
     let super_base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    // Root the captured super base across `ToPropertyKey` and the subsequent `[[Get]]`.
     key_scope.push_root(super_base)?;
 
+    // Spec: computed `super[expr]` must observe `GetSuperBase` before `ToPropertyKey`
+    // (`prop-expr-getsuperbase-before-topropertykey-*`).
     let key = evaluator
       .to_property_key_operator(&mut key_scope, member_value)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    // Root the allocated key across the subsequent `[[Get]]`.
+    match key {
+      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+    };
 
     let reference = Reference::SuperProperty {
       base: super_base,
@@ -35985,20 +36010,22 @@ fn async_resume_from_frames(
                 let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
                 key_scope.push_root(receiver)?;
 
-                // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
-                //
-                // Root the captured base across `ToPropertyKey` since key conversion may mutate the
-                // home object's prototype, potentially making the original base unreachable.
                 let base = evaluator
                   .get_super_base(&mut key_scope)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-                // Root the captured super base across `ToPropertyKey`, RHS evaluation, and async suspension.
+                // Root the captured super base across key coercion + RHS evaluation / async suspension handling.
                 key_scope.push_root(base)?;
 
+                // `super[expr]` must observe `GetSuperBase` before `ToPropertyKey` (test262:
+                // `prop-expr-getsuperbase-before-topropertykey-*`).
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
+                // Root the allocated key across RHS evaluation / async suspension handling.
+                match key {
+                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+                  PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+                };
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
               })();
@@ -36662,6 +36689,10 @@ fn async_resume_from_frames(
                   .map_err(|err| {
                     coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
                   })?;
+                match key {
+                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+                  PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+                };
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
               })();
@@ -46578,6 +46609,11 @@ fn gen_eval_assignment_to_super_computed_member_after_member(
   key_scope.push_root(base)?;
 
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+  // Root the allocated key across `PutValue` and any GC triggered by root stack growth.
+  match key {
+    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+  };
   let reference = Reference::SuperProperty { base, key, receiver };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }

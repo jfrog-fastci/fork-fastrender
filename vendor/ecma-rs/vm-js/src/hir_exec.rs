@@ -7001,7 +7001,6 @@ impl<'vm> HirEvaluator<'vm> {
                   "Cannot read a super property from a null prototype",
                 )?);
               };
-
               (key, super_base_obj)
             }
             other => {
@@ -7577,12 +7576,13 @@ impl<'vm> HirEvaluator<'vm> {
 
               let base = self.super_base_value(&mut update_scope)?;
               update_scope.push_root(base)?;
+              let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+              update_scope.push_root(Value::Object(obj))?;
 
               let key =
                 update_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
               root_property_key(&mut update_scope, key)?;
-              let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-              update_scope.push_root(Value::Object(obj))?;
+
               (key, obj)
             }
             other => {
@@ -8729,7 +8729,6 @@ impl<'vm> HirEvaluator<'vm> {
           if let Some(super_base_obj) = super_base {
             scope.push_root(Value::Object(super_base_obj))?;
           }
-
           let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
           root_property_key(&mut scope, key)?;
           (key, super_base)
@@ -9141,7 +9140,6 @@ impl<'vm> HirEvaluator<'vm> {
                       "Cannot read a super property from a null prototype",
                     )?);
                   };
-
                   (key, super_base_obj)
                 }
                 other => {
@@ -9408,7 +9406,6 @@ impl<'vm> HirEvaluator<'vm> {
                       "Cannot read a super property from a null prototype",
                     )?);
                   };
-
                   (key, super_base_obj)
                 }
                 other => {
@@ -11111,10 +11108,6 @@ impl<'vm> HirEvaluator<'vm> {
 
           let base = self.super_base_value(&mut get_scope)?;
           get_scope.push_root(base)?;
-
-          let key =
-            get_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut get_scope, key)?;
           let obj = match get_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
             Ok(obj) => obj,
             Err(VmError::TypeError(msg)) => {
@@ -11123,6 +11116,9 @@ impl<'vm> HirEvaluator<'vm> {
             Err(err) => return Err(err),
           };
           get_scope.push_root(Value::Object(obj))?;
+          let key =
+            get_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+          root_property_key(&mut get_scope, key)?;
           (key, obj)
         }
         other => {
@@ -11241,15 +11237,14 @@ impl<'vm> HirEvaluator<'vm> {
 
           let base = self.super_base_value(&mut scope)?;
           scope.push_root(base)?;
-
-          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut scope, key)?;
           let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
             Ok(obj) => obj,
             Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
             Err(err) => return Err(err),
           };
           scope.push_root(Value::Object(obj))?;
+          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+          root_property_key(&mut scope, key)?;
           (key, obj)
         }
         other => {
@@ -12002,10 +11997,6 @@ impl<'vm> HirEvaluator<'vm> {
 
               let base = self.super_base_value(&mut scope)?;
               scope.push_root(base)?;
-
-              let key =
-                scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-              root_property_key(&mut scope, key)?;
               let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
                 Ok(obj) => obj,
                 Err(VmError::TypeError(msg)) => {
@@ -12014,6 +12005,9 @@ impl<'vm> HirEvaluator<'vm> {
                 Err(err) => return Err(err),
               };
               scope.push_root(Value::Object(obj))?;
+              let key =
+                scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+              root_property_key(&mut scope, key)?;
               (key, obj)
             }
             other => {
