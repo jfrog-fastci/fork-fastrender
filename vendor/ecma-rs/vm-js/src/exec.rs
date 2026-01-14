@@ -57463,6 +57463,44 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_escaped_arrow_using_super_property_observes_initialized_this_after_ctor_returns(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let f;
+      let log = [];
+      class B {
+        get x() { log.push('get:' + (this instanceof D)); return this.marker; }
+      }
+      class D extends B {
+        constructor() {
+          f = () => super.x;
+
+          // Calling the arrow before `super()` must throw and must not reach the getter.
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.marker = 1;
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      let v = f();
+      v === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'get:true'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_returned_arrow_without_super_throws_on_call(
   ) -> Result<(), VmError> {
     let source = r#"
