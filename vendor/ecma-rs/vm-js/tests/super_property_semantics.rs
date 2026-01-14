@@ -230,17 +230,29 @@ const NULL_PROTO_SUPER_BASE: &str = r#"
       try { super["x"]; expr = "no"; } catch (e) { expr = e.name; }
       return dot + "," + expr;
     }
+    static method() {
+      var dot;
+      var expr;
+      try { super.x; dot = "no"; } catch (e) { dot = e.name; }
+      try { super["x"]; expr = "no"; } catch (e) { expr = e.name; }
+      return dot + "," + expr;
+    }
   }
   var clsRes = C.prototype.method.call(receiver);
+  var staticRes = C.method();
 
-  objRes + ";" + clsRes
+  objRes + ";" + clsRes + ";" + staticRes
 "#;
 
 #[test]
 fn super_property_null_prototype_super_base_throws_type_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(NULL_PROTO_SUPER_BASE)?;
-  assert_value_is_utf8(&rt, value, "TypeError,TypeError;TypeError,TypeError");
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "TypeError,TypeError;TypeError,TypeError;TypeError,TypeError",
+  );
   Ok(())
 }
 
@@ -248,7 +260,11 @@ fn super_property_null_prototype_super_base_throws_type_error() -> Result<(), Vm
 fn super_property_null_prototype_super_base_throws_type_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, NULL_PROTO_SUPER_BASE)?;
-  assert_value_is_utf8(&rt, value, "TypeError,TypeError;TypeError,TypeError");
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "TypeError,TypeError;TypeError,TypeError;TypeError,TypeError",
+  );
   Ok(())
 }
 
@@ -291,14 +307,33 @@ const ARROW_INHERITS_SUPER: &str = r#"
   CC.prototype.fromB = "c";
   var clsRes = CC.prototype.method();
 
-  objRes + ";" + clsRes
+  class SA {}
+  class SB extends SA {}
+  class SC extends SB {
+    static method() {
+      return [
+        (() => super.fromA)(),
+        (() => super.fromB)(),
+        (() => super["fromA"])(),
+        (() => super["fromB"])(),
+      ].join(",");
+    }
+  }
+  SA.fromA = "a";
+  SA.fromB = "a";
+  SB.fromB = "b";
+  SC.fromA = "c";
+  SC.fromB = "c";
+  var staticRes = SC.method();
+
+  objRes + ";" + clsRes + ";" + staticRes
 "#;
 
 #[test]
 fn super_property_arrow_inherits_super_binding() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(ARROW_INHERITS_SUPER)?;
-  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b");
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
   Ok(())
 }
 
@@ -306,7 +341,7 @@ fn super_property_arrow_inherits_super_binding() -> Result<(), VmError> {
 fn super_property_arrow_inherits_super_binding_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, ARROW_INHERITS_SUPER)?;
-  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b");
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
   Ok(())
 }
 
@@ -349,14 +384,33 @@ const DIRECT_EVAL_SEES_SUPER: &str = r#"
   CC.prototype.fromB = "c";
   var clsRes = CC.prototype.method();
 
-  objRes + ";" + clsRes
+  class SA {}
+  class SB extends SA {}
+  class SC extends SB {
+    static method() {
+      return [
+        eval("super.fromA"),
+        eval("super.fromB"),
+        eval("super['fromA']"),
+        eval("super['fromB']"),
+      ].join(",");
+    }
+  }
+  SA.fromA = "a";
+  SA.fromB = "a";
+  SB.fromB = "b";
+  SC.fromA = "c";
+  SC.fromB = "c";
+  var staticRes = SC.method();
+
+  objRes + ";" + clsRes + ";" + staticRes
 "#;
 
 #[test]
 fn super_property_direct_eval_resolves_super() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(DIRECT_EVAL_SEES_SUPER)?;
-  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b");
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
   Ok(())
 }
 
@@ -364,7 +418,7 @@ fn super_property_direct_eval_resolves_super() -> Result<(), VmError> {
 fn super_property_direct_eval_resolves_super_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, DIRECT_EVAL_SEES_SUPER)?;
-  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b");
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
   Ok(())
 }
 
@@ -396,17 +450,31 @@ const COMPUTED_KEY_ERRORS: &str = r#"
       try { super[test262unresolvable]; e3 = "no"; } catch (e) { e3 = e.name; }
       return [e1, e2, e3].join(",");
     }
+    static method() {
+      var e1;
+      var e2;
+      var e3;
+      try { super[thrower()]; e1 = "no"; } catch (e) { e1 = (e === thrown); }
+      try { super[badToString]; e2 = "no"; } catch (e) { e2 = (e === thrown); }
+      try { super[test262unresolvable]; e3 = "no"; } catch (e) { e3 = e.name; }
+      return [e1, e2, e3].join(",");
+    }
   }
   var clsRes = C.prototype.method();
+  var staticRes = C.method();
 
-  objRes + ";" + clsRes
+  objRes + ";" + clsRes + ";" + staticRes
 "#;
 
 #[test]
 fn super_property_computed_key_error_propagation() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(COMPUTED_KEY_ERRORS)?;
-  assert_value_is_utf8(&rt, value, "true,true,ReferenceError;true,true,ReferenceError");
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "true,true,ReferenceError;true,true,ReferenceError;true,true,ReferenceError",
+  );
   Ok(())
 }
 
@@ -414,7 +482,11 @@ fn super_property_computed_key_error_propagation() -> Result<(), VmError> {
 fn super_property_computed_key_error_propagation_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, COMPUTED_KEY_ERRORS)?;
-  assert_value_is_utf8(&rt, value, "true,true,ReferenceError;true,true,ReferenceError");
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "true,true,ReferenceError;true,true,ReferenceError;true,true,ReferenceError",
+  );
   Ok(())
 }
 
@@ -563,14 +635,42 @@ const GETSUPERBASE_BEFORE_TOPROPERTYKEY: &str = r#"
   };
   obj2.m();
 
-  getValueRes + ";" + putValueRes
+  var proto5 = { p: 1 };
+  var proto6 = { p: -1 };
+  var obj3 = {
+    __proto__: proto5,
+    m() { return super[key3] += 1; }
+  };
+  var key3 = {
+    toString() {
+      Object.setPrototypeOf(obj3, proto6);
+      return "p";
+    }
+  };
+  var compoundRes = obj3.m();
+
+  var proto7 = { p: 1 };
+  var proto8 = { p: -1 };
+  var obj4 = {
+    __proto__: proto7,
+    m() { return ++super[key4]; }
+  };
+  var key4 = {
+    toString() {
+      Object.setPrototypeOf(obj4, proto8);
+      return "p";
+    }
+  };
+  var incRes = obj4.m();
+
+  getValueRes + ";" + putValueRes + ";" + compoundRes + ";" + incRes
 "#;
 
 #[test]
 fn super_property_getsuperbase_before_topropertykey() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(GETSUPERBASE_BEFORE_TOPROPERTYKEY)?;
-  assert_value_is_utf8(&rt, value, "ok;ok");
+  assert_value_is_utf8(&rt, value, "ok;ok;2;2");
   Ok(())
 }
 
@@ -578,6 +678,41 @@ fn super_property_getsuperbase_before_topropertykey() -> Result<(), VmError> {
 fn super_property_getsuperbase_before_topropertykey_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, GETSUPERBASE_BEFORE_TOPROPERTYKEY)?;
-  assert_value_is_utf8(&rt, value, "ok;ok");
+  assert_value_is_utf8(&rt, value, "ok;ok;2;2");
+  Ok(())
+}
+
+const POISONED_UNDERSCORE_PROTO: &str = r#"
+  Object.defineProperty(Object.prototype, "__proto__", {
+    get: function() { throw "should not be called"; },
+  });
+
+  var obj = {
+    superExpression() {
+      return super["CONSTRUCTOR".toLowerCase()];
+    },
+    superIdentifierName() {
+      return super.toString();
+    },
+  };
+
+  var ok1 = obj.superExpression() === Object;
+  var ok2 = obj.superIdentifierName() === "[object Object]";
+  ok1 && ok2 ? "ok" : "bad"
+"#;
+
+#[test]
+fn super_property_poisoned_underscore_proto_does_not_trigger_getter() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(POISONED_UNDERSCORE_PROTO)?;
+  assert_value_is_utf8(&rt, value, "ok");
+  Ok(())
+}
+
+#[test]
+fn super_property_poisoned_underscore_proto_does_not_trigger_getter_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, POISONED_UNDERSCORE_PROTO)?;
+  assert_value_is_utf8(&rt, value, "ok");
   Ok(())
 }
