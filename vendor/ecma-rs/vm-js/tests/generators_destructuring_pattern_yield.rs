@@ -366,3 +366,94 @@ fn generator_object_destructuring_assignment_default_survives_gc_between_yield_a
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_computed_key_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return "m"; }
+        function* g() {
+          var o = {m: 1};
+          var x;
+          ({[yield* inner()]: x} = o);
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_assignment_default_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return 7; }
+        function* g() {
+          var x;
+          ({a: x = yield* inner()} = {});
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_var_decl_object_destructuring_computed_key_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return "m"; }
+        function* g() {
+          var {[yield* inner()]: x} = {m: 2};
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_var_decl_object_destructuring_default_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return 9; }
+        function* g() {
+          var {a: x = yield* inner()} = {};
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 9
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
