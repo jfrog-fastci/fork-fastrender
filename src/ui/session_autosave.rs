@@ -1688,6 +1688,44 @@ mod tests {
   }
 
   #[test]
+  fn quarantines_corrupted_session_file_before_first_overwrite_with_initial_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let corrupted = b"this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let initial = BrowserSession::single("about:blank".to_string());
+    let autosave = SessionAutosave::new_with_debounce_and_initial(
+      path.clone(),
+      Duration::from_millis(10),
+      Some(initial),
+    );
+    // Startup should not overwrite the corrupted file even with an initial snapshot.
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    autosave.request_save(BrowserSession::single("about:newtab".to_string()));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
+    assert!(!session.did_exit_cleanly);
+
+    let quarantined_path = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .map(|entry| entry.path())
+      .find(|p| {
+        p.file_name()
+          .and_then(|name| name.to_str())
+          .is_some_and(|name| name.starts_with("session.json.corrupt."))
+      })
+      .expect("expected quarantined session.json.corrupt.* to exist");
+    let quarantined_bytes = std::fs::read(&quarantined_path).unwrap();
+    assert_eq!(quarantined_bytes, corrupted);
+  }
+
+  #[test]
   fn failed_save_restores_corrupted_session_file_in_sync_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
