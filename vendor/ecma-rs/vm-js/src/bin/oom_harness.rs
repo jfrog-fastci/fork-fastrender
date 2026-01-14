@@ -209,6 +209,7 @@ fn main() {
     MICROTASK_ERRORS_REMAINING.store(len_code_units, Ordering::Relaxed);
 
     let mut queue = MicrotaskQueue::new();
+    let mut ctx = DummyJobContext;
     if len_code_units != 0 {
       let job = match Job::new(JobKind::Promise, microtask_job_erroring) {
         Ok(job) => job,
@@ -218,10 +219,16 @@ fn main() {
           process::exit(1);
         }
       };
-      queue.enqueue_promise_job(job, None);
+      match queue.host_enqueue_promise_job_fallible(&mut ctx, job, None) {
+        Ok(()) => {}
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: unexpected error enqueuing microtask job: {err:?}");
+          process::exit(1);
+        }
+      }
     }
 
-    let mut ctx = DummyJobContext;
     let _errors = queue.perform_microtask_checkpoint(&mut ctx);
 
     if !queue.is_empty() {
