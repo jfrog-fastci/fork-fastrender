@@ -545,6 +545,29 @@ mod tests {
   }
 
   #[test]
+  fn ring_buffer_ramped_declick_drops_misaligned_partial_frames() {
+    let rb = AudioRingBuffer::new(16);
+    // Push 3 samples, which is not a multiple of stereo frames.
+    assert_eq!(rb.push(&[1.0, 2.0, 3.0]), 3);
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 1.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+
+    let mut out = vec![0.0; 8];
+    let did_underrun = rb.pop_add_into_ramped_declick_underrun(&mut out, 2, &mut ramp, 4);
+    assert!(did_underrun);
+    assert!(rb.is_empty(), "misaligned buffer should have been dropped");
+    assert!(
+      out.iter().all(|v| *v == 0.0),
+      "output should remain silence"
+    );
+  }
+
+  #[test]
   fn ring_buffer_drains_when_gain_is_zero() {
     // 200ms worth of mono 48kHz samples.
     let total = 48_000 / 5;
