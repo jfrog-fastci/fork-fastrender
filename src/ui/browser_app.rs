@@ -1534,6 +1534,10 @@ impl ChromeAddressBarCache {
       .as_deref()
       .filter(|s| !s.is_empty())
       .and_then(|rest| {
+        // Fast path: if the string is already short in bytes, it is necessarily <= max chars.
+        if rest.len() <= display_max_chars {
+          return None;
+        }
         (rest.chars().count() > display_max_chars)
           .then(|| url_display::truncate_url_middle(rest, display_max_chars))
       });
