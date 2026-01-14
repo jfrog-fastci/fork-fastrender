@@ -572,6 +572,40 @@ fn super_call_in_static_method_uses_this_binding_as_receiver_compiled() -> Resul
 }
 
 #[test]
+fn super_call_in_static_method_uses_call_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A { static f() { return this.tag; } }
+        class B extends A { static g() { return super.f(); } }
+        function C() {}
+        C.tag = 7;
+        B.g.call(C) === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_call_in_static_method_uses_call_receiver_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A { static f() { return this.tag; } }
+      class B extends A { static g() { return super.f(); } }
+      function C() {}
+      C.tag = 7;
+      B.g.call(C) === 7
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn derived_ctor_super_prop_before_super_throws_reference_error() {
   let mut rt = new_runtime();
   let value = rt
