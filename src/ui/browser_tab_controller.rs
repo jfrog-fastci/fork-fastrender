@@ -640,11 +640,8 @@ impl BrowserTabController {
     // Clamp to root scroll bounds when possible.
     if let Some(prepared) = self.document.prepared() {
       let viewport_size = Size::new(viewport_w, viewport_h);
-      if let Some(root) =
-        crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]).last()
-      {
-        target = root.bounds.clamp(target);
-      }
+      target = crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport_size)
+        .clamp(target);
     }
 
     if target != self.scroll_state.viewport {
@@ -666,11 +663,9 @@ impl BrowserTabController {
 
     if let Some(prepared) = self.document.prepared() {
       let viewport = prepared.fragment_tree().viewport_size();
-      let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-        .first()
-        .map(|state| state.bounds);
       let mut next = self.scroll_state.clone();
-      next.viewport = bounds.map(|b| b.clamp(target)).unwrap_or(target);
+      let bounds = crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport);
+      next.viewport = bounds.clamp(target);
       if next != self.scroll_state {
         self.scroll_state = next;
         self.document.set_scroll_state(self.scroll_state.clone());
@@ -788,15 +783,10 @@ impl BrowserTabController {
       let delta = Point::new(delta_x, delta_y);
       if delta != Point::ZERO {
         let viewport = prepared.fragment_tree().viewport_size();
-        let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-          .first()
-          .map(|state| state.bounds);
         let target = Point::new(viewport_scroll.x + delta.x, viewport_scroll.y + delta.y);
-        if let Some(bounds) = bounds {
-          viewport_scroll = bounds.clamp(target);
-        } else {
-          viewport_scroll = Point::new(target.x.max(0.0), target.y.max(0.0));
-        }
+        viewport_scroll =
+          crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport)
+            .clamp(target);
       }
       next_state.viewport = viewport_scroll;
     }
@@ -902,11 +892,9 @@ impl BrowserTabController {
       }
 
       let viewport_size = Size::new(self.viewport_css.0 as f32, self.viewport_css.1 as f32);
-      if let Some(root) =
-        crate::scroll::build_scroll_chain(&fragment_tree_unscrolled.root, viewport_size, &[]).last()
-      {
-        candidate.viewport = root.bounds.clamp(candidate.viewport);
-      }
+      candidate.viewport =
+        crate::scroll::viewport_scroll_bounds(&fragment_tree_unscrolled.root, viewport_size)
+          .clamp(candidate.viewport);
 
       if candidate.viewport != prev_scroll.viewport {
         candidate.update_deltas_from(&prev_scroll);
@@ -2597,10 +2585,8 @@ impl BrowserTabController {
           let bounds = self
             .document
             .prepared()
-            .and_then(|prepared| {
-              crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[])
-                .last()
-                .map(|s| s.bounds)
+            .map(|prepared| {
+              crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport_size)
             })
             .unwrap_or(crate::scroll::ScrollBounds {
               min_x: 0.0,

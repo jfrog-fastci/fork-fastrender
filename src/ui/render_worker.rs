@@ -1330,14 +1330,19 @@ fn apply_keyboard_scroll_delta_for_focus(
       }
 
       if result.remaining != Point::ZERO {
-        let mut viewport_chain =
-          crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
-        if let Some(viewport_state) = viewport_chain.first_mut() {
+        let root = &prepared.fragment_tree().root;
+        if let Some(mut viewport_state) = crate::scroll::ScrollChainState::from_fragment(
+          root,
+          Point::new(root.bounds.x(), root.bounds.y()),
+          viewport_size,
+          viewport_size,
+          /* treat_as_root */ true,
+          /* has_fixed_cb_ancestor */ false,
+        ) {
           viewport_state.scroll = original_viewport;
+          let mut viewport_chain = [viewport_state];
           crate::scroll::apply_scroll_chain(&mut viewport_chain, result.remaining, options);
-          if let Some(viewport_state) = viewport_chain.first() {
-            next.viewport = viewport_state.scroll;
-          }
+          next.viewport = viewport_chain[0].scroll;
         }
       }
     }
@@ -2177,11 +2182,7 @@ fn compute_scroll_metrics(
   };
 
   if let Some(prepared) = doc.and_then(|doc| doc.prepared()) {
-    let chain =
-      crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
-    if let Some(root) = chain.last() {
-      bounds = root.bounds;
-    }
+    bounds = crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport_size);
   }
 
   let sanitize_axis = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
@@ -2857,15 +2858,11 @@ impl BrowserRuntime {
         0.0
       },
     );
-
+ 
     // Clamp to the root scroll bounds using the same viewport used for scroll calculations.
-    if let Some(bounds) = crate::scroll::build_scroll_chain(&tree.root, prepared.layout_viewport(), &[])
-      .last()
-      .map(|state| state.bounds)
-    {
-      state.viewport = bounds.clamp(state.viewport);
-    }
-
+    state.viewport = crate::scroll::viewport_scroll_bounds(&tree.root, prepared.layout_viewport())
+      .clamp(state.viewport);
+ 
     // Keep element scroll offsets stable (wheel interaction already clamps), but canonicalize the
     // representation so NaNs/inf and explicit zero offsets don't cause spurious diffs.
     state.elements.retain(|_, offset| {
@@ -6068,11 +6065,8 @@ impl BrowserRuntime {
 
     if let Some(prepared) = doc.prepared() {
       let viewport = Size::new(viewport_w, viewport_h);
-      if let Some(root) =
-        crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[]).last()
-      {
-        target = root.bounds.clamp(target);
-      }
+      target = crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport)
+        .clamp(target);
     }
 
     if target != tab.scroll_state.viewport {
@@ -6343,12 +6337,9 @@ impl BrowserRuntime {
 
         if let Some(prepared) = doc.prepared() {
           let viewport_size = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
-          if let Some(root) =
-            crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[])
-              .last()
-          {
-            candidate.viewport = root.bounds.clamp(candidate.viewport);
-          }
+          candidate.viewport =
+            crate::scroll::viewport_scroll_bounds(&prepared.fragment_tree().root, viewport_size)
+              .clamp(candidate.viewport);
         }
 
         if candidate.viewport != prev.viewport {
@@ -10706,33 +10697,36 @@ impl BrowserRuntime {
                                 } else {
                                   // No scrollable container in the additional-fragment chain;
                                   // scroll the viewport instead.
-                                  let mut viewport_chain = crate::scroll::build_scroll_chain(
-                                    &prepared.fragment_tree().root,
-                                    viewport_size,
-                                    &[],
-                                  );
-                                  if !viewport_chain.is_empty() {
-                                    viewport_chain[0].scroll =
-                                      sanitize_point(current_scroll.viewport);
-                                    let target_idx = 0;
-                                    let target_max_y =
-                                      if viewport_chain[target_idx].bounds.max_y.is_finite() {
-                                        viewport_chain[target_idx].bounds.max_y
-                                      } else {
-                                        0.0
-                                      };
+                                  let root = &prepared.fragment_tree().root;
+                                  if let Some(mut viewport_state) =
+                                    crate::scroll::ScrollChainState::from_fragment(
+                                      root,
+                                      Point::new(root.bounds.x(), root.bounds.y()),
+                                      viewport_size,
+                                      viewport_size,
+                                      /* treat_as_root */ true,
+                                      /* has_fixed_cb_ancestor */ false,
+                                    )
+                                  {
+                                    viewport_state.scroll = sanitize_point(current_scroll.viewport);
+                                    let target_max_y = if viewport_state.bounds.max_y.is_finite() {
+                                      viewport_state.bounds.max_y
+                                    } else {
+                                      0.0
+                                    };
                                     let desired_y = if matches!(
                                       key,
                                       crate::interaction::KeyAction::Home
                                         | crate::interaction::KeyAction::ShiftHome
                                     ) {
-                                      viewport_chain[target_idx].bounds.min_y
+                                      viewport_state.bounds.min_y
                                     } else {
                                       target_max_y
                                     };
-                                    let dy = desired_y - viewport_chain[target_idx].scroll.y;
+                                    let dy = desired_y - viewport_state.scroll.y;
+                                    let mut viewport_chain = [viewport_state];
                                     crate::scroll::apply_scroll_chain(
-                                      &mut viewport_chain[target_idx..=target_idx],
+                                      &mut viewport_chain,
                                       Point::new(0.0, dy),
                                       options,
                                     );
@@ -10792,14 +10786,19 @@ impl BrowserRuntime {
                             }
 
                             if remaining != Point::ZERO {
-                              let mut viewport_chain = crate::scroll::build_scroll_chain(
-                                &prepared.fragment_tree().root,
-                                viewport_size,
-                                &[],
-                              );
-                              if !viewport_chain.is_empty() {
-                                viewport_chain[0].scroll =
-                                  sanitize_point(current_scroll.viewport);
+                              let root = &prepared.fragment_tree().root;
+                              if let Some(mut viewport_state) =
+                                crate::scroll::ScrollChainState::from_fragment(
+                                  root,
+                                  Point::new(root.bounds.x(), root.bounds.y()),
+                                  viewport_size,
+                                  viewport_size,
+                                  /* treat_as_root */ true,
+                                  /* has_fixed_cb_ancestor */ false,
+                                )
+                              {
+                                viewport_state.scroll = sanitize_point(current_scroll.viewport);
+                                let mut viewport_chain = [viewport_state];
                                 crate::scroll::apply_scroll_chain(
                                   &mut viewport_chain,
                                   remaining,

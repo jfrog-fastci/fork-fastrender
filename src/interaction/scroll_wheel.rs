@@ -501,12 +501,19 @@ fn apply_viewport_delta(
   delta: Point,
   options: ScrollOptions,
 ) -> Point {
-  let mut chain = build_scroll_chain(&fragment_tree.root, viewport_size, &[]);
-  if chain.is_empty() {
+  let root = &fragment_tree.root;
+  let Some(mut state) = crate::scroll::ScrollChainState::from_fragment(
+    root,
+    Point::new(root.bounds.x(), root.bounds.y()),
+    viewport_size,
+    viewport_size,
+    /* treat_as_root */ true,
+    /* has_fixed_cb_ancestor */ false,
+  ) else {
     return viewport_scroll;
-  }
-
-  chain[0].scroll = viewport_scroll;
+  };
+  state.scroll = viewport_scroll;
+  let mut chain = [state];
   apply_scroll_chain(&mut chain, delta, options);
   chain[0].scroll
 }

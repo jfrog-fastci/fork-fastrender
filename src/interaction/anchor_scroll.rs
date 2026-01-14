@@ -1,6 +1,6 @@
 use crate::dom::{enumerate_dom_ids, DomNode, DomNodeType};
 use crate::geometry::{Point, Size};
-use crate::scroll::build_scroll_chain;
+use crate::scroll::viewport_scroll_bounds;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use percent_encoding::percent_decode_str;
@@ -208,23 +208,16 @@ pub fn scroll_offset_for_fragment_target(
   // - ignores viewport-fixed descendants, and
   // - matches browser scroll range semantics (negative overflow does not allow negative scroll
   //   offsets).
-  let bounds = build_scroll_chain(&fragment_tree.root, viewport, &[])
-    .first()
-    .map(|state| state.bounds);
+  let bounds = viewport_scroll_bounds(&fragment_tree.root, viewport);
   if !scroll_x.is_finite() {
     scroll_x = 0.0;
   }
   if !scroll_y.is_finite() {
     scroll_y = 0.0;
   }
-  if let Some(bounds) = bounds {
-    let clamped = bounds.clamp(Point::new(scroll_x, scroll_y));
-    scroll_x = clamped.x;
-    scroll_y = clamped.y;
-  } else {
-    scroll_x = scroll_x.max(0.0);
-    scroll_y = scroll_y.max(0.0);
-  }
+  let clamped = bounds.clamp(Point::new(scroll_x, scroll_y));
+  scroll_x = clamped.x;
+  scroll_y = clamped.y;
 
   Some(Point::new(scroll_x, scroll_y))
 }

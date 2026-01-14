@@ -398,8 +398,15 @@ pub fn scroll_state_for_focus(
       };
 
       // Ensure the focused target is also visible in the document viewport.
-      let viewport_chain = build_scroll_chain(&fragment_tree.root, viewport_size, &[]);
-      let Some(viewport_state) = viewport_chain.last() else {
+      let root = &fragment_tree.root;
+      let Some(viewport_state) = ScrollChainState::from_fragment(
+        root,
+        Point::new(root.bounds.x(), root.bounds.y()),
+        viewport_size,
+        viewport_size,
+        /* treat_as_root */ true,
+        /* has_fixed_cb_ancestor */ false,
+      ) else {
         return Some(next);
       };
 
@@ -413,12 +420,12 @@ pub fn scroll_state_for_focus(
 
       let target_in_viewport_space =
         target_bounds.translate(Point::new(-element_shift.x, -element_shift.y));
-      let viewport_scrollport_origin = scrollport_origin_for_state(viewport_state, true);
+      let viewport_scrollport_origin = scrollport_origin_for_state(&viewport_state, true);
       let target_in_viewport_scrollport_space = target_in_viewport_space.translate(Point::new(
         -viewport_scrollport_origin.x,
         -viewport_scrollport_origin.y,
       ));
-      let viewport_scrollport = scrollport_size_for_state(viewport_state, true);
+      let viewport_scrollport = scrollport_size_for_state(&viewport_state, true);
 
       next.viewport = scroll_to_reveal_rect(
         next.viewport,

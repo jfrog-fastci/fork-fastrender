@@ -1455,12 +1455,8 @@ pub(crate) fn resolve_effective_scroll_state_for_paint_mut(
     },
   );
 
-  if let Some(bounds) = build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
-    .first()
-    .map(|state| state.bounds)
-  {
-    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
-  }
+  scroll_state.viewport = viewport_scroll_bounds(&fragment_tree.root, scrollport_viewport)
+    .clamp(scroll_state.viewport);
 
   scroll_state
 }
@@ -1895,6 +1891,21 @@ fn collect_bounds(
       has_fixed_cb_ancestor,
     );
   }
+}
+
+/// Returns scroll bounds for viewport scrolling (i.e. `ScrollState.viewport`).
+///
+/// This is equivalent to `build_scroll_chain(root, viewport, &[]).first().map(|s| s.bounds)` but
+/// avoids the intermediate `Vec` allocation.
+pub(crate) fn viewport_scroll_bounds(root: &FragmentNode, viewport: Size) -> ScrollBounds {
+  scroll_bounds_for_fragment(
+    root,
+    Point::new(root.bounds.x(), root.bounds.y()),
+    viewport,
+    viewport,
+    /* treat_as_root */ true,
+    /* has_fixed_cb_ancestor */ false,
+  )
 }
 
 pub(crate) fn scroll_bounds_for_fragment(
