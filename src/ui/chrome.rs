@@ -31,6 +31,7 @@ use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_
 use crate::ui::zoom;
 use crate::ui::ChromeAction;
 use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
+use std::sync::Arc;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
@@ -595,6 +596,27 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
         "Go to URL".to_string()
       }
     }
+  }
+}
+
+#[derive(Debug, Default)]
+struct OmniboxSuggestionA11yLabelCache {
+  labels: std::collections::HashMap<egui::Id, Arc<str>>,
+}
+
+impl OmniboxSuggestionA11yLabelCache {
+  fn label(&mut self, row_id: egui::Id, suggestion: &OmniboxSuggestion) -> Arc<str> {
+    if let Some(label) = self.labels.get(&row_id) {
+      return Arc::clone(label);
+    }
+
+    let label: Arc<str> = Arc::from(omnibox_suggestion_a11y_label(suggestion));
+    self.labels.insert(row_id, Arc::clone(&label));
+    label
+  }
+
+  fn retain_row_ids(&mut self, row_ids: &[egui::Id]) {
+    self.labels.retain(|id, _| row_ids.contains(id));
   }
 }
 
@@ -3410,6 +3432,13 @@ pub fn chrome_ui_with_bookmarks(
           let row_height = ui.spacing().interact_size.y.max(24.0);
           let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
  
+          let a11y_label_cache_id = omnibox_dropdown_id.with("a11y_label_cache");
+          let mut a11y_label_cache: OmniboxSuggestionA11yLabelCache = ctx.data_mut(|d| {
+            std::mem::take(
+              d.get_temp_mut_or_default::<OmniboxSuggestionA11yLabelCache>(a11y_label_cache_id),
+            )
+          });
+
           let suggestions_list = egui::ScrollArea::vertical()
             .max_height(max_height)
             .show(ui, |ui| {
@@ -3420,6 +3449,9 @@ pub fn chrome_ui_with_bookmarks(
               if app.chrome.omnibox.selected.is_none() {
                 scrolled_to_selected = None;
               }
+              let dummy_row_id = omnibox_dropdown_id.with("a11y_label_used_rows");
+              let mut used_row_ids = [dummy_row_id; 16];
+              let mut used_row_ids_len = 0usize;
               for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
                 let is_selected = app.chrome.omnibox.selected == Some(idx);
                 // Use a deterministic row id so egui/AccessKit node ids stay stable across frames,
@@ -3439,12 +3471,16 @@ pub fn chrome_ui_with_bookmarks(
                     omnibox_dropdown_id.with(("row", "tab", tab_id))
                   }
                 };
+                if used_row_ids_len < used_row_ids.len() {
+                  used_row_ids[used_row_ids_len] = row_id;
+                  used_row_ids_len += 1;
+                }
  
                 let (_auto_id, rect) =
                   ui.allocate_space(egui::vec2(ui.available_width(), row_height));
                 let response = ui.interact(rect, row_id, egui::Sense::click());
                 response.widget_info({
-                  let label = omnibox_suggestion_a11y_label(suggestion);
+                  let label = a11y_label_cache.label(row_id, suggestion);
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 let _ = ctx.accesskit_node_builder(row_id, |builder| {
@@ -3561,8 +3597,10 @@ pub fn chrome_ui_with_bookmarks(
                   clicked_suggestion = Some(idx);
                 }
               }
+              a11y_label_cache.retain_row_ids(&used_row_ids[..used_row_ids_len]);
               ctx.data_mut(|d| {
                 d.insert_temp(scroll_selected_id, scrolled_to_selected);
+                d.insert_temp(a11y_label_cache_id, a11y_label_cache);
               });
             });
           let _ = ctx.accesskit_node_builder(suggestions_list.id, |builder| {
