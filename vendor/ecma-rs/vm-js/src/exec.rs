@@ -10961,21 +10961,24 @@ impl<'a> Evaluator<'a> {
           "optional chaining used with super property access",
         ));
       }
-      // `super[expr]` evaluates the computed key expression (including `ToPropertyKey`) before
-      // accessing the `this` binding so key-expression side effects are preserved even when `this`
-      // is uninitialized in derived constructors.
+      // `super[expr]` must resolve the current `this` binding *before* evaluating the computed key
+      // expression. In derived constructors before `super()`, `GetThisBinding` throws a
+      // ReferenceError, and that error must happen before any side effects from evaluating `expr`.
       let mut super_scope = scope.reborrow();
       // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
-      // across key evaluation, which can allocate and trigger GC.
+      // across `GetThisBinding`, key evaluation, and prototype lookup, all of which can allocate
+      // and trigger GC.
       super_scope.push_root(self.this)?;
       if let Some(home) = self.home_object {
         super_scope.push_root(Value::Object(home))?;
       }
+      let actual_this = self.get_this_binding(&mut super_scope)?;
+      super_scope.push_root(actual_this)?;
       let member_value = self.eval_expr(&mut super_scope, &expr.member)?;
       super_scope.push_root(member_value)?;
       let key = self.to_property_key_operator(&mut super_scope, member_value)?;
 
-      // Root the property key before resolving the `this` binding (which can throw and allocate).
+      // Root the property key before computing the super reference (which can allocate).
       match key {
         PropertyKey::String(s) => {
           super_scope.push_root(Value::String(s))?;
@@ -10984,9 +10987,6 @@ impl<'a> Evaluator<'a> {
           super_scope.push_root(Value::Symbol(s))?;
         }
       }
-
-      let actual_this = self.get_this_binding(&mut super_scope)?;
-      super_scope.push_root(actual_this)?;
 
       let super_base = self.super_base(&mut super_scope)?;
       let reference = Reference::SuperProperty {
@@ -11208,8 +11208,10 @@ impl<'a> Evaluator<'a> {
           ));
         }
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          // `super[expr]` evaluates the computed key expression before accessing the `this` binding
-          // so key-expression side effects are preserved even when `this` is uninitialized.
+          // `super[expr]` must resolve the current `this` binding *before* evaluating the computed
+          // key expression. In derived constructors before `super()`, `GetThisBinding` throws a
+          // ReferenceError, and that error must happen before any side effects from evaluating
+          // `expr`.
           let home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
@@ -11219,11 +11221,14 @@ impl<'a> Evaluator<'a> {
           // invoke user code (Proxy traps).
           super_scope.push_roots(&[self.this, Value::Object(home_object)])?;
 
+          let receiver = self.get_this_binding(&mut super_scope)?;
+          super_scope.push_root(receiver)?;
+
           let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
           super_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut super_scope, member_value)?;
 
-          // Root the property key before resolving the `this` binding (which can throw/allocate).
+          // Root the property key before computing the super reference (which can allocate).
           match key {
             PropertyKey::String(s) => {
               super_scope.push_root(Value::String(s))?;
@@ -11232,9 +11237,6 @@ impl<'a> Evaluator<'a> {
               super_scope.push_root(Value::Symbol(s))?;
             }
           }
-
-          let receiver = self.get_this_binding(&mut super_scope)?;
-          super_scope.push_root(receiver)?;
 
           let base = self.super_base(&mut super_scope)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
@@ -13847,20 +13849,23 @@ impl<'a> Evaluator<'a> {
             "optional chaining used with super property access",
           ));
         }
-        // Evaluate the computed key expression (including `ToPropertyKey`) before accessing the
-        // `this` binding so key-expression side effects are preserved.
+        // Resolve the `this` binding before evaluating the computed key expression. In derived
+        // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
+        // before any side effects from evaluating the key expression.
         let mut super_scope = scope.reborrow();
         // Root the raw `this` binding (which may be a derived-constructor state cell) and home
-        // object across key evaluation, which can allocate and trigger GC.
+        // object across `GetThisBinding`, key evaluation, and prototype lookup.
         super_scope.push_root(self.this)?;
         if let Some(home) = self.home_object {
           super_scope.push_root(Value::Object(home))?;
         }
+        let actual_this = self.get_this_binding(&mut super_scope)?;
+        super_scope.push_root(actual_this)?;
         let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
         super_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut super_scope, member_value)?;
 
-        // Root the property key before resolving the `this` binding (which can throw/allocate).
+        // Root the property key before computing the super reference (which can allocate).
         match key {
           PropertyKey::String(s) => {
             super_scope.push_root(Value::String(s))?;
@@ -13869,9 +13874,6 @@ impl<'a> Evaluator<'a> {
             super_scope.push_root(Value::Symbol(s))?;
           }
         }
-
-        let actual_this = self.get_this_binding(&mut super_scope)?;
-        super_scope.push_root(actual_this)?;
 
         let super_base = self.super_base(&mut super_scope)?;
         let reference = Reference::SuperProperty {
