@@ -105,6 +105,21 @@ fn super_in_static_arrow_closure_observes_dynamic_home_object_prototype() {
 }
 
 #[test]
+fn super_method_call_uses_primitive_this_binding_as_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { m() { return typeof this; } }
+        class D extends B { m() { return super.m(); } }
+        D.prototype.m.call(1) === "number"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_method_call_uses_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt
@@ -164,6 +179,28 @@ fn super_property_getter_setter_use_this_binding() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_assignment_to_non_writable_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B {}
+        Object.defineProperty(B.prototype, "x", { value: 0, writable: false, configurable: true });
+        class D extends B {
+          constructor() { super(); }
+          setX() {
+            try { super.x = 1; return "no"; }
+            catch (e) { return e.name + ":" + e.message; }
+          }
+        }
+        new D().setX()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError:Cannot assign to read-only property");
 }
 
 #[test]
@@ -246,6 +283,28 @@ fn super_property_with_null_super_base_throws_type_error() {
           }
         }
         try { new N().m(); "no"; } catch (e) { e.name + ":" + e.message }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError:Cannot convert undefined or null to object");
+}
+
+#[test]
+fn super_property_assignment_with_null_super_base_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class N extends null {
+          constructor() {
+            return Object.create(new.target.prototype);
+          }
+          m() {
+            try { super.x = 1; return "no"; }
+            catch (e) { return e.name + ":" + e.message; }
+          }
+        }
+        new N().m()
       "#,
     )
     .unwrap();
