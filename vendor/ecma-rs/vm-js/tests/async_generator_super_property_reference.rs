@@ -659,3 +659,47 @@ fn async_generator_arrow_captures_lexical_super_and_observes_dynamic_prototype_a
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_arrow_captures_lexical_super_and_observes_dynamic_prototype_across_yield_star(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* inner() { yield "yielded"; return 0; }
+
+      class B1 { m() { return "b1"; } }
+      class D extends B1 {
+        async *gen() {
+          const f = () => super.m();
+          // Suspend via yield* so we cover YieldIteratorResult suspensions.
+          yield* inner();
+          return f();
+        }
+      }
+
+      var proto2 = { m() { return "p2"; } };
+
+      async function f() {
+        const it = (new D()).gen();
+        const r0 = await it.next();
+        Object.setPrototypeOf(D.prototype, proto2);
+        const r1 = await it.next();
+        return (
+          r0.value === "yielded" && r0.done === false &&
+          r1.value === "p2" && r1.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
