@@ -6790,6 +6790,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
           while let Ok(msg) = renderer_backend.recv() {
+            // If the UI message queue has been dropped (window closed or worker restarted), stop
+            // the bridge thread immediately so we don't retain pixmaps or keep the worker→UI
+            // channel alive indefinitely.
+            if worker_msgs_pusher.inner.strong_count() == 0 {
+              break;
+            }
             match msg {
               fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
                 frame_ready_bridge_coalescer.insert(tab_id, frame);
