@@ -37499,6 +37499,7 @@ fn range_end_offset_get_native(
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::Number(offset as f64))
 }
+
 fn range_collapsed_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
