@@ -115,7 +115,7 @@ test-parse:
   bash "{{justfile_directory()}}/scripts/cargo_agent.sh" test -p parse-js
 
 test-vm:
-  bash "{{justfile_directory()}}/scripts/cargo_agent.sh" test -p vm-js
+  timeout -k 10 600 bash "{{justfile_directory()}}/scripts/cargo_agent.sh" test -p vm-js
 
 test-webidl:
   bash "{{justfile_directory()}}/scripts/cargo_agent.sh" test -p webidl

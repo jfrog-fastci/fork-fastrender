@@ -29,7 +29,7 @@ run against the correct workspace *and* pick up the pinned toolchain:
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
-bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
 ```
 
 > Note: the native backend crates (`native-js`, `runtime-native`) require LLVM 18
