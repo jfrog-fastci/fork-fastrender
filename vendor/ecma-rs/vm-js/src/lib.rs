@@ -276,6 +276,10 @@ mod private_brand_check_in_operator_tests;
 mod generators_short_circuit_and_comma_tests;
 
 #[cfg(test)]
+#[path = "../tests/generators_binary_misc_ops_yield.rs"]
+mod generators_binary_misc_ops_yield_tests;
+
+#[cfg(test)]
 #[path = "../tests/class_inheritance_and_super.rs"]
 mod class_inheritance_and_super_tests;
 
