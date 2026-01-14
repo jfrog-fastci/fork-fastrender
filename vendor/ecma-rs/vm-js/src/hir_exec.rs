@@ -13000,6 +13000,118 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Bool(true),
     )
   }
+
+  #[test]
+  fn compiled_async_await_in_call_callee_position() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let fn = await Promise.resolve(() => 3);
+          return (await Promise.resolve(fn))();
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_call_args() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          function add(a, b) { return a + b; }
+          return add(await Promise.resolve(1), await Promise.resolve(2));
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_new_callee_position() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let C = await Promise.resolve(class { constructor() { this.v = 7; } });
+          return new C().v;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(7.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_array_spread() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let arr = [0, ...await Promise.resolve([1, 2]), 3];
+          return arr.join(',');
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("0,1,2,3"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_object_spread_value() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let o = { a: 0, ...(await Promise.resolve({ b: 1 })), c: 2 };
+          return o.a + o.b + o.c;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_template_literal_substitution() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          return `x${await Promise.resolve('y')}z`;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("xyz"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_tagged_template_tag_and_substitution() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          function tag(strings, v) { return strings[0] + v + strings[1]; }
+          return (await Promise.resolve(tag))`a${await Promise.resolve('b')}c`;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("abc"),
+    )
+  }
+
   #[test]
   fn compiled_top_level_await_script_resolves_completion_value() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
