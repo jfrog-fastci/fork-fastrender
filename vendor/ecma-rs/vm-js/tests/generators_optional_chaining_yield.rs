@@ -616,3 +616,99 @@ fn generators_optional_chain_intermediate_short_circuit_skips_yield_in_call_arg(
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_optional_chain_call_evaluates_yield_in_arg_when_not_short_circuited() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const f = (yield 0);
+          const r = f?.(yield 1);
+          return r;
+        }
+
+        function add1(x) { return x + 1; }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(add1);
+        const r3 = it.next(41);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === 42 && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_member_call_preserves_this_binding_across_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          const r = o?.m(yield 1);
+          return r;
+        }
+
+        const obj = {
+          m: function (x) {
+            'use strict';
+            return this === obj && x === 123;
+          }
+        };
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+        const r3 = it.next(123);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_computed_member_call_preserves_this_binding_across_yield_in_key_and_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          const r = o?.[(yield "m")](yield 1);
+          return r;
+        }
+
+        const obj = {
+          m: function (x) {
+            'use strict';
+            return this === obj && x === 456;
+          }
+        };
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+        const r3 = it.next("m");
+        const r4 = it.next(456);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === "m" && r2.done === false &&
+        r3.value === 1 && r3.done === false &&
+        r4.value === true && r4.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
