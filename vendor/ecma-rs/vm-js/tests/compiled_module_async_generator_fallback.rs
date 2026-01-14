@@ -79,7 +79,7 @@ impl VmJobContext for JobCtx<'_> {
 }
 
 #[test]
-fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmError> {
+fn compiled_modules_do_not_require_full_ast_fallback_for_async_generators() -> Result<(), VmError> {
   // Skip cleanly until async generator execution is supported by the interpreter.
   // (Mirrors other async-generator tests.)
   {
@@ -98,8 +98,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
   let mut graph = ModuleGraph::new();
 
   // Module `a` contains an async generator. The compiled (HIR) executor does not support executing
-  // async generator bodies, so compiled-module evaluation must fall back to the AST interpreter
-  // path.
+  // generator bodies (`yield`/`yield*`), but generator functions are instantiated as
+  // interpreter-backed ECMAScript functions so their bodies can execute via per-function AST
+  // evaluation without forcing the entire module onto the AST path.
   let compiled_a = CompiledScript::compile_module(
     &mut heap,
     "a.js",
@@ -109,8 +110,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
   )?;
   let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  // Drop the AST + source so the fallback path must parse on demand from the stored compiled
-  // `SourceText` (`record.compiled.source`).
+  // Drop the AST + source so the module graph cannot rely on a full module AST; async generator
+  // bodies are still executed via per-function AST evaluation (parsed on demand from the compiled
+  // `SourceText` stored on the compiled payload).
   record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
@@ -136,12 +138,11 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
   // Link (instantiate) before evaluating so we can assert which instantiation path each module took.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
 
-  // Ensure we took the intended code paths during instantiation:
-  // - `a` must parse an AST (async-generator fallback),
-  // - `b` should not require an AST (compiled path).
+  // Ensure we took the intended code paths during instantiation: both modules should be able to
+  // instantiate declarations without parsing/retaining a full module AST.
   assert!(
-    graph.module(a).ast.is_some(),
-    "expected async-generator module to fall back to AST and parse on demand"
+    graph.module(a).ast.is_none(),
+    "expected async-generator module to avoid full-module AST parsing during linking"
   );
   assert!(
     graph.module(b).ast.is_none(),
@@ -221,7 +222,7 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
 }
 
 #[test]
-fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(), VmError> {
+fn compiled_modules_do_not_require_full_ast_fallback_for_async_generator_methods() -> Result<(), VmError> {
   // Skip cleanly until async generator execution is supported by the interpreter.
   {
     let vm = Vm::new(VmOptions::default());
@@ -238,8 +239,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(),
 
   let mut graph = ModuleGraph::new();
 
-  // Module `a` contains an async generator *method* (object literal). This must also force the
-  // compiled-module fallback-to-AST path.
+  // Module `a` contains an async generator *method* (object literal). This should still be
+  // instantiable/executable through the compiled module evaluator without requiring a full-module
+  // AST fallback (only the generator body itself runs via AST when invoked).
   let compiled_a = CompiledScript::compile_module(
     &mut heap,
     "a.js",
@@ -278,8 +280,8 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(),
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
 
   assert!(
-    graph.module(a).ast.is_some(),
-    "expected async-generator module to fall back to AST and parse on demand"
+    graph.module(a).ast.is_none(),
+    "expected async-generator module to avoid full-module AST parsing during linking"
   );
   assert!(
     graph.module(b).ast.is_none(),
@@ -355,7 +357,8 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(),
 }
 
 #[test]
-fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Result<(), VmError> {
+fn compiled_modules_do_not_require_full_ast_fallback_for_async_generator_class_methods(
+) -> Result<(), VmError> {
   // Skip cleanly until async generator execution is supported by the interpreter.
   {
     let vm = Vm::new(VmOptions::default());
@@ -372,8 +375,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Resu
 
   let mut graph = ModuleGraph::new();
 
-  // Module `a` contains an async generator *class method*. This must also force the
-  // compiled-module fallback-to-AST path.
+  // Module `a` contains an async generator *class method*. This should still be
+  // instantiable/executable through the compiled module evaluator without requiring a full-module
+  // AST fallback (only the generator body itself runs via AST when invoked).
   let compiled_a = CompiledScript::compile_module(
     &mut heap,
     "a.js",
@@ -412,8 +416,8 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Resu
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
 
   assert!(
-    graph.module(a).ast.is_some(),
-    "expected async-generator module to fall back to AST and parse on demand"
+    graph.module(a).ast.is_none(),
+    "expected async-generator module to avoid full-module AST parsing during linking"
   );
   assert!(
     graph.module(b).ast.is_none(),
@@ -489,7 +493,8 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Resu
 }
 
 #[test]
-fn compiled_modules_fall_back_to_ast_for_async_generators_eval_sync() -> Result<(), VmError> {
+fn compiled_modules_do_not_require_full_ast_fallback_for_async_generators_eval_sync(
+) -> Result<(), VmError> {
   // Skip cleanly until async generator execution is supported by the interpreter.
   {
     let vm = Vm::new(VmOptions::default());
@@ -537,8 +542,8 @@ fn compiled_modules_fall_back_to_ast_for_async_generators_eval_sync() -> Result<
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
 
   assert!(
-    graph.module(a).ast.is_some(),
-    "expected async-generator module to fall back to AST and parse on demand"
+    graph.module(a).ast.is_none(),
+    "expected async-generator module to avoid full-module AST parsing during linking"
   );
   assert!(
     graph.module(b).ast.is_none(),

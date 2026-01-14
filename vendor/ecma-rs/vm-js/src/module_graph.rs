@@ -2037,12 +2037,10 @@ impl ModuleGraph {
         if has_tla {
           // Async module evaluation (TLA) prefers the compiled executor only when the compiled async
           // evaluator can handle the module's top-level await shapes (no AST fallback required).
-          !c.top_level_await_requires_ast_fallback
-            && !c.requires_ast_fallback
-            && !c.contains_async_generators
+          !c.top_level_await_requires_ast_fallback && !c.requires_ast_fallback
         } else {
           // Non-TLA modules prefer the compiled executor only when HIR execution is safe.
-          !c.requires_ast_fallback && !c.contains_async_generators
+          !c.requires_ast_fallback
         }
       });
       if should_instantiate_compiled {
@@ -2877,7 +2875,7 @@ impl ModuleGraph {
         // The fallback path uses the async AST evaluator, which supports arbitrary `await` shapes
         // but stores raw pointers into the `parse-js` AST in its continuation frames.
         let step = if let Some(compiled) = compiled.filter(|c| {
-          !c.contains_async_generators && !c.requires_ast_fallback && !c.top_level_await_requires_ast_fallback
+          !c.requires_ast_fallback && !c.top_level_await_requires_ast_fallback
         }) {
           crate::hir_exec::start_compiled_module_tla_evaluation(
             vm,
@@ -2997,7 +2995,7 @@ impl ModuleGraph {
         // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
         if let Some(script) = compiled.clone() {
-          if !script.contains_async_generators && !script.requires_ast_fallback {
+          if !script.requires_ast_fallback {
             match run_compiled_module(
               vm,
               scope,
@@ -3505,9 +3503,7 @@ impl ModuleGraph {
       let compiled = self.modules[idx].compiled.clone();
       let has_tla = self.modules[idx].has_tla;
       match compiled {
-        Some(script)
-          if !script.requires_ast_fallback && !script.contains_async_generators && !has_tla =>
-        {
+        Some(script) if !script.requires_ast_fallback && !has_tla => {
           run_compiled_module(
             vm,
             scope,

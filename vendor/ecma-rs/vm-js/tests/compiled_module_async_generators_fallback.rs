@@ -68,15 +68,16 @@ fn first_error(errors: Vec<VmError>) -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_module_graph_falls_back_for_async_generators() -> Result<(), VmError> {
+fn compiled_module_graph_does_not_require_full_ast_fallback_for_async_generators() -> Result<(), VmError> {
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
   }
 
-  // Module A exports an async generator; module B imports it and uses `.next()` from inside an async
-  // function. If compiled-module execution does not correctly fall back for async generators, this
-  // tends to fail at runtime once `gen()` is invoked.
+  // Module A exports an async generator; module B imports it and uses `.next()` from inside an
+  // async function. Generator bodies are executed via per-function AST evaluation, so compiled
+  // module execution should *not* require a full-module AST fallback just because async generator
+  // syntax appears in the module.
   let compiled_a = CompiledScript::compile_module(
     rt.heap_mut(),
     "a",
@@ -98,7 +99,7 @@ fn compiled_module_graph_falls_back_for_async_generators() -> Result<(), VmError
   )?;
 
   // Parse module record metadata (imports/exports) but drop the AST so the compiled-module path is
-  // exercised. Async-generator modules must repopulate `ast` on-demand for the fallback evaluator.
+  // exercised.
   let (record_a, record_b) = {
     let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
     let mut record_a =
@@ -112,7 +113,7 @@ fn compiled_module_graph_falls_back_for_async_generators() -> Result<(), VmError
     (record_a, record_b)
   };
 
-  let _a = rt.modules_mut().add_module_with_specifier("a", record_a)?;
+  let a = rt.modules_mut().add_module_with_specifier("a", record_a)?;
   let b = rt.modules_mut().add_module_with_specifier("b", record_b)?;
   rt.modules_mut().link_all_by_specifier();
 
@@ -121,6 +122,21 @@ fn compiled_module_graph_falls_back_for_async_generators() -> Result<(), VmError
 
   let global_object = rt.realm().global_object();
   let realm_id = rt.realm().id();
+
+  // Link first so we can assert no full-module AST fallback was required.
+  {
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    modules.link_with_scope(vm, &mut scope, global_object, realm_id, b)?;
+    assert!(
+      modules.module(a).ast.is_none(),
+      "expected async-generator module to avoid full-module AST parsing during linking"
+    );
+    assert!(
+      modules.module(b).ast.is_none(),
+      "expected compiled module without async generators to avoid AST parsing during linking"
+    );
+  }
 
   // Evaluate module B via the module graph.
   let promise_root = {

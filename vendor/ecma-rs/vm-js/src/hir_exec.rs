@@ -18477,10 +18477,6 @@ pub(crate) fn run_compiled_module(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
-  debug_assert!(
-    !script.contains_async_generators,
-    "run_compiled_module cannot execute async-generator modules; ModuleGraph must fall back to the AST evaluator"
-  );
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -19011,11 +19007,6 @@ pub(crate) fn instantiate_compiled_module_decls(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
-  debug_assert!(
-    !script.contains_async_generators,
-    "instantiate_compiled_module_decls cannot instantiate async-generator modules; ModuleGraph must fall back to the AST evaluator"
-  );
-
   // Module instantiation creates bindings and (for function declarations) pre-creates function
   // objects. Those function objects must capture the instantiating module as `[[ScriptOrModule]]`
   // so nested operations like dynamic `import()` can correctly determine their referrer.
