@@ -118,29 +118,11 @@ fn collect_box_id_to_styled_node_id(box_tree: &BoxTree) -> FxHashMap<usize, usiz
   mapping
 }
 
-fn normalize_selection_range(
-  selection: Option<(usize, usize)>,
-  max_chars: usize,
-) -> Option<(usize, usize)> {
-  selection.and_then(|(start, end)| {
-    let start = start.min(max_chars);
-    let end = end.min(max_chars);
-    if start == end {
-      None
-    } else if start < end {
-      Some((start, end))
-    } else {
-      Some((end, start))
-    }
-  })
-}
-
 fn apply_form_control_paint_state(
   control: &mut crate::tree::box_tree::FormControl,
   node_id: usize,
   interaction_state: Option<&InteractionState>,
 ) {
-  use crate::text::caret::CaretAffinity;
   use crate::tree::box_tree::FormControlKind;
 
   match &mut control.control {
@@ -152,14 +134,12 @@ fn apply_form_control_paint_state(
       ..
     } => {
       let value_char_len = value.chars().count();
-      let mut next_caret = value_char_len;
-      let mut next_affinity = CaretAffinity::Downstream;
-      let mut next_selection: Option<(usize, usize)> = None;
-      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
-        next_caret = edit.caret.min(value_char_len);
-        next_affinity = edit.caret_affinity;
-        next_selection = normalize_selection_range(edit.selection, value_char_len);
-      }
+      let (next_caret, next_affinity, next_selection) =
+        form_controls::text_edit_state_for_value_char_len(
+          interaction_state,
+          node_id,
+          value_char_len,
+        );
       *caret = next_caret;
       *caret_affinity = next_affinity;
       *selection = next_selection;
@@ -174,14 +154,12 @@ fn apply_form_control_paint_state(
       ..
     } => {
       let value_char_len = value.chars().count();
-      let mut next_caret = value_char_len;
-      let mut next_affinity = CaretAffinity::Downstream;
-      let mut next_selection: Option<(usize, usize)> = None;
-      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
-        next_caret = edit.caret.min(value_char_len);
-        next_affinity = edit.caret_affinity;
-        next_selection = normalize_selection_range(edit.selection, value_char_len);
-      }
+      let (next_caret, next_affinity, next_selection) =
+        form_controls::text_edit_state_for_value_char_len(
+          interaction_state,
+          node_id,
+          value_char_len,
+        );
       *caret = next_caret;
       *caret_affinity = next_affinity;
       *selection = next_selection;
