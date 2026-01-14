@@ -457,3 +457,90 @@ fn generator_var_decl_object_destructuring_default_from_yield_star_resumption() 
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_destructuring_assignment_default_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return 9; }
+        function* g() {
+          var a;
+          ([a = yield* inner()] = []);
+          return a;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 9
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_var_decl_array_destructuring_default_from_yield_star_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "suspend"; return 11; }
+        function* g() {
+          var [a = yield* inner()] = [];
+          return a;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        r1.done === false && r1.value === "suspend" &&
+        r2.done === true && r2.value === 11
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_assignment_default_yield_star_not_evaluated_when_present() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "should not run"; return 99; }
+        function* g() {
+          var x;
+          ({a: x = yield* inner()} = {a: 5});
+          return x;
+        }
+        var it = g();
+        var r = it.next();
+        r.done === true && r.value === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_default_yield_star_not_evaluated_when_present() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield "should not run"; return 99; }
+        function* g() {
+          var a;
+          ([a = yield* inner()] = [7]);
+          return a;
+        }
+        var it = g();
+        var r = it.next();
+        r.done === true && r.value === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
