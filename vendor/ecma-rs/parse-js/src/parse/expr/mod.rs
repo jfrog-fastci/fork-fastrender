@@ -859,6 +859,7 @@ impl<'a> Parser<'a> {
       let name = p.id_name(ctx)?;
       Ok(IdExpr { name })
     })?;
+    self.validate_arguments_not_disallowed_in_class_init(expr.loc, &expr.stx.name)?;
     Ok(expr)
   }
 
