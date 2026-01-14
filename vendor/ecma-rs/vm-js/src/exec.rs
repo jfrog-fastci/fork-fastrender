@@ -39912,11 +39912,7 @@ fn gen_eval_assignment_apply_reference(
               };
               (Some(base), Some(key_value), None)
             }
-            Reference::SuperProperty {
-              base,
-              key,
-              receiver,
-            } => {
+            Reference::SuperProperty { base, key, receiver } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
@@ -40005,11 +40001,7 @@ fn gen_eval_assignment_apply_reference(
               };
               (Some(base), Some(key_value), None)
             }
-            Reference::SuperProperty {
-              base,
-              key,
-              receiver,
-            } => {
+            Reference::SuperProperty { base, key, receiver } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),

@@ -23,6 +23,7 @@ use parse_js::ast::expr::pat::{ArrPat, IdPat, ObjPat, Pat};
 use parse_js::ast::expr::{Expr, IdExpr, MemberExpr};
 use parse_js::ast::func::Func;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
+use parse_js::ast::stmt::decl::VarDeclMode;
 use parse_js::ast::stmt::{ForInOfLhs, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
@@ -168,8 +169,8 @@ impl CompiledScript {
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
     // The compiled (HIR) executor does not yet support generator bodies, and it only supports a
-    // subset of async classic scripts (top-level await as a direct statement/initializer/assignment
-    // or a simple top-level `for await..of` loop).
+    // subset of async classic scripts (top-level await as a direct statement/initializer/assignment,
+    // plus top-level `for await..of` loops without nested await).
     //
     // Fall back to the AST interpreter when the script uses unsupported top-level await forms (for
     // example `await` nested inside class static blocks, or `for await..of` bodies that themselves
@@ -699,7 +700,7 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `await <expr>;`
     // - `x = await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
-    // - `for await (x of iterable) { ... }` (no other `await` inside the head, RHS, or body)
+    // - `for await (<head> of <rhs>) { ... }` (no other `await` inside the head, RHS, or body)
     //
     // Any other `await` / `for await..of` form must fall back to the AST interpreter.
     Stmt::Expr(expr_stmt) => {
@@ -738,16 +739,28 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
       }
     }),
     Stmt::ForOf(for_of) => {
-      if for_of.stx.await_ {
-        // Allow the `await_` flag itself (the loop is async), but disallow any nested `await`
-        // expressions in the loop head, RHS, or body until the compiled executor supports general
-        // async statement evaluation.
-        for_in_of_lhs_contains_await(&for_of.stx.lhs)
-          || expr_contains_await(&for_of.stx.rhs)
-          || for_of.stx.body.stx.body.iter().any(stmt_contains_await)
-      } else {
-        stmt_contains_await(stmt)
+      if !for_of.stx.await_ {
+        // `for (x of xs) { await ... }` is not supported in the compiled async script executor.
+        return stmt_contains_await(stmt);
       }
+
+      if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+        return true;
+      }
+      if expr_contains_await(&for_of.stx.rhs) {
+        return true;
+      }
+      if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
+        return true;
+      }
+
+      if let ForInOfLhs::Decl((mode, _)) = &for_of.stx.lhs {
+        if !matches!(*mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
+          return true;
+        }
+      }
+
+      false
     }
     // Other statement kinds must not contain `await` / `for await..of`.
     _ => stmt_contains_await(stmt),

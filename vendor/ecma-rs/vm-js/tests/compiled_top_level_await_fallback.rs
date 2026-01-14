@@ -191,6 +191,82 @@ fn compiled_script_falls_back_for_top_level_for_await_of_with_nested_await() -> 
 }
 
 #[test]
+fn compiled_script_top_level_for_await_of_break_invokes_iterator_return() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_for_await_of_break_invokes_return.js",
+    r#"
+      var out = "";
+      var return_calls = 0;
+      var iter = {
+        i: 0,
+        next: function () {
+          if (this.i++ === 0) return Promise.resolve({ value: "ok", done: false });
+          return Promise.resolve({ value: undefined, done: true });
+        },
+        return: function () {
+          return_calls++;
+          return Promise.resolve({ done: true });
+        },
+      };
+      var iterable = {};
+      iterable[Symbol.asyncIterator] = function () { return iter; };
+
+      for await (var x of iterable) {
+        out = x;
+        break;
+      }
+     out
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level for-await-of should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "top-level for-await-of should not trigger a full AST fallback"
+  );
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // Loop body should not have executed until we run microtasks.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+  let return_calls = rt.exec_script("return_calls")?;
+  assert_eq!(return_calls, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_string(&rt, result), "ok");
+
+  let return_calls = rt.exec_script("return_calls")?;
+  assert_eq!(
+    return_calls,
+    Value::Number(1.0),
+    "breaking out of for-await-of must call iterator.return()"
+  );
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_falls_back_for_await_in_nested_stmt_list() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -220,7 +296,7 @@ fn compiled_script_falls_back_for_await_in_nested_stmt_list() -> Result<(), VmEr
   assert!(rt.heap().is_promise_object(promise_obj));
   assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
 
-  // The conditional body should not have executed until we run microtasks.
+  // Await in the nested statement list should not have executed until we run microtasks.
   let out = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, out), "");
 

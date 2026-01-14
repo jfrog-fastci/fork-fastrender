@@ -14397,29 +14397,32 @@ fn hir_eval_stmt_list_until_await(
             for_await_of_state: Some(state),
           });
         }
-        Ok(ForAwaitOfPoll::Complete(flow)) => match flow {
-          Flow::Normal(v) => {
-            if let Some(v) = v {
-              *last_value_is_set = true;
-              scope.heap_mut().set_root(last_value_root, v);
+        Ok(ForAwaitOfPoll::Complete(flow)) => {
+          state.teardown(scope.heap_mut());
+          match flow {
+            Flow::Normal(v) => {
+              if let Some(v) = v {
+                *last_value_is_set = true;
+                scope.heap_mut().set_root(last_value_root, v);
+              }
+            }
+            Flow::Return(_) => {
+              return Err(VmError::InvariantViolation(
+                "script evaluation produced Return flow (early errors should prevent this)",
+              ))
+            }
+            Flow::Break(..) => {
+              return Err(VmError::InvariantViolation(
+                "script evaluation produced Break flow (early errors should prevent this)",
+              ))
+            }
+            Flow::Continue(..) => {
+              return Err(VmError::InvariantViolation(
+                "script evaluation produced Continue flow (early errors should prevent this)",
+              ))
             }
           }
-          Flow::Return(_) => {
-            return Err(VmError::InvariantViolation(
-              "script evaluation produced Return flow (early errors should prevent this)",
-            ))
-          }
-          Flow::Break(..) => {
-            return Err(VmError::InvariantViolation(
-              "script evaluation produced Break flow (early errors should prevent this)",
-            ))
-          }
-          Flow::Continue(..) => {
-            return Err(VmError::InvariantViolation(
-              "script evaluation produced Continue flow (early errors should prevent this)",
-            ))
-          }
-        },
+        }
         Err(err) => {
           // Ensure persistent roots held by the for-await-of state machine do not leak when
           // evaluation fails before we store the state in a continuation.
