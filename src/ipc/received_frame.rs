@@ -204,7 +204,10 @@ mod tests {
     let frame = make_frame(3, 7, Arc::clone(&current_epoch), tx);
     drop(frame);
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 3 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 3 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -214,14 +217,23 @@ mod tests {
     let current_epoch = Arc::new(AtomicU64::new(1));
 
     let mut map: HashMap<u64, ReceivedFrame> = HashMap::new();
-    map.insert(123, make_frame(10, 1, Arc::clone(&current_epoch), tx.clone()));
+    map.insert(
+      123,
+      make_frame(10, 1, Arc::clone(&current_epoch), tx.clone()),
+    );
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 10 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 10 }
+    );
 
     drop(map);
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 11 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 11 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -234,7 +246,10 @@ mod tests {
     frame.ack();
     drop(frame);
 
-    assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 42 });
+    assert_eq!(
+      rx.try_recv().unwrap(),
+      BrowserToRenderer::FrameAck { frame_seq: 42 }
+    );
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -245,6 +260,31 @@ mod tests {
 
     let frame = make_frame(99, 1, Arc::clone(&current_epoch), tx);
     current_epoch.store(2, Ordering::Release);
+    drop(frame);
+
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+  }
+
+  #[test]
+  fn stale_epoch_is_not_acked_even_if_manually_acked() {
+    let (tx, rx) = mpsc::channel();
+    let current_epoch = Arc::new(AtomicU64::new(1));
+
+    let mut frame = make_frame(99, 1, Arc::clone(&current_epoch), tx);
+    current_epoch.store(2, Ordering::Release);
+    frame.ack();
+    drop(frame);
+
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+  }
+
+  #[test]
+  fn disarm_prevents_ack() {
+    let (tx, rx) = mpsc::channel();
+    let current_epoch = Arc::new(AtomicU64::new(1));
+
+    let mut frame = make_frame(99, 1, current_epoch, tx);
+    frame.disarm();
     drop(frame);
 
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
