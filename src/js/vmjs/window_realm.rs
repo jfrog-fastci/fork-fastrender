@@ -17270,15 +17270,18 @@ fn dom_parser_parse_from_string_native(
     .unwrap_or_default();
 
   let ty_lower = ty.trim().to_ascii_lowercase();
-  let dom = match ty_lower.as_str() {
-    "text/html" => dom2::parse_html_with_options(
-      &markup,
-      crate::dom::DomParseOptions::with_scripting_enabled(false),
-    )
-    .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?,
+  let (dom, content_type_override) = match ty_lower.as_str() {
+    "text/html" => (
+      dom2::parse_html_with_options(
+        &markup,
+        crate::dom::DomParseOptions::with_scripting_enabled(false),
+      )
+      .map_err(|_| VmError::TypeError("DOMParser.parseFromString failed to parse HTML"))?,
+      None,
+    ),
     // DOMParser XML flavors.
-    "application/xml" | "text/xml" | "application/xhtml+xml" | "image/svg+xml" => {
-      match dom2::parse_xml(&markup) {
+    xml_type @ ("application/xml" | "text/xml" | "application/xhtml+xml" | "image/svg+xml") => {
+      let dom = match dom2::parse_xml(&markup) {
         Ok(dom) => dom,
         Err(_) => {
           // Per spec, XML parse errors return a `parsererror` document instead of throwing.
@@ -17289,7 +17292,8 @@ fn dom_parser_parse_from_string_native(
             doc
           })
         }
-      }
+      };
+      (dom, Some(xml_type))
     }
     _ => {
       return Err(VmError::TypeError(
@@ -17357,6 +17361,19 @@ fn dom_parser_parse_from_string_native(
         },
       },
     )?;
+
+    // Preserve the DOM-standard content type for XML documents (e.g. "text/xml", "image/svg+xml")
+    // so `Document.contentType` reflects the requested MIME type.
+    if let Some(content_type_override) = content_type_override {
+      let content_type_key = alloc_key(&mut scope, DOCUMENT_CONTENT_TYPE_KEY)?;
+      let content_type_s = scope.alloc_string(content_type_override)?;
+      scope.push_root(Value::String(content_type_s))?;
+      scope.define_property(
+        document_obj,
+        content_type_key,
+        read_only_data_desc(Value::String(content_type_s)),
+      )?;
+    }
   }
 
   // Register this `Document` wrapper with the DOM platform so Document methods that brand-check via
