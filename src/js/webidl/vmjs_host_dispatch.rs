@@ -10037,7 +10037,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 )?;
               }
             }
-            // `children` is a live HTMLCollection and is kept up to date via `sync_live_html_collections`.
+            // Live HTMLCollections (including `ParentNode.children`) are kept up to date via
+            // `sync_live_html_collections`.
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }

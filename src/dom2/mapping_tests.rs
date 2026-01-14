@@ -20,7 +20,7 @@ fn find_node_id_by_attr_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> 
         namespace,
         attributes,
         ..
-      } => (namespace, attributes),
+      } => (namespace.as_str(), attributes),
       _ => continue,
     };
     let is_html = doc.is_html_case_insensitive_namespace(namespace);

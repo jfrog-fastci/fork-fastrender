@@ -8,25 +8,7 @@ use selectors::context::QuirksMode;
 use super::{Attribute, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn attr_value<'a>(doc: &'a Document, node: NodeId, name: &str) -> Option<&'a str> {
-  let node = doc.node(node);
-  let (namespace, attrs) = match &node.kind {
-    NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => (namespace, attributes),
-    _ => return None,
-  };
-  let is_html = doc.is_html_case_insensitive_namespace(namespace);
-  attrs
-    .iter()
-    .find(|attr| attr.qualified_name_matches(name, is_html))
-    .map(|attr| attr.value.as_str())
+  doc.get_attribute(node, name).ok().flatten()
 }
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
@@ -75,10 +57,7 @@ fn find_inert_descendant_with_class(doc: &Document, class: &str) -> NodeId {
         let is_html = doc.is_html_case_insensitive_namespace(namespace);
         let has_class = attributes.iter().any(|attr| {
           attr.qualified_name_matches("class", is_html)
-            && attr
-              .value
-              .split_ascii_whitespace()
-              .any(|c| c == class)
+            && attr.value.split_ascii_whitespace().any(|c| c == class)
         });
         let id = NodeId(idx);
         (has_class && doc.is_descendant_of_inert_template(id)).then_some(id)

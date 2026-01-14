@@ -6953,7 +6953,7 @@ fn prepare_fragment_tree_paint_state(
                   let preedit = control
                     .ime_preedit
                     .as_ref()
-                    .map(|p| p.text.as_str())
+                    .map(|state| state.text.as_str())
                     .filter(|t| !t.is_empty());
                   let preedit_state = control
                     .ime_preedit

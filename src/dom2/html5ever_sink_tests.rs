@@ -570,7 +570,7 @@ fn find_node_by_id_attribute(doc: &Document, needle: &str) -> Option<NodeId> {
         namespace,
         attributes,
         ..
-      } => (namespace, attributes),
+      } => (namespace.as_str(), attributes),
       _ => return None,
     };
     let is_html = doc.is_html_case_insensitive_namespace(namespace);

@@ -39,7 +39,7 @@ fn node_has_attr(doc: &Document, node: &crate::dom2::Node, name: &str) -> bool {
   };
   attrs
     .iter()
-    .any(|attr| attr.namespace == NULL_NAMESPACE && attr.qualified_name_matches(name, is_html))
+    .any(|attr| attr.qualified_name_matches(name, is_html))
 }
 
 fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) -> Option<&'a str> {
@@ -53,7 +53,7 @@ fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) ->
   };
   attrs
     .iter()
-    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.qualified_name_matches(name, is_html))
+    .find(|attr| attr.qualified_name_matches(name, is_html))
     .map(|attr| attr.value.as_str())
 }
 

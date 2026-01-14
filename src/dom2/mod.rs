@@ -3134,7 +3134,7 @@ mod template_inert_tests {
           namespace,
           attributes,
           ..
-        } => (namespace, attributes),
+        } => (namespace.as_str(), attributes),
         _ => return None,
       };
       let is_html = doc.is_html_case_insensitive_namespace(namespace);
@@ -3244,6 +3244,7 @@ mod template_inert_tests {
     let inert_template_id = doc.nodes().iter().enumerate().find_map(|(idx, node)| {
       let NodeKind::Element {
         tag_name,
+        namespace,
         attributes,
         ..
       } = &node.kind
@@ -3253,9 +3254,10 @@ mod template_inert_tests {
       if !tag_name.eq_ignore_ascii_case("template") {
         return None;
       }
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
       attributes
         .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("shadowroot"))
+        .any(|attr| attr.qualified_name_matches("shadowroot", is_html))
         .then_some(NodeId(idx))
     });
     let inert_template_id = inert_template_id.expect("expected remaining shadowroot template");

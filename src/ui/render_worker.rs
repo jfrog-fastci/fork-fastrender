@@ -4277,6 +4277,7 @@ impl BrowserRuntime {
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
             // gesture for numeric stepping (instead of scrolling the page).
+            // gesture for numeric stepping (instead of scrolling the page).
             let scroll_snapshot = tab.scroll_state.clone();
             let hit_tree = hit_test_fragment_tree_for_scroll_cached(
               &mut tab.hit_test_fragment_tree_cache,
@@ -7372,11 +7373,8 @@ impl BrowserRuntime {
     let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     let viewport_point =
       viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
-    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
-      &mut tab.hit_test_fragment_tree_cache,
-      doc,
-      scroll,
-    );
+    let hit_tree =
+      hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll);
     let engine = &mut tab.interaction;
 
     let (changed, target_id, target_element_id) = match doc.mutate_dom_with_layout_artifacts(
@@ -8560,11 +8558,8 @@ impl BrowserRuntime {
     let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     let viewport_point =
       viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
-    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
-      &mut tab.hit_test_fragment_tree_cache,
-      doc,
-      scroll,
-    );
+    let hit_tree =
+      hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll);
 
     // ---------------------------------------------------------------------------
     // JS `drop` event dispatch
@@ -8744,11 +8739,8 @@ impl BrowserRuntime {
       text_control_readonly: bool,
     }
 
-    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
-      &mut tab.hit_test_fragment_tree_cache,
-      doc,
-      scroll,
-    );
+    let hit_tree =
+      hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll);
     let engine = &mut tab.interaction;
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -14410,11 +14402,11 @@ mod tick_hint_tests {
     let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
     let worker_rx = WorkerToUiInbox::new(worker_rx);
+    let ui_tx = WorkerToUiSender::new(worker_tx, None);
 
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let ui_tx = WorkerToUiSender::new(worker_tx, None);
     let mut runtime = BrowserRuntime::new(ui_rx, ui_tx, factory, downloads);
 
     let tab_id = TabId::new();

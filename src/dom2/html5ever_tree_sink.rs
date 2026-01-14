@@ -1663,13 +1663,13 @@ mod tests {
     assert!(
       attributes
         .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "a"),
+        .any(|attr| attr.qualified_name_matches("id", true) && attr.value == "a"),
       "expected existing id attribute to be preserved"
     );
     assert!(
       attributes
         .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("class") && attr.value == "c"),
+        .any(|attr| attr.qualified_name_matches("class", true) && attr.value == "c"),
       "expected missing class attribute to be added"
     );
     assert_eq!(

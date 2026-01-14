@@ -4232,7 +4232,7 @@ mod tests {
           && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
           && attributes
             .iter()
-            .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id_value) =>
+            .any(|attr| attr.qualified_name_matches("id", true) && attr.value == id_value) =>
         {
           Some(crate::dom2::NodeId::from_index(idx))
         }
@@ -7294,7 +7294,7 @@ html { scroll-snap-type: y mandatory; }
         assert!(tag_name.eq_ignore_ascii_case("div"));
         let id_attr = attributes
           .iter()
-          .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+          .find(|attr| attr.qualified_name_matches("id", true))
           .map(|attr| attr.value.as_str());
         assert_eq!(id_attr, Some("target"));
       }
@@ -7333,7 +7333,7 @@ html { scroll-snap-type: y mandatory; }
         assert!(tag_name.eq_ignore_ascii_case("div"));
         let id_attr = attributes
           .iter()
-          .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+          .find(|attr| attr.qualified_name_matches("id", true))
           .map(|attr| attr.value.as_str());
         assert_eq!(id_attr, Some("after"));
       }

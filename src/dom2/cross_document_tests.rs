@@ -4,12 +4,24 @@ use selectors::context::QuirksMode;
 
 use super::{clone_node_into_document, Document, DomError, NodeId, NodeKind};
 
-fn id_attribute(kind: &NodeKind) -> Option<&str> {
+fn id_attribute<'a>(doc: &Document, kind: &'a NodeKind) -> Option<&'a str> {
   match kind {
-    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-      .iter()
-      .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
-      .map(|attr| attr.value.as_str()),
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => {
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
+      attributes
+        .iter()
+        .find(|attr| attr.qualified_name_matches("id", is_html))
+        .map(|attr| attr.value.as_str())
+    }
     _ => None,
   }
 }
@@ -17,7 +29,7 @@ fn id_attribute(kind: &NodeKind) -> Option<&str> {
 fn find_in_subtree_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeId> {
   doc
     .subtree_preorder(root)
-    .find(|&node_id| id_attribute(&doc.node(node_id).kind) == Some(id))
+    .find(|&node_id| id_attribute(doc, &doc.node(node_id).kind) == Some(id))
 }
 
 fn find_first_html_script(doc: &Document) -> NodeId {
@@ -869,7 +881,7 @@ fn import_html_script_matches_clone_semantics() {
       assert!(
         attributes
           .iter()
-          .any(|attr| attr.qualified_name().as_ref() == "ASYNC" && attr.value.is_empty()),
+          .any(|attr| attr.prefix.is_none() && attr.local_name == "ASYNC" && attr.value.is_empty()),
         "expected attributes to be preserved exactly"
       );
     }

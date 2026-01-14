@@ -1129,9 +1129,21 @@ fn import_node_from_document_clones_clonable_shadow_root_when_deep_false() {
     doc
       .subtree_preorder(root)
       .find(|&node_id| match &doc.node(node_id).kind {
-        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-          .iter()
-          .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id),
+        NodeKind::Element {
+          namespace,
+          attributes,
+          ..
+        }
+        | NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => {
+          let is_html = doc.is_html_case_insensitive_namespace(namespace);
+          attributes
+            .iter()
+            .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
+        }
         _ => false,
       })
   }

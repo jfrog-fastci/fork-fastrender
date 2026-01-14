@@ -561,6 +561,7 @@ impl SessionAutosave {
       None,
       save_fn,
       &spawner,
+      &spawner,
     )
   }
 
@@ -601,14 +602,14 @@ impl SessionAutosave {
     // Preserve the initial snapshot for a synchronous fallback in case thread spawning fails.
     let initial_session_cell = Arc::new(Mutex::new(initial_session));
 
+    let path_for_thread = path.clone();
+    let initial_session_for_thread = Arc::clone(&initial_session_cell);
     let join = spawner.spawn("browser_session_autosave".to_string(), {
       let write_count = Arc::clone(&write_count);
       let status = Arc::clone(&status);
       let save_fn = Arc::clone(&save_fn);
-      let path_for_thread = path;
-      let initial_session_cell = Arc::clone(&initial_session_cell);
       move || {
-        let initial_session = initial_session_cell
+        let initial_session = initial_session_for_thread
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
           .take();
@@ -627,7 +628,7 @@ impl SessionAutosave {
 
     match join {
       Ok(join) => Self {
-        path: path_for_struct,
+        path,
         tx: Some(tx),
         join: Some(join),
         sync_fallback: None,
@@ -1084,12 +1085,12 @@ fn session_writer_thread(
 ) {
   let (mut current_session, mut last_write_result, mut needs_corrupt_quarantine) =
     session_startup_unclean_marker(
-    &path,
-    initial_session,
-    &write_count,
-    status.as_ref(),
-    &save_fn,
-  );
+      path.as_path(),
+      initial_session,
+      write_count.as_ref(),
+      status.as_ref(),
+      &save_fn,
+    );
 
   // (session, updated_at, first_pending_at)
   let mut pending: Option<(BrowserSession, Instant, Instant)> = None;
@@ -1244,7 +1245,7 @@ fn session_writer_thread(
 fn session_startup_unclean_marker(
   path: &Path,
   initial_session: Option<BrowserSession>,
-  write_count: &Arc<AtomicUsize>,
+  write_count: &AtomicUsize,
   status: &SessionAutosaveStatusShared,
   save_fn: &SaveSessionFn,
 ) -> (BrowserSession, Result<(), String>, bool) {

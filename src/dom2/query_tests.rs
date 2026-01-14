@@ -28,7 +28,7 @@ fn find_node_by_id_attr(doc: &Document, id: &str) -> NodeId {
           namespace,
           attributes,
           ..
-        } => (namespace, attributes),
+        } => (namespace.as_str(), attributes),
         _ => return None,
       };
       let is_html = doc.is_html_case_insensitive_namespace(namespace);
@@ -417,7 +417,7 @@ fn selector_apis_work_for_inert_template_subtrees() {
         namespace,
         attributes,
         ..
-      } => (namespace, attributes),
+      } => (namespace.as_str(), attributes),
       _ => continue,
     };
     let is_html = doc.is_html_case_insensitive_namespace(namespace);

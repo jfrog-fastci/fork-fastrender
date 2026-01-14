@@ -160,13 +160,23 @@ fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
 
 fn find_node_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
   for node_id in doc.subtree_preorder(doc.root()) {
-    let (NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. }) = &doc.node(node_id).kind
-    else {
-      continue;
+    let (namespace, attributes) = match &doc.node(node_id).kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace.as_str(), attributes.as_slice()),
+      _ => continue,
     };
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     if attributes
       .iter()
-      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
     {
       return Some(node_id);
     }
@@ -2006,6 +2016,7 @@ fn template_contents_event_path_does_not_include_template_document_or_window() {
   for id in doc.subtree_preorder(doc.root()) {
     let NodeKind::Element {
       tag_name,
+      namespace,
       attributes,
       ..
     } = &doc.node(id).kind
@@ -2018,9 +2029,10 @@ fn template_contents_event_path_does_not_include_template_document_or_window() {
     }
 
     if tag_name.eq_ignore_ascii_case("div") {
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
       let id_attr = attributes
         .iter()
-        .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+        .find(|attr| attr.qualified_name_matches("id", is_html))
         .map(|attr| attr.value.as_str());
       match id_attr {
         Some("in") => in_id = Some(id),
@@ -3149,7 +3161,7 @@ fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
   match kind {
     NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
       .iter()
-      .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+      .find(|attr| attr.qualified_name_matches("id", /* is_html */ true))
       .map(|attr| attr.value.as_str()),
     _ => None,
   }

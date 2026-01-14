@@ -2,12 +2,24 @@
 
 use super::{MutationObserverInit, MutationRecordType, NodeId, NodeKind};
 
-fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
+fn node_id_attribute<'a>(doc: &super::Document, kind: &'a NodeKind) -> Option<&'a str> {
   match kind {
-    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-      .iter()
-      .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
-      .map(|attr| attr.value.as_str()),
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => {
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
+      attributes
+        .iter()
+        .find(|attr| attr.qualified_name_matches("id", is_html))
+        .map(|attr| attr.value.as_str())
+    }
     _ => None,
   }
 }
@@ -17,7 +29,7 @@ fn find_node_by_id(doc: &super::Document, id: &str) -> Option<NodeId> {
     .nodes()
     .iter()
     .enumerate()
-    .find_map(|(idx, node)| (node_id_attribute(&node.kind) == Some(id)).then_some(NodeId(idx)))
+    .find_map(|(idx, node)| (node_id_attribute(doc, &node.kind) == Some(id)).then_some(NodeId(idx)))
 }
 
 #[test]
