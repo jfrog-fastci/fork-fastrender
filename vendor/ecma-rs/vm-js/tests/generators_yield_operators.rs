@@ -1008,3 +1008,31 @@ fn generators_yield_in_object_literals_computed_method_symbol_key() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_object_literals_proto_setter_and_super() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // Ensure an object literal that suspends while evaluating a `__proto__` setter value still
+        // produces methods with a valid [[HomeObject]] for `super` resolution.
+        const proto = { get x() { return this.y + 1; } };
+        function* g() {
+          const o = {
+            __proto__: (yield "proto"),
+            y: 41,
+            m() { return super.x; },
+          };
+          return Object.getPrototypeOf(o) === proto && o.m() === 42;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(proto);
+        r1.value === "proto" && r1.done === false &&
+          r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
