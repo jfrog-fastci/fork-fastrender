@@ -297,6 +297,7 @@ pub enum PlaybackState {
   Playing,
   Paused,
 }
+
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media
 /// **timeline time** that supports pause/seek/playbackRate.
 ///
@@ -320,7 +321,6 @@ pub enum PlaybackState {
 ///
 /// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
 /// `playing` remains `true`).
-
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
 
