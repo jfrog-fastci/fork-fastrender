@@ -4652,6 +4652,38 @@ html, body { margin: 0; padding: 0; }
       (snapped_after - 85.0).abs() < 0.5,
       "expected element scroller to re-snap to 85px, got {snapped_after}"
     );
+
+    // Scroll anchoring should be exposed as an element scroll delta so downstream systems can
+    // treat it like a scroll event.
+    let expected_delta_y = snapped_after - snapped_before;
+    assert!(
+      expected_delta_y.abs() > 0.5,
+      "expected scroll anchoring to adjust the element scroll offset; got delta={expected_delta_y}"
+    );
+    let state = doc.scroll_state();
+    assert!(
+      state.viewport_delta == Point::ZERO,
+      "expected viewport_delta to remain unchanged, got {:?}",
+      state.viewport_delta
+    );
+    let actual_delta_y = state.element_delta(scroller_box_id).y;
+    assert!(
+      (actual_delta_y - expected_delta_y).abs() < 0.5 && actual_delta_y.abs() > 0.1,
+      "expected element_delta.y to match anchoring adjustment ({expected_delta_y}), got {actual_delta_y}"
+    );
+
+    // Painting from cache should preserve the delta (and not overwrite it with 0).
+    let painted = doc.paint_from_cache_frame_with_deadline(None)?;
+    let painted_delta_y = painted.scroll_state.element_delta(scroller_box_id).y;
+    assert!(
+      (painted_delta_y - expected_delta_y).abs() < 0.5 && painted_delta_y.abs() > 0.1,
+      "expected paint to preserve element_delta.y ({expected_delta_y}), got {painted_delta_y}"
+    );
+    let stored_delta_y = doc.scroll_state().element_delta(scroller_box_id).y;
+    assert!(
+      (stored_delta_y - expected_delta_y).abs() < 0.5,
+      "expected BrowserDocumentDom2 element_scroll_deltas to sync to {expected_delta_y}, got {stored_delta_y}"
+    );
     Ok(())
   }
 
@@ -4691,6 +4723,33 @@ html { scroll-snap-type: y mandatory; }
     assert!(
       (snapped_after - 85.0).abs() < 0.5,
       "expected viewport to re-snap to 85px, got {snapped_after}"
+    );
+
+    // Scroll anchoring should be exposed as a viewport delta so downstream systems can treat it
+    // like a scroll event.
+    let expected_delta_y = snapped_after - snapped_before;
+    assert!(
+      expected_delta_y.abs() > 0.5,
+      "expected scroll anchoring to adjust the viewport scroll offset; got delta={expected_delta_y}"
+    );
+    let state = doc.scroll_state();
+    let actual_delta_y = state.viewport_delta.y;
+    assert!(
+      (actual_delta_y - expected_delta_y).abs() < 0.5 && actual_delta_y.abs() > 0.1,
+      "expected viewport_delta.y to match anchoring adjustment ({expected_delta_y}), got {actual_delta_y}"
+    );
+
+    // Painting from cache should preserve the delta (and not overwrite it with 0).
+    let painted = doc.paint_from_cache_frame_with_deadline(None)?;
+    let painted_delta_y = painted.scroll_state.viewport_delta.y;
+    assert!(
+      (painted_delta_y - expected_delta_y).abs() < 0.5 && painted_delta_y.abs() > 0.1,
+      "expected paint to preserve viewport_delta.y ({expected_delta_y}), got {painted_delta_y}"
+    );
+    let stored_delta_y = doc.scroll_state().viewport_delta.y;
+    assert!(
+      (stored_delta_y - expected_delta_y).abs() < 0.5,
+      "expected BrowserDocumentDom2 scroll_delta.y to sync to {expected_delta_y}, got {stored_delta_y}"
     );
     Ok(())
   }

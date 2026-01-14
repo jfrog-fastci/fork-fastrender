@@ -748,6 +748,71 @@ mod tests {
   }
 
   #[test]
+  fn scroll_anchoring_updates_viewport_scroll_delta() -> Result<()> {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      /* Exclude #top from being a scroll anchor so the anchor below is selected. */
+      #top { height: 200px; overflow-anchor: none; }
+      #anchor { height: 20px; }
+      #more { height: 2000px; }
+    </style>
+  </head>
+  <body>
+    <div id="top"></div>
+    <div id="anchor">anchor</div>
+    <div id="more"></div>
+  </body>
+</html>"#;
+
+    // Start with a non-zero scroll offset but a zero delta so any scroll delta we observe after the
+    // DOM mutation comes from scroll anchoring (relayout adjustment), not programmatic scroll input.
+    let initial_scroll_y = 50.0;
+    let mut doc = BrowserDocument2::from_html(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_scroll(0.0, initial_scroll_y)
+        .with_scroll_delta(0.0, 0.0),
+    )?;
+    doc.render_frame_with_deadlines(None)?;
+
+    // Grow the content above the anchor; scroll anchoring should adjust the viewport scroll offset.
+    let top = doc.dom().get_element_by_id("top").expect("#top");
+    assert!(
+      doc.mutate_dom(|dom| {
+        dom
+          .set_attribute(top, "style", "height: 250px;")
+          .expect("set attribute")
+      }),
+      "expected DOM mutation to update #top height"
+    );
+
+    let frame = doc.render_frame_with_deadlines(None)?;
+    let after_scroll_y = frame.scroll_state.viewport.y;
+    let expected_after_scroll_y = initial_scroll_y + 50.0;
+    assert!(
+      (after_scroll_y - expected_after_scroll_y).abs() < 0.5,
+      "expected scroll anchoring to adjust viewport.y to {expected_after_scroll_y}, got {after_scroll_y}"
+    );
+
+    let expected_delta_y = after_scroll_y - initial_scroll_y;
+    assert!(
+      expected_delta_y.abs() > 0.5,
+      "expected scroll anchoring to produce a non-zero delta, got {expected_delta_y}"
+    );
+    let actual_delta_y = frame.scroll_state.viewport_delta.y;
+    assert!(
+      (actual_delta_y - expected_delta_y).abs() < 0.5,
+      "expected viewport_delta.y to match anchoring adjustment ({expected_delta_y}), got {actual_delta_y}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn realtime_animation_sampling_progresses_with_virtual_clock() -> Result<()> {
     let options = RenderOptions::new()
       .with_viewport(2, 2)
