@@ -471,10 +471,11 @@ pub fn bookmarks_manager_side_panel(
           );
 
           ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let choose_button = egui::Button::new(egui::RichText::new("Choose file…").small());
+            let choose_button =
+              egui::Button::new(egui::RichText::new("Choose save location…").small());
             let choose_resp = ui.add_enabled(!state.io_job.is_busy(), choose_button);
             choose_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose export file")
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose export save location")
             });
             if choose_resp.clicked() {
               out.request_pick_export_file = true;
@@ -2031,11 +2032,11 @@ mod tests {
     ensure_import_export_open(&ctx, &mut state, &mut store);
 
     let (_out, output) = bm_frame(&ctx, &mut state, &mut store, Vec::new());
-    let mut choose_positions = find_text_centers(&output.shapes, "Choose file…");
+    let mut choose_positions = find_text_centers(&output.shapes, "Choose save location…");
     choose_positions.sort_by(|a, b| a.y.total_cmp(&b.y));
     let choose_pos = *choose_positions
       .first()
-      .expect("failed to find Choose file… button for export");
+      .expect("failed to find Choose save location… button for export");
 
     let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
     assert!(out.request_pick_export_file);
