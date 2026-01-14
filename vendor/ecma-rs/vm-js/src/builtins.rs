@@ -427,6 +427,21 @@ fn define_properties(
       vm.tick()?;
     }
 
+    // `Object.defineProperties` only considers enumerable own properties of `properties`.
+    //
+    // Spec: https://tc39.es/ecma262/#sec-objectdefineproperties
+    // (via `EnumerableOwnProperties`).
+    //
+    // This is observable for Function objects, which have many non-enumerable built-in properties
+    // like "length"/"name". We must not attempt to treat those as property descriptor objects.
+    let enumerable = match scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, props_obj, key)? {
+      Some(desc) => desc.enumerable,
+      None => false,
+    };
+    if !enumerable {
+      continue;
+    }
+
     // `descValue = ? Get(properties, key)`
     let desc_value = scope.get_with_host_and_hooks(
       vm,
@@ -588,6 +603,25 @@ fn object_constructor_impl(
   new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
+
+  // Spec: https://tc39.es/ecma262/#sec-object-value
+  //
+  // When `%Object%` is invoked as a constructor with a `newTarget` that is not the active function
+  // (i.e. via subclassing / `Reflect.construct`), it ignores the `value` argument entirely and
+  // returns a fresh object from the `newTarget` constructor.
+  if new_target != Value::Object(intr.object_constructor()) {
+    let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+      vm,
+      scope,
+      host,
+      hooks,
+      new_target,
+      intr.object_prototype(),
+      &[],
+      |scope| scope.alloc_object(),
+    )?;
+    return Ok(Value::Object(obj));
+  }
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
   match arg0 {
@@ -11019,8 +11053,12 @@ pub fn object_prototype___proto___set(
   let mut scope = scope.reborrow();
   scope.push_roots(&[Value::Object(obj), proto_arg])?;
 
-  // `[[SetPrototypeOf]]` returns a boolean; per spec we return `undefined` regardless of success.
-  let _ = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, obj, proto)?;
+  // `[[SetPrototypeOf]]` returns a boolean; per spec we return `undefined` on success and throw a
+  // `TypeError` when it returns `false`.
+  let ok = scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, obj, proto)?;
+  if !ok {
+    return Err(VmError::TypeError("Object.prototype.__proto__ setter failed"));
+  }
   Ok(Value::Undefined)
 }
 
@@ -11041,15 +11079,16 @@ pub fn object_prototype___define_getter__(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
-  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
-  let key = scope.to_property_key(vm, host, hooks, prop)?;
-  root_property_key(&mut scope, key)?;
-
   let getter = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Spec: `IsCallable(getter)` is checked before `ToPropertyKey(P)` (`getter-non-callable.js`).
   if !scope.heap().is_callable(getter)? {
     return Err(VmError::TypeError("__defineGetter__ requires a callable getter"));
   }
   scope.push_root(getter)?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
 
   scope.define_property_or_throw_with_host_and_hooks(
     vm,
@@ -11084,15 +11123,16 @@ pub fn object_prototype___define_setter__(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
-  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
-  let key = scope.to_property_key(vm, host, hooks, prop)?;
-  root_property_key(&mut scope, key)?;
-
   let setter = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Spec: `IsCallable(setter)` is checked before `ToPropertyKey(P)` (`setter-non-callable.js`).
   if !scope.heap().is_callable(setter)? {
     return Err(VmError::TypeError("__defineSetter__ requires a callable setter"));
   }
   scope.push_root(setter)?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
 
   scope.define_property_or_throw_with_host_and_hooks(
     vm,
@@ -30283,6 +30323,134 @@ mod object_builtins_regression_tests {
             okAsyncFn &&
             okAsyncProxy
           );
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_define_getter_checks_callable_before_to_property_key() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const sentinel = {};
+          const prop = { toString() { throw sentinel; } };
+          try {
+            Object.prototype.__defineGetter__.call({}, prop, 123);
+          } catch (e) {
+            // `ToPropertyKey` must not run, so we should observe a TypeError rather than `sentinel`.
+            return e instanceof TypeError;
+          }
+          return false;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_define_setter_checks_callable_before_to_property_key() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const sentinel = {};
+          const prop = { toString() { throw sentinel; } };
+          try {
+            Object.prototype.__defineSetter__.call({}, prop, 123);
+          } catch (e) {
+            // `ToPropertyKey` must not run, so we should observe a TypeError rather than `sentinel`.
+            return e instanceof TypeError;
+          }
+          return false;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_proto_set_throws_when_set_prototype_of_returns_false() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const o = {};
+          const p = {};
+          Object.preventExtensions(o);
+          try {
+            o.__proto__ = p;
+          } catch (e) {
+            return e instanceof TypeError && Object.getPrototypeOf(o) === Object.prototype;
+          }
+          return false;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_proto_set_allows_cycles_behind_proxy_boundary() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          var root = {};
+          var intermediary = new Proxy(Object.create(root), {});
+          var leaf = Object.create(intermediary);
+          root.__proto__ = leaf;
+          return Object.getPrototypeOf(root) === leaf;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_constructor_subclass_ignores_argument_value() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          class O extends Object {}
+
+          var o1 = new O({a: 1});
+          var o2 = Reflect.construct(Object, [{b: 2}], O);
+
+          return (
+            o1.a === undefined &&
+            o2.b === undefined &&
+            Object.getPrototypeOf(o1) === O.prototype &&
+            Object.getPrototypeOf(o2) === O.prototype
+          );
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_define_properties_ignores_non_enumerable_properties_of_properties_object() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const target = {};
+          function props() {}
+          // Functions have non-enumerable built-ins like "length" and "name". These must be ignored
+          // by `Object.defineProperties` when collecting property descriptor objects.
+          props.x = { value: 1, writable: true, enumerable: true, configurable: true };
+          Object.defineProperties(target, props);
+          return target.x === 1 && Object.keys(target).length === 1;
         })()
       "#,
     )?;

@@ -242,7 +242,24 @@ impl<'a> Scope<'a> {
       return proxy_set_prototype_of(vm, self, host, hooks, obj, proto);
     }
 
-    // OrdinarySetPrototypeOf (ECMA-262).
+    // ImmutablePrototypeExoticObject (ECMA-262 §9.4.7.1) for `%Object.prototype%`.
+    //
+    // `Object.prototype`'s `[[SetPrototypeOf]]` is special-cased by the spec: it returns `true` when
+    // `V` is the current prototype and `false` otherwise (even if `OrdinarySetPrototypeOf` would
+    // normally succeed).
+    if let Some(intr) = vm.intrinsics() {
+      if obj == intr.object_prototype() {
+        let current = self.heap().object_prototype(obj)?;
+        return Ok(current == proto);
+      }
+    }
+
+    // OrdinarySetPrototypeOf (ECMA-262 §9.1.2.1).
+    //
+    // Note: cycle detection must stop when a non-ordinary `[[GetPrototypeOf]]` is encountered. In
+    // practice this means Proxy objects: if `proto`'s chain reaches a Proxy, we stop the check and
+    // allow the prototype to be set even if it could create an indirect cycle (test262:
+    // `built-ins/Object/prototype/__proto__/set-cycle-shadowed.js`).
     let current = self.heap().object_prototype(obj)?;
     if current == proto {
       return Ok(true);
@@ -251,11 +268,42 @@ impl<'a> Scope<'a> {
       return Ok(false);
     }
 
-    match self.heap_mut().object_set_prototype(obj, proto) {
-      Ok(()) => Ok(true),
-      Err(VmError::PrototypeCycle | VmError::PrototypeChainTooDeep) => Ok(false),
-      Err(e) => Err(e),
+    // Cycle / hostile-chain checks. This is the spec's `p` walk (OrdinarySetPrototypeOf step 6+),
+    // with extra guards against deep/cyclic chains to keep the VM from looping forever on
+    // invariant-violating heaps.
+    let mut p = proto;
+    let mut steps = 0usize;
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    while let Some(candidate) = p {
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Ok(false);
+      }
+      steps += 1;
+
+      if candidate == obj {
+        return Ok(false);
+      }
+
+      // Stop if `candidate.[[GetPrototypeOf]]` is not ordinary (Proxy).
+      if self.heap().is_proxy_object(candidate) {
+        break;
+      }
+
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !visited.insert(candidate) {
+        return Ok(false);
+      }
+
+      // Ordinary object: advance to its `[[Prototype]]` internal slot.
+      p = self.heap().object_prototype(candidate)?;
     }
+
+    // We performed the necessary checks above; set the prototype without the heap-level cycle
+    // check so Proxy boundaries remain observable.
+    unsafe { self.heap_mut().object_set_prototype_unchecked(obj, proto)? };
+    Ok(true)
   }
 
   /// Internal method `[[OwnPropertyKeys]]`, dispatching on Proxy objects.
