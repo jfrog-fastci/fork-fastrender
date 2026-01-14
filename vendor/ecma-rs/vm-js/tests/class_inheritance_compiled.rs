@@ -424,3 +424,52 @@ fn derived_ctor_arrow_super_computed_update_before_super_does_not_evaluate_key_c
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_param_arrow_this_before_and_after_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok_before = false;
+      var ok_after = false;
+      class B {}
+      class D extends B {
+        constructor(f = () => this) {
+          try { f(); } catch (e) { ok_before = e instanceof ReferenceError; }
+          super();
+          ok_after = f() instanceof D;
+        }
+      }
+      new D();
+      ok_before && ok_after
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_param_arrow_super_method_call_before_and_after_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok_before = false;
+      var ok_after = false;
+      class B { __m() { return this.__x; } }
+      class D extends B {
+        constructor(f = () => super.__m()) {
+          try { f(); } catch (e) { ok_before = e instanceof ReferenceError; }
+          super();
+          this.__x = 123;
+          ok_after = f() === 123;
+        }
+      }
+      new D();
+      ok_before && ok_after
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
