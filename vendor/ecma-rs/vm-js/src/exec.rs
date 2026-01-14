@@ -16076,8 +16076,20 @@ impl<'a> Evaluator<'a> {
                 let key = PropertyKey::from_string(name_s);
                 self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
               }
-              Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => {
+              Reference::Property { key, .. } => {
                 self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
+              }
+              Reference::SuperProperty { key, .. } => {
+                // `super[expr]` stores the raw property-name *value* and defers `ToPropertyKey`
+                // conversion until `PutValue` (see `Reference::SuperProperty` docs). Avoid calling
+                // `ToPropertyKey` here when it would invoke user code (object keys), because
+                // `NamedEvaluation` runs before evaluating the RHS.
+                if matches!(key, Value::Object(_)) {
+                  self.eval_expr(&mut rhs_scope, &expr.right)?
+                } else {
+                  let key = self.to_property_key_operator(&mut rhs_scope, key)?;
+                  self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
+                }
               }
               _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
             };
