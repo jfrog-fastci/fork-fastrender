@@ -93,4 +93,60 @@ fn merge_conflict_marker_script_reports_offenders() {
     !stderr.contains(":right"),
     "did not expect stderr to include non-marker lines, got:\n{stderr}"
   );
+
+  // Ensure the script's default mode (repo scan) does not miss tracked files that happen to match a
+  // `.gitignore` entry. (ripgrep respects `.gitignore` even for tracked files, so we prefer `git grep`
+  // when scanning the repository.)
+  if Command::new("git").arg("--version").output().is_err() {
+    eprintln!("git not available; skipping repo-mode conflict-marker guard script test");
+    return;
+  }
+
+  let repo_dir = tempdir().expect("create temp git repo for conflict marker guard script test");
+  let repo_path = repo_dir.path();
+  fs::create_dir_all(repo_path.join("scripts")).expect("create scripts dir for temp repo");
+  let copied_script = repo_path.join("scripts/ci_check_no_merge_conflicts.sh");
+  fs::copy(&script, &copied_script).expect("copy ci_check_no_merge_conflicts.sh into temp repo");
+
+  let init_status = Command::new("git")
+    .arg("init")
+    .current_dir(repo_path)
+    .status()
+    .expect("git init temp repo");
+  assert!(init_status.success(), "expected git init to succeed");
+
+  fs::write(repo_path.join(".gitignore"), "*.rs\n").expect("write .gitignore fixture");
+  fs::write(repo_path.join("ignored.rs"), "<<<<<<< HEAD\n").expect("write ignored.rs fixture");
+
+  let add_ignore = Command::new("git")
+    .args(["add", ".gitignore"])
+    .current_dir(repo_path)
+    .status()
+    .expect("git add .gitignore");
+  assert!(add_ignore.success(), "expected git add .gitignore to succeed");
+
+  let add_file = Command::new("git")
+    .args(["add", "-f", "ignored.rs"])
+    .current_dir(repo_path)
+    .status()
+    .expect("git add -f ignored.rs");
+  assert!(add_file.success(), "expected git add -f ignored.rs to succeed");
+
+  let repo_scan = Command::new("bash")
+    .arg(&copied_script)
+    .output()
+    .expect("run copied ci_check_no_merge_conflicts.sh in temp repo");
+  assert!(
+    !repo_scan.status.success(),
+    "expected repo scan to fail; status={:?}\nstderr:\n{}\nstdout:\n{}",
+    repo_scan.status.code(),
+    String::from_utf8_lossy(&repo_scan.stderr),
+    String::from_utf8_lossy(&repo_scan.stdout)
+  );
+
+  let repo_stderr = String::from_utf8_lossy(&repo_scan.stderr);
+  assert!(
+    repo_stderr.contains("ignored.rs:1:"),
+    "expected repo scan stderr to include ignored.rs hit; got:\n{repo_stderr}"
+  );
 }
