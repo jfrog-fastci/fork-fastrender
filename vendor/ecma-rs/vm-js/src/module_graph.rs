@@ -3262,6 +3262,10 @@ impl ModuleGraph {
 
     // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable,
     // Unimplemented, etc.) when intrinsics are available.
+    //
+    // This also coerces `VmError::Unimplemented` (for example, the "top-level await" preflight
+    // rejection) into a catchable JS `Error` with a captured stack trace. This conversion is
+    // best-effort under allocator/heap OOM (see `coerce_error_to_throw_with_stack`).
     match result {
       Err(err) => Err(crate::vm::coerce_error_to_throw_with_stack(&*vm, scope, err)),
       other => other,
