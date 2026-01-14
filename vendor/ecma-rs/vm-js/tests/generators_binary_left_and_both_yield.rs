@@ -68,6 +68,26 @@ fn generator_binary_addition_yield_on_both_sides() {
 }
 
 #[test]
+fn generator_binary_addition_string_concatenation_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield "a") + (yield "b"); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(10); // left = 10
+      var r3 = it.next("x"); // right = "x" -> string concatenation
+      r1.value === "a" && r1.done === false &&
+      r2.value === "b" && r2.done === false &&
+      r3.done === true && r3.value === "10x"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_addition_to_primitive_happens_after_rhs_evaluation() {
   let mut rt = new_runtime();
   let value = rt
