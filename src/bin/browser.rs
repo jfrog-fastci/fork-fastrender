@@ -25428,18 +25428,18 @@ impl App {
             || self.open_color_picker.is_some()
             || self.open_file_picker.is_some();
 
-          let stop_state = fastrender::ui::panel_escape::StopLoadingOnEscapeState {
-            chrome_has_text_focus: self.chrome_has_text_focus,
-            tab_loading,
-            // Find-in-page is handled above (close + return).
-            find_in_page_open: false,
-            downloads_panel_open: self.downloads_panel_open,
-            history_panel_open: self.history_panel_open,
-            bookmarks_panel_open: self.bookmarks_panel_open,
-            clear_browsing_data_dialog_open: self.clear_browsing_data_dialog_open,
-            tab_search_open,
-            chrome_menu_open,
-            // Page context menu is handled above (close + return).
+            let stop_state = fastrender::ui::panel_escape::StopLoadingOnEscapeState {
+              chrome_has_text_focus: self.chrome_has_text_focus,
+              tab_loading,
+              // Find-in-page is handled above (close + return).
+              find_in_page_open: false,
+              downloads_panel_open: self.browser_state.chrome.downloads_panel_open,
+              history_panel_open: self.browser_state.chrome.history_panel_open,
+              bookmarks_panel_open: self.browser_state.chrome.bookmarks_manager_open,
+              clear_browsing_data_dialog_open: self.clear_browsing_data_dialog_open,
+              tab_search_open,
+              chrome_menu_open,
+              // Page context menu is handled above (close + return).
             page_context_menu_open: false,
             select_dropdown_open: self.open_select_dropdown.is_some(),
             media_controls_open: self.open_media_controls.is_some(),
