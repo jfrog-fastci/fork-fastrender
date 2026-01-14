@@ -944,6 +944,32 @@ mod tests {
   }
 
   #[test]
+  fn session_window_snapshots_closed_tabs_from_app_state() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    app.closed_tabs = vec![
+      crate::ui::ClosedTabState {
+        url: "about:blank".to_string(),
+        title: Some("Closed".to_string()),
+        pinned: true,
+      },
+      crate::ui::ClosedTabState {
+        url: "about:newtab".to_string(),
+        title: None,
+        pinned: false,
+      },
+    ];
+
+    let window = BrowserSessionWindow::from_app_state(&app);
+    assert_eq!(window.closed_tabs.len(), 2);
+    assert_eq!(window.closed_tabs[0].url, "about:blank");
+    assert_eq!(window.closed_tabs[0].title.as_deref(), Some("Closed"));
+    assert!(window.closed_tabs[0].pinned);
+    assert_eq!(window.closed_tabs[1].url, "about:newtab");
+    assert_eq!(window.closed_tabs[1].title, None);
+    assert!(!window.closed_tabs[1].pinned);
+  }
+
+  #[test]
   fn session_omits_default_scroll_from_json() {
     let session = BrowserSession::single("about:newtab".to_string());
     let json = serde_json::to_string(&session).expect("serialize session");
