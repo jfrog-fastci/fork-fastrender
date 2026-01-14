@@ -391,9 +391,15 @@ impl GraphLoadingState {
       // `ContinueDynamicImport` uses `PerformPromiseThen` and therefore settles the import() promise
       // via a microtask.
       let attach_result = (|| -> Result<(), VmError> {
-        let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-          "dynamic import requires intrinsics (create a Realm first)",
-        ))?;
+        // `FinishLoadingImportedModule` can be called from host code without an active execution
+        // context, or while another Realm is active (e.g. multiple realms running concurrently).
+        // Use the initiating dynamic import's realm to select intrinsics (not `vm.intrinsics()`,
+        // which is keyed off the *current* realm state).
+        let intr = vm
+          .intrinsics_for_realm(realm_id)
+          .ok_or(VmError::Unimplemented(
+            "dynamic import requires intrinsics (create a Realm first)",
+          ))?;
  
         // `PerformPromiseThen(evaluatePromise, onFulfilled, onRejected)`.
         let on_fulfilled_call = vm.dynamic_import_eval_on_fulfilled_call_id()?;
@@ -3076,9 +3082,15 @@ mod tests {
       let on_rejected_obj =
         on_rejected_obj.expect("expected dynamicImportEvalOnRejected callback to be captured");
 
+      let expected_function_proto = realm1.intrinsics().function_prototype();
       for cb in [on_fulfilled_obj, on_rejected_obj] {
         assert_eq!(heap.get_function_job_realm(cb), Some(realm1.id()));
         assert_eq!(heap.get_function_realm(cb).unwrap(), Some(global_object1));
+        assert_eq!(
+          heap.object_prototype(cb).unwrap(),
+          Some(expected_function_proto),
+          "expected callback to inherit from initiating realm's %Function.prototype%"
+        );
         let token = heap.get_function_script_or_module_token(cb);
         assert_eq!(
           vm.resolve_script_or_module_token_opt(token),
