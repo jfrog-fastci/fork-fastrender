@@ -4129,12 +4129,9 @@ fn try_vec_into_boxed_slice<T>(v: Vec<T>) -> Result<Box<[T]>, VmError> {
 }
 
 fn try_vec_into_boxed_slice_with_ticks<T>(
-  mut v: Vec<T>,
+  v: Vec<T>,
   mut tick: impl FnMut() -> Result<(), VmError>,
 ) -> Result<Box<[T]>, VmError> {
-  use std::alloc::{alloc, dealloc, Layout};
-  use std::ptr;
-
   // Zero-sized types do not require any backing allocation, and `Vec` uses a special
   // representation where `capacity` is not meaningful for allocation.
   if core::mem::size_of::<T>() == 0 {
@@ -4148,72 +4145,34 @@ fn try_vec_into_boxed_slice_with_ticks<T>(
   let len = v.len();
   let cap = v.capacity();
 
-  if cap != len {
-    // Convert to an exact-length allocation without calling `Vec::shrink_to_fit` /
-    // `Vec::into_boxed_slice`, which would reallocate infallibly and can abort the host process on
-    // allocator OOM.
-    //
-    // When `len` is attacker-controlled and large (e.g. module namespace export lists), copying can
-    // take substantial time. Tick periodically so fuel/deadline/interrupt budgets are still
-    // enforced.
-    tick()?;
-    let layout = Layout::array::<T>(len).map_err(|_| VmError::OutOfMemory)?;
-    // SAFETY: we allocate `len` elements with the same alignment/layout as `Box<[T]>` expects.
-    unsafe {
-      let raw = alloc(layout) as *mut T;
-      if raw.is_null() {
-        return Err(VmError::OutOfMemory);
-      }
-      struct DeallocGuard {
-        ptr: *mut u8,
-        layout: Layout,
-      }
-      impl Drop for DeallocGuard {
-        fn drop(&mut self) {
-          unsafe {
-            dealloc(self.ptr, self.layout);
-          }
-        }
-      }
-      let guard = DeallocGuard {
-        ptr: raw as *mut u8,
-        layout,
-      };
-
-      // Move elements into the new allocation.
-      let mut start = 0;
-      while start < len {
-        let end = len.min(start.saturating_add(crate::tick::DEFAULT_TICK_EVERY));
-        ptr::copy_nonoverlapping(v.as_ptr().add(start), raw.add(start), end - start);
-        start = end;
-        if start < len {
-          tick()?;
-        }
-      }
-
-      // Drop the old allocation without dropping elements (they were moved).
-      v.set_len(0);
-      drop(v);
-
-      // Disarm deallocation now that the allocation has been transferred to the returned box.
-      std::mem::forget(guard);
-      return Ok(Box::from_raw(std::slice::from_raw_parts_mut(raw, len)));
-    }
+  if cap == len {
+    // `Vec::into_boxed_slice` is infallible here: no reallocation is needed when `len == cap`.
+    return Ok(v.into_boxed_slice());
   }
 
+  // Convert to an exact-length allocation without calling `Vec::into_boxed_slice`, which would
+  // reallocate infallibly and can abort the host process on allocator OOM.
+  //
+  // When `len` is attacker-controlled and large (e.g. module namespace export lists), moving
+  // elements can take substantial time. Tick periodically so fuel/deadline/interrupt budgets are
+  // still enforced.
+  tick()?;
+  let mut trimmed: Vec<T> = Vec::new();
+  trimmed
+    .try_reserve_exact(len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  for (i, item) in v.into_iter().enumerate() {
+    if i % crate::tick::DEFAULT_TICK_EVERY == 0 && i != 0 {
+      tick()?;
+    }
+    trimmed.push(item);
+  }
   debug_assert_eq!(
-    v.len(),
-    v.capacity(),
+    trimmed.len(),
+    trimmed.capacity(),
     "try_vec_into_boxed_slice must only box exact-capacity Vecs"
   );
-
-  // Convert without allocation now that `len == capacity`.
-  let len = v.len();
-  let ptr = v.as_mut_ptr();
-  std::mem::forget(v);
-  // SAFETY: `ptr` came from a `Vec<T>` allocation, and `len == capacity` ensures the allocation
-  // layout matches `Box<[T]>`'s slice layout.
-  unsafe { Ok(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len))) }
+  Ok(trimmed.into_boxed_slice())
 }
 
 /// Accessor getter for Module Namespace export properties.

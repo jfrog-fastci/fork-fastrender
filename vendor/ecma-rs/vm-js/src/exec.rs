@@ -1611,13 +1611,20 @@ impl RuntimeEnv {
           current = outer;
         }
 
-        // If the current lexical environment is the variable environment itself, there may be no
-        // dedicated "var-scope lexical env" record yet (for example, during parameter
-        // initialization). In that case, fall back to checking the current lexical env directly so
-        // direct eval `var` declarations still reject collisions with existing bindings.
-        if var_scope_lex.is_none() && self.lexical_env == var_env {
-          var_scope_lex = Some(self.lexical_env);
-        }
+        // If the current lexical environment *is* the variable environment, there is no distinct
+        // "var-scope lexical env" record to check for lexical-vs-var collisions.
+        //
+        // This occurs in module environments (where `var`/function declarations and lexical
+        // declarations share the same declarative env record) and can also occur transiently during
+        // function instantiation (before the body lexical environment is created).
+        //
+        // In these cases, treating *any* existing binding as a collision would incorrectly reject
+        // valid redeclarations (e.g. hoisted function declarations in modules, or `var` redeclaring a
+        // parameter binding). Instead, collision checks are only performed when a dedicated
+        // function-body lexical environment exists (i.e. when we found `var_scope_lex` above).
+        //
+        // Note: module/static early errors already reject illegal lexical-vs-var collisions, and
+        // strict-mode `eval` does not introduce `var` bindings into surrounding scopes.
 
         if let Some(var_scope_lex) = var_scope_lex {
           // `var_scope_lex` is usually the function-body lexical environment record, which is
