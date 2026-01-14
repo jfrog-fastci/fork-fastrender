@@ -3591,6 +3591,16 @@ impl BrowserRuntime {
       TabId,
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
+    // Coalesce scroll messages during the burst window so we don't repeatedly recompute effective
+    // scroll state / hit testing for each intermediate wheel delta.
+    //
+    // Match `drain_messages` semantics:
+    // - `ScrollTo` is last-wins per tab.
+    // - `Scroll { pointer_css: None }` is summed per tab.
+    // - `Scroll { pointer_css: Some(..) }` is treated as a barrier and handled immediately because
+    //   its target scroll container depends on the pointer location.
+    let mut pending_scroll_to: HashMap<TabId, (f32, f32)> = HashMap::new();
+    let mut pending_scroll_delta: HashMap<TabId, (f32, f32)> = HashMap::new();
     // Coalesce back-to-back tick bursts so we only run the tick handler once per tab while the
     // worker is coalescing scroll input.
     let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
@@ -3636,6 +3646,40 @@ impl BrowserRuntime {
       }
     }
 
+    fn flush_scroll_ops(
+      runtime: &mut BrowserRuntime,
+      pending_scroll_to: &mut HashMap<TabId, (f32, f32)>,
+      pending_scroll_delta: &mut HashMap<TabId, (f32, f32)>,
+    ) {
+      if pending_scroll_to.is_empty() && pending_scroll_delta.is_empty() {
+        return;
+      }
+
+      // Deterministic ordering avoids test flakiness when multiple tabs are scrolling.
+      let mut tab_ids: Vec<TabId> = pending_scroll_to
+        .keys()
+        .chain(pending_scroll_delta.keys())
+        .copied()
+        .collect();
+      tab_ids.sort_by_key(|tab_id| tab_id.0);
+      tab_ids.dedup();
+
+      for tab_id in tab_ids {
+        if let Some(pos_css) = pending_scroll_to.remove(&tab_id) {
+          runtime.handle_message(UiToWorker::ScrollTo { tab_id, pos_css });
+        }
+        if let Some(delta_css) = pending_scroll_delta.remove(&tab_id) {
+          if delta_css != (0.0, 0.0) {
+            runtime.handle_message(UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css: None,
+            });
+          }
+        }
+      }
+    }
+
     loop {
       let msg = match self.try_recv_message() {
         Some(msg) => Some(msg),
@@ -3664,6 +3708,7 @@ impl BrowserRuntime {
           dpr,
         } => {
           flush_ticks(self, &mut pending_ticks);
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_viewport.insert(tab_id, (viewport_css, dpr));
         }
         UiToWorker::PointerMove {
@@ -3673,26 +3718,55 @@ impl BrowserRuntime {
           modifiers,
         } => {
           flush_ticks(self, &mut pending_ticks);
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
         UiToWorker::Tick { tab_id, delta } => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
           *entry = entry.checked_add(delta).unwrap_or(MAX_COALESCED_TICK_DELTA);
           if *entry > MAX_COALESCED_TICK_DELTA {
             *entry = MAX_COALESCED_TICK_DELTA;
           }
         }
-        UiToWorker::Scroll { .. }
-        | UiToWorker::ScrollTo { .. }
-        | UiToWorker::TestQueryJsDomAttribute { .. } => {
+        UiToWorker::ScrollTo { tab_id, pos_css } => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
           flush_ticks(self, &mut pending_ticks);
+          // A later `ScrollTo` overrides any earlier relative scroll deltas.
+          pending_scroll_delta.remove(&tab_id);
+          pending_scroll_to.insert(tab_id, pos_css);
+        }
+        UiToWorker::Scroll {
+          tab_id,
+          delta_css,
+          pointer_css,
+        } => {
+          flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          flush_ticks(self, &mut pending_ticks);
+          if pointer_css.is_some() {
+            flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
+            self.handle_message(UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css,
+            });
+          } else {
+            let entry = pending_scroll_delta.entry(tab_id).or_insert((0.0, 0.0));
+            entry.0 += delta_css.0;
+            entry.1 += delta_css.1;
+          }
+        }
+        UiToWorker::TestQueryJsDomAttribute { .. } => {
+          flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          flush_ticks(self, &mut pending_ticks);
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           self.handle_message(msg);
         }
         other => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
           flush_ticks(self, &mut pending_ticks);
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           // Defer non-coalescible messages (clicks, navigations, etc) until after we render the
           // coalesced scroll frame.
           self.deferred_msgs.push_front(other);
@@ -3703,6 +3777,7 @@ impl BrowserRuntime {
 
     flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
     flush_ticks(self, &mut pending_ticks);
+    flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
   }
 
   fn drain_tick_burst(&mut self) {
