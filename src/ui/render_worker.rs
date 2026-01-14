@@ -8918,6 +8918,7 @@ impl BrowserRuntime {
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
     let mut keyboard_scroll: Option<UiToWorker> = None;
+    let mut media_command: Option<UiToWorker> = None;
     let mut download_to_start: Option<(String, Option<String>)> = None;
 
     {
@@ -9571,6 +9572,34 @@ impl BrowserRuntime {
           // shortcut (matching common browser behaviour like Space scrolling even when a link is
           // focused).
           if action_is_none {
+            // When a <video controls> has focus, browsers route Space/Arrow keys to media controls
+            // (play/pause, seek, etc) rather than interpreting them as page scroll shortcuts.
+            //
+            // Even if we don't implement full media-control semantics yet, treat these keys as
+            // consumed so they don't fall through to viewport scrolling.
+            //
+            // When possible, map common keys to the worker's media-command mechanism.
+            if focused_is_video_controls {
+              if let Some(node_id) = focused {
+                let cmd = match key {
+                  crate::interaction::KeyAction::Space
+                  | crate::interaction::KeyAction::ShiftSpace => Some(MediaCommand::TogglePlayPause),
+                  crate::interaction::KeyAction::ArrowLeft => Some(MediaCommand::SeekBySeconds(-5.0)),
+                  crate::interaction::KeyAction::ArrowRight => Some(MediaCommand::SeekBySeconds(5.0)),
+                  crate::interaction::KeyAction::Home
+                  | crate::interaction::KeyAction::ShiftHome => Some(MediaCommand::SeekToSeconds(0.0)),
+                  _ => None,
+                };
+                if let Some(command) = cmd {
+                  media_command = Some(UiToWorker::MediaCommand {
+                    tab_id,
+                    node_id,
+                    command,
+                  });
+                }
+              }
+            }
+
             let focus_consumes_space =
               focused_is_input
                 || focused_is_textarea
@@ -9705,6 +9734,10 @@ impl BrowserRuntime {
       self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
     } else if let Some(request) = navigate_request {
       self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
+    }
+
+    if let Some(msg) = media_command {
+      self.handle_message(msg);
     }
 
     if let Some(scroll_msg) = keyboard_scroll {
