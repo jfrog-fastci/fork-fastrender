@@ -1,9 +1,30 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn assert_script_returns_true_in_interpreter_and_compiled(source: &str) {
+  // AST interpreter.
+  {
+    let mut rt = new_runtime();
+    let value = rt.exec_script(source).unwrap();
+    assert_eq!(value, Value::Bool(true));
+  }
+
+  // Compiled HIR executor.
+  {
+    let mut rt = new_runtime();
+    let script = CompiledScript::compile_script(rt.heap_mut(), "<inline>", source).unwrap();
+    assert!(
+      !script.requires_ast_fallback,
+      "test script should execute via compiled (HIR) script executor"
+    );
+    let value = rt.exec_compiled_script(script).unwrap();
+    assert_eq!(value, Value::Bool(true));
+  }
 }
 
 #[test]
@@ -166,4 +187,61 @@ fn destructuring_assignment_to_super_computed_in_arrow_uses_initialized_this_and
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_assignment_to_super_computed_evaluates_key_expression_before_getsuperbase() {
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      (() => {
+        let log = [];
+        let proto1 = { set p(v) { log.push("p1"); } };
+        let proto2 = { set p(v) { log.push("p2"); } };
+
+        let obj = {
+          __proto__: proto1,
+          m() {
+            // `SuperProperty : super [ Expression ]` evaluates the key expression to a value
+            // before `GetSuperBase`. Prototype mutations during key evaluation are observable.
+            [super[(Object.setPrototypeOf(obj, proto2), "p")]] = [1];
+          }
+        };
+
+        obj.m();
+        return log.join(",") === "p2";
+      })()
+    "#,
+  );
+}
+
+#[test]
+fn destructuring_assignment_to_super_computed_getsuperbase_is_observed_before_topropertykey() {
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      (() => {
+        let log = [];
+        let proto1 = { set p(v) { log.push("p1"); } };
+        let proto2 = { set p(v) { log.push("p2"); } };
+
+        let obj = {
+          __proto__: proto1,
+          m() {
+            [super[key]] = [1];
+          }
+        };
+
+        let key = {
+          toString() {
+            // `GetSuperBase` must be observed before `ToPropertyKey`, so prototype mutation during
+            // key coercion does not affect the resolved super base.
+            Object.setPrototypeOf(obj, proto2);
+            return "p";
+          }
+        };
+
+        obj.m();
+        return log.join(",") === "p1";
+      })()
+    "#,
+  );
 }

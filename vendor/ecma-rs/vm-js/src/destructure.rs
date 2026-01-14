@@ -663,13 +663,6 @@ fn bind_object_pattern(
                       "super property assignment missing [[HomeObject]]",
                     ));
                   };
-                  let super_base = prop_scope.heap().object_prototype(home)?;
-                  if let Some(base_obj) = super_base {
-                    prop_scope.push_root(Value::Object(base_obj))?;
-                  }
-                  // `GetSuperBase` is observed before evaluating the key expression (and before the
-                  // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
-                  // `super[expr]` references.
                   let key_value = eval_expr(
                     vm,
                     host,
@@ -684,6 +677,15 @@ fn bind_object_pattern(
                     &member.stx.member,
                   )?;
                   let key_value = prop_scope.push_root(key_value)?;
+                  // ECMA-262 `SuperProperty : super [ Expression ]`:
+                  // - the key expression is evaluated to a value before `GetSuperBase`, and
+                  // - `GetSuperBase` is observed before the deferred `ToPropertyKey` conversion so
+                  //   prototype mutation during key coercion does not affect the resolved super
+                  //   base.
+                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    prop_scope.push_root(Value::Object(base_obj))?;
+                  }
                   return Ok(Some(PropertyAssignmentTarget::SuperComputedMember {
                     super_base,
                     key_value,
@@ -985,13 +987,6 @@ fn bind_object_pattern(
                     "super property assignment missing [[HomeObject]]",
                   ));
                 };
-                let super_base = scope.heap().object_prototype(home)?;
-                if let Some(base_obj) = super_base {
-                  scope.push_root(Value::Object(base_obj))?;
-                }
-                // `GetSuperBase` is observed before evaluating the key expression (and before the
-                // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
-                // `super[expr]` references.
                 let key_value = eval_expr(
                   vm,
                   host,
@@ -1006,6 +1001,12 @@ fn bind_object_pattern(
                   &member.stx.member,
                 )?;
                 let key_value = scope.push_root(key_value)?;
+                // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
+                // deferred `ToPropertyKey` conversion.
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
                 return Ok(Some(RestAssignmentTarget::SuperComputedMember {
                   super_base,
                   key_value,
@@ -1325,13 +1326,6 @@ fn bind_array_pattern(
                       "super property assignment missing [[HomeObject]]",
                     ));
                   };
-                  let super_base = elem_scope.heap().object_prototype(home)?;
-                  if let Some(base_obj) = super_base {
-                    elem_scope.push_root(Value::Object(base_obj))?;
-                  }
-                  // `GetSuperBase` is observed before evaluating the key expression (and before the
-                  // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
-                  // `super[expr]` references.
                   let key_value = eval_expr(
                     vm,
                     host,
@@ -1346,6 +1340,12 @@ fn bind_array_pattern(
                     &member.stx.member,
                   )?;
                   let key_value = elem_scope.push_root(key_value)?;
+                  // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
+                  // deferred `ToPropertyKey` conversion.
+                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    elem_scope.push_root(Value::Object(base_obj))?;
+                  }
                   return Ok(Some(ElementAssignmentTarget::SuperComputedMember {
                     super_base,
                     key_value,
@@ -1740,13 +1740,6 @@ fn bind_array_pattern(
                     "super property assignment missing [[HomeObject]]",
                   ));
                 };
-                let super_base = scope.heap().object_prototype(home)?;
-                if let Some(base_obj) = super_base {
-                  scope.push_root(Value::Object(base_obj))?;
-                }
-                // `GetSuperBase` is observed before evaluating the key expression (and before the
-                // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
-                // `super[expr]` references.
                 let key_value = eval_expr(
                   vm,
                   host,
@@ -1761,6 +1754,12 @@ fn bind_array_pattern(
                   &member.stx.member,
                 )?;
                 let key_value = scope.push_root(key_value)?;
+                // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
+                // deferred `ToPropertyKey` conversion.
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
                 return Ok(Some(RestAssignmentTarget::SuperComputedMember {
                   super_base,
                   key_value,
@@ -2286,13 +2285,6 @@ fn assign_to_computed_member(
         "super property assignment missing [[HomeObject]]",
       ));
     };
-    // `GetSuperBase` before evaluating the key expression (and before the deferred
-    // `ToPropertyKey` conversion), matching the interpreter ordering for `super[expr]`.
-    let super_base = key_scope.heap().object_prototype(home)?;
-    if let Some(base_obj) = super_base {
-      key_scope.push_root(Value::Object(base_obj))?;
-    }
-
     let key_value = eval_expr(
       vm,
       host,
@@ -2307,6 +2299,11 @@ fn assign_to_computed_member(
       &member.member,
     )?;
     let key_value = key_scope.push_root(key_value)?;
+    // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before `ToPropertyKey`.
+    let super_base = key_scope.heap().object_prototype(home)?;
+    if let Some(base_obj) = super_base {
+      key_scope.push_root(Value::Object(base_obj))?;
+    }
 
     return assign_to_super_computed_member(
       vm,
