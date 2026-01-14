@@ -16,7 +16,7 @@
 use crate::geometry::Point;
 use crate::paint::painter::{paint_backend_from_env, PaintBackend};
 use crate::scroll::ScrollState;
-use crate::{PreparedDocument, Size};
+use crate::PreparedDocument;
 
 /// Reasons why the scroll blit fast-path could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
