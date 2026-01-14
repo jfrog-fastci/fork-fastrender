@@ -7,7 +7,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn compiled_script_falls_back_for_generators() -> Result<(), VmError> {
+fn compiled_script_supports_generators_via_call_time_ast_evaluation() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(
@@ -24,6 +24,11 @@ fn compiled_script_falls_back_for_generators() -> Result<(), VmError> {
     "#,
   )?;
 
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that define/call generator functions should be able to execute via HIR (generator bodies execute via call-time AST evaluation)"
+  );
+
   rt.exec_compiled_script(script)?;
 
   let value = rt.exec_script("result")?;
@@ -32,10 +37,12 @@ fn compiled_script_falls_back_for_generators() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_script_with_host_and_hooks_falls_back_for_generators() -> Result<(), VmError> {
-  // Regression test for `exec_compiled_script_with_host_and_hooks`: scripts that require AST
-  // fallback (e.g. generators) should execute correctly and enqueue Promise jobs via the provided
-  // `hooks`.
+fn compiled_script_with_host_and_hooks_supports_generators_via_call_time_ast_evaluation(
+) -> Result<(), VmError> {
+  // Regression test for `exec_compiled_script_with_host_and_hooks`: generator bodies execute via
+  // call-time AST evaluation, but the surrounding script can remain on the compiled (HIR) path.
+  //
+  // Ensure Promise jobs are enqueued via the provided `hooks` implementation.
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(

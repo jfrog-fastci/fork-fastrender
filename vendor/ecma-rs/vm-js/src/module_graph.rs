@@ -367,7 +367,7 @@ impl ModuleGraph {
   /// Ensures that `module` has a parsed `parse-js` AST available in its module record.
   ///
   /// This supports execution paths where a module is primarily compiled to HIR, but must retain an
-  /// AST for a fallback interpreter path (for example top-level await or async-generator fallback).
+  /// AST for a fallback interpreter path (for example top-level await or unsupported syntax).
   ///
   /// Note: compiled module records may drop `record.source` to save memory (the compiled payload
   /// already owns an `Arc<SourceText>`). In that case this helper falls back to

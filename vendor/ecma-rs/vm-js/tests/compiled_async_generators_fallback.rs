@@ -11,7 +11,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn compiled_script_falls_back_for_async_generators() -> Result<(), VmError> {
+fn compiled_script_supports_async_generators_via_call_time_ast_evaluation() -> Result<(), VmError> {
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
@@ -31,6 +31,11 @@ fn compiled_script_falls_back_for_async_generators() -> Result<(), VmError> {
     "#,
   )?;
 
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that define/call async generator functions should be able to execute via HIR (generator bodies execute via call-time AST evaluation)"
+  );
+
   rt.exec_compiled_script(script)?;
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -40,9 +45,10 @@ fn compiled_script_falls_back_for_async_generators() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_script_with_host_and_hooks_falls_back_for_async_generators() -> Result<(), VmError> {
-  // Regression test for `exec_compiled_script_with_host_and_hooks`: async generator scripts are
-  // not yet supported by the compiled (HIR) executor and must fall back to the AST interpreter.
+fn compiled_script_with_host_and_hooks_supports_async_generators_via_call_time_ast_evaluation(
+) -> Result<(), VmError> {
+  // Regression test for `exec_compiled_script_with_host_and_hooks`: async generator bodies execute
+  // via call-time AST evaluation, but the surrounding script can remain on the compiled (HIR) path.
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());

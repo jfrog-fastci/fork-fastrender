@@ -249,8 +249,8 @@ pub struct SourceTextModuleRecord {
   /// External-memory token for retained module ASTs (`ast`).
   ///
   /// Module ASTs live outside the GC heap. When a module is compiled to HIR but must retain/parse
-  /// an AST for a fallback execution path (e.g. top-level await or async-generator fallback), the
-  /// host must charge the additional memory usage via [`Heap::charge_external`].
+  /// an AST for a fallback execution path (e.g. top-level await or unsupported syntax), the host
+  /// must charge the additional memory usage via [`Heap::charge_external`].
   ///
   /// This token is stored in an [`Arc`] so `SourceTextModuleRecord` remains `Clone` without
   /// duplicating the external-memory charge.
