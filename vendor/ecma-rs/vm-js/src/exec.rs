@@ -39540,9 +39540,9 @@ pub(crate) fn start_module_tla_evaluation(
 
       // Root all GC-managed values while we create persistent roots and register the continuation.
       //
-      // Note: `this` / `new.target` can be temporarily overridden by nested constructs that can
-      // suspend (e.g. class static blocks). Capture them so module resumption continues with the
-      // correct execution context.
+      // Note: `this` / `new.target` / `[[HomeObject]]` can be temporarily overridden by nested
+      // constructs that can suspend (e.g. class static blocks). Capture them so module resumption
+      // continues with the correct execution context (including `super` semantics).
       let this_at_suspend = evaluator.this;
       let new_target_at_suspend = evaluator.new_target;
       let home_object_at_suspend = evaluator
@@ -39695,6 +39695,23 @@ pub(crate) fn resume_module_tla_evaluation(
         .ok_or(VmError::InvariantViolation(
           "module async continuation missing new.target root",
         ))?;
+    let home_object = {
+      let value = scope
+        .heap()
+        .get_root(cont.home_object_root)
+        .ok_or(VmError::InvariantViolation(
+          "module async continuation missing home object root",
+        ))?;
+      match value {
+        Value::Object(o) => Some(o),
+        Value::Undefined => None,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "module async continuation home object root is not an object or undefined",
+          ))
+        }
+      }
+    };
 
     let source = cont.env.source();
     let (line, col) = source.line_col(0);
@@ -39714,7 +39731,7 @@ pub(crate) fn resume_module_tla_evaluation(
       strict: true,
       this,
       new_target,
-      home_object: None,
+      home_object,
       class_constructor: None,
       derived_constructor: false,
       this_initialized: true,
@@ -39732,6 +39749,13 @@ pub(crate) fn resume_module_tla_evaluation(
     scope
       .heap_mut()
       .set_root(cont.new_target_root, evaluator.new_target);
+    scope.heap_mut().set_root(
+      cont.home_object_root,
+      evaluator
+        .home_object
+        .map(Value::Object)
+        .unwrap_or(Value::Undefined),
+    );
 
     loop {
       match next {
@@ -39799,6 +39823,13 @@ pub(crate) fn resume_module_tla_evaluation(
               scope
                 .heap_mut()
                 .set_root(cont.new_target_root, evaluator.new_target);
+              scope.heap_mut().set_root(
+                cont.home_object_root,
+                evaluator
+                  .home_object
+                  .map(Value::Object)
+                  .unwrap_or(Value::Undefined),
+              );
               continue;
             }
             Err(err) => {
