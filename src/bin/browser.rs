@@ -7310,6 +7310,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
   // Revision of the bookmark store used to build the current about-page bookmark snapshot.
   let mut about_page_bookmarks_snapshot_revision = global_bookmarks.revision();
+  // Revision tuple (sum of per-window session + tab revisions) used to build the current
+  // `about:processes` open-tabs snapshot.
+  //
+  // Using revision sums keeps snapshot rebuilds O(windows) while still reflecting tab mutations and
+  // active-tab changes without doing expensive per-tab snapshot allocation on every event-loop
+  // tick.
+  let mut about_page_open_tabs_snapshot_revision: (u64, u64) = (0, 0);
 
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
@@ -9867,11 +9874,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Keep the `about:processes` tab snapshot reasonably fresh without rebuilding it on every
     // event-loop tick. Snapshot generation can be expensive (it walks all windows/tabs and allocates
-    // strings), so only do it when `about:processes` is actually visible.
+    // strings), so only do it when `about:processes` is actually visible *and* the tab state has
+    // changed since the last snapshot.
+    let mut open_tabs_revision: Option<(u64, u64)> = None;
     if any_about_processes_visible {
-      open_tabs_about_snapshot_scheduler.mark_dirty();
+      let mut session_rev_sum = 0u64;
+      let mut tabs_rev_sum = 0u64;
+      for win in windows.values() {
+        session_rev_sum = session_rev_sum.wrapping_add(win.app.browser_state.session_revision());
+        tabs_rev_sum = tabs_rev_sum.wrapping_add(win.app.browser_state.tabs_revision());
+      }
+      open_tabs_revision = Some((session_rev_sum, tabs_rev_sum));
+      if open_tabs_revision.is_some_and(|rev| rev != about_page_open_tabs_snapshot_revision) {
+        open_tabs_about_snapshot_scheduler.mark_dirty();
+      }
     }
-    if any_about_processes_visible && open_tabs_about_snapshot_scheduler.take_if_due(now) {
+    if open_tabs_revision.is_some_and(|_| open_tabs_about_snapshot_scheduler.take_if_due(now)) {
       let mut open_tabs: Vec<fastrender::ui::about_pages::OpenTabSnapshot> = Vec::new();
       for (window_id, win) in windows.iter() {
         let window_debug = format!("{window_id:?}");
@@ -9918,6 +9936,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
       open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
       fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
+      if let Some(rev) = open_tabs_revision {
+        about_page_open_tabs_snapshot_revision = rev;
+      }
 
       // If any window is currently showing `about:processes`, invalidate its cached render so the
       // next redraw re-renders with the updated snapshot.
