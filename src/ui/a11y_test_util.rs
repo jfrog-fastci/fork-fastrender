@@ -335,6 +335,83 @@ impl AccessKitTestTree {
     self.node_by_name_from_platform_output(&output.platform_output, name)
   }
 
+  pub fn node_by_role_and_name<'a>(
+    &'a self,
+    update: &'a accesskit::TreeUpdate,
+    role: accesskit::Role,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    let needle = name.trim();
+
+    let update_ids: HashSet<accesskit::NodeId> = update.nodes.iter().map(|(id, _node)| *id).collect();
+
+    let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
+    let mut duplicates: Vec<(String, String)> = Vec::new();
+
+    let mut consider = |id: accesskit::NodeId, node: &'a accesskit::Node| {
+      if node.role() != role {
+        return;
+      }
+      let node_name = node.name().unwrap_or("").trim();
+      if node_name != needle {
+        return;
+      }
+
+      if found.is_some() {
+        duplicates.push((id.0.get().to_string(), format!("{:?}", node.role())));
+        return;
+      }
+      found = Some((id, node));
+    };
+
+    for (id, node) in update.nodes.iter() {
+      consider(*id, node);
+    }
+
+    let mut stored_nodes: Vec<(accesskit::NodeId, &'a accesskit::Node)> = self
+      .nodes
+      .iter()
+      .filter_map(|(id, node)| (!update_ids.contains(id)).then_some((*id, node)))
+      .collect();
+    stored_nodes.sort_by_key(|(id, _node)| id.0.get());
+
+    for (id, node) in stored_nodes {
+      consider(id, node);
+    }
+
+    if let Some((id, node)) = found {
+      if !duplicates.is_empty() {
+        duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
+        panic!(
+          "multiple AccessKit nodes matched role={role:?} name {needle:?}: {duplicates:?}. \
+          Use a more specific accessible name to disambiguate."
+        );
+      }
+      return Some((id, node));
+    }
+
+    None
+  }
+
+  pub fn node_by_role_and_name_from_platform_output<'a>(
+    &'a self,
+    output: &'a egui::PlatformOutput,
+    role: accesskit::Role,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    let update = accesskit_update_from_platform_output(output);
+    self.node_by_role_and_name(update, role, name)
+  }
+
+  pub fn node_by_role_and_name_from_full_output<'a>(
+    &'a self,
+    output: &'a egui::FullOutput,
+    role: accesskit::Role,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    self.node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
+  }
+
   /// Resolve the focused node's accessible name, searching this store when the focused node is not
   /// included in the update (incremental updates).
   pub fn focus_name(&self, update: &accesskit::TreeUpdate) -> Option<String> {
@@ -842,6 +919,49 @@ pub fn accesskit_node_by_name<'a>(
   None
 }
 
+/// Find the first AccessKit node with the given role and accessible name.
+///
+/// Returns `None` when no matching node is present. Panics if more than one node matches the given
+/// `(role, name)` pair.
+pub fn accesskit_node_by_role_and_name<'a>(
+  update: &'a accesskit::TreeUpdate,
+  role: accesskit::Role,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  let needle = name.trim();
+  let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
+  let mut duplicates: Vec<(String, String)> = Vec::new();
+
+  for (id, node) in update.nodes.iter() {
+    if node.role() != role {
+      continue;
+    }
+    let node_name = node.name().unwrap_or("").trim();
+    if node_name != needle {
+      continue;
+    }
+
+    if found.is_some() {
+      duplicates.push((id.0.get().to_string(), format!("{:?}", node.role())));
+      continue;
+    }
+    found = Some((*id, node));
+  }
+
+  if let Some((id, node)) = found {
+    if !duplicates.is_empty() {
+      duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
+      panic!(
+        "multiple AccessKit nodes matched role={role:?} name {needle:?}: {duplicates:?}. \
+        Use a more specific accessible name to disambiguate."
+      );
+    }
+    return Some((id, node));
+  }
+
+  None
+}
+
 pub fn accesskit_node_by_name_from_platform_output<'a>(
   output: &'a egui::PlatformOutput,
   name: &str,
@@ -855,6 +975,23 @@ pub fn accesskit_node_by_name_from_full_output<'a>(
   name: &str,
 ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
   accesskit_node_by_name_from_platform_output(&output.platform_output, name)
+}
+
+pub fn accesskit_node_by_role_and_name_from_platform_output<'a>(
+  output: &'a egui::PlatformOutput,
+  role: accesskit::Role,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_node_by_role_and_name(update, role, name)
+}
+
+pub fn accesskit_node_by_role_and_name_from_full_output<'a>(
+  output: &'a egui::FullOutput,
+  role: accesskit::Role,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  accesskit_node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
 }
 
 /// Resolve the AccessKit focus id into the focused node's accessible name.
@@ -1091,6 +1228,13 @@ mod tests {
       "expected AccessKitTestTree to find nodes that were only present in prior updates"
     );
     assert_eq!(
+      store
+        .node_by_role_and_name(&incremental, accesskit::Role::Button, "child")
+        .map(|(id, _node)| id),
+      Some(child_id),
+      "expected AccessKitTestTree role+name lookup to find nodes from stored updates"
+    );
+    assert_eq!(
       store.focus_name(&incremental),
       Some("child".to_string()),
       "expected focus name to be resolved via stored nodes for incremental updates"
@@ -1203,6 +1347,14 @@ mod tests {
     assert_eq!(found_id, id(2));
     assert_eq!(found_node.name().unwrap_or("").trim(), "Focus target");
     assert_eq!(accesskit_focus_name(&update), Some("Focus target".to_string()));
+    assert_eq!(
+      accesskit_node_by_role_and_name(&update, Role::Button, "Focus target").map(|(id, _node)| id),
+      Some(id(2))
+    );
+    assert!(
+      accesskit_node_by_role_and_name(&update, Role::Window, "Focus target").is_none(),
+      "expected mismatched role to return None"
+    );
 
     let platform_output = output_with_update(update);
 
@@ -1217,6 +1369,11 @@ mod tests {
       Some("Focus target".to_string())
     );
     assert!(accesskit_node_by_name_from_platform_output(&platform_output, "Missing").is_none());
+    assert_eq!(
+      accesskit_node_by_role_and_name_from_platform_output(&platform_output, Role::Button, "Focus target")
+        .map(|(id, _node)| id),
+      Some(id(2))
+    );
   }
 
   #[test]
@@ -1248,6 +1405,37 @@ mod tests {
     };
 
     let _ = accesskit_node_by_name(&update, "Dup");
+  }
+
+  #[test]
+  #[should_panic(expected = "multiple AccessKit nodes matched role")]
+  fn node_by_role_and_name_panics_on_duplicate_matches() {
+    let mut classes = NodeClassSet::new();
+
+    let mut root = NodeBuilder::new(Role::Window);
+    root.set_name("Root");
+    root.push_child(id(2));
+    root.push_child(id(3));
+
+    let mut a = NodeBuilder::new(Role::Button);
+    a.set_name("Dup");
+    let mut b = NodeBuilder::new(Role::Button);
+    b.set_name("Dup");
+
+    let update = TreeUpdate {
+      nodes: vec![
+        (id(1), root.build(&mut classes)),
+        (id(2), a.build(&mut classes)),
+        (id(3), b.build(&mut classes)),
+      ],
+      tree: Some(accesskit::Tree {
+        root: id(1),
+        root_scroller: None,
+      }),
+      focus: None,
+    };
+
+    let _ = accesskit_node_by_role_and_name(&update, Role::Button, "Dup");
   }
 
   #[test]
