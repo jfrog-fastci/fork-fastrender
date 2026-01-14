@@ -2,6 +2,8 @@ use std::ffi::CStr;
 use std::fmt;
 use std::ptr;
 
+use fastrender_yuv::yuv420p_to_rgba;
+
 /// Hard maximum width/height accepted from untrusted VP9 bitstreams.
 ///
 /// This is a defense-in-depth cap to prevent adversarial/corrupted media from causing unbounded
@@ -286,6 +288,7 @@ impl Vp9Decoder {
     let mut rgba8 = vec![0u8; rgba_len];
 
     let chroma_width = (width + (1usize << x_shift) - 1) >> x_shift;
+    let chroma_height = (height + (1usize << y_shift) - 1) >> y_shift;
     let y_bytes_per_sample = if high_bit_depth { 2 } else { 1 };
     let chroma_bytes_per_sample = y_bytes_per_sample;
     let min_y_stride = width
@@ -319,6 +322,65 @@ impl Vp9Decoder {
         "vp9 high bit depth frame has odd stride: y_stride={y_stride} u_stride={u_stride} v_stride={v_stride} a_stride={a_stride}"
       )));
     }
+
+    // Fast-path: the common web-video output format is 8-bit studio-range 4:2:0 (I420/YV12) with
+    // BT.601 coefficients and no alpha. For that case, reuse the shared Rust YUV->RGBA utility so
+    // multiple decoders (OpenH264 + libvpx) stay pixel-identical without duplicating conversion
+    // logic.
+    if !high_bit_depth
+      && !has_alpha
+      && !full_range
+      && x_shift == 1
+      && y_shift == 1
+      && matches!(fmt_base, crate::VPX_IMG_FMT_I420 | crate::VPX_IMG_FMT_YV12)
+    {
+      // Match the normalization logic in `yuv_to_rgb` so we only take this fast-path when we'd
+      // otherwise use BT.601 coefficients.
+      let cs = match cs {
+        crate::VPX_CS_BT_601 | crate::VPX_CS_SMPTE_170 => crate::VPX_CS_BT_601,
+        crate::VPX_CS_SMPTE_240 => crate::VPX_CS_BT_709,
+        crate::VPX_CS_SRGB => crate::VPX_CS_BT_709,
+        other => other,
+      };
+      if cs != crate::VPX_CS_BT_709 && cs != crate::VPX_CS_BT_2020 {
+        let y_len = y_stride
+          .checked_mul(height)
+          .ok_or_else(|| MediaError::Decode("vp9 Y plane size overflow".to_string()))?;
+        let u_len = u_stride
+          .checked_mul(chroma_height)
+          .ok_or_else(|| MediaError::Decode("vp9 U plane size overflow".to_string()))?;
+        let v_len = v_stride
+          .checked_mul(chroma_height)
+          .ok_or_else(|| MediaError::Decode("vp9 V plane size overflow".to_string()))?;
+
+        // SAFETY: `img` guarantees these pointers and strides address valid memory for the
+        // duration of this call.
+        let y_plane = unsafe { std::slice::from_raw_parts(y_plane, y_len) };
+        let u_plane = unsafe { std::slice::from_raw_parts(u_plane, u_len) };
+        let v_plane = unsafe { std::slice::from_raw_parts(v_plane, v_len) };
+
+        yuv420p_to_rgba(
+          width,
+          height,
+          y_plane,
+          y_stride,
+          u_plane,
+          u_stride,
+          v_plane,
+          v_stride,
+          &mut rgba8,
+        );
+
+        return Ok(Vp9Frame {
+          width: width as u32,
+          height: height as u32,
+          render_width: if img.r_w != 0 { img.r_w } else { width as u32 },
+          render_height: if img.r_h != 0 { img.r_h } else { height as u32 },
+          rgba8,
+        });
+      }
+    }
+
     if high_bit_depth {
       // High bit depth frames use 16-bit samples packed into a byte buffer (little-endian on all
       // supported targets). Strides are in bytes.

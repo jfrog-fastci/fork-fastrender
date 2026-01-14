@@ -11,6 +11,7 @@ readme = "README.md"
 
 [dependencies]
 libc = "0.2"
+fastrender-yuv = { path = "../fastrender-yuv" }
 
 [dev-dependencies]
 matroska-demuxer = "0.7"

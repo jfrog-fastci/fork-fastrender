@@ -12,6 +12,7 @@ members = [
   "crates/js-wpt-dom-runner",
   "crates/fastrender-ipc",
   "crates/fastrender-renderer",
+  "crates/fastrender-yuv",
   "crates/win-sandbox",
   "crates/libvpx-sys-bundled",
   "crates/fastrender-shmem",
@@ -142,6 +143,7 @@ ci = [
 
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
+fastrender-yuv = { path = "crates/fastrender-yuv" }
 base64 = "0.22"
 aes-gcm = "0.10"
 aes = "0.8"

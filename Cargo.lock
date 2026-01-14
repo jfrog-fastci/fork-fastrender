@@ -1884,6 +1884,7 @@ dependencies = [
  "encoding_rs",
  "fastrender-ipc",
  "fastrender-shmem",
+ "fastrender-yuv",
  "filetime",
  "flate2",
  "fontdb 0.23.0",
@@ -2011,6 +2012,10 @@ dependencies = [
  "libc",
  "memmap2 0.9.9",
 ]
+
+[[package]]
+name = "fastrender-yuv"
+version = "0.1.0"
 
 [[package]]
 name = "fax"
@@ -3379,6 +3384,7 @@ dependencies = [
 name = "libvpx-sys-bundled"
 version = "0.1.0"
 dependencies = [
+ "fastrender-yuv",
  "libc",
  "matroska-demuxer",
 ]

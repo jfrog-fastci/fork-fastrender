@@ -3,6 +3,8 @@ use super::{
   MediaTrackInfo,
 };
 #[cfg(feature = "codec_h264_openh264")]
+use super::yuv::yuv420p_to_rgba;
+#[cfg(feature = "codec_h264_openh264")]
 use openh264::formats::YUVSource;
 
 /// A video decoder consumes demuxed packets and outputs 0..N decoded frames.
@@ -252,7 +254,19 @@ impl VideoDecoder for H264Decoder {
     let (w, h) = yuv.dimensions();
     let rgba_len = validate_decoded_rgba_frame_size("h264", w, h)?;
     let mut rgba = vec![0u8; rgba_len];
-    yuv.write_rgba8(&mut rgba);
+
+    let (y_stride, u_stride, v_stride) = yuv.strides();
+    yuv420p_to_rgba(
+      w,
+      h,
+      yuv.y(),
+      y_stride,
+      yuv.u(),
+      u_stride,
+      yuv.v(),
+      v_stride,
+      &mut rgba,
+    );
 
     Ok(vec![DecodedVideoFrame {
       pts_ns: packet.pts_ns,
