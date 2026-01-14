@@ -113,7 +113,10 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
     Self::from_reader_with_meta(mp4, Mp4ParseMeta::default())
   }
 
-  fn from_reader_with_meta(mp4: mp4::Mp4Reader<R>, mp4parse_meta: Mp4ParseMeta) -> MediaResult<Self> {
+  fn from_reader_with_meta(
+    mp4: mp4::Mp4Reader<R>,
+    mp4parse_meta: Mp4ParseMeta,
+  ) -> MediaResult<Self> {
     let Mp4ParseMeta {
       vp9_tracks,
       sample_tables: mut meta_sample_tables,
@@ -138,7 +141,9 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
           if vp9_tracks.contains_key(track_id) {
             None
           } else {
-            return Err(MediaError::Demux(format!("mp4: failed to get media type: {err}")));
+            return Err(MediaError::Demux(format!(
+              "mp4: failed to get media type: {err}"
+            )));
           }
         }
       };
@@ -350,7 +355,9 @@ fn mp4parse_vp9_tracks_from_ctx(
     //   [codec_init_len] codec_init bytes
     let codec_init: Vec<u8> = vpcc.codec_init.iter().copied().collect();
     if codec_init.len() > u16::MAX as usize {
-      return Err(MediaError::Demux("mp4parse: vp9 codec_init too large".into()));
+      return Err(MediaError::Demux(
+        "mp4parse: vp9 codec_init too large".into(),
+      ));
     }
 
     let mut codec_private = Vec::with_capacity(3 + 2 + codec_init.len());
@@ -814,7 +821,10 @@ mod tests {
       .find(|t| t.track_type == MediaTrackType::Video && t.codec == MediaCodec::Vp9)
       .expect("expected VP9 video track");
 
-    assert_eq!(track.video.as_ref().map(|v| (v.width, v.height)), Some((16, 16)));
+    assert_eq!(
+      track.video.as_ref().map(|v| (v.width, v.height)),
+      Some((16, 16))
+    );
     assert!(
       track.codec_private.len() >= 5,
       "expected VP9 vpcC-derived extradata"
