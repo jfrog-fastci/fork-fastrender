@@ -49,6 +49,52 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_label_ec
 }
 
 #[test]
+fn arguments_identifier_reference_is_syntax_error_in_class_static_block_break_label_ecma() {
+  let src = r#"
+    class C {
+      static {
+        while (false) {
+          break arguments;
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let err = parser
+    .parse_top_level()
+    .expect_err("parse unexpectedly succeeded");
+  assert_eq!(err.typ, SyntaxErrorType::ArgumentsNotAllowedInClassInit);
+  assert_eq!(err.actual_token, None);
+}
+
+#[test]
+fn arguments_identifier_reference_is_syntax_error_in_class_static_block_continue_label_ecma() {
+  let src = r#"
+    class C {
+      static {
+        while (false) {
+          continue arguments;
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let err = parser
+    .parse_top_level()
+    .expect_err("parse unexpectedly succeeded");
+  assert_eq!(err.typ, SyntaxErrorType::ArgumentsNotAllowedInClassInit);
+  assert_eq!(err.actual_token, None);
+}
+
+#[test]
 fn arguments_identifier_reference_is_syntax_error_in_class_static_block_object_shorthand_ecma() {
   let src = r#"
     class C {

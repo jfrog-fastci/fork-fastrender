@@ -559,7 +559,9 @@ impl<'a> Parser<'a> {
     let t = self.peek();
     let label = if is_valid_pattern_identifier(t.typ, ctx.rules) && !t.preceded_by_line_terminator {
       // Label.
-      Some(self.id_name(ctx)?)
+      let label_name = self.id_name(ctx)?;
+      self.validate_arguments_not_disallowed_in_class_init(t.loc, &label_name)?;
+      Some(label_name)
     } else if t.typ == TT::Semicolon {
       self.consume();
       None
