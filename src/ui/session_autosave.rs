@@ -1034,10 +1034,11 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
 
-    // Make the debounce effectively infinite so the only way we see a write is via the max interval.
-    let debounce = Duration::from_secs(60);
-    let max_write_interval = Duration::from_millis(120);
-    let tick = Duration::from_millis(20);
+    // Send Save requests more frequently than the debounce window. Without the max-write-interval
+    // cap this would starve forever (trailing-edge debounce never expires).
+    let debounce = Duration::from_millis(200);
+    let max_write_interval = Duration::from_millis(300);
+    let tick = Duration::from_millis(50);
 
     let autosave = SessionAutosave::new_with_debounce_and_initial_and_max_interval(
       path.clone(),
