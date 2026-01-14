@@ -321,6 +321,71 @@ fn array_buffer_transfer_to_immutable_roots_this_across_gc() -> Result<(), VmErr
 }
 
 #[test]
+fn array_concat_roots_args_across_gc_in_is_concat_spreadable_getter() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const receiver = [];
+      const spreadable = {
+        get [Symbol.isConcatSpreadable]() {
+          // Force a GC during IsConcatSpreadable's `Get(O, @@isConcatSpreadable)` step.
+          ({});
+          return true;
+        },
+        length: 0
+      };
+      const tail = "x";
+      return [receiver, spreadable, tail];
+    })()"#,
+  )?;
+
+  let [receiver_val, spreadable_val, tail_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [spreadable_val, tail_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_concat(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    receiver_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected concat() to trigger GC under tiny heap limits"
+  );
+
+  scope.push_root(out)?;
+  let Value::Object(out_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "Array.prototype.concat returned non-object",
+    ));
+  };
+
+  assert_eq!(scope.heap().array_length(out_obj)?, 1);
+  let elem0 = scope
+    .heap()
+    .array_fast_own_data_element_value(out_obj, 0)?
+    .ok_or(VmError::TypeError("missing out[0]"))?;
+  assert_eq!(elem0, tail_val);
+
+  Ok(())
+}
+
+#[test]
 fn typed_array_set_roots_inputs_across_gc_in_offset_coercion() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 

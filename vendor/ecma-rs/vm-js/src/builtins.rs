@@ -13212,6 +13212,18 @@ pub fn array_prototype_concat(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
+  // Root `this` + args for the duration of the operation. `ArraySpeciesCreate`,
+  // `IsConcatSpreadable`, and `LengthOfArrayLike` can all invoke user code and trigger GC, and host
+  // callers may invoke this builtin directly without `Vm::call_impl` argument rooting.
+  //
+  // Root the arguments first while treating `this` as an extra root so a GC triggered by root-stack
+  // growth cannot collect the receiver before `ToObject(this)` runs.
+  if !args.is_empty() {
+    let this_root = [this];
+    scope.push_roots_with_extra_roots(args, &this_root, &[])?;
+  }
+  scope.push_root(this)?;
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
