@@ -15743,10 +15743,11 @@ mod hir_async_await_eval_order_compiled_tests {
       r#"
         async function f() {
           let order = '';
-          let obj = { set x(v) { order += 's'; } };
+          let seen = undefined;
+          let obj = { set x(v) { order += 's'; seen = v; } };
           async function rhs() { order += 'r'; return 1; }
           obj.x = await rhs();
-          return order === 'rs';
+          return order === 'rs' && seen === 1;
         }
         f()
       "#,
