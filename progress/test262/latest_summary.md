@@ -82,19 +82,19 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 16023 (92.52%) |
-| Mismatched upstream expected | 1295 (7.48%) |
-| Timeouts | 1 |
+| Matched upstream expected | 16035 (92.59%) |
+| Mismatched upstream expected | 1283 (7.41%) |
+| Timeouts | 0 |
 | Skipped | 40 |
-| Unexpected mismatches | 665 |
+| Unexpected mismatches | 657 |
 
 ### Outcomes (runner)
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15983 |
-| failed | 1294 |
-| timed_out | 1 |
+| passed | 15995 |
+| failed | 1283 |
+| timed_out | 0 |
 | skipped | 40 |
 
 ### Expectations (manifest)
@@ -110,29 +110,29 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 8181 |
-| FAIL (unexpected) | 665 |
-| XFAIL | 630 |
-| XPASS | 7802 |
+| PASS | 8189 |
+| FAIL (unexpected) | 657 |
+| XFAIL | 626 |
+| XPASS | 7806 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 6864 | 321 | 4.47% | 6388 | 1 | 320 | 436 | 40 |
-| language | 10128 | 9154 | 974 | 9.62% | 1788 | 664 | 310 | 7366 | 0 |
+| built-ins | 7185 | 6875 | 310 | 4.31% | 6389 | 0 | 310 | 446 | 40 |
+| language | 10128 | 9155 | 973 | 9.61% | 1795 | 657 | 316 | 7360 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 955 | 13.34% | 756 | 664 | 291 | 5450 | 0 |
+| `language/statements` | 7161 | 946 | 13.21% | 763 | 657 | 289 | 5452 | 0 |
 | `built-ins/Set` | 764 | 302 | 39.53% | 390 | 0 | 302 | 72 | 0 |
-| `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
-| `built-ins/Object` | 1692 | 12 | 0.71% | 1332 | 0 | 12 | 348 | 0 |
-| `built-ins/Array` | 1503 | 7 | 0.47% | 1456 | 1 | 6 | 0 | 40 |
+| `language/expressions` | 2337 | 27 | 1.16% | 1032 | 0 | 27 | 1278 | 0 |
+| `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
+| `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
@@ -144,8 +144,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 845 (65.25%)
-- VmError::Unimplemented: 450 (34.75%)
+- exception/other: 844 (65.78%)
+- VmError::Unimplemented: 439 (34.22%)
 - termination: 0 (0.00%)
 
 ### Top 20
@@ -166,16 +166,16 @@ Mismatched cases by high-level bucket:
 | 12 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
 | 13 | exception/other | 14 | `isConstructor invoked with a non-function value` |
 | 14 | exception/other | 12 | `Expected true but got false` |
-| 15 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
-| 16 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
-| 17 | exception/other | 10 | `Expected SameValue(«0», «1») to be true` |
-| 18 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
-| 19 | VmError::Unimplemented | 8 | `unimplemented: yield in assignment target` |
-| 20 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
+| 15 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
+| 16 | exception/other | 10 | `Expected SameValue(«0», «1») to be true` |
+| 17 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
+| 18 | VmError::Unimplemented | 8 | `unimplemented: yield in assignment target` |
+| 19 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
+| 20 | exception/other | 8 | `Expected a ReferenceError but got a Test262Error` |
 
 ## Timed-out tests
 
-- `built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js#strict`
+_None._
 
 ## Appendix: top failing tests (IDs + first-line error)
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (13 shown / 955 mismatches)
+### `language/statements` (22 shown / 946 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -199,6 +199,15 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/async-generator/dflt-params-abrupt.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dflt-params-abrupt.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dflt-params-arg-val-not-undefined.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-not-undefined.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-undefined.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-undefined.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-later.js#non_strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-later.js#strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-prior.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-prior.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-self.js#non_strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-self.js#strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
 
 ### `built-ins/Set` (10 shown / 302 mismatches)
 
@@ -213,7 +222,7 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `built-ins/Set/prototype/difference/combines-Map.js#non_strict`: `value is not callable`
 - `built-ins/Set/prototype/difference/combines-Map.js#strict`: `value is not callable`
 
-### `language/expressions` (10 shown / 19 mismatches)
+### `language/expressions` (10 shown / 27 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -226,25 +235,16 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/expressions/super/call-proto-not-ctor.js#strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
 - `language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js#non_strict`: `Expected SameValue(«"bad"», «"ok"») to be true`
 
-### `built-ins/Object` (10 shown / 12 mismatches)
+### `built-ins/Array` (6 shown / 6 mismatches)
 
-- `built-ins/Object/prototype/toString/symbol-tag-array-builtin.js#non_strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-array-builtin.js#strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#non_strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-map-builtin.js#non_strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-map-builtin.js#strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#non_strict`: `Expected SameValue(«"[object Error]"», «"[object test262]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#strict`: `Cannot assign to read-only property`
-- `built-ins/Object/prototype/toString/symbol-tag-set-builtin.js#non_strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-set-builtin.js#strict`: `Expected SameValue(«"[object Object]"», «"[object Iterator]"») to be true`
-
-### `built-ins/Array` (7 shown / 7 mismatches)
-
-- `built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js#strict`: `timeout after 10 seconds`
 - `built-ins/Array/prototype/slice/coerced-start-end-grow.js#non_strict`: `Cannot convert a BigInt value to a number`
 - `built-ins/Array/prototype/slice/coerced-start-end-grow.js#strict`: `Cannot convert a BigInt value to a number`
 - `built-ins/Array/prototype/slice/coerced-start-end-shrink.js#non_strict`: `Actual [undefined, undefined, undefined, undefined] and expected [1, 2, undefined, undefined] should have the same contents.`
 - `built-ins/Array/prototype/slice/coerced-start-end-shrink.js#strict`: `Actual [undefined, undefined, undefined, undefined] and expected [1, 2, undefined, undefined] should have the same contents.`
 - `built-ins/Array/prototype/slice/resizable-buffer.js#non_strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
 - `built-ins/Array/prototype/slice/resizable-buffer.js#strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
+
+### `built-ins/Object` (2 shown / 2 mismatches)
+
+- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#non_strict`: `Expected SameValue(«"[object Error]"», «"[object test262]"») to be true`
+- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#strict`: `Cannot assign to read-only property`
