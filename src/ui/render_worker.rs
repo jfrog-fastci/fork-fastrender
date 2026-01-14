@@ -10072,6 +10072,8 @@ impl BrowserRuntime {
                   | crate::interaction::KeyAction::ShiftSpace => Some(MediaCommand::TogglePlayPause),
                   crate::interaction::KeyAction::ArrowLeft => Some(MediaCommand::SeekBySeconds(-5.0)),
                   crate::interaction::KeyAction::ArrowRight => Some(MediaCommand::SeekBySeconds(5.0)),
+                  crate::interaction::KeyAction::PageUp => Some(MediaCommand::SeekBySeconds(-10.0)),
+                  crate::interaction::KeyAction::PageDown => Some(MediaCommand::SeekBySeconds(10.0)),
                   crate::interaction::KeyAction::Home
                   | crate::interaction::KeyAction::ShiftHome => Some(MediaCommand::SeekToSeconds(0.0)),
                   _ => None,
