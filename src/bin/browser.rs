@@ -6478,6 +6478,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       fastrender::ui::GlobalHistoryStore::default()
     }
   };
+  let startup_profile_toast_text = if startup_profile_notifications.is_empty() {
+    None
+  } else {
+    Some(startup_profile_notifications.join("\n\n"))
+  };
 
   // Seed the process-global about-page snapshot so `about:newtab` can render bookmarks + history
   // immediately (including persisted state) before any new navigation commits happen.
@@ -7083,6 +7088,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if idx == active_idx {
       // Only relevant for windowed UI (headless modes return before reaching this point).
       let now = std::time::Instant::now();
+      let startup_profile_toast_text = startup_profile_toast_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
 
       if show_safe_mode_toast {
         let mut toast_text =
@@ -7095,15 +7104,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             toast_text.push_str(extra);
           }
         }
+        if let Some(extra) = startup_profile_toast_text {
+          toast_text.push_str("\n\n");
+          toast_text.push_str(extra);
+        }
         app.chrome_toast.show(
           fastrender::ui::ToastKind::Warning,
           toast_text,
           now,
           std::time::Duration::from_secs(10),
         );
-      } else if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
+      } else if let Some(base_text) = profile_autosave_failure_toast.as_deref() {
+        let mut toast_text = base_text.to_string();
+        if let Some(extra) = startup_profile_toast_text {
+          toast_text.push_str("\n\n");
+          toast_text.push_str(extra);
+        }
         app.chrome_toast.show(
           fastrender::ui::ToastKind::Error,
+          toast_text,
+          now,
+          std::time::Duration::from_secs(8),
+        );
+      } else if let Some(toast_text) = startup_profile_toast_text {
+        app.chrome_toast.show(
+          fastrender::ui::ToastKind::Warning,
           toast_text.to_string(),
           now,
           std::time::Duration::from_secs(8),
@@ -7242,19 +7267,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
   let mut profile_autosave_flush_tracker =
     ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
-
-  if !startup_profile_notifications.is_empty() {
-    let toast_text = startup_profile_notifications.join("\n\n");
-    let toast_target = active_window_id.or_else(|| window_order.first().copied());
-    if let Some(target_id) = toast_target {
-      if let Some(win) = windows.get_mut(&target_id) {
-        win
-          .app
-          .show_chrome_toast_kind(fastrender::ui::ToastKind::Warning, toast_text);
-        win.app.window.request_redraw();
-      }
-    }
-  }
 
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
