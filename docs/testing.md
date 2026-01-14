@@ -95,11 +95,16 @@ deterministic across platforms. Set `FASTR_USE_BUNDLED_FONTS=1` locally to match
 
 ## Media fixtures (video/audio)
 
-Deterministic video/audio assets used by tests and offline fixtures live under
-`tests/pages/fixtures/assets/media/`.
+Deterministic, license-clean media assets live in a few places:
 
-For provenance, licensing, size budgets, and regeneration commands, see:
-[`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
+- **Demux/decode unit-test fixtures**: `tests/fixtures/media/`
+  (see [`tests/fixtures/media/README.md`](../tests/fixtures/media/README.md)).
+- **Playback smoke-test assets** (HTML fixtures): `tests/pages/fixtures/media_playback/assets/`
+  (see [`tests/pages/fixtures/media_playback/README.md`](../tests/pages/fixtures/media_playback/README.md)).
+  These files are kept in sync with `tests/fixtures/media/`.
+- **Reserved** directory for future “golden” media assets used by general offline page fixtures:
+  `tests/pages/fixtures/assets/media/` (see
+  [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md)).
 
 ## Style regression tests
 
