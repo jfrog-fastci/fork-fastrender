@@ -1054,6 +1054,14 @@ mod tests {
         "expected AccessKit name {expected:?} in File menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
       );
     }
+    // Ensure we don't regress to placeholder labels that are less discoverable/stable for screen
+    // readers.
+    for unexpected in ["Save page (not implemented)", "Print page (not implemented)"] {
+      assert!(
+        !names.iter().any(|n| n == unexpected),
+        "did not expect placeholder AccessKit name {unexpected:?} in File menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
 
     let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
     let roles_snapshot =
@@ -1062,6 +1070,26 @@ mod tests {
       assert!(
         nodes.iter().any(|n| n.role == "Button" && n.name == expected),
         "expected File menu item {expected:?} to appear as a Button in AccessKit output.\n\nsnapshot:\n{roles_snapshot}"
+      );
+    }
+  }
+
+  #[test]
+  fn file_menu_emits_accesskit_names_for_save_print_without_active_tab() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // No active tab -> Save/Print are disabled, but should still be present in the AccessKit tree
+    // so screen readers can discover them.
+    let app = BrowserAppState::new();
+    let output = open_menu_for_accesskit(&ctx, &app, "File");
+
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+    for expected in ["Save page", "Print page"] {
+      assert!(
+        nodes.iter().any(|n| n.role == "Button" && n.name == expected),
+        "expected File menu item {expected:?} to appear as a Button in AccessKit output even when disabled.\n\nsnapshot:\n{snapshot}"
       );
     }
   }
