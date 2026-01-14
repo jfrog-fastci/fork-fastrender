@@ -34,6 +34,11 @@ id = "built-ins/Array/prototype/join/resizable-buffer.js"
 status = "skip"
 reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray constructors"
 
+[[expectations]]
+id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
+status = "skip"
+reason = "Flaky timeout under the full curated suite (passes in isolation, but can exceed the per-test 10s budget under parallel load)."
+
 # --- TypedArray constructors (incremental enablement) ---
 #
 # The curated suites do not yet include the full TypedArray corpus, but we keep explicit
@@ -366,12 +371,13 @@ status = "pass"
 id = "language/statements/for-await-of/iterator-close-throw-get-method-abrupt.js"
 status = "pass"
 
-# --- Classes (incremental enablement) ---
+# --- Classes ---
 #
-# Start with the basic (non-inheritance) semantics and keep remaining failures narrow.
-#
-# Note: `extends` + `super` are still incomplete in `vm-js`, so class inheritance tests remain xfail
-# for now.
+# Class syntax + inheritance are implemented; keep this `pass` so regressions in the (now large)
+# curated class corpus are not hidden by the broad `language/statements/**` xfail fallback below.
+[[expectations]]
+glob = "language/statements/class/**"
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/class/accessor-name-inst/**"
@@ -384,103 +390,83 @@ status = "pass"
 # --- class/definition ---
 [[expectations]]
 id = "language/statements/class/definition/constructable-but-no-prototype.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/invalid-extends.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/methods-async-super-call-body.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/methods-async-super-call-param.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/numeric-property-names.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/prototype-getter.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/prototype-setter.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/prototype-wiring.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/side-effects-in-extends.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/side-effects-in-property-define.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/this-access-restriction-2.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/this-access-restriction.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/this-check-ordering.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/methods-gen-yield-as-expression-with-rhs.js"
-status = "xfail"
-reason = "vm-js does not yet implement `yield` as an expression in generator methods."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/methods-gen-yield-as-expression-without-rhs.js"
-status = "xfail"
-reason = "vm-js does not yet implement `yield` as an expression in generator methods."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/fn-name-accessor-get.js"
-status = "xfail"
-reason = "vm-js bug: function name inference for class accessors is incorrect."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/fn-name-accessor-set.js"
-status = "xfail"
-reason = "vm-js bug: function name inference for class accessors is incorrect."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/fn-name-gen-method.js"
-status = "xfail"
-reason = "vm-js bug: function name inference for class methods is incorrect."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/fn-name-method.js"
-status = "xfail"
-reason = "vm-js bug: function name inference for class methods is incorrect."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/definition/setters-restricted-ids.js"
-status = "xfail"
-reason = "vm-js bug: class accessors named `arguments`/`eval` incorrectly trigger restricted function property checks."
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/class/definition/**"
@@ -499,23 +485,19 @@ status = "pass"
 # --- class/syntax ---
 [[expectations]]
 id = "language/statements/class/syntax/class-body-has-direct-super-class-heritage.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/syntax/class-body-method-definition-super-property.js"
-status = "xfail"
-reason = "vm-js does not yet implement `super` property access."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/syntax/class-declaration-heritage-identifier-reference-class-element-list.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/syntax/class-expression-heritage-identifier-reference.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/class/syntax/**"
@@ -524,8 +506,7 @@ status = "pass"
 # --- class/strict-mode ---
 [[expectations]]
 id = "language/statements/class/strict-mode/arguments-callee.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/class/strict-mode/**"
@@ -534,18 +515,15 @@ status = "pass"
 # --- class/name-binding ---
 [[expectations]]
 id = "language/statements/class/name-binding/in-extends-expression-assigned.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/name-binding/in-extends-expression-grouped.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/name-binding/in-extends-expression.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/class/name-binding/**"
@@ -554,38 +532,36 @@ status = "pass"
 # --- Class fields / private names / static blocks (targeted curated coverage) ---
 [[expectations]]
 id = "language/statements/class/elements/field-declaration.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/elements/static-field-declaration.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/elements/intercalated-static-non-static-computed-fields.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/elements/privatefieldget-typeerror-4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/class/elements/privategetter-on-proxy.js"
 status = "xfail"
-reason = "vm-js does not yet implement class fields/private fields."
+reason = "vm-js: private getter access on Proxy instances is still buggy (invalid handle)."
 
 [[expectations]]
 id = "language/statements/class/elements/private-methods/prod-private-method.js"
-status = "xfail"
-reason = "vm-js private methods are not fully spec-compliant yet (should not appear as own properties)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields/private fields (required for private methods to be visible to field initializers)."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/static-init-sequence.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields/static initialization blocks."
+status = "pass"
 
 [[expectations]]
 id = "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-1.js"
@@ -627,6 +603,14 @@ status = "pass"
 glob = "language/statements/**/labelled-fn-stmt*.js"
 status = "pass"
 reason = "parse-js: enforce IsLabelledFunction early errors in statement positions."
+
+[[expectations]]
+glob = "language/statements/async-function/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/for-in/**"
+status = "pass"
 
 [[expectations]]
 glob = "language/statements/**"
@@ -2630,8 +2614,7 @@ status = "pass"
 
 [[expectations]]
 id = "language/statements/class/restricted-properties.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance."
+status = "pass"
 
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]

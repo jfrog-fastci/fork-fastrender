@@ -81,56 +81,56 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 17328 |
-| Matched upstream expected | 17050 (98.40%) |
-| Mismatched upstream expected | 278 (1.60%) |
+| Total cases | 17336 |
+| Matched upstream expected | 17056 (98.38%) |
+| Mismatched upstream expected | 280 (1.62%) |
 | Timeouts | 0 |
-| Skipped | 40 |
+| Skipped | 42 |
 | Unexpected mismatches | 0 |
 
 ### Outcomes (runner)
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17010 |
-| failed | 278 |
+| passed | 17014 |
+| failed | 280 |
 | timed_out | 0 |
-| skipped | 40 |
+| skipped | 42 |
 
 ### Expectations (manifest)
 
 | Kind | Count |
 | --- | ---: |
-| pass | 9195 |
-| xfail | 8093 |
-| skip | 40 |
+| pass | 9825 |
+| xfail | 7469 |
+| skip | 42 |
 | flaky | 0 |
 
 ### Results vs expectations
 
 | Status | Count |
 | --- | ---: |
-| PASS | 9195 |
+| PASS | 9825 |
 | FAIL (unexpected) | 0 |
-| XFAIL | 278 |
-| XPASS | 7815 |
-| SKIP | 40 |
+| XFAIL | 280 |
+| XPASS | 7189 |
+| SKIP | 42 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7171 | 14 | 0.19% | 6759 | 0 | 14 | 372 | 40 |
-| language | 10138 | 9874 | 264 | 2.60% | 2431 | 0 | 264 | 7443 | 0 |
+| built-ins | 7185 | 7171 | 14 | 0.19% | 6757 | 0 | 14 | 372 | 42 |
+| language | 10146 | 9880 | 266 | 2.62% | 3063 | 0 | 266 | 6817 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7171 | 245 | 3.42% | 1399 | 0 | 245 | 5527 | 0 |
+| `language/statements` | 7179 | 247 | 3.44% | 2031 | 0 | 247 | 4901 | 0 |
 | `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
-| `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
+| `built-ins/Array` | 1503 | 6 | 0.40% | 1455 | 0 | 6 | 0 | 42 |
 | `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 0 | 6 | 0 | 0 |
 | `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
@@ -144,7 +144,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 278 (100.00%)
+- exception/other: 280 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (26 shown / 245 mismatches)
+### `language/statements` (26 shown / 247 mismatches)
 
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#non_strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
