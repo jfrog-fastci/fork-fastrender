@@ -148,6 +148,17 @@ src/ui/history.rs       — Per-tab navigation history
 src/ui/session.rs       — Session persistence
 ```
 
+### Built-in `about:` pages (debugging)
+
+FastRender’s `browser` binary exposes several offline internal pages under the `about:` scheme (e.g.
+`about:newtab`, `about:settings`, `about:gpu`, `about:processes`). These are extremely useful when
+debugging chrome behavior without depending on the network stack.
+
+See [`docs/about_pages.md`](../docs/about_pages.md) for the canonical list and what each page is
+expected to show (notably: `about:settings` for runtime paths/env overrides, and `about:processes` as
+a multiprocess/process-assignment placeholder that currently shows an open-tabs snapshot with a
+derived Site column).
+
 ### Key invariants
 
 - **UI thread never blocks**: All rendering happens on worker thread
