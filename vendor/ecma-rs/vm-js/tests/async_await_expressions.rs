@@ -215,6 +215,68 @@ fn await_in_delete_expression() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_delete_expression_strict_mode_nonconfigurable_member_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f(obj) {
+        "use strict";
+        try {
+          delete (await Promise.resolve(obj)).x;
+          return "no";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var obj = {};
+      Object.defineProperty(obj, "x", { value: 1, configurable: false });
+      f(obj).then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "TypeError");
+  Ok(())
+}
+
+#[test]
+fn await_in_delete_expression_strict_mode_nonconfigurable_computed_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f(obj) {
+        "use strict";
+        try {
+          delete obj[await Promise.resolve("x")];
+          return "no";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var obj = {};
+      Object.defineProperty(obj, "x", { value: 1, configurable: false });
+      f(obj).then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "TypeError");
+  Ok(())
+}
+
+#[test]
 fn await_in_delete_expression_optional_chain_skips_key() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

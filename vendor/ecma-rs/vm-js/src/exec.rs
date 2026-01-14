@@ -26894,17 +26894,23 @@ fn async_delete_member_after_base(
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
   del_scope.push_root(Value::Object(object))?;
 
-  Ok(Value::Bool(
-    crate::spec_ops::internal_delete_with_host_and_hooks(
+  let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+    evaluator.vm,
+    &mut del_scope,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    object,
+    key,
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  if evaluator.strict && !ok {
+    return Err(throw_type_error(
       evaluator.vm,
       &mut del_scope,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      object,
-      key,
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?,
-  ))
+      "Cannot delete property",
+    )?);
+  }
+  Ok(Value::Bool(ok))
 }
 
 fn async_delete_computed_member_after_base(
@@ -26986,17 +26992,23 @@ fn async_delete_computed_member_after_member(
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
   del_scope.push_root(Value::Object(object))?;
 
-  Ok(Value::Bool(
-    crate::spec_ops::internal_delete_with_host_and_hooks(
+  let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+    evaluator.vm,
+    &mut del_scope,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    object,
+    key,
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  if evaluator.strict && !ok {
+    return Err(throw_type_error(
       evaluator.vm,
       &mut del_scope,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      object,
-      key,
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?,
-  ))
+      "Cannot delete property",
+    )?);
+  }
+  Ok(Value::Bool(ok))
 }
 
 fn async_apply_unary_operator(
