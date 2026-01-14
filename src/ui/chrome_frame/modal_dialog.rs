@@ -144,7 +144,7 @@ pub fn modal_dialog_html(model: &Model) -> String {
 
       format!(
         r#"<div class="chrome-modal-input-row">
-          <input class="chrome-modal-input" type="text" name="{safe_name}" value="{safe_value}"{placeholder_attr} autofocus>
+          <input class="chrome-modal-input" type="text" name="{safe_name}" value="{safe_value}" aria-labelledby="chrome-modal-body"{placeholder_attr} autofocus>
         </div>"#,
         placeholder_attr = placeholder_attr.unwrap_or_default()
       )
@@ -315,6 +315,16 @@ mod tests {
       count_buttons_with_formaction(doc.dom(), "chrome-dialog:cancel"),
       1,
       "confirm dialog should include exactly one cancel button"
+    );
+  }
+
+  #[test]
+  fn prompt_dialog_labels_input_from_body_text() {
+    let model = Model::prompt("Prompt", "Enter value", PromptField::new("value"));
+    let html = modal_dialog_html(&model);
+    assert!(
+      html.contains(r#"aria-labelledby="chrome-modal-body""#),
+      "expected prompt input to be labelled by the dialog body"
     );
   }
 }
