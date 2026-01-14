@@ -4135,7 +4135,7 @@ enum UserEvent {
     from_id: winit::window::WindowId,
     window: fastrender::ui::BrowserSessionWindow,
   },
-  /// Discard the currently restored session and start fresh (single `about:newtab` tab per window).
+  /// Discard the currently restored session and start fresh (single clean `about:newtab` window).
   StartNewSession(winit::window::WindowId),
   PageExportNativeDialogFallback {
     window_id: winit::window::WindowId,

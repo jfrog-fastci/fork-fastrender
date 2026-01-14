@@ -245,7 +245,8 @@ Note: startup/session restore:
   (windows + tabs + per-tab zoom + best-effort scroll restoration).
   - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the
     active window shows a crash-recovery infobar/toast (including **Keep** (dismiss) and
-    **Start new session** (discard restored tabs across all windows) actions).
+    **Start new session** (discard restored tabs across all windows and close extra restored windows,
+    leaving a single clean window) actions).
   - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
     start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
@@ -415,8 +416,8 @@ The windowed `browser` app uses a background autosave helper (`SessionAutosave` 
   `did_exit_cleanly=false` and increments `unclean_exit_streak`. If the process is terminated
   unexpectedly, these values remain on disk so the next launch can detect the unclean exit.
   - UX (when restoring an unclean session): the active window shows a crash-recovery infobar/toast
-    (including **Keep** (dismiss) and **Start new session** (discard restored tabs across all
-    windows) actions).
+    (including **Keep** (dismiss) and **Start new session** (discard restored tabs across all windows
+    and close extra restored windows, leaving a single clean window) actions).
   - Crash-loop breaker: after a threshold number of consecutive unclean exits, the browser may skip
     auto-restoring tabs and start with a safe new tab instead (use `--restore` to force restoring
     anyway).

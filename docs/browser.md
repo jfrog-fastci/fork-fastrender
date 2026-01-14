@@ -130,7 +130,7 @@ Startup note:
 - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the UI shows
   a crash-recovery infobar/toast on startup.
   - It includes **Keep** (dismiss) and **Start new session** (discard restored tabs across all
-    windows).
+    windows and close extra restored windows, leaving a single clean `about:newtab` window).
   - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
     start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
