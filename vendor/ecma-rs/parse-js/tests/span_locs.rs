@@ -90,8 +90,9 @@ fn object_prop_value_expr_loc_excludes_closing_brace() {
     panic!("expected LitObjExpr");
   };
 
-  // `parse-js` does not keep parentheses as nodes; the object literal span starts at `{`.
-  assert_eq!(slice(src, expr.loc), "{a:b}");
+  // `parse-js` does not keep parentheses as nodes; grouped expressions expand the inner node's span
+  // to include the parentheses so downstream consumers can slice+reparse reliably.
+  assert_eq!(slice(src, expr.loc), "({a:b})");
 
   let member = obj.stx.members.first().expect("member");
   let ObjMemberType::Valued { val, .. } = &member.stx.typ else {

@@ -161,6 +161,60 @@ fn await_using_declarations_reject_binding_patterns_after_comma() {
 }
 
 #[test]
+fn using_decl_parses_as_var_decl_mode_using() {
+  let src = "{ using x = null; }";
+  let ast = parse_ecma_script(src);
+  assert_eq!(ast.stx.body.len(), 1);
+
+  let stmt0 = &ast.stx.body[0];
+  let Stmt::Block(block) = stmt0.stx.as_ref() else {
+    panic!("expected BlockStmt, got {:?}", stmt0.stx);
+  };
+  assert_eq!(block.stx.body.len(), 1);
+
+  let inner = &block.stx.body[0];
+  let Stmt::VarDecl(var) = inner.stx.as_ref() else {
+    panic!("expected VarDecl, got {:?}", inner.stx);
+  };
+  assert_eq!(var.stx.mode, parse_js::ast::stmt::decl::VarDeclMode::Using);
+  let decl = var.stx.declarators.first().expect("declarator");
+  let parse_js::ast::expr::pat::Pat::Id(id) = decl.pattern.stx.pat.stx.as_ref() else {
+    panic!("expected BindingIdentifier");
+  };
+  assert_eq!(id.stx.name, "x");
+  assert!(decl.initializer.is_some());
+}
+
+#[test]
+fn await_using_decl_parses_as_var_decl_mode_await_using() {
+  let src = "async function f() { await using x = null; }";
+  let ast = parse_ecma_script(src);
+  assert_eq!(ast.stx.body.len(), 1);
+
+  let stmt0 = &ast.stx.body[0];
+  let Stmt::FunctionDecl(func_decl) = stmt0.stx.as_ref() else {
+    panic!("expected FunctionDecl, got {:?}", stmt0.stx);
+  };
+  let func = &func_decl.stx.function.stx;
+  assert!(func.async_);
+  let Some(FuncBody::Block(body)) = &func.body else {
+    panic!("expected function body block");
+  };
+  assert_eq!(body.len(), 1);
+
+  let Stmt::VarDecl(var) = body[0].stx.as_ref() else {
+    panic!("expected VarDecl");
+  };
+  assert_eq!(var.stx.mode, parse_js::ast::stmt::decl::VarDeclMode::AwaitUsing);
+  let decl = var.stx.declarators.first().expect("declarator");
+  let parse_js::ast::expr::pat::Pat::Id(id) = decl.pattern.stx.pat.stx.as_ref() else {
+    panic!("expected BindingIdentifier");
+  };
+  assert_eq!(id.stx.name, "x");
+  assert!(decl.initializer.is_some());
+}
+
+#[test]
 fn for_of_using_of_of_disambiguates_using_as_identifier() {
   // Spec lookahead restriction: `for (using of ...)` must treat `using` as an identifier assignment
   // target, not as a `using` declaration.
@@ -254,4 +308,103 @@ fn using_decl_is_syntax_error_in_for_in_head() {
   // `using` declarations are not permitted in `for-in` statement heads.
   let src = "for (using x in [1,2,3]) {}";
   assert!(parse_with_options(src, ecma_script_opts()).is_err());
+}
+
+#[test]
+fn for_await_of_using_decl_parses() {
+  let src = "async function f() { for await (using x of []) {} }";
+  let ast = parse_ecma_script(src);
+
+  let stmt0 = &ast.stx.body[0];
+  let Stmt::FunctionDecl(func_decl) = stmt0.stx.as_ref() else {
+    panic!("expected FunctionDecl");
+  };
+  let func = &func_decl.stx.function.stx;
+  assert!(func.async_);
+  let Some(FuncBody::Block(body)) = &func.body else {
+    panic!("expected function body block");
+  };
+  assert_eq!(body.len(), 1);
+
+  let Stmt::ForOf(for_of) = body[0].stx.as_ref() else {
+    panic!("expected ForOfStmt");
+  };
+  assert!(for_of.stx.await_);
+  let parse_js::ast::stmt::ForInOfLhs::Decl((mode, pat_decl)) = &for_of.stx.lhs else {
+    panic!("expected decl lhs");
+  };
+  assert_eq!(*mode, parse_js::ast::stmt::decl::VarDeclMode::Using);
+  let parse_js::ast::expr::pat::Pat::Id(id) = pat_decl.stx.pat.stx.as_ref() else {
+    panic!("expected BindingIdentifier");
+  };
+  assert_eq!(id.stx.name, "x");
+}
+
+#[test]
+fn for_await_of_await_using_decl_parses() {
+  let src = "async function f() { for await (await using x of []) {} }";
+  let ast = parse_ecma_script(src);
+
+  let stmt0 = &ast.stx.body[0];
+  let Stmt::FunctionDecl(func_decl) = stmt0.stx.as_ref() else {
+    panic!("expected FunctionDecl");
+  };
+  let func = &func_decl.stx.function.stx;
+  assert!(func.async_);
+  let Some(FuncBody::Block(body)) = &func.body else {
+    panic!("expected function body block");
+  };
+  assert_eq!(body.len(), 1);
+
+  let Stmt::ForOf(for_of) = body[0].stx.as_ref() else {
+    panic!("expected ForOfStmt");
+  };
+  assert!(for_of.stx.await_);
+  let parse_js::ast::stmt::ForInOfLhs::Decl((mode, pat_decl)) = &for_of.stx.lhs else {
+    panic!("expected decl lhs");
+  };
+  assert_eq!(*mode, parse_js::ast::stmt::decl::VarDeclMode::AwaitUsing);
+  let parse_js::ast::expr::pat::Pat::Id(id) = pat_decl.stx.pat.stx.as_ref() else {
+    panic!("expected BindingIdentifier");
+  };
+  assert_eq!(id.stx.name, "x");
+}
+
+#[test]
+fn for_await_of_using_of_of_disambiguates_using_as_identifier() {
+  // Same disambiguation as `for (using of of ...)`, but within a `for await (...) of ...` header.
+  let src = "async function f() { for await (using of of [0, 1, 2]) {} }";
+  let ast = parse_ecma_script(src);
+
+  let stmt0 = &ast.stx.body[0];
+  let Stmt::FunctionDecl(func_decl) = stmt0.stx.as_ref() else {
+    panic!("expected FunctionDecl");
+  };
+  let func = &func_decl.stx.function.stx;
+  assert!(func.async_);
+  let Some(FuncBody::Block(body)) = &func.body else {
+    panic!("expected function body block");
+  };
+  assert_eq!(body.len(), 1);
+
+  let Stmt::ForOf(for_of) = body[0].stx.as_ref() else {
+    panic!("expected ForOfStmt");
+  };
+  assert!(for_of.stx.await_);
+
+  let parse_js::ast::stmt::ForInOfLhs::Assign(pat) = &for_of.stx.lhs else {
+    panic!("expected assignment lhs");
+  };
+  let parse_js::ast::expr::pat::Pat::Id(id) = pat.stx.as_ref() else {
+    panic!("expected identifier assignment target");
+  };
+  assert_eq!(id.stx.name, "using");
+
+  let Expr::ComputedMember(member) = for_of.stx.rhs.stx.as_ref() else {
+    panic!("expected computed member rhs");
+  };
+  let Expr::Id(obj) = member.stx.object.stx.as_ref() else {
+    panic!("expected identifier base");
+  };
+  assert_eq!(obj.stx.name, "of");
 }
