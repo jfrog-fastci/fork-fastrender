@@ -436,6 +436,62 @@ fn super_static_getter_setter_use_this_binding_compiled() -> Result<(), VmError>
 }
 
 #[test]
+fn super_static_getter_setter_uses_call_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {
+          static get x(){ return this._x; }
+          static set x(v){ this._x = v; }
+        }
+        class B extends A {
+          static setX(v){ super.x = v; }
+          static getX(){ return super.x; }
+        }
+        function C() {}
+        B.setX(42);
+        B.setX.call(C, 7);
+        B.getX() === 42 &&
+          B._x === 42 &&
+          C._x === 7 &&
+          B.getX.call(C) === 7 &&
+          A._x === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_static_getter_setter_uses_call_receiver_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {
+        static get x(){ return this._x; }
+        static set x(v){ this._x = v; }
+      }
+      class B extends A {
+        static setX(v){ super.x = v; }
+        static getX(){ return super.x; }
+      }
+      function C() {}
+      B.setX(42);
+      B.setX.call(C, 7);
+      B.getX() === 42 &&
+        B._x === 42 &&
+        C._x === 7 &&
+        B.getX.call(C) === 7 &&
+        A._x === undefined
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_property_assignment_to_non_writable_throws_type_error() {
   let mut rt = new_runtime();
   let value = rt
