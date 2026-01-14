@@ -274,3 +274,86 @@ fn generator_resume_roots_computed_member_assignment_base_before_key_yield() {
     "expected generator resumption to trigger at least one GC cycle"
   );
 }
+
+#[test]
+fn generator_resume_roots_array_literal_after_single_element_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          return [ (yield 1), 2 ];
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(42);
+        r1.value === 1 && r1.done === false &&
+        r2.done === true &&
+        Array.isArray(r2.value) &&
+        r2.value.length === 2 &&
+        r2.value[0] === 42 &&
+        r2.value[1] === 2
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
+fn generator_resume_roots_array_literal_after_spread_element_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          return [ ...(yield 1), 2 ];
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  // Reuse the preallocated `args` array as the resume value so we don't trigger a GC cycle before
+  // the generator resumption code has taken the continuation out of the heap.
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(args);
+        r1.value === 1 && r1.done === false &&
+        r2.done === true &&
+        Array.isArray(r2.value) &&
+        r2.value.length === (args.length + 1) &&
+        r2.value[0] === 0 &&
+        r2.value[args.length - 1] === (args.length - 1) &&
+        r2.value[args.length] === 2
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
