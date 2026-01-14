@@ -25167,7 +25167,9 @@ fn async_eval_assignment_to_member(
         "super private member access is not valid (early errors should prevent this)",
       ));
     }
-    // `super` uses the current `this` binding as the receiver (`GetThisBinding`).
+    // `super` uses the current `this` binding as the receiver (`GetThisBinding`). In derived
+    // constructors this must also unwrap a `DerivedConstructorState` cell (captured by arrow
+    // functions / direct eval) to the initialized `this` object.
     let receiver = async_get_super_receiver(evaluator, scope)?;
 
     let mut key_scope = scope.reborrow();
@@ -30781,7 +30783,9 @@ fn async_resume_from_frames(
 
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                  .map_err(|err| {
+                    coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
+                  })?;
 
                 // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
                 match key {
@@ -30789,9 +30793,9 @@ fn async_resume_from_frames(
                   PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
                 };
 
-                let base = evaluator
-                  .get_super_base(&mut key_scope)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                let base = evaluator.get_super_base(&mut key_scope).map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
+                })?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
               })();
@@ -31393,7 +31397,9 @@ fn async_resume_from_frames(
 
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                  .map_err(|err| {
+                    coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
+                  })?;
 
                 // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
                 match key {
@@ -31401,9 +31407,9 @@ fn async_resume_from_frames(
                   PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
                 };
 
-                let base = evaluator
-                  .get_super_base(&mut key_scope)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                let base = evaluator.get_super_base(&mut key_scope).map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
+                })?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
               })();
