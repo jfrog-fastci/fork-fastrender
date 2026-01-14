@@ -2331,8 +2331,9 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 # --- Explicit Resource Management (ERM) built-ins / staging tests ---
 #
 # `vm-js` parses `using` / `await using` (with early errors enforced). The core ERM built-ins
-# (DisposableStack/AsyncDisposableStack/SuppressedError) are implemented, but the runtime semantics
-# for `using` are still pending, so staging tests remain `xfail`.
+# (DisposableStack/AsyncDisposableStack/SuppressedError) are implemented, and `using` / `await using`
+# runtime semantics are wired up across functions/modules/scripts/generators. Async generators are
+# still unimplemented, so we keep the lone async-generator staging test as `xfail`.
 [[expectations]]
 glob = "built-ins/DisposableStack/**"
 status = "pass"
@@ -2347,8 +2348,12 @@ status = "pass"
 
 [[expectations]]
 glob = "staging/explicit-resource-management/**"
+status = "pass"
+
+[[expectations]]
+id = "staging/explicit-resource-management/await-using-in-async-generator-body.js"
 status = "xfail"
-reason = "vm-js: Explicit Resource Management proposal runtime semantics are not implemented yet."
+reason = "vm-js: async generators are not implemented yet (required for await using in async generator bodies)."
 
 # --- Map / Set (core built-ins, partially implemented) ---
 [[expectations]]

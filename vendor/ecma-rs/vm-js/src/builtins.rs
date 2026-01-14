@@ -7146,7 +7146,7 @@ fn require_async_disposable_stack(
   Ok((this_obj, state, stack))
 }
 
-fn create_suppressed_error(
+pub(crate) fn create_suppressed_error(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   suppressed_error_prototype: GcObject,

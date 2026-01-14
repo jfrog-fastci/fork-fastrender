@@ -1130,6 +1130,390 @@ fn check_disposable_resource_value(
   }
 }
 
+fn add_disposable_resource(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl_mode: VarDeclMode,
+  value: Value,
+) -> Result<(), VmError> {
+  // Explicit Resource Management (tc39/proposal-explicit-resource-management).
+  //
+  // This is the runtime `AddDisposableResource` step performed by `using` / `await using`
+  // declarations. It validates the initializer value, resolves the appropriate disposer method, and
+  // pushes a record into the current disposable scope.
+  check_disposable_resource_value(evaluator.vm, scope, value)?;
+
+  // `using x = null/undefined` is a no-op.
+  if matches!(value, Value::Null | Value::Undefined) {
+    evaluator
+      .env
+      .push_disposable_record(scope, Value::Undefined, Value::Undefined, false)?;
+    return Ok(());
+  }
+
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let (method, should_await) = match decl_mode {
+    VarDeclMode::Using => {
+      let dispose_sym = intr.well_known_symbols().dispose;
+      let dispose_key = PropertyKey::from_symbol(dispose_sym);
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        evaluator.vm,
+        scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        value,
+        dispose_key,
+      )?
+      .ok_or(VmError::TypeError("No dispose method"))?;
+      (method, false)
+    }
+    VarDeclMode::AwaitUsing => {
+      let async_dispose_sym = intr.well_known_symbols().async_dispose;
+      let async_dispose_key = PropertyKey::from_symbol(async_dispose_sym);
+      let async_method = crate::spec_ops::get_method_with_host_and_hooks(
+        evaluator.vm,
+        scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        value,
+        async_dispose_key,
+      )?;
+      if let Some(m) = async_method {
+        (m, true)
+      } else {
+        let dispose_sym = intr.well_known_symbols().dispose;
+        let dispose_key = PropertyKey::from_symbol(dispose_sym);
+        let method = crate::spec_ops::get_method_with_host_and_hooks(
+          evaluator.vm,
+          scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          value,
+          dispose_key,
+        )?
+        .ok_or(VmError::TypeError("No dispose method"))?;
+        // Important: `await using` must not await a fallback `@@dispose` method even if it returns a
+        // Promise.
+        (method, false)
+      }
+    }
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "add_disposable_resource called for non-using declaration",
+      ))
+    }
+  };
+
+  evaluator
+    .env
+    .push_disposable_record(scope, value, method, should_await)?;
+  Ok(())
+}
+
+fn dispose_disposable_scope_sync(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  scope_obj: GcObject,
+  mut completion: Completion,
+) -> Result<Completion, VmError> {
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let suppressed_error_prototype = intr.suppressed_error_prototype();
+
+  // Root the popped scope array so its record list remains alive across allocations + calls.
+  let mut dispose_scope = scope.reborrow();
+  dispose_scope.push_root(Value::Object(scope_obj))?;
+
+  // Root the incoming completion value (if any) across disposal operations that may allocate and/or
+  // trigger GC.
+  if let Some(v) = completion.value() {
+    dispose_scope.push_root(v)?;
+  }
+
+  let len = dispose_scope.heap().array_length(scope_obj)?;
+
+  const TICK_EVERY: u32 = 32;
+  for i in (0..len).rev() {
+    if i % TICK_EVERY == 0 {
+      evaluator.tick()?;
+    }
+
+    let record = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(scope_obj, i)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(record_obj) = record else {
+      continue;
+    };
+
+    let resource = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 0)?
+      .unwrap_or(Value::Undefined);
+    let method = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 1)?
+      .unwrap_or(Value::Undefined);
+
+    if matches!(method, Value::Undefined) {
+      continue;
+    }
+
+    // Root the call inputs across the host call.
+    let call_result = {
+      let mut call_scope = dispose_scope.reborrow();
+      call_scope.push_roots(&[resource, method])?;
+      evaluator.vm.call_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut call_scope,
+        &mut *evaluator.hooks,
+        method,
+        resource,
+        &[],
+      )
+    };
+
+    match call_result {
+      Ok(_) => {}
+      Err(err) => {
+        if err.is_throw_completion() {
+          let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut dispose_scope, err);
+          let Some(thrown) = err.thrown_value() else {
+            return Err(err);
+          };
+
+          completion = match completion {
+            Completion::Throw(mut prev) => {
+              let suppressed = crate::builtins::create_suppressed_error(
+                evaluator.vm,
+                &mut dispose_scope,
+                suppressed_error_prototype,
+                thrown,
+                prev.value,
+              )?;
+              prev.value = suppressed;
+              // Root the latest completion value across further allocations.
+              dispose_scope.push_root(suppressed)?;
+              Completion::Throw(prev)
+            }
+            _ => {
+              dispose_scope.push_root(thrown)?;
+              Completion::Throw(Thrown {
+                value: thrown,
+                stack: Vec::new(),
+              })
+            }
+          };
+        } else {
+          return Err(err);
+        }
+      }
+    }
+  }
+
+  Ok(completion)
+}
+
+fn dispose_disposable_scope_async_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  scope_obj: GcObject,
+  scope_root: Option<RootId>,
+  mut completion: Completion,
+  mut next_index: i32,
+) -> Result<AsyncEval<Completion>, VmError> {
+  // Explicit Resource Management (tc39/proposal-explicit-resource-management).
+  //
+  // Async variant of `DisposeResources`. This walks the record list in LIFO order, calling each
+  // disposer and awaiting async-dispose results. Awaiting must suspend even when the disposer returns
+  // a non-Promise value (spec `Await` semantics).
+  if next_index < 0 {
+    return Ok(AsyncEval::Complete(completion));
+  }
+
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let suppressed_error_prototype = intr.suppressed_error_prototype();
+
+  // Root the popped scope array so its record list remains alive across allocations + calls.
+  let mut dispose_scope = scope.reborrow();
+  dispose_scope.push_root(Value::Object(scope_obj))?;
+
+  // Root the running completion value (if any) across disposal operations that may allocate and/or
+  // trigger GC.
+  if let Some(v) = completion.value() {
+    dispose_scope.push_root(v)?;
+  }
+
+  const TICK_EVERY: i32 = 32;
+  while next_index >= 0 {
+    if next_index % TICK_EVERY == 0 {
+      evaluator.tick()?;
+    }
+
+    let record = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(scope_obj, next_index as u32)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(record_obj) = record else {
+      next_index -= 1;
+      continue;
+    };
+
+    let resource = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 0)?
+      .unwrap_or(Value::Undefined);
+    let method = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 1)?
+      .unwrap_or(Value::Undefined);
+    let should_await = dispose_scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 2)?
+      .unwrap_or(Value::Bool(false));
+    let should_await = match should_await {
+      Value::Bool(b) => b,
+      Value::Undefined => false,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "disposable record shouldAwait slot is not a boolean",
+        ))
+      }
+    };
+
+    if matches!(method, Value::Undefined) {
+      next_index -= 1;
+      continue;
+    }
+
+    // Root the call inputs across the host call.
+    let call_result = {
+      let mut call_scope = dispose_scope.reborrow();
+      call_scope.push_roots(&[resource, method])?;
+      evaluator.vm.call_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut call_scope,
+        &mut *evaluator.hooks,
+        method,
+        resource,
+        &[],
+      )
+    };
+
+    match call_result {
+      Ok(v) => {
+        if should_await {
+          // We must suspend on `await v` (even if `v` is not a Promise).
+
+          // Root the awaited value across root allocation and rooted-completion creation.
+          let mut suspend_scope = dispose_scope.reborrow();
+          suspend_scope.push_root(v)?;
+
+          // Ensure the scope array stays alive across the await.
+          let created_scope_root = scope_root.is_none();
+          let scope_root_id = match scope_root {
+            Some(id) => id,
+            None => {
+              let id = suspend_scope.heap_mut().add_root(Value::Object(scope_obj))?;
+              id
+            }
+          };
+
+          // Root the pending completion so it survives across the await boundary.
+          let mut pending = match RootedCompletion::new(&mut suspend_scope, completion) {
+            Ok(p) => p,
+            Err(err) => {
+              if created_scope_root {
+                suspend_scope.heap_mut().remove_root(scope_root_id);
+              }
+              return Err(err);
+            }
+          };
+
+          let mut frames = VecDeque::new();
+          // Ensure we can push the continuation frame before we move `pending` into it; if the
+          // reservation fails we must tear down the persistent roots that `pending` created.
+          if frames.try_reserve(1).is_err() {
+            let heap = suspend_scope.heap_mut();
+            pending.teardown(heap);
+            if created_scope_root {
+              heap.remove_root(scope_root_id);
+            }
+            return Err(VmError::OutOfMemory);
+          }
+          frames.push_back(AsyncFrame::DisposeScopeContinue {
+            scope_root: scope_root_id,
+            next_index: next_index.saturating_sub(1),
+            pending,
+          });
+          return Ok(AsyncEval::Suspend(AsyncSuspend {
+            kind: AsyncSuspendKind::Await,
+            await_value: v,
+            frames,
+          }));
+        }
+      }
+      Err(err) => {
+        if err.is_throw_completion() {
+          let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut dispose_scope, err);
+          let Some(thrown) = err.thrown_value() else {
+            return Err(err);
+          };
+
+          completion = match completion {
+            Completion::Throw(mut prev) => {
+              let suppressed = crate::builtins::create_suppressed_error(
+                evaluator.vm,
+                &mut dispose_scope,
+                suppressed_error_prototype,
+                thrown,
+                prev.value,
+              )?;
+              prev.value = suppressed;
+              // Root the latest completion value across further allocations.
+              dispose_scope.push_root(suppressed)?;
+              Completion::Throw(prev)
+            }
+            _ => {
+              dispose_scope.push_root(thrown)?;
+              Completion::Throw(Thrown {
+                value: thrown,
+                stack: Vec::new(),
+              })
+            }
+          };
+        } else {
+          return Err(err);
+        }
+      }
+    }
+
+    next_index -= 1;
+  }
+
+  Ok(AsyncEval::Complete(completion))
+}
+
+fn dispose_disposable_scope_async(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  scope_obj: GcObject,
+  completion: Completion,
+) -> Result<AsyncEval<Completion>, VmError> {
+  let len = scope.heap().array_length(scope_obj)?;
+  let start = (len as i32).saturating_sub(1);
+  dispose_disposable_scope_async_from(evaluator, scope, scope_obj, None, completion, start)
+}
+
 fn throw_syntax_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -1214,6 +1598,14 @@ pub(crate) struct RuntimeEnv {
   /// - eval executed from the *function body* (where `var` declarations may redeclare parameters and
   ///   collisions must be checked against the function-body lexical environment instead).
   in_parameter_init: bool,
+  /// Stack of active explicit resource management scopes.
+  ///
+  /// Each element is an Array object containing disposable resource records:
+  /// `[resourceValue, disposeMethod, shouldAwait]`.
+  ///
+  /// This container is rooted persistently while this `RuntimeEnv` is stored outside the GC heap
+  /// (on the Rust stack, or in async continuations).
+  disposable_scopes: GcObject,
   /// Persistent env root used while this `RuntimeEnv` is stored outside the GC heap (e.g. on the
   /// Rust stack during normal execution, or in `AsyncContinuation`).
   ///
@@ -1221,6 +1613,13 @@ pub(crate) struct RuntimeEnv {
   /// yields; generator code sets this to `None` before storing the env in the heap, and may attach a
   /// temporary root only for the duration of a single `.next/.throw/.return` call.
   lexical_root: Option<EnvRootId>,
+  /// Persistent root for `disposable_scopes` used while this `RuntimeEnv` is stored outside the GC
+  /// heap.
+  ///
+  /// Generator continuations are GC-owned, so they must not keep persistent roots alive across
+  /// yields; generator code sets this to `None` before storing the env in the heap, and may attach a
+  /// temporary root only for the duration of a single `.next/.throw/.return` call.
+  disposable_root: Option<RootId>,
   var_env: VarEnv,
   /// Whether new global `var`/function declarations should create **deletable** (configurable)
   /// bindings on the global object.
@@ -1244,6 +1643,7 @@ impl Trace for RuntimeEnv {
     if let Some(env) = self.parameter_env {
       tracer.trace_env(env);
     }
+    tracer.trace_value(Value::Object(self.disposable_scopes));
     if let VarEnv::Env(env) = self.var_env {
       tracer.trace_env(env);
     }
@@ -1353,15 +1753,23 @@ impl RuntimeEnv {
     let envs = [lexical_env];
     scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_root(lexical_env)?;
+
+    // Allocate the disposable scope stack and root it persistently before leaving this function so
+    // GC can trace it even while the `RuntimeEnv` is stored off-heap.
+    let disposable_scopes = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(disposable_scopes))?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
+    let disposable_root = Some(scope.heap_mut().add_root(Value::Object(disposable_scopes))?);
 
     Ok(Self {
       global_object,
       lexical_env,
       parameter_env: None,
       in_parameter_init: false,
+      disposable_scopes,
       lexical_root,
+      disposable_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
       source,
@@ -1387,15 +1795,20 @@ impl RuntimeEnv {
     scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_roots(&envs)?;
 
+    let disposable_scopes = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(disposable_scopes))?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
+    let disposable_root = Some(scope.heap_mut().add_root(Value::Object(disposable_scopes))?);
 
     Ok(Self {
       global_object,
       lexical_env,
       parameter_env: None,
       in_parameter_init: false,
+      disposable_scopes,
       lexical_root,
+      disposable_root,
       var_env: VarEnv::Env(var_env),
       global_var_deletable: false,
       source,
@@ -1417,15 +1830,21 @@ impl RuntimeEnv {
     let envs = [lexical_env];
     scope.push_roots_with_extra_roots(&values, &[], &envs)?;
     scope.push_env_root(lexical_env)?;
+
+    let disposable_scopes = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(disposable_scopes))?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
+    let disposable_root = Some(scope.heap_mut().add_root(Value::Object(disposable_scopes))?);
 
     Ok(Self {
       global_object,
       lexical_env,
       parameter_env: None,
       in_parameter_init: false,
+      disposable_scopes,
       lexical_root,
+      disposable_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
       source,
@@ -1438,6 +1857,9 @@ impl RuntimeEnv {
   pub(crate) fn teardown(&mut self, heap: &mut Heap) {
     if let Some(root) = self.lexical_root.take() {
       heap.remove_env_root(root);
+    }
+    if let Some(root) = self.disposable_root.take() {
+      heap.remove_root(root);
     }
   }
 
@@ -1485,6 +1907,131 @@ impl RuntimeEnv {
 
   pub(crate) fn lexical_env(&self) -> GcEnv {
     self.lexical_env
+  }
+
+  pub(crate) fn disposable_scope_depth(&self, heap: &Heap) -> Result<u32, VmError> {
+    heap.array_length(self.disposable_scopes)
+  }
+
+  fn current_disposable_scope(&self, heap: &Heap) -> Result<Option<GcObject>, VmError> {
+    let len = heap.array_length(self.disposable_scopes)?;
+    if len == 0 {
+      return Ok(None);
+    }
+    let idx = len.saturating_sub(1);
+    let v = heap
+      .array_fast_own_data_element_value(self.disposable_scopes, idx)?
+      .unwrap_or(Value::Undefined);
+    match v {
+      Value::Object(o) => Ok(Some(o)),
+      _ => Ok(None),
+    }
+  }
+
+  pub(crate) fn push_disposable_scope(&mut self, scope: &mut Scope<'_>) -> Result<(), VmError> {
+    // Root the stack container across scope allocation + stack mutation.
+    let stack = self.disposable_scopes;
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(stack))?;
+
+    let scope_obj = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(scope_obj))?;
+
+    let len = scope.heap().array_length(stack)?;
+    let key = scope.alloc_array_index_key(len)?;
+    if let PropertyKey::String(s) = key {
+      scope.push_root(Value::String(s))?;
+    }
+    scope.create_data_property_or_throw(stack, key, Value::Object(scope_obj))?;
+    Ok(())
+  }
+
+  pub(crate) fn pop_disposable_scope(
+    &mut self,
+    scope: &mut Scope<'_>,
+  ) -> Result<Option<GcObject>, VmError> {
+    let stack = self.disposable_scopes;
+    let len = scope.heap().array_length(stack)?;
+    if len == 0 {
+      return Ok(None);
+    }
+    let idx = len.saturating_sub(1);
+
+    // Read the value before mutating the element table.
+    let value = scope
+      .heap()
+      .array_fast_own_data_element_value(stack, idx)?
+      .unwrap_or(Value::Undefined);
+
+    // Remove the last element without allocating.
+    let elems = scope.heap_mut().array_fast_elements_mut(stack)?;
+    debug_assert!(
+      elems.len() == len as usize,
+      "internal disposable scope stack is not dense"
+    );
+    if !elems.is_empty() {
+      elems.pop();
+    }
+    scope.heap_mut().array_set_length(stack, idx)?;
+
+    match value {
+      Value::Object(o) => Ok(Some(o)),
+      Value::Undefined => Ok(None),
+      _ => Err(VmError::InvariantViolation(
+        "disposable scope stack contains non-object",
+      )),
+    }
+  }
+
+  pub(crate) fn push_disposable_record(
+    &mut self,
+    scope: &mut Scope<'_>,
+    resource_value: Value,
+    dispose_method: Value,
+    should_await: bool,
+  ) -> Result<(), VmError> {
+    let Some(scope_obj) = self.current_disposable_scope(scope.heap())? else {
+      return Err(VmError::InvariantViolation(
+        "using declaration executed with no active disposable scope",
+      ));
+    };
+
+    let mut scope = scope.reborrow();
+    // Root all inputs across record + key allocation and array mutation.
+    scope.push_roots(&[
+      Value::Object(scope_obj),
+      resource_value,
+      dispose_method,
+      Value::Bool(should_await),
+    ])?;
+
+    // Record shape: [resourceValue, disposeMethod, shouldAwait]
+    let record = scope.alloc_array(0)?;
+    scope.push_root(Value::Object(record))?;
+
+    for (idx, value) in [
+      resource_value,
+      dispose_method,
+      Value::Bool(should_await),
+    ]
+    .iter()
+    .copied()
+    .enumerate()
+    {
+      let key = scope.alloc_array_index_key(idx as u32)?;
+      if let PropertyKey::String(s) = key {
+        scope.push_root(Value::String(s))?;
+      }
+      scope.create_data_property_or_throw(record, key, value)?;
+    }
+
+    let len = scope.heap().array_length(scope_obj)?;
+    let key = scope.alloc_array_index_key(len)?;
+    if let PropertyKey::String(s) = key {
+      scope.push_root(Value::String(s))?;
+    }
+    scope.create_data_property_or_throw(scope_obj, key, Value::Object(record))?;
+    Ok(())
   }
 
   /// Resolves an identifier reference for assignment without reading its value.
@@ -3732,8 +4279,25 @@ impl JsRuntime {
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+        evaluator.env.push_disposable_scope(&mut scope)?;
 
-        let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+        let eval_result = evaluator.eval_stmt_list(&mut scope, &top.stx.body);
+        let completion = match eval_result {
+          Ok(completion) => {
+            let scope_obj = evaluator.env.pop_disposable_scope(&mut scope)?;
+            let Some(scope_obj) = scope_obj else {
+              return Err(VmError::InvariantViolation(
+                "script completed with no disposable scope",
+              ));
+            };
+            dispose_disposable_scope_sync(&mut evaluator, &mut scope, scope_obj, completion)?
+          }
+          Err(err) => {
+            let _ = evaluator.env.pop_disposable_scope(&mut scope)?;
+            return Err(err);
+          }
+        };
+
         return match completion {
           Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
           Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
@@ -3793,7 +4357,29 @@ impl JsRuntime {
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-        let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
+        evaluator.env.push_disposable_scope(&mut scope)?;
+
+        let eval = match async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)? {
+          AsyncEval::Complete(completion) => {
+            let scope_obj = evaluator.env.pop_disposable_scope(&mut scope)?;
+            let Some(scope_obj) = scope_obj else {
+              return Err(VmError::InvariantViolation(
+                "async script completed with no disposable scope",
+              ));
+            };
+            dispose_disposable_scope_async(&mut evaluator, &mut scope, scope_obj, completion)?
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+              // Best-effort: ensure no persistent roots owned by the frames leak.
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+            AsyncEval::Suspend(suspend)
+          }
+        };
         let home_object = evaluator
           .home_object
           .map(Value::Object)
@@ -8456,13 +9042,32 @@ impl<'a> Evaluator<'a> {
     let outer = self.env.lexical_env;
     let block_env = scope.env_create(Some(outer))?;
     self.env.set_lexical_env(scope.heap_mut(), block_env);
+    if let Err(err) = self.env.push_disposable_scope(scope) {
+      self.env.set_lexical_env(scope.heap_mut(), outer);
+      return Err(err);
+    }
 
     let result = self
       .instantiate_block_decls_in_stmt_list(scope, block_env, &block.body)
       .and_then(|_| self.eval_stmt_list(scope, &block.body));
 
     self.env.set_lexical_env(scope.heap_mut(), outer);
-    result
+    match result {
+      Ok(completion) => {
+        let scope_obj = self.env.pop_disposable_scope(scope)?;
+        let Some(scope_obj) = scope_obj else {
+          return Err(VmError::InvariantViolation(
+            "block completed with no disposable scope",
+          ));
+        };
+        dispose_disposable_scope_sync(self, scope, scope_obj, completion)
+      }
+      Err(err) => {
+        // Fatal error: pop the scope without running any disposal (do not run user code).
+        let _ = self.env.pop_disposable_scope(scope)?;
+        Err(err)
+      }
+    }
   }
 
   fn eval_function_decl_stmt(
@@ -8904,7 +9509,7 @@ impl<'a> Evaluator<'a> {
             self.derived_constructor,
             self.this_initialized,
           )?;
-          check_disposable_resource_value(self.vm, scope, value)?;
+          add_disposable_resource(self, scope, decl.mode, value)?;
         }
         Ok(Completion::empty())
       }
@@ -10295,6 +10900,19 @@ impl<'a> Evaluator<'a> {
     let body_lex = block_scope.env_create(Some(var_env))?;
     self.env.set_var_env(VarEnv::Env(var_env));
     self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+    if let Err(err) = self.env.push_disposable_scope(&mut block_scope) {
+      // Restore the surrounding class evaluation context before propagating.
+      self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+      self.env.set_var_env(saved_var_env);
+      self
+        .env
+        .set_meta_property_context(saved_meta_property_context);
+      self.this = saved_this;
+      self.this_initialized = saved_this_initialized;
+      self.new_target = saved_new_target;
+      self.home_object = saved_home_object;
+      return Err(err);
+    }
 
     let res: Result<Completion, VmError> = (|| {
       self.instantiate_stmt_list(&mut block_scope, stmts)?;
@@ -10312,7 +10930,23 @@ impl<'a> Evaluator<'a> {
     self.new_target = saved_new_target;
     self.home_object = saved_home_object;
 
-    match res? {
+    let completion = match res {
+      Ok(completion) => {
+        let scope_obj = self.env.pop_disposable_scope(&mut block_scope)?;
+        let Some(scope_obj) = scope_obj else {
+          return Err(VmError::InvariantViolation(
+            "class static block completed with no disposable scope",
+          ));
+        };
+        dispose_disposable_scope_sync(self, &mut block_scope, scope_obj, completion)?
+      }
+      Err(err) => {
+        let _ = self.env.pop_disposable_scope(&mut block_scope)?;
+        return Err(err);
+      }
+    };
+
+    match completion {
       Completion::Normal(_) => Ok(()),
       Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
         value: thrown.value,
@@ -10652,6 +11286,7 @@ impl<'a> Evaluator<'a> {
     //   paramEnv. This ensures:
     //   - catch-parameter destructuring defaults observe TDZ for the parameter bindings, and
     //   - closures created in the catch body capture block lexical bindings, not the parameter env.
+    let mut pushed_disposable_scope = false;
     let result = (|| {
       if let Some(param) = &catch.parameter {
         // --- Catch parameter binding ---
@@ -10673,6 +11308,10 @@ impl<'a> Evaluator<'a> {
         // --- Catch block evaluation ---
         let block_env = catch_scope.env_create(Some(param_env))?;
         self.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+        if let Err(err) = self.env.push_disposable_scope(&mut catch_scope) {
+          return Err(err);
+        }
+        pushed_disposable_scope = true;
 
         self.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
         self.eval_stmt_list(&mut catch_scope, &catch.body)
@@ -10697,6 +11336,10 @@ impl<'a> Evaluator<'a> {
 
         let block_env = catch_scope.env_create(Some(outer))?;
         self.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+        if let Err(err) = self.env.push_disposable_scope(&mut catch_scope) {
+          return Err(err);
+        }
+        pushed_disposable_scope = true;
         self.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
         self.eval_stmt_list(&mut catch_scope, &catch.body)
       }
@@ -10704,7 +11347,26 @@ impl<'a> Evaluator<'a> {
 
     // Always restore the outer lexical environment so later statements run in the correct scope.
     self.env.set_lexical_env(catch_scope.heap_mut(), outer);
-    result
+    match result {
+      Ok(completion) => {
+        if !pushed_disposable_scope {
+          return Ok(completion);
+        }
+        let scope_obj = self.env.pop_disposable_scope(&mut catch_scope)?;
+        let Some(scope_obj) = scope_obj else {
+          return Err(VmError::InvariantViolation(
+            "catch completed with no disposable scope",
+          ));
+        };
+        dispose_disposable_scope_sync(self, &mut catch_scope, scope_obj, completion)
+      }
+      Err(err) => {
+        if pushed_disposable_scope {
+          let _ = self.env.pop_disposable_scope(&mut catch_scope)?;
+        }
+        Err(err)
+      }
+    }
   }
 
   fn bind_catch_param(
@@ -11493,13 +12155,31 @@ impl<'a> Evaluator<'a> {
     let outer = self.env.lexical_env;
     let body_env = scope.env_create(Some(outer))?;
     self.env.set_lexical_env(scope.heap_mut(), body_env);
+    if let Err(err) = self.env.push_disposable_scope(scope) {
+      self.env.set_lexical_env(scope.heap_mut(), outer);
+      return Err(err);
+    }
 
     let result = self
       .instantiate_block_decls_in_stmt_list(scope, body_env, &body.body)
       .and_then(|_| self.eval_stmt_list(scope, &body.body));
 
     self.env.set_lexical_env(scope.heap_mut(), outer);
-    result
+    match result {
+      Ok(completion) => {
+        let scope_obj = self.env.pop_disposable_scope(scope)?;
+        let Some(scope_obj) = scope_obj else {
+          return Err(VmError::InvariantViolation(
+            "for-body completed with no disposable scope",
+          ));
+        };
+        dispose_disposable_scope_sync(self, scope, scope_obj, completion)
+      }
+      Err(err) => {
+        let _ = self.env.pop_disposable_scope(scope)?;
+        Err(err)
+      }
+    }
   }
 
   fn eval_label(
@@ -11542,6 +12222,10 @@ impl<'a> Evaluator<'a> {
     self
       .env
       .set_lexical_env(switch_scope.heap_mut(), switch_env);
+    if let Err(err) = self.env.push_disposable_scope(&mut switch_scope) {
+      self.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      return Err(err);
+    }
 
     let result = (|| -> Result<Completion, VmError> {
       const BRANCH_TICK_EVERY: usize = 32;
@@ -11700,7 +12384,21 @@ impl<'a> Evaluator<'a> {
 
     // Restore the outer lexical environment no matter how control leaves the switch.
     self.env.set_lexical_env(switch_scope.heap_mut(), outer);
-    result
+    match result {
+      Ok(completion) => {
+        let scope_obj = self.env.pop_disposable_scope(&mut switch_scope)?;
+        let Some(scope_obj) = scope_obj else {
+          return Err(VmError::InvariantViolation(
+            "switch completed with no disposable scope",
+          ));
+        };
+        dispose_disposable_scope_sync(self, &mut switch_scope, scope_obj, completion)
+      }
+      Err(err) => {
+        let _ = self.env.pop_disposable_scope(&mut switch_scope)?;
+        Err(err)
+      }
+    }
   }
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, VmError> {
@@ -16783,6 +17481,19 @@ pub(crate) enum AsyncFrame {
   /// a computed member key contains `await`).
   RestoreStrict { saved_strict: bool },
 
+  /// Dispose the current explicit resource management scope (`using` / `await using`).
+  ///
+  /// This frame must be reached with a `Completion` state; it pops the current disposable scope from
+  /// `RuntimeEnv` and runs its disposers, potentially suspending on async disposals.
+  DisposeScope,
+  /// Continue disposing an explicit resource management scope after awaiting an async disposer
+  /// result.
+  DisposeScopeContinue {
+    scope_root: RootId,
+    next_index: i32,
+    pending: RootedCompletion,
+  },
+
   /// Finish an expression statement after its expression is evaluated.
   ExprStmt,
   /// Finish a return statement after its value expression is evaluated.
@@ -18661,6 +19372,12 @@ impl RootedCompletion {
 fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
   match frame {
     AsyncFrame::HirAsync { state } => state.teardown(heap),
+    AsyncFrame::DisposeScopeContinue {
+      scope_root, pending, ..
+    } => {
+      heap.remove_root(*scope_root);
+      pending.teardown(heap);
+    }
     AsyncFrame::StmtList {
       last_value_root, ..
     } => heap.remove_root(*last_value_root),
@@ -20816,7 +21533,9 @@ fn arr_pat_contains_await(pat: &ArrPat) -> bool {
 fn for_in_of_lhs_contains_await(lhs: &ForInOfLhs) -> bool {
   match lhs {
     ForInOfLhs::Decl((mode, pat_decl)) => {
-      matches!(*mode, VarDeclMode::AwaitUsing) || pat_contains_await(&pat_decl.stx.pat.stx)
+      // Explicit Resource Management: `await using` can require async evaluation even if no
+      // `AwaitExpression` exists in the initializer/pattern (disposal at scope exit uses `Await`).
+      *mode == VarDeclMode::AwaitUsing || pat_contains_await(&pat_decl.stx.pat.stx)
     }
     ForInOfLhs::Assign(pat) => pat_contains_await(&pat.stx),
   }
@@ -21013,13 +21732,13 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_await),
     Stmt::Throw(throw_stmt) => expr_contains_await(&throw_stmt.stx.value),
     Stmt::VarDecl(decl) => {
-      if decl.stx.mode == VarDeclMode::AwaitUsing {
-        return true;
-      }
-      decl.stx.declarators.iter().any(|d| {
-        d.initializer.as_ref().is_some_and(expr_contains_await)
-          || pat_contains_await(&d.pattern.stx.pat.stx)
-      })
+      // Explicit Resource Management: `await using` can require async evaluation even if no
+      // `AwaitExpression` exists in the initializer/pattern (disposal at scope exit uses `Await`).
+      decl.stx.mode == VarDeclMode::AwaitUsing
+        || decl.stx.declarators.iter().any(|d| {
+          d.initializer.as_ref().is_some_and(expr_contains_await)
+            || pat_contains_await(&d.pattern.stx.pat.stx)
+        })
     }
     Stmt::Block(block) => block.stx.body.iter().any(stmt_contains_await),
     Stmt::If(if_stmt) => {
@@ -21068,14 +21787,13 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
         parse_js::ast::stmt::ForTripleStmtInit::None => false,
         parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => expr_contains_await(expr),
         parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => {
-          if decl.stx.mode == VarDeclMode::AwaitUsing {
-            true
-          } else {
-            decl.stx.declarators.iter().any(|d| {
+          // Explicit Resource Management: `await using` in the `for` head can require async
+          // evaluation even if the initializer/pattern contains no `AwaitExpression`.
+          decl.stx.mode == VarDeclMode::AwaitUsing
+            || decl.stx.declarators.iter().any(|d| {
               d.initializer.as_ref().is_some_and(expr_contains_await)
                 || pat_contains_await(&d.pattern.stx.pat.stx)
             })
-          }
         }
       };
 
@@ -21580,20 +22298,55 @@ fn async_eval_block_stmt(
   let outer = evaluator.env.lexical_env;
   let block_env = scope.env_create(Some(outer))?;
   evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
-
-  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &block.body) {
+  if let Err(err) = evaluator.env.push_disposable_scope(scope) {
     evaluator.env.set_lexical_env(scope.heap_mut(), outer);
     return Err(err);
   }
 
-  match async_eval_stmt_list(evaluator, scope, &block.body)? {
-    AsyncEval::Complete(c) => {
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &block.body) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    // Fatal error: pop the scope without running any disposal (do not run user code).
+    let _ = evaluator.env.pop_disposable_scope(scope)?;
+    return Err(err);
+  }
+
+  match async_eval_stmt_list(evaluator, scope, &block.body) {
+    Ok(AsyncEval::Complete(c)) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
-      Ok(AsyncEval::Complete(c))
+      let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+      let Some(scope_obj) = scope_obj else {
+        return Err(VmError::InvariantViolation(
+          "async block completed with no disposable scope",
+        ));
+      };
+      dispose_disposable_scope_async(evaluator, scope, scope_obj, c)
     }
-    AsyncEval::Suspend(mut suspend) => {
-      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      // Ensure we restore the outer lexical environment and dispose the scope after the body
+      // completes (even if it suspends at an `await` point).
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer }) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
       Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      // Fatal error: pop the scope without running any disposal (do not run user code).
+      let _ = evaluator.env.pop_disposable_scope(scope)?;
+      Err(err)
     }
   }
 }
@@ -21605,6 +22358,7 @@ fn async_eval_catch(
   thrown: Value,
 ) -> Result<AsyncEval<Completion>, VmError> {
   let outer = evaluator.env.lexical_env;
+  let mut pushed_disposable_scope = false;
 
   // Root thrown across environment setup and binding instantiation which may allocate.
   {
@@ -21664,10 +22418,16 @@ fn async_eval_catch(
       evaluator
         .env
         .set_lexical_env(catch_scope.heap_mut(), block_env);
+      if let Err(err) = evaluator.env.push_disposable_scope(&mut catch_scope) {
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+        return Err(err);
+      }
+      pushed_disposable_scope = true;
       if let Err(err) =
         evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)
       {
         evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(&mut catch_scope)?;
         return Err(err);
       }
     } else {
@@ -21690,24 +22450,65 @@ fn async_eval_catch(
         evaluator
           .env
           .set_lexical_env(catch_scope.heap_mut(), block_env);
+        if let Err(err) = evaluator.env.push_disposable_scope(&mut catch_scope) {
+          evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+          return Err(err);
+        }
+        pushed_disposable_scope = true;
         if let Err(err) =
           evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)
         {
           evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+          let _ = evaluator.env.pop_disposable_scope(&mut catch_scope)?;
           return Err(err);
         }
       }
     }
   }
 
-  match async_eval_stmt_list(evaluator, scope, &catch.body)? {
-    AsyncEval::Complete(c) => {
+  match async_eval_stmt_list(evaluator, scope, &catch.body) {
+    Ok(AsyncEval::Complete(c)) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
-      Ok(AsyncEval::Complete(c))
+      if !pushed_disposable_scope {
+        return Ok(AsyncEval::Complete(c));
+      }
+      let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+      let Some(scope_obj) = scope_obj else {
+        return Err(VmError::InvariantViolation(
+          "async catch completed with no disposable scope",
+        ));
+      };
+      dispose_disposable_scope_async(evaluator, scope, scope_obj, c)
     }
-    AsyncEval::Suspend(mut suspend) => {
-      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer }) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        if pushed_disposable_scope {
+          let _ = evaluator.env.pop_disposable_scope(scope)?;
+        }
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
+      if pushed_disposable_scope {
+        if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+          let _ = evaluator.env.pop_disposable_scope(scope)?;
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(err);
+        }
+      }
       Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      if pushed_disposable_scope {
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+      }
+      Err(err)
     }
   }
 }
@@ -22333,7 +23134,7 @@ fn async_bind_var_declarator_value(
         )?;
         match bind_res {
           AsyncEval::Complete(()) => {
-            check_disposable_resource_value(evaluator.vm, scope, value)?;
+            add_disposable_resource(evaluator, scope, decl.mode, value)?;
             Ok(AsyncEval::Complete(()))
           }
           AsyncEval::Suspend(_) => Err(VmError::Unimplemented(
@@ -22356,7 +23157,7 @@ fn async_bind_var_declarator_value(
         scope
           .heap_mut()
           .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
-        check_disposable_resource_value(evaluator.vm, scope, value)?;
+        add_disposable_resource(evaluator, scope, decl.mode, value)?;
         Ok(AsyncEval::Complete(()))
       }
     }
@@ -25485,20 +26286,51 @@ fn async_eval_for_body(
   let outer = evaluator.env.lexical_env;
   let body_env = scope.env_create(Some(outer))?;
   evaluator.env.set_lexical_env(scope.heap_mut(), body_env);
-
-  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, body_env, &body.body) {
+  if let Err(err) = evaluator.env.push_disposable_scope(scope) {
     evaluator.env.set_lexical_env(scope.heap_mut(), outer);
     return Err(err);
   }
 
-  match async_eval_stmt_list(evaluator, scope, &body.body)? {
-    AsyncEval::Complete(c) => {
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, body_env, &body.body) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    let _ = evaluator.env.pop_disposable_scope(scope)?;
+    return Err(err);
+  }
+
+  match async_eval_stmt_list(evaluator, scope, &body.body) {
+    Ok(AsyncEval::Complete(c)) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
-      Ok(AsyncEval::Complete(c))
+      let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+      let Some(scope_obj) = scope_obj else {
+        return Err(VmError::InvariantViolation(
+          "async for-body completed with no disposable scope",
+        ));
+      };
+      dispose_disposable_scope_async(evaluator, scope, scope_obj, c)
     }
-    AsyncEval::Suspend(mut suspend) => {
-      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+    Ok(AsyncEval::Suspend(mut suspend)) => {
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer }) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
       Ok(AsyncEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      let _ = evaluator.env.pop_disposable_scope(scope)?;
+      Err(err)
     }
   }
 }
@@ -27653,6 +28485,11 @@ fn async_switch_after_discriminant(
     }
   };
   evaluator.env.set_lexical_env(scope.heap_mut(), switch_env);
+  if let Err(err) = evaluator.env.push_disposable_scope(scope) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    scope.heap_mut().remove_root(discriminant_root);
+    return Err(err);
+  }
 
   // Instantiate lexical declarations for the shared switch scope.
   const BRANCH_TICK_EVERY: usize = 32;
@@ -27660,6 +28497,7 @@ fn async_switch_after_discriminant(
     if i % BRANCH_TICK_EVERY == 0 {
       if let Err(err) = evaluator.tick() {
         evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
         scope.heap_mut().remove_root(discriminant_root);
         return Err(err);
       }
@@ -27668,6 +28506,7 @@ fn async_switch_after_discriminant(
       evaluator.instantiate_block_decls_in_stmt_list(scope, switch_env, &branch.stx.body)
     {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      let _ = evaluator.env.pop_disposable_scope(scope)?;
       scope.heap_mut().remove_root(discriminant_root);
       return Err(err);
     }
@@ -27679,6 +28518,7 @@ fn async_switch_after_discriminant(
     Ok(id) => id,
     Err(err) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      let _ = evaluator.env.pop_disposable_scope(scope)?;
       scope.heap_mut().remove_root(discriminant_root);
       return Err(err);
     }
@@ -27688,14 +28528,40 @@ fn async_switch_after_discriminant(
   {
     Ok(AsyncEval::Complete(c)) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
-      Ok(AsyncEval::Complete(c))
+      let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+      let Some(scope_obj) = scope_obj else {
+        return Err(VmError::InvariantViolation(
+          "async switch completed with no disposable scope",
+        ));
+      };
+      dispose_disposable_scope_async(evaluator, scope, scope_obj, c)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
-      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer }) {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+        async_switch_cleanup(scope, discriminant_root, v_root);
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        let _ = evaluator.env.pop_disposable_scope(scope)?;
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(err);
+      }
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      // Best-effort: ensure roots are removed and we don't leave a disposable scope on the stack.
+      async_switch_cleanup(scope, discriminant_root, v_root);
+      let _ = evaluator.env.pop_disposable_scope(scope)?;
       Err(err)
     }
   }
@@ -33422,28 +34288,76 @@ fn async_start_body(
       )),
       Err(err) => Err(err),
     },
-    FuncBody::Block(stmts) => match async_eval_stmt_list(evaluator, scope, stmts) {
-      Ok(AsyncEval::Complete(completion)) => match completion {
-        Completion::Normal(_) => Ok(AsyncBodyResult::CompleteOk(Value::Undefined)),
-        Completion::Return(v) => Ok(AsyncBodyResult::CompleteOk(v)),
-        Completion::Throw(thrown) => Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
-        Completion::Break(..) => Err(VmError::InvariantViolation(
-          "async function body produced Break completion (early errors should prevent this)",
-        )),
-        Completion::Continue(..) => Err(VmError::InvariantViolation(
-          "async function body produced Continue completion (early errors should prevent this)",
-        )),
-      },
-      Ok(AsyncEval::Suspend(mut suspend)) => {
-        async_frames_push(&mut suspend.frames, AsyncFrame::RootBlockBody)?;
-        Ok(AsyncBodyResult::Await {
-          kind: suspend.kind,
-          await_value: suspend.await_value,
-          frames: suspend.frames,
-        })
+    FuncBody::Block(stmts) => {
+      // Explicit Resource Management: async function bodies form a disposable scope, and `await
+      // using` can require async disposal even when the body contains no `AwaitExpression`.
+      evaluator.env.push_disposable_scope(scope)?;
+
+      let body_eval = async_eval_stmt_list(evaluator, scope, stmts);
+      match body_eval {
+        Ok(AsyncEval::Complete(completion)) => {
+          let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+          let Some(scope_obj) = scope_obj else {
+            return Err(VmError::InvariantViolation(
+              "async function body completed with no disposable scope",
+            ));
+          };
+
+          match dispose_disposable_scope_async(evaluator, scope, scope_obj, completion)? {
+            AsyncEval::Complete(completion) => match completion {
+              Completion::Normal(_) => Ok(AsyncBodyResult::CompleteOk(Value::Undefined)),
+              Completion::Return(v) => Ok(AsyncBodyResult::CompleteOk(v)),
+              Completion::Throw(thrown) => Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
+              Completion::Break(..) => Err(VmError::InvariantViolation(
+                "async function body produced Break completion (early errors should prevent this)",
+              )),
+              Completion::Continue(..) => Err(VmError::InvariantViolation(
+                "async function body produced Continue completion (early errors should prevent this)",
+              )),
+            },
+            AsyncEval::Suspend(mut suspend) => {
+              if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootBlockBody) {
+                for mut frame in suspend.frames {
+                  async_teardown_frame(scope.heap_mut(), &mut frame);
+                }
+                return Err(err);
+              }
+              Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              })
+            }
+          }
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+            let _ = evaluator.env.pop_disposable_scope(scope)?;
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+          if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootBlockBody) {
+            let _ = evaluator.env.pop_disposable_scope(scope)?;
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+          Ok(AsyncBodyResult::Await {
+            kind: suspend.kind,
+            await_value: suspend.await_value,
+            frames: suspend.frames,
+          })
+        }
+        Err(err) => {
+          // Fatal error: pop the scope without running any disposal (do not run user code).
+          let _ = evaluator.env.pop_disposable_scope(scope)?;
+          Err(err)
+        }
       }
-      Err(err) => Err(err),
-    },
+    }
   }
 }
 
@@ -35974,7 +36888,7 @@ fn async_resume_from_frames(
                       async_teardown_frame(scope.heap_mut(), &mut frame);
                     }
                     scope.heap_mut().remove_root(result_root);
-                    for mut frame in frames {
+                    for mut frame in frames.drain(..) {
                       async_teardown_frame(scope.heap_mut(), &mut frame);
                     }
                     return Err(VmError::OutOfMemory);
@@ -37034,7 +37948,7 @@ fn async_resume_from_frames(
                   for mut frame in suspend.frames {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
-                  for mut frame in frames {
+                  for mut frame in frames.drain(..) {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   return Err(VmError::OutOfMemory);
@@ -37235,7 +38149,7 @@ fn async_resume_from_frames(
                       }
                       scope.heap_mut().remove_root(value_root);
                       async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
-                      for mut frame in frames {
+                      for mut frame in frames.drain(..) {
                         async_teardown_frame(scope.heap_mut(), &mut frame);
                       }
                       return Err(VmError::OutOfMemory);
@@ -37273,7 +38187,7 @@ fn async_resume_from_frames(
                   }
                   scope.heap_mut().remove_root(value_root);
                   async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
-                  for mut frame in frames {
+                  for mut frame in frames.drain(..) {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   return Err(VmError::OutOfMemory);
@@ -37364,7 +38278,7 @@ fn async_resume_from_frames(
                   }
                   scope.heap_mut().remove_root(value_root);
                   async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
-                  for mut frame in frames {
+                  for mut frame in frames.drain(..) {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   return Err(VmError::OutOfMemory);
@@ -37502,7 +38416,7 @@ fn async_resume_from_frames(
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   scope.heap_mut().remove_root(value_root);
-                  for mut frame in frames {
+                  for mut frame in frames.drain(..) {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   return Err(VmError::OutOfMemory);
@@ -37785,6 +38699,143 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::DisposeScope => match state {
+        AsyncState::Completion(completion) => {
+          let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+          let Some(scope_obj) = scope_obj else {
+            return Err(VmError::InvariantViolation(
+              "DisposeScope frame reached with no active disposable scope",
+            ));
+          };
+
+          match dispose_disposable_scope_async(evaluator, scope, scope_obj, completion)? {
+            AsyncEval::Complete(c) => state = AsyncState::Completion(c),
+            AsyncEval::Suspend(mut suspend) => {
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "DisposeScope frame received expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::DisposeScopeContinue {
+        scope_root,
+        next_index,
+        mut pending,
+      } => match state {
+        AsyncState::Expr(resume_res) => {
+          let scope_obj_value = scope.heap().get_root(scope_root).ok_or(VmError::InvariantViolation(
+            "missing disposable scope root in DisposeScopeContinue",
+          ))?;
+          let Value::Object(scope_obj) = scope_obj_value else {
+            pending.teardown(scope.heap_mut());
+            scope.heap_mut().remove_root(scope_root);
+            return Err(VmError::InvariantViolation(
+              "disposable scope root is not an object",
+            ));
+          };
+
+          // Rehydrate the pending completion and drop its persistent roots now that we're executing.
+          let mut completion = pending.to_completion(scope.heap())?;
+
+          // Root the completion value while we tear down the persistent roots in case a GC happens
+          // during subsequent disposal operations.
+          if let Some(v) = completion.value() {
+            scope.push_root(v)?;
+          }
+
+          pending.teardown(scope.heap_mut());
+
+          // If the awaited disposer rejected, treat it as a disposal error and apply suppression
+          // rules.
+          if let Err(err) = resume_res {
+            if err.is_throw_completion() {
+              let Some(thrown) = err.thrown_value() else {
+                scope.heap_mut().remove_root(scope_root);
+                return Err(err);
+              };
+
+              let intr = evaluator
+                .vm
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+              let suppressed_error_prototype = intr.suppressed_error_prototype();
+
+              completion = match completion {
+                Completion::Throw(mut prev) => {
+                  let suppressed = crate::builtins::create_suppressed_error(
+                    evaluator.vm,
+                    scope,
+                    suppressed_error_prototype,
+                    thrown,
+                    prev.value,
+                  )?;
+                  prev.value = suppressed;
+                  scope.push_root(suppressed)?;
+                  Completion::Throw(prev)
+                }
+                _ => {
+                  scope.push_root(thrown)?;
+                  Completion::Throw(Thrown {
+                    value: thrown,
+                    stack: Vec::new(),
+                  })
+                }
+              };
+            } else {
+              scope.heap_mut().remove_root(scope_root);
+              return Err(err);
+            }
+          }
+
+          match dispose_disposable_scope_async_from(
+            evaluator,
+            scope,
+            scope_obj,
+            Some(scope_root),
+            completion,
+            next_index,
+          ) {
+            Ok(AsyncEval::Complete(c)) => {
+              scope.heap_mut().remove_root(scope_root);
+              state = AsyncState::Completion(c);
+            }
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              if let Err(err) =
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)
+              {
+                // `async_frames_try_append` tears down both frame stacks on failure, including the
+                // `DisposeScopeContinue` root, so we must not remove `scope_root` again here.
+                return Err(err);
+              }
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err) => {
+              scope.heap_mut().remove_root(scope_root);
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "DisposeScopeContinue frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::CatchAfterParamBind { catch, outer } => match state {
         AsyncState::Expr(param_res) => match param_res {
           Ok(_) => {
@@ -37794,30 +38845,64 @@ fn async_resume_from_frames(
             let param_env = evaluator.env.lexical_env;
             let block_env = scope.env_create(Some(param_env))?;
             evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+            if let Err(err) = evaluator.env.push_disposable_scope(scope) {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+              return Err(err);
+            }
 
             if let Err(err) =
               evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &catch.body)
             {
               evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+              let _ = evaluator.env.pop_disposable_scope(scope)?;
               return Err(err);
             }
 
             match async_eval_stmt_list(evaluator, scope, &catch.body) {
               Ok(AsyncEval::Complete(c)) => {
                 evaluator.env.set_lexical_env(scope.heap_mut(), outer);
-                state = AsyncState::Completion(c);
+                let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+                let Some(scope_obj) = scope_obj else {
+                  return Err(VmError::InvariantViolation(
+                    "async catch completed with no disposable scope",
+                  ));
+                };
+                match dispose_disposable_scope_async(evaluator, scope, scope_obj, c)? {
+                  AsyncEval::Complete(c) => state = AsyncState::Completion(c),
+                  AsyncEval::Suspend(mut suspend) => {
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                    return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
+                      await_value: suspend.await_value,
+                      frames: suspend.frames,
+                    });
+                  }
+                }
               }
               Ok(AsyncEval::Suspend(mut suspend)) => {
+                // Dispose the catch scope after the body completes.
                 if let Err(err) =
                   async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })
                 {
                   for mut frame in suspend.frames {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
-                  for mut frame in frames {
+                  for mut frame in frames.drain(..) {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                  let _ = evaluator.env.pop_disposable_scope(scope)?;
+                  return Err(err);
+                }
+                if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  for mut frame in frames.drain(..) {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                  let _ = evaluator.env.pop_disposable_scope(scope)?;
                   return Err(err);
                 }
                 async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
@@ -37829,6 +38914,7 @@ fn async_resume_from_frames(
               }
               Err(err) => {
                 evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                let _ = evaluator.env.pop_disposable_scope(scope)?;
                 return Err(err);
               }
             }
@@ -40234,7 +41320,7 @@ fn gen_bind_var_declarator_value(
           evaluator.derived_constructor,
           evaluator.this_initialized,
         )?;
-        check_disposable_resource_value(evaluator.vm, scope, value)?;
+        add_disposable_resource(evaluator, scope, decl.mode, value)?;
         return Ok(());
       }
 
@@ -40253,7 +41339,7 @@ fn gen_bind_var_declarator_value(
       scope
         .heap_mut()
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
-      check_disposable_resource_value(evaluator.vm, scope, value)?;
+      add_disposable_resource(evaluator, scope, decl.mode, value)?;
     }
   }
 
@@ -48701,13 +49787,18 @@ fn gen_start_body(
 
   match body {
     FuncBody::Expression(_) => Err(VmError::Unimplemented("generator expression body")),
-    FuncBody::Block(stmts) => match gen_eval_stmt_list(evaluator, scope, stmts)? {
-      GenEval::Complete(c) => Ok(GenEval::Complete(c)),
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(&mut suspend.frames, GenFrame::RootBlockBody)?;
-        Ok(GenEval::Suspend(suspend))
+    FuncBody::Block(stmts) => {
+      // Generator bodies form an explicit resource management scope that persists across yields.
+      evaluator.env.push_disposable_scope(scope)?;
+
+      match gen_eval_stmt_list(evaluator, scope, stmts)? {
+        GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::RootBlockBody)?;
+          Ok(GenEval::Suspend(suspend))
+        }
       }
-    },
+    }
   }
 }
 
@@ -55973,7 +57064,7 @@ fn gen_root_values_for_continuation(
   //
   // Root list construction itself must not infallibly reallocate, since generator resumption
   // happens while the continuation is stored outside of the heap and cannot be traced by GC.
-  let mut needed = 2usize // `this` + `new_target`.
+  let mut needed = 3usize // `this` + `new_target` + `disposable_scopes`.
     .saturating_add(usize::from(cont.home_object.is_some()))
     .saturating_add(cont.args.len());
 
@@ -56181,6 +57272,7 @@ fn gen_root_values_for_continuation(
 
   values.push(cont.this);
   values.push(cont.new_target);
+  values.push(Value::Object(cont.env.disposable_scopes));
   if let Some(home_object) = cont.home_object {
     values.push(Value::Object(home_object));
   }
@@ -56623,35 +57715,34 @@ pub(crate) fn generator_resume(
 
         gen_root_values_for_continuation(&mut scope, &cont)?;
         cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+        cont.env.disposable_root = Some(
+          scope
+            .heap_mut()
+            .add_root(Value::Object(cont.env.disposable_scopes))?,
+        );
 
         let func = cont.func.clone();
-
-        let (result, strict_after, this_after, new_target_after, home_object_after) = {
-          let mut evaluator = Evaluator {
-            vm,
-            host,
-            hooks,
-            env: &mut cont.env,
-            suppress_async_iterator_close_errors_on_throw: true,
-            strict: cont.strict,
-            this: cont.this,
-            new_target: cont.new_target,
-            home_object: cont.home_object,
-            class_constructor: None,
-            derived_constructor: false,
-            this_initialized: true,
-            this_root_idx: None,
-            is_async_generator: false,
-          };
-          let result = gen_start_body(&mut evaluator, &mut scope, &func);
-          (
-            result,
-            evaluator.strict,
-            evaluator.this,
-            evaluator.new_target,
-            evaluator.home_object,
-          )
+        let mut evaluator = Evaluator {
+          vm,
+          host,
+          hooks,
+          env: &mut cont.env,
+          suppress_async_iterator_close_errors_on_throw: true,
+          strict: cont.strict,
+          this: cont.this,
+          new_target: cont.new_target,
+          home_object: cont.home_object,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
+          is_async_generator: false,
         };
+        let result = gen_start_body(&mut evaluator, &mut scope, &func);
+        let strict_after = evaluator.strict;
+        let this_after = evaluator.this;
+        let new_target_after = evaluator.new_target;
+        let home_object_after = evaluator.home_object;
 
         // Persist temporary strictness/`this`/`new.target`/`[[HomeObject]]` changes across yield
         // suspensions: nested constructs (notably class static blocks) can override these values
@@ -56664,6 +57755,7 @@ pub(crate) fn generator_resume(
         match result {
           Ok(GenEval::Suspend(suspend)) => {
             cont.frames = suspend.frames;
+            drop(evaluator);
             cont.env.teardown(scope.heap_mut());
             scope
               .heap_mut()
@@ -56677,6 +57769,39 @@ pub(crate) fn generator_resume(
             })
           }
           Ok(GenEval::Complete(completion)) => {
+            // Explicit Resource Management: dispose resources from the generator body scope on
+            // completion (including abrupt completion).
+            let completion = match evaluator.env.pop_disposable_scope(&mut scope) {
+              Ok(Some(scope_obj)) => match dispose_disposable_scope_sync(
+                &mut evaluator,
+                &mut scope,
+                scope_obj,
+                completion,
+              ) {
+                Ok(c) => c,
+                Err(err) => {
+                  drop(evaluator);
+                  cont.env.teardown(scope.heap_mut());
+                  scope
+                    .heap_mut()
+                    .generator_set_state(gen_obj, GeneratorState::Completed)?;
+                  scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+                  return Err(err);
+                }
+              },
+              Ok(None) => completion,
+              Err(err) => {
+                drop(evaluator);
+                cont.env.teardown(scope.heap_mut());
+                scope
+                  .heap_mut()
+                  .generator_set_state(gen_obj, GeneratorState::Completed)?;
+                scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+                return Err(err);
+              }
+            };
+
+            drop(evaluator);
             cont.env.teardown(scope.heap_mut());
             scope
               .heap_mut()
@@ -56696,6 +57821,7 @@ pub(crate) fn generator_resume(
           }
           Err(err) => {
             // Fatal error: close the generator to avoid leaving it stuck in `executing`.
+            drop(evaluator);
             cont.env.teardown(scope.heap_mut());
             scope
               .heap_mut()
@@ -56727,6 +57853,8 @@ pub(crate) fn generator_resume(
 
       gen_root_values_for_continuation(&mut scope, &cont)?;
       cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+      cont.env.disposable_root =
+        Some(scope.heap_mut().add_root(Value::Object(cont.env.disposable_scopes))?);
 
       let frames = mem::take(&mut cont.frames);
 
@@ -56739,32 +57867,27 @@ pub(crate) fn generator_resume(
         GeneratorResumeInput::Return(v) => Completion::Return(v),
       };
 
-      let (result, strict_after, this_after, new_target_after, home_object_after) = {
-        let mut evaluator = Evaluator {
-          vm,
-          host,
-          hooks,
-          env: &mut cont.env,
-          suppress_async_iterator_close_errors_on_throw: true,
-          strict: cont.strict,
-          this: cont.this,
-          new_target: cont.new_target,
-          home_object: cont.home_object,
-          class_constructor: None,
-          derived_constructor: false,
-          this_initialized: true,
-          this_root_idx: None,
-          is_async_generator: false,
-        };
-        let result = gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion);
-        (
-          result,
-          evaluator.strict,
-          evaluator.this,
-          evaluator.new_target,
-          evaluator.home_object,
-        )
+      let mut evaluator = Evaluator {
+        vm,
+        host,
+        hooks,
+        env: &mut cont.env,
+        suppress_async_iterator_close_errors_on_throw: true,
+        strict: cont.strict,
+        this: cont.this,
+        new_target: cont.new_target,
+        home_object: cont.home_object,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+        is_async_generator: false,
       };
+      let result = gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion);
+      let strict_after = evaluator.strict;
+      let this_after = evaluator.this;
+      let new_target_after = evaluator.new_target;
+      let home_object_after = evaluator.home_object;
 
       // Persist temporary strictness/`this`/`new.target`/`[[HomeObject]]` changes across yield
       // suspensions (see comment in the `SuspendedStart` branch above).
@@ -56776,6 +57899,7 @@ pub(crate) fn generator_resume(
       match result {
         Ok(GenEval::Suspend(suspend)) => {
           cont.frames = suspend.frames;
+          drop(evaluator);
           cont.env.teardown(scope.heap_mut());
           scope
             .heap_mut()
@@ -56789,6 +57913,39 @@ pub(crate) fn generator_resume(
           })
         }
         Ok(GenEval::Complete(completion)) => {
+          // Explicit Resource Management: dispose resources from the generator body scope on
+          // completion (including abrupt completion).
+          let completion = match evaluator.env.pop_disposable_scope(&mut scope) {
+            Ok(Some(scope_obj)) => match dispose_disposable_scope_sync(
+              &mut evaluator,
+              &mut scope,
+              scope_obj,
+              completion,
+            ) {
+              Ok(c) => c,
+              Err(err) => {
+                drop(evaluator);
+                cont.env.teardown(scope.heap_mut());
+                scope
+                  .heap_mut()
+                  .generator_set_state(gen_obj, GeneratorState::Completed)?;
+                scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+                return Err(err);
+              }
+            },
+            Ok(None) => completion,
+            Err(err) => {
+              drop(evaluator);
+              cont.env.teardown(scope.heap_mut());
+              scope
+                .heap_mut()
+                .generator_set_state(gen_obj, GeneratorState::Completed)?;
+              scope.heap_mut().generator_set_continuation(gen_obj, None)?;
+              return Err(err);
+            }
+          };
+
+          drop(evaluator);
           cont.env.teardown(scope.heap_mut());
           scope
             .heap_mut()
@@ -56807,6 +57964,7 @@ pub(crate) fn generator_resume(
           }
         }
         Err(err) => {
+          drop(evaluator);
           cont.env.teardown(scope.heap_mut());
           scope
             .heap_mut()
@@ -56965,6 +58123,7 @@ pub(crate) fn run_ecma_function(
     // persistent env roots alive across yields.
     let mut gen_env = env.clone();
     gen_env.lexical_root = None;
+    gen_env.disposable_root = None;
 
     if func.stx.async_ {
       let cont = AsyncGeneratorContinuation {
@@ -57458,7 +58617,28 @@ pub(crate) fn run_ecma_function(
       other => other,
     },
     FuncBody::Block(stmts) => {
-      let completion = evaluator.eval_stmt_list(scope, stmts)?;
+      // Function bodies form an explicit resource management scope.
+      evaluator.env.push_disposable_scope(scope)?;
+
+      let body_result = evaluator.eval_stmt_list(scope, stmts);
+
+      let completion = match body_result {
+        Ok(completion) => {
+          let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+          let Some(scope_obj) = scope_obj else {
+            return Err(VmError::InvariantViolation(
+              "function body completed with no disposable scope",
+            ));
+          };
+          dispose_disposable_scope_sync(&mut evaluator, scope, scope_obj, completion)?
+        }
+        Err(err) => {
+          // Fatal error: pop the scope without running any disposal (do not run user code).
+          let _ = evaluator.env.pop_disposable_scope(scope)?;
+          return Err(err);
+        }
+      };
+
       match completion {
         Completion::Normal(_) => Ok(Value::Undefined),
         Completion::Return(v) => Ok(v),
@@ -57676,7 +58856,26 @@ pub(crate) fn run_module(
         is_async_generator: false,
       };
 
-      let completion = evaluator.eval_stmt_list(scope, stmts)?;
+      // Module bodies form an explicit resource management scope.
+      evaluator.env.push_disposable_scope(scope)?;
+
+      let eval_result = evaluator.eval_stmt_list(scope, stmts);
+      let completion = match eval_result {
+        Ok(completion) => {
+          let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+          let Some(scope_obj) = scope_obj else {
+            return Err(VmError::InvariantViolation(
+              "module completed with no disposable scope",
+            ));
+          };
+          dispose_disposable_scope_sync(&mut evaluator, scope, scope_obj, completion)?
+        }
+        Err(err) => {
+          // Fatal error: pop the scope without running any disposal (do not run user code).
+          let _ = evaluator.env.pop_disposable_scope(scope)?;
+          return Err(err);
+        }
+      };
 
       match completion {
         Completion::Normal(_) => Ok(()),
@@ -57819,47 +59018,106 @@ pub(crate) fn start_module_tla_evaluation(
       is_async_generator: false,
     };
 
+    // Module bodies form an explicit resource management scope.
+    if let Err(err) = evaluator.env.push_disposable_scope(scope) {
+      env.teardown(scope.heap_mut());
+      return Err(err);
+    }
+
     // Start module evaluation. If we suspend, convert the suspended evaluator call stack into a VM
     // async continuation so it can be resumed across microtasks.
-    let mut next = match async_eval_stmt_list(&mut evaluator, scope, stmts)? {
-      AsyncEval::Complete(completion) => match completion {
-        Completion::Normal(_) => {
-          env.teardown(scope.heap_mut());
-          return Ok(ModuleTlaStepResult::Completed);
+    let mut next = match async_eval_stmt_list(&mut evaluator, scope, stmts) {
+      Ok(AsyncEval::Complete(completion)) => {
+        let scope_obj = match evaluator.env.pop_disposable_scope(scope) {
+          Ok(Some(o)) => o,
+          Ok(None) => {
+            env.teardown(scope.heap_mut());
+            return Err(VmError::InvariantViolation(
+              "module completed with no disposable scope",
+            ));
+          }
+          Err(err) => {
+            env.teardown(scope.heap_mut());
+            return Err(err);
+          }
+        };
+
+        match dispose_disposable_scope_async(&mut evaluator, scope, scope_obj, completion) {
+          Ok(AsyncEval::Complete(completion)) => match completion {
+            Completion::Normal(_) => {
+              env.teardown(scope.heap_mut());
+              return Ok(ModuleTlaStepResult::Completed);
+            }
+            Completion::Throw(thrown) => {
+              env.teardown(scope.heap_mut());
+              return Err(VmError::ThrowWithStack {
+                value: thrown.value,
+                stack: thrown.stack,
+              });
+            }
+            Completion::Return(_) => {
+              env.teardown(scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "module evaluation produced Return completion (early errors should prevent this)",
+              ));
+            }
+            Completion::Break(..) => {
+              env.teardown(scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "module evaluation produced Break completion (early errors should prevent this)",
+              ));
+            }
+            Completion::Continue(..) => {
+              env.teardown(scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "module evaluation produced Continue completion (early errors should prevent this)",
+              ));
+            }
+          },
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody) {
+              env.teardown(scope.heap_mut());
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+            AsyncBodyResult::Await {
+              kind: suspend.kind,
+              await_value: suspend.await_value,
+              frames: suspend.frames,
+            }
+          }
+          Err(err) => {
+            env.teardown(scope.heap_mut());
+            return Err(err);
+          }
         }
-        Completion::Throw(thrown) => {
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
           env.teardown(scope.heap_mut());
-          return Err(VmError::ThrowWithStack {
-            value: thrown.value,
-            stack: thrown.stack,
-          });
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(err);
         }
-        Completion::Return(_) => {
+        if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody) {
           env.teardown(scope.heap_mut());
-          return Err(VmError::InvariantViolation(
-            "module evaluation produced Return completion (early errors should prevent this)",
-          ));
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(err);
         }
-        Completion::Break(..) => {
-          env.teardown(scope.heap_mut());
-          return Err(VmError::InvariantViolation(
-            "module evaluation produced Break completion (early errors should prevent this)",
-          ));
-        }
-        Completion::Continue(..) => {
-          env.teardown(scope.heap_mut());
-          return Err(VmError::InvariantViolation(
-            "module evaluation produced Continue completion (early errors should prevent this)",
-          ));
-        }
-      },
-      AsyncEval::Suspend(mut suspend) => {
-        async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
         AsyncBodyResult::Await {
           kind: suspend.kind,
           await_value: suspend.await_value,
           frames: suspend.frames,
         }
+      }
+      Err(err) => {
+        env.teardown(scope.heap_mut());
+        return Err(err);
       }
     };
 
@@ -58413,7 +59671,52 @@ pub(crate) fn run_module_async_start(
           this_root_idx: None,
           is_async_generator: false,
         };
-        let eval = async_eval_stmt_list(&mut evaluator, scope, stmts)?;
+        // Module bodies form an explicit resource management scope.
+        evaluator.env.push_disposable_scope(scope)?;
+
+        let eval = match async_eval_stmt_list(&mut evaluator, scope, stmts) {
+          Ok(AsyncEval::Complete(completion)) => {
+            // Body completed without suspension: pop + dispose the root scope (async disposal can
+            // still suspend).
+            let scope_obj = evaluator.env.pop_disposable_scope(scope)?;
+            let Some(scope_obj) = scope_obj else {
+              return Err(VmError::InvariantViolation(
+                "async module completed with no disposable scope",
+              ));
+            };
+
+            match dispose_disposable_scope_async(&mut evaluator, scope, scope_obj, completion)? {
+              AsyncEval::Complete(c) => AsyncEval::Complete(c),
+              AsyncEval::Suspend(mut suspend) => {
+                if let Err(err) =
+                  async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)
+                {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+                AsyncEval::Suspend(suspend)
+              }
+            }
+          }
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::DisposeScope) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+            if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+            AsyncEval::Suspend(suspend)
+          }
+          Err(err) => return Err(err),
+        };
         // Capture `this` / `new.target` at the end of this execution segment (suspension boundary or
         // completion) so it can be restored on resumption.
         (eval, evaluator.this, evaluator.new_target)
@@ -58445,7 +59748,6 @@ pub(crate) fn run_module_async_start(
           }
         }
         (AsyncEval::Suspend(mut suspend), this_at_suspend, new_target_at_suspend) => {
-          async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
           scope.heap_mut().set_root(
             cont
               .as_ref()

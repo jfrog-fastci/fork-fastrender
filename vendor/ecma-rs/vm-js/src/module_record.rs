@@ -2150,7 +2150,8 @@ fn var_decl_contains_top_level_await(
 ) -> Result<bool, VmError> {
   ctx.budget_tick()?;
 
-  // `await using` requires async evaluation even when its initializer contains no `AwaitExpression`.
+  // Explicit Resource Management: `await using` can require async module evaluation even if no
+  // `AwaitExpression` exists in the initializer/pattern (disposal at scope exit uses `Await`).
   if decl.mode == VarDeclMode::AwaitUsing {
     return Ok(true);
   }
@@ -2176,13 +2177,9 @@ fn for_in_of_lhs_contains_top_level_await(
 
   match lhs {
     ForInOfLhs::Assign(pat) => pat_contains_top_level_await(pat, ctx),
-    ForInOfLhs::Decl((mode, pat_decl)) => {
-      if *mode == VarDeclMode::AwaitUsing {
-        Ok(true)
-      } else {
-        pat_contains_top_level_await(&pat_decl.stx.pat, ctx)
-      }
-    }
+    ForInOfLhs::Decl((mode, pat_decl)) => Ok(
+      *mode == VarDeclMode::AwaitUsing || pat_contains_top_level_await(&pat_decl.stx.pat, ctx)?,
+    ),
   }
 }
 

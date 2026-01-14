@@ -555,9 +555,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       StmtListKind::BlockLike => {
         ctx.using_allowed = true;
       }
-      // Switch clause bodies disallow `using` declarations directly within the clause's StatementList.
+      // Switch clause statement lists are valid `using` containers (a `switch` CaseBlock forms a
+      // single lexical scope for all clauses).
       StmtListKind::SwitchClause => {
-        ctx.using_allowed = false;
+        ctx.using_allowed = true;
       }
     }
 
