@@ -254,6 +254,7 @@ pub(crate) mod testing;
 pub mod js;
 pub mod media;
 pub mod memory;
+pub mod media;
 pub mod perf_log;
 pub mod perf_log_schema;
 pub mod multiprocess;
