@@ -1702,3 +1702,176 @@ fn string_locale_compare_roots_arg_across_gc_in_this_tostring() -> Result<(), Vm
 
   Ok(())
 }
+
+#[test]
+fn object_define_property_roots_desc_across_gc_in_key_to_property_key() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = {};
+      const prop = { toString() { ({});
+        return "x";
+      }};
+      const desc = { value: 1, writable: true, enumerable: true, configurable: true };
+      return [target, prop, desc];
+    })()"#,
+  )?;
+
+  let [target_val, prop_val, desc_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.object_constructor();
+  let args = [target_val, prop_val, desc_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::object_define_property(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Object.defineProperty to trigger GC under tiny heap limits"
+  );
+
+  // Validate property installation (`target.x === 1`).
+  scope.push_root(out)?;
+  let Value::Object(target_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "Object.defineProperty returned non-object",
+    ));
+  };
+
+  let x_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_s))?;
+  let x_key = PropertyKey::from_string(x_s);
+  assert_eq!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &x_key)?,
+    Some(Value::Number(1.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn object_assign_roots_sources_across_gc_in_target_to_object() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = true;
+      const source = { x: 1 };
+      return [target, source, undefined];
+    })()"#,
+  )?;
+
+  let [target_val, source_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.object_constructor();
+  let args = [target_val, source_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::object_assign(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Object.assign to trigger GC under tiny heap limits"
+  );
+
+  // Validate that the source object survived GC and was copied into the boxed target.
+  scope.push_root(out)?;
+  let Value::Object(target_obj) = out else {
+    return Err(VmError::InvariantViolation("Object.assign returned non-object"));
+  };
+
+  let x_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_s))?;
+  let x_key = PropertyKey::from_string(x_s);
+  assert_eq!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &x_key)?,
+    Some(Value::Number(1.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn reflect_apply_roots_target_across_gc_in_create_list_from_array_like() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = function (x) { return x; };
+      const thisArg = undefined;
+      const args = {
+        get length() { ({});
+          return 1;
+        },
+        0: 42,
+      };
+      return [target, thisArg, args, undefined];
+    })()"#,
+  )?;
+
+  let [target_val, this_arg_val, args_val, _] = extract_fast_array_elems4(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.object_constructor();
+  let args = [target_val, this_arg_val, args_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::reflect_apply(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Reflect.apply to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(42.0));
+
+  Ok(())
+}

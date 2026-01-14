@@ -610,6 +610,13 @@ fn object_constructor_impl(
   new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
+  // Root all arguments and `new_target` for the duration of the constructor. This is required when
+  // the builtin is invoked directly from the host (bypassing `Vm::call_impl` argument rooting).
+  //
+  // Note: use `push_roots_with_extra_roots` so `new_target` is treated as a root if growing the
+  // root stack triggers a GC.
+  scope.push_roots_with_extra_roots(args, &[new_target], &[])?;
+  scope.push_root(new_target)?;
 
   // Spec: https://tc39.es/ecma262/#sec-object-value
   //
@@ -733,7 +740,12 @@ pub fn object_constructor_call(
   // heap. For cross-realm tests, `Object` called as a function must box primitives using the
   // *callee's* realm intrinsics.
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(callee))?;
+
+  // Root `args` and `callee` up-front so a GC (triggered by root-stack growth or cross-realm
+  // lookups) cannot collect a value that is only kept alive by the host stack.
+  let callee_val = Value::Object(callee);
+  scope.push_roots_with_extra_roots(args, &[callee_val], &[])?;
+  scope.push_root(callee_val)?;
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(arg0, Value::Object(_)) {
@@ -914,6 +926,9 @@ pub fn object_define_property(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root all args for host-call safety: `ToPropertyKey` / `ToPropertyDescriptor` can invoke user
+  // code and allocate, triggering GC.
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -940,6 +955,9 @@ pub fn object_define_properties(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
   scope.push_root(Value::Object(target))?;
@@ -947,7 +965,7 @@ pub fn object_define_properties(
   let props_val = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(props_val)?;
 
-  define_properties(vm, scope, host, hooks, target, props_val)?;
+  define_properties(vm, &mut scope, host, hooks, target, props_val)?;
   Ok(Value::Object(target))
 }
 
@@ -960,6 +978,9 @@ pub fn object_create(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let proto_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let proto = match proto_val {
     Value::Object(o) => Some(o),
@@ -985,7 +1006,7 @@ pub fn object_create(
       //
       // Object.create(proto, propertiesObject) defines properties via `ObjectDefineProperties`.
       scope.push_root(properties_object)?;
-      define_properties(vm, scope, host, hooks, obj, properties_object)?;
+      define_properties(vm, &mut scope, host, hooks, obj, properties_object)?;
     }
   }
 
@@ -1018,6 +1039,9 @@ pub fn object_has_own(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   // https://tc39.es/ecma262/#sec-object.hasown
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
@@ -1025,7 +1049,7 @@ pub fn object_has_own(
 
   let prop_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let key = scope.to_property_key(vm, host, hooks, prop_val)?;
-  root_property_key(scope, key)?;
+  root_property_key(&mut scope, key)?;
 
   let has = scope
     .object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
@@ -1044,13 +1068,16 @@ pub fn object_get_own_property_descriptor(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-object.getownpropertydescriptor
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let obj = scope.to_object(vm, host, hooks, obj_val)?;
   scope.push_root(Value::Object(obj))?;
 
   let prop_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let key = scope.to_property_key(vm, host, hooks, prop_val)?;
-  root_property_key(scope, key)?;
+  root_property_key(&mut scope, key)?;
 
   let Some(desc) =
     scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, obj, key)?
@@ -1058,7 +1085,7 @@ pub fn object_get_own_property_descriptor(
     return Ok(Value::Undefined);
   };
 
-  let out = from_property_descriptor(vm, scope, desc)?;
+  let out = from_property_descriptor(vm, &mut scope, desc)?;
   Ok(Value::Object(out))
 }
 
@@ -1852,6 +1879,7 @@ pub fn object_group_by(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let items = args.get(0).copied().unwrap_or(Value::Undefined);
   let callbackfn = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -1990,6 +2018,7 @@ pub fn object_assign(
   // Spec: Object.assign performs `ToObject` on the target and each source, and uses `Get`/`Set`
   // semantics (invoking accessors and Proxy traps).
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
   let mut tick = Vm::tick;
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = scope.to_object(vm, host, hooks, target_val)?;
@@ -2172,6 +2201,9 @@ pub fn reflect_apply(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.apply
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(target)? {
     return Err(VmError::NotCallable);
@@ -2185,13 +2217,13 @@ pub fn reflect_apply(
 
   let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     arguments_obj,
   )?;
 
-  vm.call_with_host_and_hooks(host, scope, hooks, target, this_argument, &list)
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, target, this_argument, &list)
 }
 
 pub fn reflect_construct(
@@ -2204,6 +2236,9 @@ pub fn reflect_construct(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.construct
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_constructor(target)? {
     return Err(VmError::NotConstructable);
@@ -2223,13 +2258,13 @@ pub fn reflect_construct(
 
   let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     arguments_obj,
   )?;
 
-  vm.construct_with_host_and_hooks(host, scope, hooks, target, &list, new_target)
+  vm.construct_with_host_and_hooks(host, &mut scope, hooks, target, &list, new_target)
 }
 
 pub fn reflect_define_property(
@@ -2243,6 +2278,7 @@ pub fn reflect_define_property(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.defineproperty
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2290,6 +2326,7 @@ pub fn reflect_delete_property(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.deleteproperty
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2314,6 +2351,7 @@ pub fn reflect_get(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.get
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2338,6 +2376,7 @@ pub fn reflect_get_own_property_descriptor(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.getownpropertydescriptor
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2389,6 +2428,7 @@ pub fn reflect_has(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.has
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2500,6 +2540,7 @@ pub fn reflect_set(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.set
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -2528,6 +2569,7 @@ pub fn reflect_set_prototype_of(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-reflect.setprototypeof
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let target = require_object(target_val)?;
@@ -11706,6 +11748,8 @@ pub fn object_prototype_has_own_property(
   let mut scope = scope.reborrow();
 
   let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root `this`/`prop` before `ToPropertyKey`, which can invoke user code and allocate.
+  scope.push_roots(&[this, prop])?;
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
 
@@ -11730,7 +11774,12 @@ pub fn object_prototype___proto___get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root `this` and the coerced object across `ToObject` + `[[GetPrototypeOf]]`, both of which can
+  // allocate/GC (and `[[GetPrototypeOf]]` can invoke Proxy traps).
+  scope.push_root(this)?;
   let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
   match scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, obj)? {
     Some(proto) => Ok(Value::Object(proto)),
     None => Ok(Value::Null),
@@ -11792,6 +11841,10 @@ pub fn object_prototype___define_getter__(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-object.prototype.__definegetter__
   let mut scope = scope.reborrow();
+  // Root `this` + all args up-front: `ToObject`/`ToPropertyKey` can allocate/GC, and this builtin
+  // can be invoked directly from the host.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -11836,6 +11889,10 @@ pub fn object_prototype___define_setter__(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-object.prototype.__definesetter__
   let mut scope = scope.reborrow();
+  // Root `this` + all args up-front: `ToObject`/`ToPropertyKey` can allocate/GC, and this builtin
+  // can be invoked directly from the host.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -11880,6 +11937,8 @@ pub fn object_prototype___lookup_getter__(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-object.prototype.__lookupgetter__
   let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let mut obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -11936,6 +11995,8 @@ pub fn object_prototype___lookup_setter__(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-object.prototype.__lookupsetter__
   let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let mut obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12053,6 +12114,8 @@ pub fn object_prototype_property_is_enumerable(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
