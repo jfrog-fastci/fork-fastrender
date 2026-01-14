@@ -1905,8 +1905,7 @@ fn tab_ui(
       store_test_close_id(ui.ctx(), tab.id, close_resp.id);
       store_test_close_rect(ui.ctx(), tab.id, close_rect);
     }
-    let close_label = BrowserIcon::CloseTab.a11y_label();
-    let close_a11y_label = tab.tab_close_a11y_label_cache.get_or_update(close_label, title);
+    let close_a11y_label = tab.tab_close_accessible_label(&title);
     close_resp.widget_info({
       let close_a11y_label = close_a11y_label;
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, close_a11y_label.as_ref())
