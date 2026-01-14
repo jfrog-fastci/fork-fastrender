@@ -15518,6 +15518,497 @@ enum HirAsyncBodyKind {
   Expr { expr: hir_js::ExprId },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TryStmtStage {
+  Init,
+  TryBlock,
+  ForAwaitOf {
+    next_stmt_index_after: usize,
+    await_stmt_offset: u32,
+  },
+}
+
+#[derive(Debug)]
+struct TryStmtState {
+  try_stmts: Box<[hir_js::StmtId]>,
+  catch: Option<hir_js::hir::CatchClause>,
+  finally_block: Option<hir_js::StmtId>,
+  stage: TryStmtStage,
+  next_stmt_index: usize,
+  /// Outer lexical environment at entry to the try block.
+  outer_lex: Option<GcEnv>,
+  /// Running statement-list completion value root for `UpdateEmpty` semantics.
+  last_value_root: Option<RootId>,
+  /// Whether the running completion value is present (distinguishes `None` from `Some(undefined)`).
+  last_value_present: bool,
+  for_await_of_state: Option<ForAwaitOfState>,
+}
+
+#[derive(Debug)]
+enum TryStmtPoll {
+  Complete(Flow),
+  Await {
+    kind: crate::exec::AsyncSuspendKind,
+    await_value: Value,
+    await_stmt_offset: u32,
+  },
+}
+
+impl TryStmtState {
+  fn new(
+    evaluator: &mut HirEvaluator<'_>,
+    body: &hir_js::Body,
+    try_block: hir_js::StmtId,
+    catch: Option<hir_js::hir::CatchClause>,
+    finally_block: Option<hir_js::StmtId>,
+  ) -> Result<Self, VmError> {
+    let block_stmt = evaluator.get_stmt(body, try_block)?;
+    let hir_js::StmtKind::Block(stmts) = &block_stmt.kind else {
+      return Err(VmError::InvariantViolation(
+        "try statement block is not a Block statement",
+      ));
+    };
+    let mut cloned: Vec<hir_js::StmtId> = Vec::new();
+    cloned
+      .try_reserve_exact(stmts.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    cloned.extend_from_slice(stmts.as_slice());
+    Ok(Self {
+      try_stmts: cloned.into_boxed_slice(),
+      catch,
+      finally_block,
+      stage: TryStmtStage::Init,
+      next_stmt_index: 0,
+      outer_lex: None,
+      last_value_root: None,
+      last_value_present: false,
+      for_await_of_state: None,
+    })
+  }
+
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    if let Some(state) = &mut self.for_await_of_state {
+      state.teardown(heap);
+    }
+    if let Some(id) = self.last_value_root.take() {
+      if heap.get_root(id).is_some() {
+        heap.remove_root(id);
+      }
+    }
+  }
+
+  fn last_value(&self, heap: &crate::Heap) -> Result<Option<Value>, VmError> {
+    if !self.last_value_present {
+      return Ok(None);
+    }
+    let root = self
+      .last_value_root
+      .ok_or(VmError::InvariantViolation("try stmt missing last value root"))?;
+    let value = heap
+      .get_root(root)
+      .ok_or(VmError::InvariantViolation("try stmt missing last value root value"))?;
+    Ok(Some(value))
+  }
+
+  fn finalize_pending(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    mut pending: Result<Flow, VmError>,
+  ) -> Result<TryStmtPoll, VmError> {
+    // Mirror `HirEvaluator::eval_stmt` `Try` semantics:
+    // - catch thrown completions (including internal errors coerced to throws),
+    // - always execute finally (if present),
+    // - `UpdateEmpty` to `undefined` on normal completion.
+
+    pending = match pending {
+      Ok(flow) => Ok(flow),
+      Err(err) => {
+        if !err.is_throw_completion() {
+          return Err(err);
+        }
+        let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+        if err.thrown_value().is_none() {
+          return Err(err);
+        }
+        Err(err)
+      }
+    };
+
+    // Catch clause.
+    if let (Err(thrown_err), Some(catch_clause)) = (&pending, self.catch.as_ref()) {
+      if let Some(thrown_value) = thrown_err.thrown_value() {
+        let mut catch_scope = scope.reborrow();
+        // Root the thrown value across env creation + binding initialization.
+        catch_scope.push_root(thrown_value)?;
+
+        let outer_env = evaluator.env.lexical_env();
+        let catch_env = catch_scope.env_create(Some(outer_env))?;
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
+
+        let catch_result = (|| -> Result<Flow, VmError> {
+          if let Some(param_pat_id) = catch_clause.param {
+            let mut names: Vec<hir_js::NameId> = Vec::new();
+            evaluator.collect_pat_idents(body, param_pat_id, &mut names)?;
+            for name_id in names {
+              let name = evaluator.resolve_name(name_id)?;
+              if !catch_scope.heap().env_has_binding(catch_env, name.as_str())? {
+                catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
+              }
+            }
+            evaluator.bind_pattern(
+              &mut catch_scope,
+              body,
+              param_pat_id,
+              thrown_value,
+              PatBindingKind::Let,
+            )?;
+          }
+          evaluator.eval_stmt(&mut catch_scope, body, catch_clause.body)
+        })();
+
+        // Always restore outer env.
+        evaluator
+          .env
+          .set_lexical_env(catch_scope.heap_mut(), outer_env);
+
+        pending = catch_result;
+      }
+    }
+
+    // Finally clause.
+    if let Some(finally_stmt) = self.finally_block {
+      let mut finally_scope = scope.reborrow();
+
+      // Root the pending completion's value while evaluating finally.
+      let pending_value: Option<Value> = match &pending {
+        Ok(flow) => flow.value(),
+        Err(err) => err.thrown_value(),
+      };
+      if let Some(v) = pending_value {
+        finally_scope.push_root(v)?;
+      }
+
+      let finally_result = evaluator.eval_stmt(&mut finally_scope, body, finally_stmt);
+      match finally_result {
+        Ok(Flow::Normal(_)) => {
+          // Does not override.
+        }
+        Ok(abrupt) => {
+          pending = Ok(abrupt);
+        }
+        Err(err) => {
+          pending = Err(err);
+        }
+      }
+    }
+
+    match pending {
+      Ok(flow) => Ok(TryStmtPoll::Complete(flow.update_empty(Some(Value::Undefined)))),
+      Err(err) => Err(err),
+    }
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<TryStmtPoll, VmError> {
+    loop {
+      match self.stage {
+        TryStmtStage::Init => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "try stmt init received resume value",
+            ));
+          }
+
+          // Match synchronous statement evaluation: the try statement itself is ticked by the
+          // caller, but we must tick once for the try block `Block` statement entry.
+          evaluator.vm.tick()?;
+
+          let outer = evaluator.env.lexical_env();
+          self.outer_lex = Some(outer);
+          let block_env = scope.env_create(Some(outer))?;
+          evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+          // Initialize block-scoped declarations.
+          evaluator.instantiate_lexical_decls(scope, body, self.try_stmts.as_ref(), block_env)?;
+          evaluator.instantiate_block_scoped_function_decls_in_stmt_list(
+            scope,
+            body,
+            block_env,
+            self.try_stmts.as_ref(),
+          )?;
+          evaluator.initialize_annex_b_function_decls_in_stmt_list(scope, body, self.try_stmts.as_ref())?;
+
+          // Root the running completion value across suspensions.
+          let last_root = scope.heap_mut().add_root(Value::Undefined)?;
+          self.last_value_root = Some(last_root);
+          self.last_value_present = false;
+
+          self.stage = TryStmtStage::TryBlock;
+          continue;
+        }
+
+        TryStmtStage::TryBlock => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "try stmt try-block stage received unexpected resume value",
+            ));
+          }
+
+          if self.next_stmt_index >= self.try_stmts.len() {
+            // End of try block: normal completion with the last statement-list value.
+            let last = self.last_value(scope.heap())?;
+            if let Some(id) = self.last_value_root.take() {
+              scope.heap_mut().remove_root(id);
+            }
+            self.last_value_present = false;
+
+            let outer = self
+              .outer_lex
+              .take()
+              .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+            // Finalize try/catch/finally semantics (may coerce empty to undefined).
+            return self.finalize_pending(evaluator, scope, body, Ok(Flow::Normal(last)));
+          }
+
+          let stmt_id = self.try_stmts[self.next_stmt_index];
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+
+          // Fast-path label chains ending in `for await..of` inside the try block statement list.
+          if let hir_js::StmtKind::Labeled {
+            label: first_label,
+            body: first_body,
+          } = &stmt.kind
+          {
+            let mut label_count: usize = 1;
+            let mut current_stmt_id: hir_js::StmtId = *first_body;
+            loop {
+              let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+              match &inner_stmt.kind {
+                hir_js::StmtKind::Labeled { body: inner, .. } => {
+                  label_count = label_count.saturating_add(1);
+                  current_stmt_id = *inner;
+                }
+                _ => break,
+              }
+            }
+
+            let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+            if let hir_js::StmtKind::ForIn {
+              left,
+              right,
+              body: inner,
+              is_for_of: true,
+              await_: true,
+            } = &inner_stmt.kind
+            {
+              let mut label_set: Vec<hir_js::NameId> = Vec::new();
+              label_set
+                .try_reserve_exact(label_count)
+                .map_err(|_| VmError::OutOfMemory)?;
+              label_set.push(*first_label);
+              let mut current_stmt_id = *first_body;
+              loop {
+                let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+                match &inner_stmt.kind {
+                  hir_js::StmtKind::Labeled { label, body: inner } => {
+                    label_set.push(*label);
+                    current_stmt_id = *inner;
+                  }
+                  _ => break,
+                }
+              }
+
+              // Budget once per label statement and once for the loop statement entry.
+              for _ in 0..label_set.len() {
+                evaluator.vm.tick()?;
+              }
+              evaluator.vm.tick()?;
+
+              let loop_offset = inner_stmt.span.start;
+              self.for_await_of_state = Some(ForAwaitOfState::new(
+                left.clone(),
+                *right,
+                *inner,
+                label_set.as_slice(),
+              )?);
+              self.stage = TryStmtStage::ForAwaitOf {
+                next_stmt_index_after: self.next_stmt_index.saturating_add(1),
+                await_stmt_offset: loop_offset,
+              };
+              continue;
+            }
+          }
+
+          // Direct `for await..of` in the try block statement list.
+          if let hir_js::StmtKind::ForIn {
+            left,
+            right,
+            body: inner,
+            is_for_of: true,
+            await_: true,
+          } = &stmt.kind
+          {
+            evaluator.vm.tick()?;
+            let loop_offset = stmt.span.start;
+            self.for_await_of_state = Some(ForAwaitOfState::new(
+              left.clone(),
+              *right,
+              *inner,
+              &[],
+            )?);
+            self.stage = TryStmtStage::ForAwaitOf {
+              next_stmt_index_after: self.next_stmt_index.saturating_add(1),
+              await_stmt_offset: loop_offset,
+            };
+            continue;
+          }
+
+          // Evaluate other statements synchronously and apply statement-list `UpdateEmpty`.
+          let stmt_result = evaluator.eval_stmt(scope, body, stmt_id);
+          match stmt_result {
+            Ok(Flow::Normal(v)) => {
+              if let Some(v) = v {
+                let root = self
+                  .last_value_root
+                  .ok_or(VmError::InvariantViolation("try stmt missing last value root"))?;
+                scope.heap_mut().set_root(root, v);
+                self.last_value_present = true;
+              }
+              self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+              continue;
+            }
+            Ok(abrupt) => {
+              let last = self.last_value(scope.heap())?;
+              let out_flow = abrupt.update_empty(last);
+
+              if let Some(id) = self.last_value_root.take() {
+                scope.heap_mut().remove_root(id);
+              }
+              self.last_value_present = false;
+
+              let outer = self
+                .outer_lex
+                .take()
+                .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+              return self.finalize_pending(evaluator, scope, body, Ok(out_flow));
+            }
+            Err(err) => {
+              if let Some(id) = self.last_value_root.take() {
+                scope.heap_mut().remove_root(id);
+              }
+              self.last_value_present = false;
+
+              let outer = self
+                .outer_lex
+                .take()
+                .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+              return self.finalize_pending(evaluator, scope, body, Err(err));
+            }
+          }
+        }
+
+        TryStmtStage::ForAwaitOf {
+          next_stmt_index_after,
+          await_stmt_offset,
+        } => {
+          let Some(state) = &mut self.for_await_of_state else {
+            return Err(VmError::InvariantViolation(
+              "try stmt missing for-await-of state machine",
+            ));
+          };
+
+          let poll = state.poll(evaluator, scope, body, resume_value.take());
+          match poll {
+            Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+              return Ok(TryStmtPoll::Await {
+                kind,
+                await_value,
+                await_stmt_offset,
+              });
+            }
+            Ok(ForAwaitOfPoll::Complete(flow)) => {
+              // Ensure persistent roots held by the for-await-of state machine do not leak.
+              state.teardown(scope.heap_mut());
+
+              let flow = match flow {
+                Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                  Flow::Normal(value)
+                }
+                other => other,
+              };
+
+              self.for_await_of_state = None;
+              self.stage = TryStmtStage::TryBlock;
+              self.next_stmt_index = next_stmt_index_after;
+
+              match flow {
+                Flow::Normal(v) => {
+                  if let Some(v) = v {
+                    let root = self
+                      .last_value_root
+                      .ok_or(VmError::InvariantViolation("try stmt missing last value root"))?;
+                    scope.heap_mut().set_root(root, v);
+                    self.last_value_present = true;
+                  }
+                  continue;
+                }
+                abrupt => {
+                  let last = self.last_value(scope.heap())?;
+                  let out_flow = abrupt.update_empty(last);
+
+                  if let Some(id) = self.last_value_root.take() {
+                    scope.heap_mut().remove_root(id);
+                  }
+                  self.last_value_present = false;
+
+                  let outer = self
+                    .outer_lex
+                    .take()
+                    .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+                  return self.finalize_pending(evaluator, scope, body, Ok(out_flow));
+                }
+              }
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              self.for_await_of_state = None;
+              self.stage = TryStmtStage::TryBlock;
+
+              if let Some(id) = self.last_value_root.take() {
+                scope.heap_mut().remove_root(id);
+              }
+              self.last_value_present = false;
+
+              let outer = self
+                .outer_lex
+                .take()
+                .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+              return self.finalize_pending(evaluator, scope, body, Err(err));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 #[derive(Debug)]
 enum TryPoll {
   Complete(Flow),
@@ -15640,6 +16131,7 @@ enum HirAsyncActive {
   ForOf(ForOfState),
   ForTriple(ForTripleAwaitState),
   Try(TryState),
+  TryStmt(TryStmtState),
   /// Suspended while evaluating a destructuring assignment pattern that contains an `await`
   /// expression in a computed key or default value.
   DestructuringAssign(AsyncDestructuringAssignState),
@@ -15676,6 +16168,7 @@ impl HirAsyncActive {
       HirAsyncActive::ForOf(state) => state.teardown(heap),
       HirAsyncActive::ForTriple(state) => state.teardown(heap),
       HirAsyncActive::Try(state) => state.teardown(heap),
+      HirAsyncActive::TryStmt(state) => state.teardown(heap),
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
       | HirAsyncActive::AwaitAssignmentStmt { pending_assign: None, .. }
@@ -16298,6 +16791,62 @@ impl HirAsyncState {
                   }
                   other => other,
                 };
+                self.active = None;
+                match flow {
+                  Flow::Normal(_) => {
+                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                    continue;
+                  }
+                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Break(..) | Flow::Continue(..) => {
+                    return Err(VmError::InvariantViolation(
+                      "async compiled function body produced break/continue completion",
+                    ))
+                  }
+                }
+              }
+              Err(err) => {
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::TryStmt(state) => {
+            let poll = state.poll(evaluator, scope, body, resume_value.take());
+            match poll {
+              Ok(TryStmtPoll::Await {
+                kind,
+                await_value,
+                await_stmt_offset,
+              }) => {
+                self.await_stmt_offset = await_stmt_offset;
+                return Ok(HirAsyncResult::Await { kind, await_value });
+              }
+              Ok(TryStmtPoll::Complete(flow)) => {
+                // Defensive: ensure roots cannot leak if the try state machine changes.
+                state.teardown(scope.heap_mut());
                 self.active = None;
                 match flow {
                   Flow::Normal(_) => {
@@ -17247,6 +17796,71 @@ impl HirAsyncState {
             &[],
           )?));
           continue;
+        }
+      }
+
+      // Support `for await..of` loops nested directly within `try` blocks by evaluating the `try`
+      // statement via an async-aware state machine.
+      if let hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } = &stmt.kind
+      {
+        // Detect whether the try block contains a top-level `for await..of` loop so we can avoid
+        // routing it through the synchronous evaluator (which rejects `await_ = true`).
+        let block_stmt = evaluator.get_stmt(body, *block)?;
+        if let hir_js::StmtKind::Block(stmts) = &block_stmt.kind {
+          let mut needs_async_try: bool = false;
+          for inner_stmt_id in stmts.iter() {
+            let inner_stmt = evaluator.get_stmt(body, *inner_stmt_id)?;
+            match &inner_stmt.kind {
+              hir_js::StmtKind::ForIn {
+                is_for_of: true,
+                await_: true,
+                ..
+              } => {
+                needs_async_try = true;
+                break;
+              }
+              hir_js::StmtKind::Labeled { body: first_body, .. } => {
+                // Label chains like `a: for await (...) {}`.
+                let mut current_stmt_id: hir_js::StmtId = *first_body;
+                loop {
+                  let s = evaluator.get_stmt(body, current_stmt_id)?;
+                  match &s.kind {
+                    hir_js::StmtKind::Labeled { body: inner, .. } => current_stmt_id = *inner,
+                    hir_js::StmtKind::ForIn {
+                      is_for_of: true,
+                      await_: true,
+                      ..
+                    } => {
+                      needs_async_try = true;
+                      break;
+                    }
+                    _ => break,
+                  }
+                }
+                if needs_async_try {
+                  break;
+                }
+              }
+              _ => {}
+            }
+          }
+
+          if needs_async_try {
+            // Budget once for the try statement entry (matching `eval_stmt_labelled`).
+            evaluator.vm.tick()?;
+            self.active = Some(HirAsyncActive::TryStmt(TryStmtState::new(
+              evaluator,
+              body,
+              *block,
+              catch.clone(),
+              *finally_block,
+            )?));
+            continue;
+          }
         }
       }
 
