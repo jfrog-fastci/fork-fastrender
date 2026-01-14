@@ -6,6 +6,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_with_frequent_gc() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  // Force frequent GC during generator suspension/resumption so missing roots in continuation
+  // frames manifest as stale handles.
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 64 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
 #[test]
 fn generators_yield_in_binary_addition_left() {
   let mut rt = new_runtime();
@@ -299,14 +307,24 @@ fn generators_yield_in_delete_computed_key() {
 
 #[test]
 fn generators_yield_in_template_literals() {
-  let mut rt = new_runtime();
+  let mut rt = new_runtime_with_frequent_gc();
   let value = rt
     .exec_script(
       r#"
+        function churn() {
+          // Allocate enough to force GC under the small `gc_threshold`.
+          let junk = [];
+          for (let i = 0; i < 200; i++) {
+            junk.push(new Uint8Array(1024));
+          }
+          return junk.length;
+        }
+
         // `a${yield 1}b`
         function* tpl_simple() { return `a${yield 1}b`; }
         const it1 = tpl_simple();
         const a1 = it1.next();
+        churn();
         const a2 = it1.next(10);
         const ok1 = a1.value === 1 && a1.done === false && a2.value === "a10b" && a2.done === true;
 
@@ -314,7 +332,9 @@ fn generators_yield_in_template_literals() {
         function* tpl_multi() { return `x${yield 1}y${yield 2}z`; }
         const it2 = tpl_multi();
         const b1 = it2.next();
+        churn();
         const b2 = it2.next("A");
+        churn();
         const b3 = it2.next("B");
         const ok2 =
           b1.value === 1 && b1.done === false &&
@@ -325,6 +345,7 @@ fn generators_yield_in_template_literals() {
         function* tpl_nested() { return `a${1 + (yield 2)}b`; }
         const it3 = tpl_nested();
         const c1 = it3.next();
+        churn();
         const c2 = it3.next(10);
         const ok3 = c1.value === 2 && c1.done === false && c2.value === "a11b" && c2.done === true;
 
@@ -332,6 +353,7 @@ fn generators_yield_in_template_literals() {
         function* tpl_symbol() { return `${yield 1}`; }
         const it4 = tpl_symbol();
         it4.next();
+        churn();
         let ok4 = false;
         try {
           it4.next(Symbol("s"));
