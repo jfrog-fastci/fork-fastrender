@@ -1,7 +1,8 @@
 //! WebM / Matroska demuxer.
 //!
-//! Safety: encoded packet payloads are capped at [`MAX_WEBM_PACKET_BYTES`] to avoid unbounded memory
-//! usage when demuxing corrupted/adversarial files containing absurdly large blocks.
+//! Safety: to avoid unbounded memory usage when demuxing corrupted/adversarial files:
+//! - encoded packet payloads are capped at [`MAX_WEBM_PACKET_BYTES`], and
+//! - codec-private ("extradata") blobs are capped at [`MAX_WEBM_CODEC_PRIVATE_BYTES`].
 
 use crate::error::{RenderError, RenderStage};
 use crate::media::track_selection::{
