@@ -530,6 +530,7 @@ fn scale_nanos(nanos: u64, rate: f64) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::VirtualClock;
 
   #[derive(Debug, Default)]
   struct FakeDeviceClock {
