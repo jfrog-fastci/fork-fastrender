@@ -22176,7 +22176,7 @@ fn node_list_for_each_native(
   scope.push_root(Value::Object(list_obj))?;
 
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !scope.heap().is_callable(callback).unwrap_or(false) {
+  if !scope.heap().is_callable(callback)? {
     return Err(throw_type_error(
       vm,
       scope,
