@@ -19060,7 +19060,6 @@ fn async_generator_start(
   let new_target = cont.new_target;
   let home_object = cont.home_object;
   let func = cont.func.clone();
-  let args: &[Value] = &cont.args;
 
   let mut evaluator = Evaluator {
     vm,
@@ -19076,16 +19075,6 @@ fn async_generator_start(
     this_initialized: true,
     this_root_idx: None,
   };
-
-  if let Err(err) = evaluator.instantiate_function(scope, func.as_ref(), args) {
-    let err = coerce_error_to_throw_for_async(vm, scope, err);
-    match err {
-      VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
-        return Ok((AsyncBodyResult::CompleteThrow(reason), cont))
-      }
-      other => return Err(other),
-    }
-  }
 
   let result = async_start_body(&mut evaluator, scope, &func)?;
   // Persist strictness and `this`/`new.target`/`home_object` overrides across suspensions.

@@ -56,6 +56,49 @@ fn async_generator_default_params_are_evaluated_on_call() -> Result<(), VmError>
 }
 
 #[test]
+fn async_generator_param_array_pattern_closes_iterator_once() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var doneCallCount = 0;
+      var iter = {};
+      iter[Symbol.iterator] = function() {
+        return {
+          next: function() { return { value: null, done: false }; },
+          return: function() { doneCallCount += 1; return {}; }
+        };
+      };
+
+      var callCount = 0;
+      var ok = false;
+      async function* f([x]) {
+        // Parameter binding runs at generator call time; iterator close must happen exactly once.
+        if (doneCallCount !== 1) throw doneCallCount;
+        callCount = callCount + 1;
+      };
+
+      f(iter).next().then(
+        function () { ok = (doneCallCount === 1 && callCount === 1); },
+        function () { ok = false; }
+      );
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(false));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.exec_script("ok")?, Value::Bool(true));
+  assert_eq!(rt.exec_script("doneCallCount")?, Value::Number(1.0));
+  assert_eq!(rt.exec_script("callCount")?, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn async_generator_method_in_object_literal_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
