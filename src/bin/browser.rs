@@ -18946,11 +18946,11 @@ impl App {
 
     match hud.process_rss_bytes {
       Some(bytes) => {
-        let mb = fastrender::memory::bytes_to_mb(bytes);
-        let _ = writeln!(&mut hud.text_buf, "rss: {mb:.1} MB");
+        let mib = fastrender::memory::bytes_to_mb(bytes);
+        let _ = writeln!(&mut hud.text_buf, "rss: {mib:.1} MiB");
       }
       None => {
-        let _ = writeln!(&mut hud.text_buf, "rss: - MB");
+        let _ = writeln!(&mut hud.text_buf, "rss: - MiB");
       }
     }
 
