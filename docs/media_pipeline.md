@@ -353,9 +353,14 @@ Useful runtime toggles while debugging:
 - Paint backend selection:
   - `FASTR_PAINT_BACKEND=display_list|legacy` (default: `display_list`; see `docs/env-vars.md`).
 - Video A/V sync tolerances (used by `src/media/av_sync.rs`):
-  - `FASTR_AV_SYNC_TOLERANCE_MS`
-  - `FASTR_AV_SYNC_MAX_LATE_MS`
-  - `FASTR_AV_SYNC_MAX_EARLY_MS`
+  - Preferred env vars:
+    - `FASTRENDER_AVSYNC_IN_SYNC_MS`
+    - `FASTRENDER_AVSYNC_DROP_LATE_MS`
+    - `FASTRENDER_AVSYNC_DELAY_EARLY_MS`
+  - Legacy (FASTR_ prefix; still supported):
+    - `FASTR_AV_SYNC_TOLERANCE_MS`
+    - `FASTR_AV_SYNC_MAX_LATE_MS`
+    - `FASTR_AV_SYNC_MAX_EARLY_MS`
 
 Note: full end-to-end decode→paint→DOM integration is still in progress. Today these pages are
 primarily a smoke test for `<video>/<audio>` layout and for future playback wiring.
