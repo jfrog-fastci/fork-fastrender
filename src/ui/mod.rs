@@ -24,6 +24,9 @@ pub mod document_ticks;
 pub mod clipboard_gate;
 pub mod theme_parsing;
 pub mod high_contrast;
+// Native dialog fallback + safety helpers used by the windowed browser UI.
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod native_dialogs;
 // UI↔worker messaging lives in `messages.rs`.
 //
 // `render_worker` is the *single* production UI worker implementation. The `browser` binary and

@@ -23,11 +23,6 @@ const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 #[cfg(all(feature = "browser_ui", feature = "audio_cpal"))]
 const ENV_AUDIO_TEST_TONE: &str = "FASTR_AUDIO_TEST_TONE";
 
-// Native `rfd` dialogs can be flaky/unavailable on minimal/CI hosts (e.g. missing
-// xdg-desktop-portal). Allow forcing the in-app dialogs for reliable headless testing/debug.
-#[cfg(any(test, feature = "browser_ui"))]
-const ENV_BROWSER_FORCE_IN_APP_DIALOGS: &str = "FASTR_BROWSER_FORCE_IN_APP_DIALOGS";
-
 // Experimental renderer-chrome toggle (render browser chrome via FastRender HTML/CSS).
 //
 // Manual smoke test (macOS VoiceOver / Windows Narrator / Linux Orca):
@@ -138,39 +133,6 @@ impl PageExportKind {
       Self::SavePage => "html",
       Self::Print => "png",
     }
-  }
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn force_in_app_dialogs_from_env(env_value: Option<&str>) -> bool {
-  parse_env_bool(env_value)
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum NativeSaveDialogOutcome {
-  /// The user chose a destination path.
-  Chosen(std::path::PathBuf),
-  /// The user cancelled the dialog.
-  Cancelled,
-  /// The native dialog could not be opened (or native dialogs are disabled) and the caller should
-  /// fall back to the in-app path popup.
-  FallbackToInApp,
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn native_save_dialog_outcome(
-  force_in_app_dialogs: bool,
-  open_dialog: impl FnOnce() -> Option<std::path::PathBuf>,
-) -> NativeSaveDialogOutcome {
-  if force_in_app_dialogs {
-    return NativeSaveDialogOutcome::FallbackToInApp;
-  }
-
-  match std::panic::catch_unwind(std::panic::AssertUnwindSafe(open_dialog)) {
-    Ok(Some(path)) => NativeSaveDialogOutcome::Chosen(path),
-    Ok(None) => NativeSaveDialogOutcome::Cancelled,
-    Err(_) => NativeSaveDialogOutcome::FallbackToInApp,
   }
 }
 // Structured JSONL performance logging used by the windowed browser UI.
@@ -5245,46 +5207,6 @@ mod tests {
   fn pending_page_subtree_accesskit_update_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<PendingPageSubtreeAccessKitUpdate>();
-  }
-
-  #[test]
-  fn force_in_app_dialogs_env_override_parses_truthy_values() {
-    assert!(!force_in_app_dialogs_from_env(None));
-    assert!(!force_in_app_dialogs_from_env(Some("0")));
-    assert!(!force_in_app_dialogs_from_env(Some("false")));
-    assert!(force_in_app_dialogs_from_env(Some("1")));
-    assert!(force_in_app_dialogs_from_env(Some("true")));
-    assert!(force_in_app_dialogs_from_env(Some("yes")));
-  }
-
-  #[test]
-  fn native_save_dialog_outcome_skips_dialog_when_forced() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-
-    let called = Arc::new(AtomicBool::new(false));
-    let called2 = Arc::clone(&called);
-    let outcome = native_save_dialog_outcome(true, || {
-      called2.store(true, Ordering::SeqCst);
-      Some(std::path::PathBuf::from("ignored"))
-    });
-    assert_eq!(outcome, NativeSaveDialogOutcome::FallbackToInApp);
-    assert!(
-      !called.load(Ordering::SeqCst),
-      "expected dialog closure to be skipped"
-    );
-  }
-
-  #[test]
-  fn native_save_dialog_outcome_catches_panics() {
-    let outcome = native_save_dialog_outcome(false, || panic!("boom"));
-    assert_eq!(outcome, NativeSaveDialogOutcome::FallbackToInApp);
-  }
-
-  #[test]
-  fn native_save_dialog_outcome_distinguishes_cancel() {
-    let outcome = native_save_dialog_outcome(false, || None);
-    assert_eq!(outcome, NativeSaveDialogOutcome::Cancelled);
   }
 
   #[test]
@@ -16774,6 +16696,11 @@ impl App {
   }
 
   fn trigger_page_export(&mut self, kind: PageExportKind) {
+    use fastrender::ui::native_dialogs::{
+      force_in_app_dialogs_from_env, native_save_dialog_outcome, NativeSaveDialogOutcome,
+      ENV_BROWSER_FORCE_IN_APP_DIALOGS,
+    };
+
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       return;
     };
