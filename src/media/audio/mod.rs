@@ -14,6 +14,9 @@
 //! a roughly-constant buffer duration; callers should treat this as a constant offset (not drift)
 //! and compensate using the estimated latency.
 //!
+//! Real-time audio callbacks (e.g. the CPAL output callback) must never unwind across the callback
+//! boundary; see `panic_guard` for helpers that catch panics and output silence.
+//!
 //! See `docs/media_clocking.md` for the broader clocking model and recommended sync tolerances.
 use std::cell::RefCell;
 use std::sync::Arc;
