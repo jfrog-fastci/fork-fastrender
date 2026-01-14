@@ -100,7 +100,9 @@ jobs:
           rm -f "${report}"
           mkdir -p "$(dirname "${report}")"
           chmod +x scripts/run_limited.sh
-          scripts/run_limited.sh --as 64G -- \
+          # Wrap with a wall-clock timeout as an extra guardrail: the runner has per-test cooperative
+          # timeouts, but a host-level hang (e.g. cancellation bug) should not burn the entire job.
+          timeout -k 10 1800 scripts/run_limited.sh --as 64G -- \
             bash scripts/cargo_agent.sh run --release -p test262-semantic -- \
               --test262-dir "${repo_root}/vendor/ecma-rs/test262-semantic/data" \
               --harness test262 \
