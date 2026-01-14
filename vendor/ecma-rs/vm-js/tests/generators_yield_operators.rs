@@ -296,3 +296,52 @@ fn generators_yield_in_delete_computed_key() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_template_literals() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // `a${yield 1}b`
+        function* tpl_simple() { return `a${yield 1}b`; }
+        const it1 = tpl_simple();
+        const a1 = it1.next();
+        const a2 = it1.next(10);
+        const ok1 = a1.value === 1 && a1.done === false && a2.value === "a10b" && a2.done === true;
+
+        // Ensure substitution evaluation is left-to-right and each `yield` consumes its own resume value.
+        function* tpl_multi() { return `x${yield 1}y${yield 2}z`; }
+        const it2 = tpl_multi();
+        const b1 = it2.next();
+        const b2 = it2.next("A");
+        const b3 = it2.next("B");
+        const ok2 =
+          b1.value === 1 && b1.done === false &&
+          b2.value === 2 && b2.done === false &&
+          b3.value === "xAyBz" && b3.done === true;
+
+        // Yield inside a larger substitution expression.
+        function* tpl_nested() { return `a${1 + (yield 2)}b`; }
+        const it3 = tpl_nested();
+        const c1 = it3.next();
+        const c2 = it3.next(10);
+        const ok3 = c1.value === 2 && c1.done === false && c2.value === "a11b" && c2.done === true;
+
+        // ToString is applied to substitution results (Symbol should throw).
+        function* tpl_symbol() { return `${yield 1}`; }
+        const it4 = tpl_symbol();
+        it4.next();
+        let ok4 = false;
+        try {
+          it4.next(Symbol("s"));
+        } catch (e) {
+          ok4 = e instanceof TypeError;
+        }
+
+        ok1 && ok2 && ok3 && ok4
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
