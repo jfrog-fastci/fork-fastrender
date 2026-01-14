@@ -13,6 +13,8 @@ fn json_output_parses_and_contains_expected_keys() {
 {"event":"resize","resize_to_present_ms":7.0}
 {"event":"cpu_summary","cpu_percent_recent":10.0}
 {"event":"frame_upload","upload_total_ms":3.0,"upload_last_ms":3.0,"overwritten_frames":2}
+{"event":"worker_wake_summary","worker_msgs_forwarded_per_sec":10.0,"worker_msgs_processed_per_sec":9.0,"worker_wakes_handled_per_sec":2.0,"worker_wake_events_sent_per_sec":1.0,"worker_wake_events_coalesced_per_sec":99.0,"worker_followup_wakes_per_sec":0.5,"worker_empty_wakes_per_sec":0.25,"worker_pending_msgs_estimate":12,"worker_msgs_per_nonempty_wake":4.0,"worker_last_drain":8,"worker_max_drain":16}
+{"event":"worker_wake_summary","worker_msgs_forwarded_per_sec":20.0,"worker_msgs_processed_per_sec":18.0,"worker_wakes_handled_per_sec":4.0,"worker_wake_events_sent_per_sec":2.0,"worker_wake_events_coalesced_per_sec":50.0,"worker_followup_wakes_per_sec":1.0,"worker_empty_wakes_per_sec":0.0,"worker_pending_msgs_estimate":6,"worker_msgs_per_nonempty_wake":5.0,"worker_last_drain":10,"worker_max_drain":20}
 
 {"type":"ui_frame_time","frame_time_ms":30.0,"ts_ms":3}
 {"type":"resource_sample","cpu_percent":20.0,"rss_bytes":2000,"unknown":true}
@@ -59,6 +61,10 @@ fn json_output_parses_and_contains_expected_keys() {
     "upload_last_ms",
     "coalesced_frames",
     "cpu_percent",
+    "worker_msgs_forwarded_per_sec",
+    "worker_wake_events_coalesced_per_sec",
+    "worker_pending_msgs_estimate",
+    "worker_last_drain",
     "rss_bytes",
     "rss_mb",
     "rss_first_mb",
@@ -79,4 +85,22 @@ fn json_output_parses_and_contains_expected_keys() {
   assert_eq!(rss_bytes["min"].as_u64(), Some(1000));
   assert_eq!(rss_bytes["max"].as_u64(), Some(4000));
   assert_eq!(rss_bytes["mean"].as_f64(), Some(2500.0));
+
+  let worker_msgs_forwarded = &value["worker_msgs_forwarded_per_sec"];
+  assert_eq!(worker_msgs_forwarded["count"].as_u64(), Some(2));
+  assert_eq!(worker_msgs_forwarded["min"].as_f64(), Some(10.0));
+  assert_eq!(worker_msgs_forwarded["max"].as_f64(), Some(20.0));
+  assert_eq!(worker_msgs_forwarded["mean"].as_f64(), Some(15.0));
+
+  let worker_pending = &value["worker_pending_msgs_estimate"];
+  assert_eq!(worker_pending["count"].as_u64(), Some(2));
+  assert_eq!(worker_pending["min"].as_f64(), Some(6.0));
+  assert_eq!(worker_pending["max"].as_f64(), Some(12.0));
+  assert_eq!(worker_pending["mean"].as_f64(), Some(9.0));
+
+  let worker_last_drain = &value["worker_last_drain"];
+  assert_eq!(worker_last_drain["count"].as_u64(), Some(2));
+  assert_eq!(worker_last_drain["min"].as_f64(), Some(8.0));
+  assert_eq!(worker_last_drain["max"].as_f64(), Some(10.0));
+  assert_eq!(worker_last_drain["mean"].as_f64(), Some(9.0));
 }

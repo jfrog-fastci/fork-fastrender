@@ -197,6 +197,7 @@ struct Samples {
   worker_wake_events_coalesced_per_sec: Vec<f64>,
   worker_pending_msgs_estimate: Vec<f64>,
   worker_msgs_per_nonempty_wake: Vec<f64>,
+  worker_last_drain: Vec<f64>,
   worker_max_drain: Vec<f64>,
   rss_bytes: Vec<u64>,
   rss_first_bytes: Option<u64>,
@@ -228,6 +229,7 @@ struct Summary {
   worker_wake_events_coalesced_per_sec: ScalarStats,
   worker_pending_msgs_estimate: ScalarStats,
   worker_msgs_per_nonempty_wake: ScalarStats,
+  worker_last_drain: ScalarStats,
   worker_max_drain: ScalarStats,
   rss_bytes: RssStats,
   rss_mb: ScalarStats,
@@ -490,6 +492,14 @@ fn print_table(summary: &Summary) {
   );
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_last_drain",
+    summary.worker_last_drain.count,
+    fmt_opt_f64(summary.worker_last_drain.min, 0),
+    fmt_opt_f64(summary.worker_last_drain.mean, 0),
+    fmt_opt_f64(summary.worker_last_drain.max, 0),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
     "worker_max_drain",
     summary.worker_max_drain.count,
     fmt_opt_f64(summary.worker_max_drain.min, 0),
@@ -727,6 +737,7 @@ fn run(cli: Cli) -> Result<(), String> {
               worker_wake_events_coalesced_per_sec,
               worker_pending_msgs_estimate,
               worker_msgs_per_nonempty_wake,
+              worker_last_drain,
               worker_max_drain,
               ..
             } => {
@@ -758,6 +769,9 @@ fn run(cli: Cli) -> Result<(), String> {
               }
               if let Some(v) = worker_msgs_per_nonempty_wake.filter(|v| v.is_finite()) {
                 samples.worker_msgs_per_nonempty_wake.push(f64::from(v));
+              }
+              if let Some(v) = worker_last_drain {
+                samples.worker_last_drain.push(v as f64);
               }
               if let Some(v) = worker_max_drain {
                 samples.worker_max_drain.push(v as f64);
@@ -880,6 +894,7 @@ fn run(cli: Cli) -> Result<(), String> {
     ),
     worker_pending_msgs_estimate: scalar_stats(&mut samples.worker_pending_msgs_estimate),
     worker_msgs_per_nonempty_wake: scalar_stats(&mut samples.worker_msgs_per_nonempty_wake),
+    worker_last_drain: scalar_stats(&mut samples.worker_last_drain),
     worker_max_drain: scalar_stats(&mut samples.worker_max_drain),
     rss_bytes,
     rss_mb,
