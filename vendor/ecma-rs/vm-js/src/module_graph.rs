@@ -4,7 +4,7 @@ use crate::exec::{
 };
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
-use crate::hir_exec::{instantiate_compiled_module_decls, run_compiled_module};
+use crate::hir_exec::instantiate_compiled_module_decls;
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
@@ -2820,34 +2820,6 @@ impl ModuleGraph {
             state.waiting_on = Some(module);
             self.scc_eval_states[root_idx] = Some(state);
             return Ok(());
-          }
-          Err(err) => {
-            let reason = if let Some(thrown) = err.thrown_value() {
-              thrown
-            } else {
-              self.cache_module_error_from_err(vm, scope, idx, &err)?;
-              self.module_errored_value(vm, scope, idx)?
-            };
-            self.scc_eval_states[root_idx] = None;
-            self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
-            return Ok(());
-          }
-        }
-      } else if let Some(compiled) = compiled {
-        match run_compiled_module(
-          vm,
-          scope,
-          host,
-          hooks,
-          state.global_object,
-          state.realm_id,
-          module,
-          module_env,
-          compiled,
-        ) {
-          Ok(()) => {
-            state.next_member_index = state.next_member_index.saturating_add(1);
-            continue;
           }
           Err(err) => {
             let reason = if let Some(thrown) = err.thrown_value() {
