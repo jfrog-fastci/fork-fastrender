@@ -46905,6 +46905,37 @@ mod tests {
     assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_arrow_created_in_direct_eval_before_super_observes_this_initialization(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          // Creating an arrow function that closes over `this` via direct eval must not throw.
+          let f = eval("(() => this)");
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      (d.v instanceof D) &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
