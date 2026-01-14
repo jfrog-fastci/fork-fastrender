@@ -7,13 +7,6 @@ third‑party images/audio.
 
 ## Fixtures
 
-### `aac_stereo_48000.mp4`
-
-- Container: MP4
-- Audio: AAC-LC, stereo, 48 kHz, silence, very short (~50ms)
-- Video: none
-- Purpose: used by `tests/media_aac_duration.rs` to validate AAC packet duration accounting
-
 ### `test_h264_aac.mp4`
 
 - Container: MP4
@@ -31,13 +24,6 @@ third‑party images/audio.
 - Container: WebM
 - Video: VP9, 64×64, 1 fps, 2 frames (red then blue)
 - Audio: Opus, stereo, 48 kHz, silence, ~2s
-
-### `vp9_opus.webm`
-
-- Container: WebM
-- Video: VP9 (profile 1 / 4:4:4), 64×64, 30 fps, ~1s
-- Audio: Opus, mono, 48 kHz, non-silent (sine tone), ~1s
-- Purpose: used by WebM demux/seek tests in `src/media/demux/webm.rs` (notably Matroska `SeekPreRoll`)
 
 ### `vp9_in_mp4.mp4`
 
