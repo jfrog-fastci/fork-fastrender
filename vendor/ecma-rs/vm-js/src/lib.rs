@@ -300,6 +300,14 @@ mod class_inheritance_tests;
 mod super_property_tests;
 
 #[cfg(test)]
+#[path = "../tests/class_extends_null.rs"]
+mod class_extends_null_tests;
+
+#[cfg(test)]
+#[path = "../tests/delete_super_reference.rs"]
+mod delete_super_reference_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/object_literal_super.rs"]
 mod object_literal_super_tests;
 
