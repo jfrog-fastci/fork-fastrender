@@ -5276,6 +5276,47 @@ mod tests {
   }
 
   #[test]
+  fn teardown_microtasks_clears_ast_async_continuations_and_roots() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let baseline_roots = rt.heap.persistent_root_count();
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+ 
+    for _ in 0..8 {
+      let _promise = rt.exec_script("async function f(){ await 1; } f();")?;
+ 
+      // The async function should suspend at `await`, leaving behind a queued Promise job and a
+      // stored continuation.
+      assert!(
+        !rt.vm.microtask_queue().is_empty(),
+        "expected async function await to enqueue a microtask"
+      );
+      assert!(
+        rt.vm.async_continuation_count() > 0,
+        "expected async function await to store an async continuation"
+      );
+ 
+      rt.vm.teardown_microtasks(&mut rt.heap);
+ 
+      assert!(rt.vm.microtask_queue().is_empty());
+      assert_eq!(rt.vm.async_continuation_count(), 0);
+      assert_eq!(
+        rt.heap.persistent_root_count(),
+        baseline_roots,
+        "expected persistent value roots to return to baseline after teardown"
+      );
+      assert_eq!(
+        rt.heap.persistent_env_root_count(),
+        baseline_env_roots,
+        "expected persistent env roots to return to baseline after teardown"
+      );
+ 
+      rt.heap.collect_garbage();
+    }
+ 
+    Ok(())
+  }
+ 
+  #[test]
   fn teardown_realm_clears_template_registry_and_intrinsics() -> Result<(), VmError> {
     use crate::exec::eval_script_with_host_and_hooks;
     use crate::microtasks::MicrotaskQueue;

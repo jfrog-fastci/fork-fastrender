@@ -16966,9 +16966,14 @@ pub(crate) fn hir_async_resume_continuation(
     };
 
     let hir = cont.script.hir.as_ref();
-    let body = hir
-      .body(hir.root_body())
-      .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+    let body = match hir.body(hir.root_body()) {
+      Some(body) => body,
+      None => {
+        // Fatal internal error: ensure we do not leak persistent roots held by the continuation.
+        hir_async_teardown_continuation(scope, cont);
+        return Err(VmError::InvariantViolation("compiled script root body not found"));
+      }
+    };
     // Avoid borrowing `evaluator` immutably across `eval_expr` calls: we need mutable access to the
     // evaluator while executing.
     let source = evaluator.script.source.clone();
