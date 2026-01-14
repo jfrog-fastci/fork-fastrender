@@ -32,6 +32,29 @@ fn generator_yield_in_object_destructuring_default_preserves_assignment_result()
 }
 
 #[test]
+fn generator_yield_in_object_destructuring_default_not_evaluated_when_present() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let a = 0;
+          let rhs = {a: 5};
+          let res = ({a = yield 1} = rhs);
+          return res === rhs && a === 5;
+        }
+        var it = g();
+        var r1 = it.next();
+        return r1.done === true && r1.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_array_destructuring_default_preserves_assignment_result() {
   let mut rt = new_runtime();
   let value = rt
@@ -49,6 +72,29 @@ fn generator_yield_in_array_destructuring_default_preserves_assignment_result() 
         if (r1.done !== false || r1.value !== 1) return false;
         var r2 = it.next(7);
         return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_array_destructuring_default_not_evaluated_when_present() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let a = 0;
+          let rhs = [5];
+          let res = ([a = yield 1] = rhs);
+          return res === rhs && a === 5;
+        }
+        var it = g();
+        var r1 = it.next();
+        return r1.done === true && r1.value === true;
       })()
     "#,
     )
