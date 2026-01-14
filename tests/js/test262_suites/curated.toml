@@ -34,6 +34,8 @@ include = [
   "language/expressions/logical-and/**/*.js",
   "language/expressions/logical-not/**/*.js",
   "language/expressions/logical-or/**/*.js",
+  # Targeted logical assignment coverage for private references.
+  "language/expressions/logical-assignment/left-hand-side-private-reference-*.js",
   "language/expressions/member-expression/**/*.js",
   "language/expressions/modulus/**/*.js",
   "language/expressions/multiplication/**/*.js",
