@@ -27052,9 +27052,16 @@ fn async_eval_new_expr(
   scope: &mut Scope<'_>,
   expr: &UnaryExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
+  // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
+  //
+  // Important: `new (f())` must *not* use `f` as the constructor. It must first evaluate the
+  // parenthesized call expression and then construct the *result* with no arguments.
+  //
+  // `parse-js` stores parentheses via the `ParenthesizedExpr` assoc marker, so treat parenthesized
+  // call expressions as the `new (expr)` form (no argument list for `new`).
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
   let callee_expr = match &*expr.argument.stx {
-    // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
-    Expr::Call(call) => &call.stx.callee,
+    Expr::Call(call) if !is_parenthesized => &call.stx.callee,
     _ => &expr.argument,
   };
 
@@ -27078,8 +27085,9 @@ fn async_new_begin(
   expr: &UnaryExpr,
   callee_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
   let call_args = match &*expr.argument.stx {
-    Expr::Call(call) => Some(&call.stx.arguments),
+    Expr::Call(call) if !is_parenthesized => Some(&call.stx.arguments),
     _ => None,
   };
 
@@ -27132,12 +27140,19 @@ fn async_new_continue_args(
   mut arg_roots: Vec<RootId>,
   start_index: usize,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
   let Expr::Call(call) = &*expr.argument.stx else {
     async_new_cleanup(scope, callee_root, &mut arg_roots);
     return Err(VmError::InvariantViolation(
       "async new arg continuation without call expression",
     ));
   };
+  if is_parenthesized {
+    async_new_cleanup(scope, callee_root, &mut arg_roots);
+    return Err(VmError::InvariantViolation(
+      "async new arg continuation with parenthesized call expression",
+    ));
+  }
 
   // Evaluate each remaining argument in order.
   for (idx, arg) in call.stx.arguments.iter().enumerate().skip(start_index) {

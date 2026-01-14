@@ -190,6 +190,31 @@ fn await_in_new_expression() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_new_parenthesized_call_evaluates_expression_first() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        function make(x) { return function C(){ this.x = x; }; }
+        // `new (make(await ...))` must evaluate `make(await ...)` first (producing a constructor),
+        // then construct the *result* with no arguments. This differs from `new make(await ...)`.
+        return (new (make(await Promise.resolve("ok")))).x;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_delete_expression() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
