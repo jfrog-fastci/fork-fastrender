@@ -116,7 +116,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   fn from_reader_with_meta(mp4: mp4::Mp4Reader<R>, mp4parse_meta: Mp4ParseMeta) -> MediaResult<Self> {
     let Mp4ParseMeta {
       vp9_tracks,
-      mut sample_tables: meta_sample_tables,
+      sample_tables: mut meta_sample_tables,
       aac_asc,
     } = mp4parse_meta;
 
