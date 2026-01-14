@@ -282,7 +282,7 @@ impl<Host: 'static> Task<Host> {
     Self {
       source,
       seq: 0,
-      runnable: Box::new(runnable),
+      runnable: Box::new(runnable) as Runnable<Host>,
     }
   }
 
@@ -293,7 +293,7 @@ impl<Host: 'static> Task<Host> {
     Self {
       source,
       seq,
-      runnable: Box::new(runnable),
+      runnable: Box::new(runnable) as Runnable<Host>,
     }
   }
 
