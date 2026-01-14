@@ -863,9 +863,7 @@ impl<'a> Parser<'a> {
           await_expr_allowed: false,
           yield_expr_allowed: false,
         });
-        let initializer = self.with_disallow_arguments_in_class_init(|p| {
-          p.expr_with_asi(init_ctx, [TT::Semicolon, TT::BraceClose], &mut asi)
-        });
+        let initializer = self.expr_with_asi(init_ctx, [TT::Semicolon, TT::BraceClose], &mut asi);
         self.new_target_allowed = prev_new_target_allowed;
         self.super_prop_allowed = prev_super_prop_allowed;
         self.super_call_allowed = prev_super_call_allowed;
@@ -1222,7 +1220,7 @@ impl<'a> Parser<'a> {
       p.new_target_allowed += 1;
       p.super_prop_allowed += 1;
       p.super_call_allowed = 0;
-      let res = p.with_arguments_bound_in_class_init(|p| {
+      let res = (|| {
         p.require(TT::ParenthesisOpen)?;
         // Setters are not generators or async, so yield/await can be used as identifiers
         let is_module = p.is_module();
@@ -1375,7 +1373,7 @@ impl<'a> Parser<'a> {
           return_type: None,
           body,
         })
-      });
+      })();
       p.new_target_allowed = prev_new_target_allowed;
       p.super_prop_allowed = prev_super_prop_allowed;
       p.super_call_allowed = prev_super_call_allowed;
@@ -1430,13 +1428,11 @@ impl<'a> Parser<'a> {
             await_expr_allowed: false,
             yield_expr_allowed: false,
           });
-          let expr = self.with_disallow_arguments_in_class_init(|p| {
-            p.expr_with_asi(
-              init_ctx,
-              [statement_delimiter, TT::BraceClose],
-              property_initialiser_asi,
-            )
-          });
+          let expr = self.expr_with_asi(
+            init_ctx,
+            [statement_delimiter, TT::BraceClose],
+            property_initialiser_asi,
+          );
           self.new_target_allowed = prev_new_target_allowed;
           self.super_prop_allowed = prev_super_prop_allowed;
           self.super_call_allowed = prev_super_call_allowed;
@@ -1652,13 +1648,11 @@ impl<'a> Parser<'a> {
               await_expr_allowed: false,
               yield_expr_allowed: false,
             });
-            let expr = self.with_disallow_arguments_in_class_init(|p| {
-              p.expr_with_asi(
-                init_ctx,
-                [statement_delimiter, TT::BraceClose],
-                property_initialiser_asi,
-              )
-            });
+            let expr = self.expr_with_asi(
+              init_ctx,
+              [statement_delimiter, TT::BraceClose],
+              property_initialiser_asi,
+            );
             self.new_target_allowed = prev_new_target_allowed;
             self.super_prop_allowed = prev_super_prop_allowed;
             self.super_call_allowed = prev_super_call_allowed;

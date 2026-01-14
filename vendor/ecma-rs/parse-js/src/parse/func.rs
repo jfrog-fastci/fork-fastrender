@@ -16,7 +16,7 @@ use std::collections::HashSet;
 impl<'a> Parser<'a> {
   // `scope` should be a newly created closure scope for this function.
   pub fn func_params(&mut self, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
-    self.with_arguments_bound_in_class_init(|p| p.func_params_impl(ctx, true))
+    self.func_params_impl(ctx, true)
   }
 
   /// Parse arrow function parameter lists.
@@ -246,7 +246,7 @@ impl<'a> Parser<'a> {
     // Regular functions do not have a `super` binding.
     self.super_prop_allowed = 0;
     self.super_call_allowed = 0;
-    let res = self.with_arguments_bound_in_class_init(|p| p.parse_func_block_body(ctx));
+    let res = self.parse_func_block_body(ctx);
     self.new_target_allowed = prev_new_target_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
       // within them); it is never valid in methods/fields/static blocks.
       self.super_call_allowed = 0;
     }
-    let res = self.with_arguments_bound_in_class_init(|p| p.parse_func_block_body(ctx));
+    let res = self.parse_func_block_body(ctx);
     self.new_target_allowed = prev_new_target_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
