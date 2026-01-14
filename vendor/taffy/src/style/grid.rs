@@ -86,7 +86,7 @@ pub trait GenericRepetition {
   fn tracks(&self) -> Self::RepetitionTrackList<'_>;
   /// Returns the number of repeated tracks
   fn track_count(&self) -> u16 {
-    self.tracks().len() as u16
+    self.tracks().len().min(u16::MAX as usize) as u16
   }
   /// Returns an iterator over the lines names
   fn lines_names(&self) -> Self::TemplateLineNames<'_>;
@@ -825,6 +825,25 @@ mod origin_zero_grid_placement_tests {
   }
 }
 
+#[cfg(test)]
+mod repetition_tests {
+  use super::*;
+
+  #[test]
+  fn grid_template_repetition_track_count_clamps_to_u16_max() {
+    // Regression: `Vec::len() as u16` wraps when the repeated track list is very large, which can
+    // later underflow calculations when computing explicit track counts.
+    let tracks = vec![TrackSizingFunction::from_length(1.0); (u16::MAX as usize) + 1];
+    let repetition: GridTemplateRepetition<DefaultCheapStr> = GridTemplateRepetition {
+      count: RepetitionCount::Count(1),
+      tracks,
+      line_names: Vec::new(),
+    };
+    let repetition_ref = &repetition;
+    assert_eq!(repetition_ref.track_count(), u16::MAX);
+  }
+}
+
 /// Represents the start and end points of a GridItem within a given axis
 impl<S: CheapCloneStr> Default for Line<GridPlacement<S>> {
   fn default() -> Self {
@@ -1510,7 +1529,7 @@ impl<S: CheapCloneStr> GenericRepetition for &'_ GridTemplateRepetition<S> {
     }
     #[inline(always)]
     fn track_count(&self) -> u16 {
-        self.tracks.len() as u16
+        self.tracks.len().min(u16::MAX as usize) as u16
     }
     #[inline(always)]
     fn tracks(&self) -> Self::RepetitionTrackList<'_> {
