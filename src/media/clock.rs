@@ -355,6 +355,15 @@ impl PlaybackClock {
     }
   }
 
+  #[must_use]
+  pub fn state(&self) -> PlaybackState {
+    if self.playing.load(Ordering::Relaxed) {
+      PlaybackState::Playing
+    } else {
+      PlaybackState::Paused
+    }
+  }
+
   pub fn play(&self) {
     // Capture current frozen timeline time so the transition is continuous.
     let timeline_now = self.now();
@@ -383,15 +392,6 @@ impl PlaybackClock {
       .store(timeline_now_nanos, Ordering::Relaxed);
     self.last_now.store(timeline_now_nanos, Ordering::Relaxed);
     self.playing.store(false, Ordering::Relaxed);
-  }
-
-  #[must_use]
-  pub fn state(&self) -> PlaybackState {
-    if self.playing.load(Ordering::Relaxed) {
-      PlaybackState::Playing
-    } else {
-      PlaybackState::Paused
-    }
   }
 
   /// Jumps the timeline to `new_time` and continues from there (if playing).

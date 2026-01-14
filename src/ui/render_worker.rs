@@ -6428,10 +6428,12 @@ impl BrowserRuntime {
       };
 
       let hit_tree_before = hit_test_fragment_tree_for_scroll_cached(
+      let hit_tree_before = hit_test_fragment_tree_for_scroll_cached(
         &mut tab.hit_test_fragment_tree_cache,
         doc,
         &scroll_snapshot,
       );
+      let hit_tree_after = next_scroll.as_ref().and_then(|scroll| {
       let hit_tree_after = next_scroll.as_ref().and_then(|scroll| {
         hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll)
       });
@@ -7351,6 +7353,7 @@ impl BrowserRuntime {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
+      let hit_tree = hit_test_fragment_tree_for_scroll_cached(
       let hit_tree = hit_test_fragment_tree_for_scroll_cached(
         &mut tab.hit_test_fragment_tree_cache,
         doc,

@@ -1,4 +1,4 @@
-use crate::dom2::{Document, NodeId, NodeKind};
+use crate::dom2::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 use crate::interaction::InteractionStateDom2;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -37,7 +37,9 @@ fn node_has_attr(doc: &Document, node: &crate::dom2::Node, name: &str) -> bool {
     NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes.as_slice(),
     _ => return false,
   };
-  attrs.iter().any(|attr| attr.qualified_name_matches(name, is_html))
+  attrs
+    .iter()
+    .any(|attr| attr.namespace == NULL_NAMESPACE && attr.qualified_name_matches(name, is_html))
 }
 
 fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) -> Option<&'a str> {
@@ -51,7 +53,7 @@ fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) ->
   };
   attrs
     .iter()
-    .find(|attr| attr.qualified_name_matches(name, is_html))
+    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.qualified_name_matches(name, is_html))
     .map(|attr| attr.value.as_str())
 }
 
