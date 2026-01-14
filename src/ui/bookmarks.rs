@@ -2032,11 +2032,6 @@ mod bookmarks_bar_ui {
               .map(str::to_string)
               .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
 
-            let tooltip = if let Some(title) = title {
-              format!("{title}\n{url}")
-            } else {
-              url.to_string()
-            };
             let a11y_label = super::format_bookmark_widget_info_label(title, url);
 
             let button = egui::Button::new(label)
@@ -2044,12 +2039,26 @@ mod bookmarks_bar_ui {
               .sense(egui::Sense::click_and_drag());
             let response = ui
               .add(button)
-              .on_hover_text(tooltip.clone())
+              .on_hover_ui(|ui| {
+                if let Some(title) = title {
+                  ui.label(title);
+                  ui.label(url);
+                } else {
+                  ui.label(url);
+                }
+              })
               .on_hover_cursor(egui::CursorIcon::PointingHand);
             if response.has_focus() && !response.hovered() {
               // Egui tooltips only show on pointer hover. Mirror the hover tooltip while
               // keyboard-focused so bookmark buttons remain discoverable for keyboard-only users.
-              egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
+              egui::show_tooltip(ui.ctx(), response.id.with("focus_tooltip"), |ui| {
+                if let Some(title) = title {
+                  ui.label(title);
+                  ui.label(url);
+                } else {
+                  ui.label(url);
+                }
+              });
             }
             response.widget_info({
               let a11y_label = a11y_label.clone();

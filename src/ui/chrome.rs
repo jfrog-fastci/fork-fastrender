@@ -4035,8 +4035,15 @@ pub fn chrome_ui_with_bookmarks(
           } else {
             "Custom accent color: Default".to_string()
           };
-          resp = resp.on_hover_text(tooltip.clone());
-          show_tooltip_on_focus(ui, &resp, &tooltip);
+          // Avoid cloning the tooltip string every frame unless we actually need it for a keyboard
+          // focus tooltip.
+          let show_focus_tooltip = resp.has_focus() && !resp.hovered();
+          if show_focus_tooltip {
+            resp = resp.on_hover_text(tooltip.clone());
+            show_tooltip_on_focus(ui, &resp, &tooltip);
+          } else {
+            resp = resp.on_hover_text(tooltip);
+          }
           paint_focus_ring(ui, &resp, focus_ring);
           if let Some(hex) = app.appearance.accent_color.as_deref() {
             ui.monospace(hex);
