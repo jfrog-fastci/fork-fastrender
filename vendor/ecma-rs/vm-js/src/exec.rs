@@ -4937,29 +4937,68 @@ impl<'a> Evaluator<'a> {
       return expr_span_start;
     }
 
-    // If the expression start is not preceded by an opening parenthesis (ignoring whitespace and
-    // block comments), its `Loc` is not missing a leading `(` so there is nothing to fix.
-    let mut probe = start;
-    loop {
-      while probe > member_start && text[probe - 1].is_ascii_whitespace() {
-        probe -= 1;
-      }
-
-      // Skip a block comment (`/* ... */`) directly before the current position.
-      if probe >= member_start + 2 && &text[probe - 2..probe] == b"*/" {
-        probe = probe.saturating_sub(2);
-        while probe >= member_start + 2 {
-          if &text[probe - 2..probe] == b"/*" {
-            probe = probe.saturating_sub(2);
-            break;
+    let skip_trivia_back = |mut idx: usize| -> usize {
+      idx = idx.min(text.len());
+      'outer: loop {
+        let mut saw_newline = false;
+        // Skip ASCII whitespace.
+        while idx > member_start && text[idx - 1].is_ascii_whitespace() {
+          if matches!(text[idx - 1], b'\n' | b'\r') {
+            saw_newline = true;
           }
-          probe = probe.saturating_sub(1);
+          idx = idx.saturating_sub(1);
         }
-        continue;
+
+        // Skip a block comment (`/* ... */`) directly before the current position.
+        if idx >= member_start + 2 && &text[idx - 2..idx] == b"*/" {
+          idx = idx.saturating_sub(2);
+          while idx >= member_start + 2 {
+            if &text[idx - 2..idx] == b"/*" {
+              idx = idx.saturating_sub(2);
+              continue 'outer;
+            }
+            idx = idx.saturating_sub(1);
+          }
+          continue 'outer;
+        }
+
+        // Skip comment-only line comments (`// ... \n`).
+        //
+        // We intentionally only treat `//` as a comment if it is the first non-whitespace token on
+        // the line. This avoids mis-identifying `//` inside string literals like `"http://..."`
+        // while doing this best-effort span repair.
+        if saw_newline {
+          let mut line_start = idx;
+          while line_start > member_start {
+            let b = text[line_start - 1];
+            if b == b'\n' || b == b'\r' {
+              break;
+            }
+            line_start = line_start.saturating_sub(1);
+          }
+
+          let mut i = line_start;
+          while i < idx {
+            match text[i] {
+              b' ' | b'\t' => i += 1,
+              _ => break,
+            }
+          }
+
+          if i + 1 < idx && text[i] == b'/' && text[i + 1] == b'/' {
+            idx = line_start;
+            continue 'outer;
+          }
+        }
+
+        return idx;
       }
-      break;
-    }
-    if probe <= member_start || text[probe - 1] != b'(' {
+    };
+
+    // If the expression start is not preceded by an opening parenthesis (ignoring whitespace and
+    // trivia/comments), its `Loc` is not missing a leading `(` so there is nothing to fix.
+    let probe = skip_trivia_back(start);
+    if probe <= member_start || text.get(probe - 1) != Some(&b'(') {
       return expr_span_start;
     }
 
@@ -5109,26 +5148,9 @@ impl<'a> Evaluator<'a> {
 
     let mut best = start;
     while missing > 0 {
-      // Skip whitespace before each parenthesis.
-      while best > member_start && text[best - 1].is_ascii_whitespace() {
-        best -= 1;
-      }
-
-      // Skip a block comment (`/* ... */`) directly before the current position.
-      if best >= member_start + 2 && &text[best - 2..best] == b"*/" {
-        best = best.saturating_sub(2);
-        while best >= member_start + 2 {
-          if &text[best - 2..best] == b"/*" {
-            best = best.saturating_sub(2);
-            break;
-          }
-          best = best.saturating_sub(1);
-        }
-        continue;
-      }
-
-      if best > member_start && text[best - 1] == b'(' {
-        best -= 1;
+      best = skip_trivia_back(best);
+      if best > member_start && text.get(best - 1) == Some(&b'(') {
+        best = best.saturating_sub(1);
         missing -= 1;
       } else {
         break;
@@ -23816,26 +23838,45 @@ fn async_define_class_member(
         PropertyKey::Symbol(s) => Value::Symbol(s),
       };
 
-      // Create a function object for `= <expr>` initializers so they can be evaluated later with
-      // the correct `this` value.
-      let init_value = match initializer_expr {
-        Some(expr_node) => {
-          let rel_start = expr_node
-            .loc
-            .start_u32()
-            .saturating_sub(evaluator.env.prefix_len());
-          let rel_end = expr_node
-            .loc
-            .end_u32()
-            .saturating_sub(evaluator.env.prefix_len());
-          let span_start = evaluator.env.base_offset().saturating_add(rel_start);
-          let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+       // Create a function object for `= <expr>` initializers so they can be evaluated later with
+       // the correct `this` value.
+       let init_value = match initializer_expr {
+         Some(expr_node) => {
+           let rel_start = expr_node
+             .loc
+             .start_u32()
+             .saturating_sub(evaluator.env.prefix_len());
+           let rel_end = expr_node
+             .loc
+             .end_u32()
+             .saturating_sub(evaluator.env.prefix_len());
+           let mut span_start = evaluator.env.base_offset().saturating_add(rel_start);
+           let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
-          let code = evaluator.vm.register_ecma_function(
-            evaluator.env.source(),
-            span_start,
-            span_end,
-            EcmaFunctionKind::ClassFieldInitializer,
+           // `parse-js` expression spans intentionally exclude parentheses, tracking them via the
+           // `ParenthesizedExpr` assoc marker. For IIFE-style initializers like
+           // `(() => super.m())()`, slicing `expr_node.loc` can produce an invalid snippet such as
+           // `() => super.m())()` (missing `(` but including `)`), which fails when the VM lazily
+           // reparses the initializer body.
+           //
+           // Keep async class evaluation behavior consistent with the sync class evaluation path by
+           // repairing missing parentheses in the snippet span before registering the initializer
+           // function.
+           let member_span_start = evaluator
+             .env
+             .base_offset()
+             .saturating_add(member_loc_start.saturating_sub(evaluator.env.prefix_len()));
+           span_start = evaluator.class_field_initializer_span_start_scan(
+             member_span_start,
+             span_start,
+             span_end,
+           );
+
+           let code = evaluator.vm.register_ecma_function(
+             evaluator.env.source(),
+             span_start,
+             span_end,
+             EcmaFunctionKind::ClassFieldInitializer,
           )?;
 
           // Field initializer functions are always strict mode and have `length = 0`.
