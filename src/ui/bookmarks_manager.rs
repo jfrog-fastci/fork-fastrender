@@ -1523,7 +1523,14 @@ fn render_bookmark_row(
   .on_hover_text(entry.url.as_str());
 
   row_resp.widget_info(move || {
-    let label = format!("Open bookmark: {title} ({})", entry.url);
+    let mut label = String::with_capacity(
+      "Open bookmark: ".len() + title.len() + 3 + entry.url.len(),
+    );
+    label.push_str("Open bookmark: ");
+    label.push_str(title);
+    label.push_str(" (");
+    label.push_str(entry.url.as_str());
+    label.push(')');
     egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
