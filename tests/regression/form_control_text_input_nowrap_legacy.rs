@@ -263,6 +263,8 @@ fn legacy_text_input_scroll_x_is_clamped_when_focused() {
         border: none;
         background: transparent;
         font-family: "Noto Sans", sans-serif;
+        /* Avoid caret ink so the test detects whether the text itself is visible after clamping. */
+        caret-color: transparent;
         /* Wrapping-friendly authored styles; the painter must still force nowrap. */
         white-space: pre-wrap;
         text-wrap: wrap;
