@@ -254,11 +254,11 @@ where
   D: Deserializer<'de>,
 {
   #[derive(Deserialize)]
-  struct RawAppearanceSettings<'de> {
+  struct RawAppearanceSettings<'a> {
     #[serde(default)]
-    theme: Option<Cow<'de, str>>,
+    theme: Option<Cow<'a, str>>,
     #[serde(default, alias = "accent")]
-    accent_color: Option<Cow<'de, str>>,
+    accent_color: Option<Cow<'a, str>>,
     #[serde(default)]
     ui_scale: Option<f32>,
     #[serde(default)]
