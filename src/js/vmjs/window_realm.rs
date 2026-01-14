@@ -35535,12 +35535,11 @@ fn node_text_content_set_native(
     // `textContent` is `DOMString?`; `null` and `undefined` act as the empty string.
     Value::Null | Value::Undefined => String::new(),
     other => {
-      let s = scope.heap_mut().to_string(other)?;
-      scope
-        .heap()
-        .get_string(s)
-        .map(|s| s.to_utf8_lossy())
-        .unwrap_or_default()
+      let s = match other {
+        Value::String(s) => s,
+        other => scope.to_string(vm, host, hooks, other)?,
+      };
+      scope.heap().get_string(s)?.to_utf8_lossy()
     }
   };
 
@@ -60559,6 +60558,26 @@ mod tests {
           const el = document.createElement("div");
           el.append({ toString() { return "x"; } });
           return el.firstChild && el.firstChild.nodeType === 3 && el.firstChild.data === "x";
+        })()
+      "#,
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_text_content_set_stringifies_objects_via_ecmascript_to_string() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"
+        (() => {
+          const el = document.createElement("div");
+          el.textContent = { toString() { return "x"; } };
+          return el.textContent === "x";
         })()
       "#,
     )?;
