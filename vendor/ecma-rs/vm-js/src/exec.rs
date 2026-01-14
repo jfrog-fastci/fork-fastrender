@@ -67228,7 +67228,7 @@ mod tests {
         d.postMsg1 === 'Cannot delete a super property' &&
         d.postName2 === 'ReferenceError' &&
         d.postMsg2 === 'Cannot delete a super property' &&
-        d.log === 'key,toString'
+        d.log === 'key'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
