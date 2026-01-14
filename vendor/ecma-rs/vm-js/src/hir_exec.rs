@@ -16130,6 +16130,7 @@ impl HirAsyncState {
 
           HirAsyncActive::AwaitExprStmt { next_stmt_index } => {
             let next_stmt_index = *next_stmt_index;
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await expr statement missing resume value",
@@ -16142,20 +16143,11 @@ impl HirAsyncState {
                 continue;
               }
               Err(err) => {
-                let await_stmt_index = next_stmt_index.saturating_sub(1);
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(await_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16172,6 +16164,7 @@ impl HirAsyncState {
             pending_assign,
           } => {
             let next_stmt_index = *next_stmt_index;
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await assignment statement missing resume value",
@@ -16201,7 +16194,7 @@ impl HirAsyncState {
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16280,6 +16273,7 @@ impl HirAsyncState {
           } => {
             let next_stmt_index = *next_stmt_index;
             let pat_id = *pat_id;
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await destructuring assignment statement missing resume value",
@@ -16305,7 +16299,7 @@ impl HirAsyncState {
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16347,6 +16341,7 @@ impl HirAsyncState {
             }
           }
           HirAsyncActive::AwaitReturn => {
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await return missing resume value",
@@ -16356,19 +16351,11 @@ impl HirAsyncState {
             match resume {
               Ok(v) => return Ok(HirAsyncResult::CompleteOk(v)),
               Err(err) => {
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(self.next_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16382,6 +16369,7 @@ impl HirAsyncState {
           }
 
           HirAsyncActive::AwaitThrow => {
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await throw missing resume value",
@@ -16420,7 +16408,7 @@ impl HirAsyncState {
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16438,6 +16426,7 @@ impl HirAsyncState {
           } => {
             let stmt_index = *stmt_index;
             let declarator_index = *declarator_index;
+            let await_offset = self.await_stmt_offset;
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
                 "hir async await var decl missing resume value",
@@ -16450,19 +16439,11 @@ impl HirAsyncState {
             let resumed_value = match resume {
               Ok(v) => v,
               Err(err) => {
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,
                   evaluator.script.source.as_ref(),
-                  stmt_offset,
+                  await_offset,
                   err,
                 );
                 match err {
@@ -16579,7 +16560,7 @@ impl HirAsyncState {
                     declarator_index: j,
                   });
                   self.next_stmt_index = stmt_index;
-                  self.await_stmt_offset = stmt_offset;
+                  self.await_stmt_offset = init_expr.span.start;
                   return Ok(HirAsyncResult::Await {
                     kind: crate::exec::AsyncSuspendKind::Await,
                     await_value,
@@ -17083,7 +17064,7 @@ impl HirAsyncState {
           self.active = Some(HirAsyncActive::AwaitExprStmt {
             next_stmt_index: self.next_stmt_index.saturating_add(1),
           });
-          self.await_stmt_offset = stmt_offset;
+          self.await_stmt_offset = expr.span.start;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -17151,7 +17132,7 @@ impl HirAsyncState {
                   next_stmt_index: self.next_stmt_index.saturating_add(1),
                   pat_id: *target,
                 });
-                self.await_stmt_offset = stmt_offset;
+                self.await_stmt_offset = rhs.span.start;
                 return Ok(HirAsyncResult::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
@@ -17304,7 +17285,7 @@ impl HirAsyncState {
                 next_stmt_index: self.next_stmt_index.saturating_add(1),
                 pending_assign: Some(pending),
               });
-              self.await_stmt_offset = stmt_offset;
+              self.await_stmt_offset = rhs.span.start;
               return Ok(HirAsyncResult::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value,
@@ -17339,7 +17320,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
-          self.await_stmt_offset = stmt_offset;
+          self.await_stmt_offset = expr.span.start;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -17372,7 +17353,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitThrow);
-          self.await_stmt_offset = stmt_offset;
+          self.await_stmt_offset = expr.span.start;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -17418,7 +17399,7 @@ impl HirAsyncState {
                 stmt_index: self.next_stmt_index,
                 declarator_index: j,
               });
-              self.await_stmt_offset = stmt_offset;
+              self.await_stmt_offset = init_expr.span.start;
               return Ok(HirAsyncResult::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value,
@@ -21130,6 +21111,89 @@ enum HirAsyncResumePoint {
   },
 }
 
+fn await_span_start_for_hir_async_resume_point(
+  body: &hir_js::Body,
+  resume: HirAsyncResumePoint,
+) -> Result<u32, VmError> {
+  let stmt_index = match resume {
+    HirAsyncResumePoint::ExprStmt { next_stmt_index }
+    | HirAsyncResumePoint::Assignment { next_stmt_index }
+    | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
+    HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+  };
+
+  let stmt_id = *body
+    .root_stmts
+    .get(stmt_index)
+    .ok_or(VmError::InvariantViolation(
+      "hir async script await stmt index out of bounds",
+    ))?;
+  let stmt = body
+    .stmts
+    .get(stmt_id.0 as usize)
+    .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?;
+  let stmt_offset = stmt.span.start;
+
+  let await_offset = match resume {
+    HirAsyncResumePoint::ExprStmt { .. } => {
+      let hir_js::StmtKind::Expr(expr_id) = stmt.kind else {
+        return Ok(stmt_offset);
+      };
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return Ok(stmt_offset);
+      };
+      if matches!(&expr.kind, hir_js::ExprKind::Await { .. }) {
+        expr.span.start
+      } else {
+        stmt_offset
+      }
+    }
+    HirAsyncResumePoint::VarDecl {
+      declarator_index, ..
+    } => {
+      let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
+        return Ok(stmt_offset);
+      };
+      let Some(declarator) = var_decl.declarators.get(declarator_index) else {
+        return Ok(stmt_offset);
+      };
+      let Some(init_id) = declarator.init else {
+        return Ok(stmt_offset);
+      };
+      let Some(init_expr) = body.exprs.get(init_id.0 as usize) else {
+        return Ok(stmt_offset);
+      };
+      if matches!(&init_expr.kind, hir_js::ExprKind::Await { .. }) {
+        init_expr.span.start
+      } else {
+        stmt_offset
+      }
+    }
+    HirAsyncResumePoint::Assignment { .. } => {
+      let hir_js::StmtKind::Expr(expr_id) = stmt.kind else {
+        return Ok(stmt_offset);
+      };
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return Ok(stmt_offset);
+      };
+      let hir_js::ExprKind::Assignment { value, .. } = &expr.kind else {
+        return Ok(stmt_offset);
+      };
+      let Some(value_expr) = body.exprs.get(value.0 as usize) else {
+        return Ok(stmt_offset);
+      };
+      if matches!(&value_expr.kind, hir_js::ExprKind::Await { .. }) {
+        value_expr.span.start
+      } else {
+        stmt_offset
+      }
+    }
+    HirAsyncResumePoint::ForAwaitOf { .. } => stmt_offset,
+  };
+
+  Ok(await_offset)
+}
+
 #[derive(Debug)]
 pub(crate) struct HirAsyncContinuation {
   env: RuntimeEnv,
@@ -22040,26 +22104,7 @@ fn run_compiled_script_async(
         env.teardown(root_scope.heap_mut());
         return Err(err);
       }
-      let await_stmt_offset = {
-        let stmt_index = match resume {
-          HirAsyncResumePoint::ExprStmt { next_stmt_index }
-          | HirAsyncResumePoint::Assignment { next_stmt_index }
-          | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
-          HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
-        };
-        let stmt_id = *body
-          .root_stmts
-          .get(stmt_index)
-          .ok_or(VmError::InvariantViolation(
-            "hir async script await stmt index out of bounds",
-          ))?;
-        body
-          .stmts
-          .get(stmt_id.0 as usize)
-          .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
-          .span
-          .start
-      };
+      let await_stmt_offset = await_span_start_for_hir_async_resume_point(body, resume)?;
 
       let awaited_promise_res: Result<Value, VmError> = match kind {
         crate::exec::AsyncSuspendKind::Await => crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
@@ -22501,26 +22546,7 @@ pub(crate) fn hir_async_resume_continuation(
           let body = hir
             .body(hir.root_body())
             .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
-          let stmt_index = match cont.resume {
-            HirAsyncResumePoint::ExprStmt { next_stmt_index }
-            | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
-            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
-          };
-          let stmt_id = *body
-            .root_stmts
-            .get(stmt_index)
-            .ok_or(VmError::InvariantViolation(
-              "hir async script await stmt index out of bounds",
-            ))?;
-          Ok(
-            body
-              .stmts
-              .get(stmt_id.0 as usize)
-              .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
-              .span
-              .start,
-          )
+          await_span_start_for_hir_async_resume_point(body, cont.resume)
         })() {
           Ok(offset) => offset,
           Err(err) => {
@@ -23168,26 +23194,7 @@ pub(crate) fn hir_async_resume_continuation(
         }
 
         let await_stmt_offset = match (|| -> Result<u32, VmError> {
-          let stmt_index = match cont.resume {
-            HirAsyncResumePoint::ExprStmt { next_stmt_index }
-            | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
-            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
-          };
-          let stmt_id = *body
-            .root_stmts
-            .get(stmt_index)
-            .ok_or(VmError::InvariantViolation(
-              "hir async script await stmt index out of bounds",
-            ))?;
-          Ok(
-            body
-              .stmts
-              .get(stmt_id.0 as usize)
-              .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
-              .span
-              .start,
-          )
+          await_span_start_for_hir_async_resume_point(body, cont.resume)
         })() {
           Ok(offset) => offset,
           Err(err) => {
@@ -23994,6 +24001,261 @@ mod hir_async_object_literal_and_optional_call_regressions {
       "#,
     )?;
     assert_promise_fulfills(&mut rt, promise, Value::Bool(true))?;
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod hir_async_await_stack_tests {
+  use crate::function::CallHandler;
+  use crate::property::PropertyKey;
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+  use core::mem;
+
+  fn run_hir_async_function_direct(
+    rt: &mut JsRuntime,
+    func_ref: crate::CompiledFunctionRef,
+    is_strict: bool,
+    outer: Option<crate::GcEnv>,
+  ) -> Result<Value, VmError> {
+    let global_object = rt.realm().global_object();
+    let mut host = ();
+
+    // Use the VM's microtask queue as the host hook implementation for Promise job scheduling, but
+    // keep it temporarily owned by this test so we can swap it back after running the compiled
+    // async body.
+    let mut hooks = mem::take(rt.vm.microtask_queue_mut());
+
+    let promise_res: Result<Value, VmError> = (|| {
+      // Keep the `hooks` pointer installed while we execute HIR so any native code that consults
+      // `vm.host_hooks()` observes the same hook implementation used for Promise jobs.
+      let mut vm_hooks = rt.vm.push_active_host_hooks_guard(&mut hooks);
+
+      let mut scope = rt.heap.scope();
+      let func_env = scope.env_create(outer)?;
+      let mut env =
+        crate::exec::RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+
+      super::run_compiled_function(
+        &mut *vm_hooks,
+        &mut scope,
+        &mut host,
+        &mut hooks,
+        &mut env,
+        func_ref,
+        is_strict,
+        Value::Undefined,
+        /* this_initialized */ true,
+        Value::Undefined,
+        /* home_object */ None,
+        &[],
+        /* class_constructor */ None,
+        /* derived_constructor */ false,
+        /* this_root_idx */ None,
+      )
+    })();
+
+    // Restore the VM-owned microtask queue so we can drain it via `perform_microtask_checkpoint`.
+    *rt.vm.microtask_queue_mut() = hooks;
+    promise_res
+  }
+
+  #[test]
+  fn hir_async_await_rejection_error_stack_attributed_to_await_site() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let src = "async function f(){\n  let x;\n  x = await Promise.reject(new Error('boom'));\n}\nf";
+    let script = CompiledScript::compile_script(&mut rt.heap, "await_reject.js", src)?;
+    let result = rt.exec_compiled_script(script.clone())?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let (func_ref, is_strict, outer) = {
+      let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+      let CallHandler::User(func_ref) = call_handler else {
+        panic!("expected compiled user function call handler, got {call_handler:?}");
+      };
+      let f = rt.heap.get_function(func_obj)?;
+      (func_ref, f.is_strict, f.closure_env)
+    };
+
+    let promise = run_hir_async_function_direct(&mut rt, func_ref, is_strict, outer)?;
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected promise root to contain a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("rejected promise missing reason"))?;
+
+    let Value::Object(err_obj) = reason else {
+      panic!("expected rejection reason to be an Error object, got {reason:?}");
+    };
+
+    let stack_string = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(err_obj))?;
+
+      let key_s = scope.alloc_string("stack")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      let stack_value = scope.heap().get(err_obj, &key)?;
+      let Value::String(stack_s) = stack_value else {
+        panic!("expected error.stack to be a string, got {stack_value:?}");
+      };
+      let s = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+      assert!(
+        !s.is_empty(),
+        "expected error.stack to be non-empty for awaited rejection"
+      );
+      s
+    };
+
+    // The top stack frame should point at the `await` site, not the start of the assignment
+    // statement (`x = ...`).
+    let await_offset = script
+      .source
+      .text
+      .find("await Promise.reject")
+      .expect("test source should contain await site") as u32;
+    let (line, col) = script.source.line_col(await_offset);
+    let expected_loc = format!("{}:{line}:{col}", script.source.name.as_ref());
+
+    let first_frame = stack_string
+      .lines()
+      .find(|line| line.starts_with("at "))
+      .unwrap_or_default();
+    assert!(
+      first_frame.contains(&expected_loc),
+      "expected top stack frame to contain {expected_loc:?}, got {first_frame:?}\nfull stack:\n{stack_string}"
+    );
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn hir_async_await_rejection_non_error_value_rejects() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let src = "async function f(){\n  let x;\n  x = await Promise.reject('x');\n}\nf";
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", src)?;
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let (func_ref, is_strict, outer) = {
+      let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+      let CallHandler::User(func_ref) = call_handler else {
+        panic!("expected compiled user function call handler, got {call_handler:?}");
+      };
+      let f = rt.heap.get_function(func_obj)?;
+      (func_ref, f.is_strict, f.closure_env)
+    };
+
+    let promise = run_hir_async_function_direct(&mut rt, func_ref, is_strict, outer)?;
+    let promise_root = rt.heap.add_root(promise)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected promise root to contain a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("rejected promise missing reason"))?;
+
+    let Value::String(reason_s) = reason else {
+      panic!("expected rejection reason to be a string, got {reason:?}");
+    };
+    assert_eq!(rt.heap.get_string(reason_s)?.to_utf8_lossy(), "x");
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn top_level_await_rejection_error_stack_attributed_to_await_site() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let src = "let x;\nx = await Promise.reject(new Error('boom'));\n";
+    let script = CompiledScript::compile_script(&mut rt.heap, "tla_reject.js", src)?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.top_level_await_requires_ast_fallback);
+    assert!(!script.requires_ast_fallback);
+
+    let value = rt.exec_compiled_script(script.clone())?;
+    let Value::Object(promise_obj) = value else {
+      panic!("expected top-level await script to evaluate to a Promise object, got {value:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+
+    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected rooted completion Promise to remain live");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("rejected promise missing reason"))?;
+    let Value::Object(err_obj) = reason else {
+      panic!("expected rejection reason to be an Error object, got {reason:?}");
+    };
+
+    let stack_string = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(err_obj))?;
+      let key_s = scope.alloc_string("stack")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      let stack_value = scope.heap().get(err_obj, &key)?;
+      let Value::String(stack_s) = stack_value else {
+        panic!("expected error.stack to be a string, got {stack_value:?}");
+      };
+      let s = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+      assert!(
+        !s.is_empty(),
+        "expected error.stack to be non-empty for top-level await rejection"
+      );
+      s
+    };
+
+    let await_offset = script
+      .source
+      .text
+      .find("await Promise.reject")
+      .expect("test source should contain await site") as u32;
+    let (line, col) = script.source.line_col(await_offset);
+    let expected_loc = format!("{}:{line}:{col}", script.source.name.as_ref());
+    let first_frame = stack_string
+      .lines()
+      .find(|line| line.starts_with("at "))
+      .unwrap_or_default();
+    assert!(
+      first_frame.contains(&expected_loc),
+      "expected top stack frame to contain {expected_loc:?}, got {first_frame:?}\nfull stack:\n{stack_string}"
+    );
+
+    rt.heap.remove_root(promise_root);
     Ok(())
   }
 }
