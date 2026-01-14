@@ -7,7 +7,7 @@ use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
-use memchr::{memchr, memchr2, memchr3};
+use memchr::{memchr, memchr2, memchr3, memrchr};
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -876,10 +876,7 @@ fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
     let bytes = host.as_bytes();
     // Matches at the start of the TLD label (after the last `.`) cannot be at the registrable-domain
     // boundary, so the PSL lookup is wasted work.
-    let last_dot = bytes
-      .iter()
-      .rposition(|&b| b == b'.')
-      .unwrap_or(idx as usize - 1);
+    let last_dot = memrchr(b'.', bytes).unwrap_or(idx as usize - 1);
     if idx as usize == last_dot + 1 {
       250
     } else {
