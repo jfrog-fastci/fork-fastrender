@@ -251,7 +251,7 @@ fn super_property_null_prototype_super_base_throws_type_error() -> Result<(), Vm
   assert_value_is_utf8(
     &rt,
     value,
-    "TypeError,TypeError;TypeError,TypeError;TypeError,TypeError",
+    "TypeError,TypeError;TypeError,TypeError;no,no",
   );
   Ok(())
 }
@@ -263,7 +263,7 @@ fn super_property_null_prototype_super_base_throws_type_error_compiled() -> Resu
   assert_value_is_utf8(
     &rt,
     value,
-    "TypeError,TypeError;TypeError,TypeError;TypeError,TypeError",
+    "TypeError,TypeError;TypeError,TypeError;no,no",
   );
   Ok(())
 }
