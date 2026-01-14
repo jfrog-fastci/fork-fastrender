@@ -1022,6 +1022,73 @@ fn compiled_script_top_level_await_unresolvable_binding_assignment_strict_mode_t
 }
 
 #[test]
+fn compiled_script_top_level_await_global_property_binding_assignment_strict_mode_does_not_become_unresolvable_after_await(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      Object.defineProperty(globalThis, "x", { value: 0, writable: true, configurable: true });
+      var log = [];
+      Promise.resolve().then(() => { delete globalThis.x; log.push("mt1"); });
+      Promise.resolve().then(() => {
+        log.push(Object.prototype.hasOwnProperty.call(globalThis, "x") ? "still" : "deleted");
+        log.push("mt2");
+      });
+      x = await Promise.resolve((log.push("rhs"), 1));
+      log.push("after");
+      globalThis.x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The await argument should have been evaluated, but microtasks should not have executed yet.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs");
+  let x = rt.exec_script("globalThis.x")?;
+  assert_eq!(value_to_number(x), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // `x` resolved to a global property binding at reference-evaluation time, so the assignment must
+  // still succeed even if the property is deleted while suspended.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_number(promise_result), 1.0);
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs,mt1,deleted,mt2,after");
+
+  let x = rt.exec_script("globalThis.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_unresolvable_binding_assignment_sloppy_mode_puts_value_after_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
