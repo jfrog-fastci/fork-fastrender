@@ -2675,7 +2675,6 @@ fn make_idle_deadline_object(
   // `deadline instanceof IdleDeadline` works for libraries that inspect it.
   //
   // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies).
-  // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies).
   let own_data_value =
     |heap: &vm_js::Heap, obj: vm_js::GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
       match heap.object_get_own_data_property_value(obj, key) {

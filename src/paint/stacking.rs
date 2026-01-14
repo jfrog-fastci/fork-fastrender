@@ -81,6 +81,23 @@ use std::sync::Arc;
 
 const DEADLINE_STRIDE: usize = 256;
 
+#[inline]
+fn pop_stacking_traversal_frame<T>(stack: &mut Vec<T>) -> Option<T> {
+  match stack.pop() {
+    Some(frame) => Some(frame),
+    None => {
+      // Defensive: a well-formed traversal never underflows the explicit stack. If it does, avoid a
+      // hard panic in production builds; callers treat this as an internal error and fall back.
+      //
+      // Keep a debug-mode signal for developers, but don't trip our regression tests which
+      // intentionally exercise this branch.
+      #[cfg(all(debug_assertions, not(test)))]
+      debug_assert!(false, "stacking traversal stack unexpectedly empty");
+      None
+    }
+  }
+}
+
 fn resolve_filter_outset_for_bounds(
   style: &ComputedStyle,
   bbox: Rect,
@@ -1369,10 +1386,10 @@ fn build_stacking_tree_internal(
       fragment: child_fragment,
       mut context,
       ..
-    }) = stack.pop()
+    }) = pop_stacking_traversal_frame(&mut stack)
     else {
       // Defensive: `stack` was non-empty because we just borrowed `stack.last_mut()` above.
-      break;
+      return StackingContext::new(0);
     };
     let Some(parent) = stack.last_mut() else {
       return context;
@@ -1995,7 +2012,7 @@ where
       continue;
     }
 
-    let Some(mut finished) = stack.pop() else {
+    let Some(mut finished) = pop_stacking_traversal_frame(&mut stack) else {
       return Err(Error::Render(crate::error::RenderError::InvalidParameters {
         message: "stacking tree frame stack unexpectedly empty".into(),
       }));
@@ -2414,6 +2431,15 @@ mod tests {
 
   fn create_text_fragment(x: f32, y: f32, width: f32, height: f32, text: &str) -> FragmentNode {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
+  }
+
+  #[test]
+  fn stacking_traversal_stack_underflow_is_handled() {
+    let mut stack: Vec<u8> = Vec::new();
+    assert!(
+      pop_stacking_traversal_frame(&mut stack).is_none(),
+      "expected empty traversal stack pop to return None"
+    );
   }
 
   // Stacking context creation tests

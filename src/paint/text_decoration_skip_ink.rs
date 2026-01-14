@@ -18,8 +18,14 @@ struct UnderlineGlyphBboxKey {
 }
 
 const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: NonZeroUsize =
-  // SAFETY: the constant is non-zero.
-  unsafe { NonZeroUsize::new_unchecked(8192) };
+  // Avoid `.unwrap()` in production code (see `xtask lint-no-panics`).
+  //
+  // The fallback branch is unreachable because the literal is non-zero, but keep it anyway so this
+  // constant can never panic, even if edited incorrectly in the future.
+  match NonZeroUsize::new(8192) {
+    Some(v) => v,
+    None => NonZeroUsize::MIN,
+  };
 type UnderlineGlyphBboxCacheHasher = BuildHasherDefault<FxHasher>;
 
 thread_local! {
