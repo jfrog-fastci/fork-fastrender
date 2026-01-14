@@ -462,65 +462,13 @@ fn about_shared_css() -> &'static str {
   CSS
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BuiltInPageLink {
-  url: &'static str,
-  label: &'static str,
-}
-
-/// Built-in `about:*` pages intended to be linked from user-facing UI surfaces.
-///
-/// This list intentionally excludes test-only pages (`about:test-*`) so they do not show up in the
-/// primary navigation surfaces (e.g. the shared about-page header).
-const BUILT_IN_PAGE_LINKS: &[BuiltInPageLink] = &[
-  BuiltInPageLink {
-    url: ABOUT_NEWTAB,
-    label: "New tab",
-  },
-  BuiltInPageLink {
-    url: ABOUT_HISTORY,
-    label: "History",
-  },
-  BuiltInPageLink {
-    url: ABOUT_BOOKMARKS,
-    label: "Bookmarks",
-  },
-  BuiltInPageLink {
-    url: ABOUT_SETTINGS,
-    label: "Settings",
-  },
-  BuiltInPageLink {
-    url: ABOUT_HELP,
-    label: "Help",
-  },
-  BuiltInPageLink {
-    url: ABOUT_VERSION,
-    label: "Version",
-  },
-  BuiltInPageLink {
-    url: ABOUT_GPU,
-    label: "GPU",
-  },
-  BuiltInPageLink {
-    url: ABOUT_PROCESSES,
-    label: "Processes",
-  },
-];
-
-fn built_in_page_links() -> &'static [BuiltInPageLink] {
-  BUILT_IN_PAGE_LINKS
-}
-
 fn built_in_pages_list_items_html() -> String {
   use std::fmt::Write;
 
   let mut out = String::new();
-  for &BuiltInPageLink { url, .. } in built_in_page_links() {
+  for &(url, _) in user_facing_about_pages() {
     let safe_url = escape_html(url);
-    let _ = write!(
-      out,
-      r#"<li><a href="{safe_url}">{safe_url}</a></li>"#
-    );
+    let _ = write!(out, r#"<li><a href="{safe_url}">{safe_url}</a></li>"#);
   }
   out
 }
@@ -547,7 +495,7 @@ fn test_pages_list_items_html() -> String {
 
 fn about_header_html(current: &str) -> String {
   let mut links = String::with_capacity(256);
-  for &BuiltInPageLink { url, label } in built_in_page_links() {
+  for &(url, label) in user_facing_about_pages() {
     let aria = if url == current {
       " aria-current=\"page\""
     } else {
@@ -1074,7 +1022,7 @@ fn settings_html(_full_url: &str) -> String {
   }
   use std::fmt::Write;
   let mut page_links = String::new();
-  for &BuiltInPageLink { url, label } in built_in_page_links() {
+  for &(url, label) in user_facing_about_pages() {
     let safe_url = escape_html(url);
     let safe_label = escape_html(label);
     let _ = write!(
@@ -3410,7 +3358,13 @@ mod tests {
     set_about_page_snapshot(AboutPageSnapshot::default());
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    for url in [ABOUT_SETTINGS, ABOUT_HELP, ABOUT_VERSION, ABOUT_GPU, ABOUT_PROCESSES] {
+    for url in [
+      ABOUT_SETTINGS,
+      ABOUT_HELP,
+      ABOUT_VERSION,
+      ABOUT_GPU,
+      ABOUT_PROCESSES,
+    ] {
       let needle = format!("class=\"about-tile\" href=\"{url}\"");
       assert!(
         html.contains(&needle),
@@ -3457,8 +3411,14 @@ mod tests {
 
   #[test]
   fn processes_site_derivation_handles_common_schemes() {
-    assert_eq!(best_effort_site_for_url("https://example.com/x"), "example.com");
-    assert_eq!(best_effort_site_for_url("http://localhost:8080/"), "localhost:8080");
+    assert_eq!(
+      best_effort_site_for_url("https://example.com/x"),
+      "example.com"
+    );
+    assert_eq!(
+      best_effort_site_for_url("http://localhost:8080/"),
+      "localhost:8080"
+    );
     assert_eq!(best_effort_site_for_url("about:newtab"), "about:newtab");
     assert_eq!(best_effort_site_for_url("file:///tmp/a.html"), "file://");
     assert_eq!(best_effort_site_for_url("not a url"), "(unknown)");
