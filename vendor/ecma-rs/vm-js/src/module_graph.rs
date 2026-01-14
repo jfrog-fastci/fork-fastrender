@@ -2715,13 +2715,13 @@ impl ModuleGraph {
         // Non-TLA modules can execute via either:
         // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
-          if let Some(compiled) = compiled.clone() {
-            if !compiled.requires_ast_fallback {
-              match crate::hir_exec::run_compiled_module(
-                vm,
-                scope,
-                host,
-                hooks,
+        if let Some(compiled) = compiled.clone() {
+          if !compiled.requires_ast_fallback {
+            match crate::hir_exec::run_compiled_module(
+              vm,
+              scope,
+              host,
+              hooks,
               state.global_object,
               state.realm_id,
               module,
