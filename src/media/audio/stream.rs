@@ -219,9 +219,18 @@ impl AudioStreamHandle {
       output_frames,
     );
 
+    let accepted = self.inner.sink.push_interleaved_f32(&out);
+    if let Some(span) = resample_span.as_mut() {
+      span.arg_u64("produced_samples", out.len() as u64);
+      span.arg_u64("accepted_samples", accepted as u64);
+      span.arg_u64(
+        "dropped_samples",
+        out.len().saturating_sub(accepted) as u64,
+      );
+    }
     drop(resample_span);
 
-    Ok(self.inner.sink.push_interleaved_f32(&out))
+    Ok(accepted)
   }
 }
 
