@@ -365,6 +365,59 @@ fn compiled_script_falls_back_for_nested_await_in_expression() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_script_falls_back_for_await_in_computed_member_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_await_in_computed_member_key_fallback.js",
+    r#"
+      var log = [];
+      var obj = {};
+      obj[await Promise.resolve((log.push("key"), "k"))] = (log.push("rhs"), "v");
+      log.push("after");
+      obj.k
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await in a computed member key is not supported by the HIR async classic-script executor"
+  );
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // Only the computed member key evaluation should have occurred so far.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_string(&rt, log), "key");
+  assert_eq!(rt.exec_script("obj.k")?, Value::Undefined);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_string(&rt, result), "v");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_string(&rt, log), "key,rhs,after");
+  let obj_k = rt.exec_script("obj.k")?;
+  assert_eq!(value_to_string(&rt, obj_k), "v");
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_suspends_and_resumes() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
