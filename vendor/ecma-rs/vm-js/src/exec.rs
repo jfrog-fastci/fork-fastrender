@@ -53395,7 +53395,7 @@ pub(crate) fn start_module_tla_evaluation(
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
           }
           AsyncSuspendKind::AwaitResolved => Ok(await_value),
-          AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in module TLA",
           )),
           AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
