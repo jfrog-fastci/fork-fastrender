@@ -209,7 +209,9 @@ pub fn downloads_panel_ui(
         |ui| {
           let change_folder = ui
             .small_button("Change download folder…")
-            .on_hover_ui(|ui| ui.label(format!("Current folder: {}", download_dir.display())));
+            .on_hover_ui(|ui| {
+              ui.label(format!("Current folder: {}", download_dir.display()));
+            });
           #[cfg(test)]
           store_test_id(
             ui.ctx(),
