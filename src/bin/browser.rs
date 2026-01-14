@@ -8701,7 +8701,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .is_some_and(|url| win.app.bookmarks.contains_url(url));
 
         if !is_source_window || force_full_sync {
-          if force_full_sync || dirty_bookmark_windows.contains(id) {
+          if force_full_sync {
             win.app.bookmarks = global_bookmarks.clone();
           } else if let Err(err) = win.app.bookmarks.apply_deltas(&deltas) {
             eprintln!("failed to apply bookmark deltas to window {id:?}: {err:?}");
