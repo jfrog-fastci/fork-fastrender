@@ -6,6 +6,13 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn assert_syntax_error(err: VmError) -> Vec<diagnostics::Diagnostic> {
+  match err {
+    VmError::Syntax(diags) => diags,
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
 #[test]
 fn return_outside_function_is_syntax_error() {
   let mut rt = new_runtime();
@@ -200,42 +207,63 @@ fn continue_label_in_class_static_block_does_not_target_enclosing_label_is_synta
 #[test]
 fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt.exec_script("class C { static { arguments; } }").unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let diags = assert_syntax_error(rt.exec_script("class C { static { arguments; } }").unwrap_err());
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected VMJS0004 early error, got {diags:?}"
+  );
 }
 
 #[test]
 fn arguments_label_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_script("class C { static { arguments: 0; } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let diags = assert_syntax_error(
+    rt
+      .exec_script("class C { static { arguments: 0; } }")
+      .unwrap_err(),
+  );
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected VMJS0004 early error, got {diags:?}"
+  );
 }
 
 #[test]
 fn arguments_identifier_reference_in_arrow_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_script("class C { static { () => arguments; } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let diags = assert_syntax_error(
+    rt
+      .exec_script("class C { static { () => arguments; } }")
+      .unwrap_err(),
+  );
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected VMJS0004 early error, got {diags:?}"
+  );
 }
 
 #[test]
 fn arguments_identifier_reference_in_class_field_initializer_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt.exec_script("class C { x = arguments; }").unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let diags = assert_syntax_error(rt.exec_script("class C { x = arguments; }").unwrap_err());
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected VMJS0004 early error, got {diags:?}"
+  );
 }
 
 #[test]
 fn arguments_identifier_reference_in_arrow_in_class_field_initializer_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_script("class C { x = () => arguments; }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let diags = assert_syntax_error(
+    rt
+      .exec_script("class C { x = () => arguments; }")
+      .unwrap_err(),
+  );
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected VMJS0004 early error, got {diags:?}"
+  );
 }
 
 #[test]
