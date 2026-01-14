@@ -5060,7 +5060,27 @@ impl Vm {
       // may still be uninitialized if `super()` was never called, and must throw a ReferenceError in
       // that case.
       Value::Undefined => match final_this {
-        Value::Object(o) => Ok(Value::Object(o)),
+        Value::Object(obj) => {
+          if is_derived_class_ctor_body && this_scope.heap().is_derived_constructor_state(obj) {
+            let state = this_scope.heap().get_derived_constructor_state(obj)?;
+            match state.this_value {
+              Some(this_obj) => Ok(Value::Object(this_obj)),
+              None => {
+                let intr = self
+                  .intrinsics()
+                  .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+                let err = crate::new_reference_error(
+                  &mut this_scope,
+                  intr,
+                  "Derived constructor did not initialize `this` via super()",
+                )?;
+                Err(VmError::Throw(err))
+              }
+            }
+          } else {
+            Ok(Value::Object(obj))
+          }
+        }
         _ if is_derived_class_ctor_body => {
           let intr = self
             .intrinsics()

@@ -58462,8 +58462,14 @@ pub(crate) fn run_ecma_function(
         //
         // `vm-js` represents that shared state as a heap-owned `DerivedConstructorState` object and
         // stores it in the function's "this environment" at call time.
-        let state_obj = scope.alloc_derived_constructor_state(ctor)?;
-        this = Value::Object(state_obj);
+        let needs_state_obj = match this {
+          Value::Object(obj) => !scope.heap().is_derived_constructor_state(obj),
+          _ => true,
+        };
+        if needs_state_obj {
+          let state_obj = scope.alloc_derived_constructor_state(ctor)?;
+          this = Value::Object(state_obj);
+        }
       }
     }
 
