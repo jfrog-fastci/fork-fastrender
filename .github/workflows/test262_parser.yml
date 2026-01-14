@@ -47,25 +47,9 @@ jobs:
           path: target
           key: test262-parser-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Init ecma-rs submodule + test262 parser corpus
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
         shell: bash
-        run: |
-          set -euo pipefail
-
-          bash scripts/ci_init_ecma_rs_submodule.sh
-
-          if ! grep -q 'submodule "vendor/ecma-rs/test262/data"' .gitmodules; then
-            echo "::error::Missing test262 parser corpus submodule entry (vendor/ecma-rs/test262/data)." >&2
-            exit 1
-          fi
-
-          # Only initialize the parser corpus, not all optional nested submodules.
-          git submodule update --init vendor/ecma-rs/test262/data
-
-          if [ ! -d vendor/ecma-rs/test262/data ]; then
-            echo "::error::test262 parser corpus directory vendor/ecma-rs/test262/data is missing after submodule init." >&2
-            exit 1
-          fi
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
 
       - name: Assert ecma-rs is checked out
         shell: bash
@@ -80,6 +64,24 @@ jobs:
       - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
         shell: bash
         run: bash scripts/check_no_conflict_markers.sh
+
+      - name: Init test262 parser corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! grep -q 'submodule "vendor/ecma-rs/test262/data"' .gitmodules; then
+            echo "::error::Missing test262 parser corpus submodule entry (vendor/ecma-rs/test262/data)." >&2
+            exit 1
+          fi
+
+          # Only initialize the parser corpus, not all optional nested submodules.
+          git submodule update --init vendor/ecma-rs/test262/data
+
+          if [ ! -d vendor/ecma-rs/test262/data ]; then
+            echo "::error::test262 parser corpus directory vendor/ecma-rs/test262/data is missing after submodule init." >&2
+            exit 1
+          fi
 
       - name: Run test262 parser harness
         shell: bash

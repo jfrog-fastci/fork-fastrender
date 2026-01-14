@@ -28,11 +28,28 @@ jobs:
         shell: bash
         run: bash scripts/ci_check_no_merge_conflicts.sh
 
-      - name: Init ecma-rs submodule + curated corpus
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/ci_init_ecma_rs_submodule.sh
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
+      - name: Init curated test262 semantic corpus
+        shell: bash
+        run: |
+          set -euo pipefail
 
           if ! grep -q 'submodule "vendor/ecma-rs/test262-semantic/data"' .gitmodules; then
             echo "::error::Missing test262 semantic corpus submodule entry (vendor/ecma-rs/test262-semantic/data)." >&2
@@ -51,20 +68,6 @@ jobs:
             echo "::error::test262 semantic corpus appears incomplete (expected vendor/ecma-rs/test262-semantic/data/test). Did the submodule checkout fail?" >&2
             exit 1
           fi
-
-      - name: Assert ecma-rs is checked out
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
-            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
-            echo "Run: git submodule update --init vendor/ecma-rs" >&2
-            exit 1
-          fi
-
-      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
-        shell: bash
-        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
