@@ -209,10 +209,10 @@ impl<'a> Parser<'a> {
       allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
+      disallow_arguments_in_class_init: 0,
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
-      disallow_arguments_in_class_init: 0,
       class_is_derived: Vec::new(),
       in_iteration: 0,
       in_switch: 0,
@@ -237,10 +237,10 @@ impl<'a> Parser<'a> {
       allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
+      disallow_arguments_in_class_init: 0,
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
-      disallow_arguments_in_class_init: 0,
       class_is_derived: Vec::new(),
       in_iteration: 0,
       in_switch: 0,
@@ -361,6 +361,44 @@ impl<'a> Parser<'a> {
     Self::is_strict_mode_restricted_binding_identifier(name)
   }
 
+  pub(crate) fn with_disallow_arguments_in_class_init<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
+  ) -> SyntaxResult<R> {
+    if !self.is_strict_ecmascript() {
+      return f(self);
+    }
+    let prev = self.disallow_arguments_in_class_init;
+    self.disallow_arguments_in_class_init = prev.saturating_add(1);
+    let res = f(self);
+    self.disallow_arguments_in_class_init = prev;
+    res
+  }
+
+  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
+    &self,
+    loc: Loc,
+    name: &str,
+  ) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
+      return Ok(());
+    }
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      // Identifier names should have already been validated by the lexer; treat this as a syntax
+      // error to avoid silently accepting malformed escape sequences.
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+    if string_value.as_ref() == "arguments" {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "`arguments` is not allowed in class field initializers or static blocks",
+        ),
+        None,
+      ));
+    }
+    Ok(())
+  }
+
   pub(crate) fn validate_strict_binding_identifier_name(
     &self,
     loc: Loc,
@@ -380,50 +418,6 @@ impl<'a> Parser<'a> {
       || Self::is_strict_mode_restricted_binding_identifier(string_value.as_ref())
     {
       return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    }
-    Ok(())
-  }
-
-  /// Runs `f` with the `ContainsArguments` early error enabled for class initialization code.
-  ///
-  /// When enabled, identifier references to `arguments` are rejected (unless they occur inside a
-  /// nested non-arrow function body, which introduces its own `arguments` binding).
-  pub(crate) fn with_disallow_arguments_in_class_init<R, F>(&mut self, f: F) -> R
-  where
-    F: FnOnce(&mut Self) -> R,
-  {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    let prev = self.disallow_arguments_in_class_init;
-    self.disallow_arguments_in_class_init += 1;
-    let res = f(self);
-    self.disallow_arguments_in_class_init = prev;
-    res
-  }
-
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-
-    let Some(string_value) = self.identifier_name_string_value(name) else {
-      // Identifier names should already have been validated by the lexer; treat decode failures as a
-      // syntax error rather than silently accepting malformed escapes.
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "'arguments' is not allowed in class field initializer or static initialization block",
-        ),
-        None,
-      ));
     }
     Ok(())
   }
