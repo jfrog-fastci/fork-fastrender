@@ -131,7 +131,7 @@ pub enum PageContextMenuAction {
 pub fn format_page_context_menu_a11y_label(
   base_label: &str,
   action: &PageContextMenuAction,
-  checked: bool,
+  _checked: bool,
 ) -> String {
   match action {
     // Toggle panel visibility. The visible label already reflects the action ("Show/Hide ..."), so
@@ -139,11 +139,9 @@ pub fn format_page_context_menu_a11y_label(
     PageContextMenuAction::ToggleHistoryPanel | PageContextMenuAction::ToggleBookmarksPanel => {
       base_label.to_string()
     }
-    PageContextMenuAction::BookmarkLink(_) => {
-      if checked { "Bookmark link: on" } else { "Bookmark link: off" }.to_string()
-    }
-    PageContextMenuAction::BookmarkPage(_) => {
-      if checked { "Bookmark page: on" } else { "Bookmark page: off" }.to_string()
+    // The visible label reflects the toggle state ("Bookmark …" vs "Remove …"), so reuse it.
+    PageContextMenuAction::BookmarkLink(_) | PageContextMenuAction::BookmarkPage(_) => {
+      base_label.to_string()
     }
     _ => base_label.to_string(),
   }
@@ -246,6 +244,12 @@ pub fn build_page_context_menu_entries(
   }
 
   if let Some(url) = input.link_url.map(str::trim).filter(|s| !s.is_empty()) {
+    let link_bookmarked = input.bookmarks.contains_url(url);
+    let bookmark_link_label = if link_bookmarked {
+      "Remove Bookmark Link"
+    } else {
+      "Bookmark Link"
+    };
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
       label: "Open Link in New Tab",
       action: PageContextMenuAction::OpenLinkInNewTab(url.to_string()),
@@ -262,18 +266,24 @@ pub fn build_page_context_menu_entries(
       checked: false,
     }));
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
-      label: "Bookmark Link",
+      label: bookmark_link_label,
       action: PageContextMenuAction::BookmarkLink(url.to_string()),
-      checked: input.bookmarks.contains_url(url),
+      checked: link_bookmarked,
     }));
     push_separator(&mut out);
   }
 
   let page_url = input.page_url.map(str::trim).unwrap_or("");
+  let page_bookmarked = !page_url.is_empty() && input.bookmarks.contains_url(page_url);
+  let bookmark_page_label = if page_bookmarked {
+    "Remove Bookmark"
+  } else {
+    "Bookmark This Page"
+  };
   out.push(PageContextMenuEntry::Action(PageContextMenuItem {
-    label: "Bookmark Page",
+    label: bookmark_page_label,
     action: PageContextMenuAction::BookmarkPage(page_url.to_string()),
-    checked: !page_url.is_empty() && input.bookmarks.contains_url(page_url),
+    checked: page_bookmarked,
   }));
 
   let history_toggle_label = if input.history_panel_open {
@@ -350,22 +360,22 @@ mod a11y_label_tests {
   }
 
   #[test]
-  fn format_page_context_menu_a11y_label_includes_bookmark_state() {
+  fn format_page_context_menu_a11y_label_echoes_bookmark_label() {
     assert_eq!(
       format_page_context_menu_a11y_label(
-        "Bookmark Page",
+        "Bookmark This Page",
         &PageContextMenuAction::BookmarkPage("https://example.com".into()),
         true
       ),
-      "Bookmark page: on"
+      "Bookmark This Page"
     );
     assert_eq!(
       format_page_context_menu_a11y_label(
-        "Bookmark Page",
+        "Remove Bookmark",
         &PageContextMenuAction::BookmarkPage("https://example.com".into()),
         false
       ),
-      "Bookmark page: off"
+      "Remove Bookmark"
     );
 
     assert_eq!(
@@ -374,15 +384,15 @@ mod a11y_label_tests {
         &PageContextMenuAction::BookmarkLink("https://example.com".into()),
         true
       ),
-      "Bookmark link: on"
+      "Bookmark Link"
     );
     assert_eq!(
       format_page_context_menu_a11y_label(
-        "Bookmark Link",
+        "Remove Bookmark Link",
         &PageContextMenuAction::BookmarkLink("https://example.com".into()),
         false
       ),
-      "Bookmark link: off"
+      "Remove Bookmark Link"
     );
   }
 
@@ -468,6 +478,71 @@ mod entry_label_tests {
       _ => None,
     });
     assert_eq!(bookmarks_label, Some("Hide Bookmarks"));
+  }
+
+  #[test]
+  fn build_page_context_menu_entries_bookmark_labels_reflect_bookmarked_state() {
+    let page_url = "https://example.com/";
+    let link_url = "https://example.com/link";
+
+    let mut bookmarks = BookmarkStore::default();
+    let input = |bookmarks: &BookmarkStore| PageContextMenuBuildInput {
+      link_url: Some(link_url),
+      image_url: None,
+      page_url: Some(page_url),
+      bookmarks,
+      history_panel_open: false,
+      bookmarks_panel_open: false,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+    };
+
+    let entries = build_page_context_menu_entries(input(&bookmarks));
+    let page_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::BookmarkPage(_)) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(page_label, Some("Bookmark This Page"));
+
+    let link_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::BookmarkLink(_)) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(link_label, Some("Bookmark Link"));
+
+    bookmarks.toggle(page_url, None);
+    bookmarks.toggle(link_url, None);
+
+    let entries = build_page_context_menu_entries(input(&bookmarks));
+    let page_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::BookmarkPage(_)) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(page_label, Some("Remove Bookmark"));
+
+    let link_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::BookmarkLink(_)) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(link_label, Some("Remove Bookmark Link"));
   }
 }
 
