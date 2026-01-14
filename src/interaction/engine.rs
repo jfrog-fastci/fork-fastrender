@@ -2463,6 +2463,72 @@ mod tests {
     set_text_selection_caret(&mut engine, &mut dom, textarea_id, "abc".chars().count());
     engine.text_input(&mut dom, "X");
     assert_eq!(textarea_value(&mut dom, textarea_id), "abc");
+
+  }
+
+  #[test]
+  fn text_input_strips_ascii_line_breaks_for_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    assert!(engine.text_input(&mut dom, "a\n\rb"));
+    assert_eq!(input_value(&mut dom, input_id), "ab");
+  }
+
+  #[test]
+  fn text_input_preserves_ascii_line_breaks_for_textarea() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea></textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    assert!(engine.text_input(&mut dom, "a\n\rb"));
+    // Textareas normalize CR/LF to LF, but must not *strip* line breaks.
+    assert_eq!(textarea_value(&mut dom, textarea_id), "a\n\nb");
+  }
+
+  #[test]
+  fn drag_drop_text_insertion_strips_ascii_line_breaks_for_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    {
+      let mut index = DomIndexMut::new(&mut dom);
+      assert!(engine.insert_text_into_text_control_at_caret(
+        &mut index,
+        input_id,
+        "a\n\rb",
+        0,
+        CaretAffinity::Downstream,
+      ));
+    }
+
+    assert_eq!(input_value(&mut dom, input_id), "ab");
+  }
+
+  #[test]
+  fn date_time_input_space_suppression_is_unchanged() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input type=\"date\" value=\"2020-01-01\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.text_input(&mut dom, " ");
+    assert_eq!(input_value(&mut dom, input_id), "2020-01-01");
   }
 
   #[test]
@@ -11152,6 +11218,15 @@ impl InteractionEngine {
     // Any direct text mutation cancels an in-progress IME preedit string.
     let mut changed = self.ime_cancel_internal();
 
+    // HTML `<input>` controls are single-line: strip CR/LF from inserted text. `<textarea>` keeps
+    // newlines (it normalizes CR/LF to LF at the DOM layer).
+    let text = if is_text_input {
+      crate::dom::strip_ascii_line_breaks(text)
+    } else {
+      std::borrow::Cow::Borrowed(text)
+    };
+    let text = text.as_ref();
+
     let caret = caret.min(current_len);
     let mut edit = self.text_edit.unwrap_or(TextEditState {
       node_id,
@@ -11389,6 +11464,15 @@ impl InteractionEngine {
     if text.is_empty() {
       return changed;
     }
+
+    // HTML `<input>` controls are single-line: strip CR/LF from inserted text. `<textarea>` keeps
+    // newlines (it normalizes CR/LF to LF at the DOM layer).
+    let text = if focused_is_text_input {
+      crate::dom::strip_ascii_line_breaks(text)
+    } else {
+      std::borrow::Cow::Borrowed(text)
+    };
+    let text = text.as_ref();
 
     self.ensure_form_default_snapshot_for_control(&index, focused);
 

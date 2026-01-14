@@ -5890,7 +5890,7 @@ pub(crate) fn input_file_value_string(node: &DomNode) -> Option<String> {
   )
 }
 
-fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
+pub(crate) fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
   if !value.as_bytes().iter().any(|b| matches!(*b, b'\n' | b'\r')) {
     return Cow::Borrowed(value);
   }
