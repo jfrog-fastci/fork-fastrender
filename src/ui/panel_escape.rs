@@ -18,6 +18,77 @@ pub enum PanelEscapeAction {
   Noop,
 }
 
+/// Pure boolean state describing whether Escape should map to "Stop loading".
+///
+/// Escape has multiple meanings in the windowed browser UI:
+/// - dismiss transient chrome UI (side panels, dialogs, menus, in-page popups),
+/// - cancel find-in-page,
+/// - otherwise stop an in-flight navigation.
+///
+/// This struct is deliberately egui-agnostic and can be unit tested without pulling in egui/winit.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StopLoadingOnEscapeState {
+  /// Whether a chrome text input owns keyboard focus (address bar, find-in-page input, panel search).
+  pub chrome_has_text_focus: bool,
+  /// Whether the active tab is currently loading.
+  pub tab_loading: bool,
+  /// Whether find-in-page is currently open.
+  pub find_in_page_open: bool,
+  /// Downloads panel is open.
+  pub downloads_panel_open: bool,
+  /// History panel is open.
+  pub history_panel_open: bool,
+  /// Bookmarks manager/panel is open.
+  pub bookmarks_panel_open: bool,
+  /// Clear browsing data modal dialog is open.
+  pub clear_browsing_data_dialog_open: bool,
+  /// Tab search / quick switcher overlay is open.
+  pub tab_search_open: bool,
+  /// A chrome menu (tab context menu, appearance menu, etc) is open.
+  pub chrome_menu_open: bool,
+  /// A page-scoped context menu is open (right-click menu).
+  pub page_context_menu_open: bool,
+  /// A page-scoped `<select>` dropdown popup is open.
+  pub select_dropdown_open: bool,
+  /// Media controls overlay is open.
+  pub media_controls_open: bool,
+  /// Other transient popups (date/time picker, color picker, file picker, …).
+  pub other_popup_open: bool,
+}
+
+/// Decide whether Escape should trigger "Stop loading".
+///
+/// Returns `true` only when:
+/// - the active tab is loading,
+/// - egui/chrome is not actively editing text,
+/// - no transient chrome/popup surface that should close on Escape is open.
+#[must_use]
+pub fn should_stop_loading_on_escape(state: StopLoadingOnEscapeState) -> bool {
+  if state.chrome_has_text_focus {
+    return false;
+  }
+  if !state.tab_loading {
+    return false;
+  }
+  if state.find_in_page_open {
+    return false;
+  }
+  if state.downloads_panel_open
+    || state.history_panel_open
+    || state.bookmarks_panel_open
+    || state.clear_browsing_data_dialog_open
+    || state.tab_search_open
+    || state.chrome_menu_open
+    || state.page_context_menu_open
+    || state.select_dropdown_open
+    || state.media_controls_open
+    || state.other_popup_open
+  {
+    return false;
+  }
+  true
+}
+
 /// Decide how the Bookmarks Manager side panel should respond to Escape.
 ///
 /// Semantics:
@@ -95,8 +166,9 @@ pub fn downloads_panel_should_close_on_escape(
 #[cfg(test)]
 mod tests {
   use super::{
-    bookmarks_panel_escape_action, downloads_panel_should_close_on_escape, history_panel_escape_action,
-    PanelEscapeAction,
+    bookmarks_panel_escape_action, downloads_panel_should_close_on_escape,
+    history_panel_escape_action, should_stop_loading_on_escape, PanelEscapeAction,
+    StopLoadingOnEscapeState,
   };
 
   #[test]
@@ -189,5 +261,45 @@ mod tests {
   #[test]
   fn downloads_panel_escape_guard_allows_close_when_no_global_focus() {
     assert!(downloads_panel_should_close_on_escape(false, false, false));
+  }
+
+  #[test]
+  fn stop_loading_blocked_when_downloads_panel_open() {
+    assert!(!should_stop_loading_on_escape(StopLoadingOnEscapeState {
+      tab_loading: true,
+      downloads_panel_open: true,
+      ..Default::default()
+    }));
+  }
+
+  #[test]
+  fn stop_loading_blocked_when_history_or_bookmarks_panel_open() {
+    assert!(!should_stop_loading_on_escape(StopLoadingOnEscapeState {
+      tab_loading: true,
+      history_panel_open: true,
+      ..Default::default()
+    }));
+    assert!(!should_stop_loading_on_escape(StopLoadingOnEscapeState {
+      tab_loading: true,
+      bookmarks_panel_open: true,
+      ..Default::default()
+    }));
+  }
+
+  #[test]
+  fn stop_loading_blocked_when_find_in_page_open() {
+    assert!(!should_stop_loading_on_escape(StopLoadingOnEscapeState {
+      tab_loading: true,
+      find_in_page_open: true,
+      ..Default::default()
+    }));
+  }
+
+  #[test]
+  fn stop_loading_allowed_when_tab_loading_and_no_chrome_surfaces_open() {
+    assert!(should_stop_loading_on_escape(StopLoadingOnEscapeState {
+      tab_loading: true,
+      ..Default::default()
+    }));
   }
 }

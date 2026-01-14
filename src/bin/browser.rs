@@ -25124,6 +25124,11 @@ impl App {
             self.window.request_redraw();
             return;
           }
+
+          let tab_loading = self
+            .browser_state
+            .active_tab()
+            .is_some_and(|tab| tab.loading);
           if let Some(tab_id) = self.browser_state.active_tab_id() {
             if self
               .browser_state
@@ -25147,16 +25152,50 @@ impl App {
             return;
           }
 
-          if !self.chrome_has_text_focus {
-            if self
-              .browser_state
-              .active_tab()
-              .is_some_and(|tab| tab.loading)
-            {
-              self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::StopLoading]);
-              self.window.request_redraw();
-              return;
-            }
+          let tab_search_open = self.browser_state.chrome.tab_search.open;
+          let chrome_menu_open = self.browser_state.chrome.appearance_popup_open
+            || self.browser_state.chrome.open_tab_context_menu.is_some();
+          let other_popup_open = self.open_date_time_picker.is_some()
+            || self.open_color_picker.is_some()
+            || self.open_file_picker.is_some();
+
+          let stop_state = fastrender::ui::panel_escape::StopLoadingOnEscapeState {
+            chrome_has_text_focus: self.chrome_has_text_focus,
+            tab_loading,
+            // Find-in-page is handled above (close + return).
+            find_in_page_open: false,
+            downloads_panel_open: self.downloads_panel_open,
+            history_panel_open: self.history_panel_open,
+            bookmarks_panel_open: self.bookmarks_panel_open,
+            clear_browsing_data_dialog_open: self.clear_browsing_data_dialog_open,
+            tab_search_open,
+            chrome_menu_open,
+            // Page context menu is handled above (close + return).
+            page_context_menu_open: false,
+            select_dropdown_open: self.open_select_dropdown.is_some(),
+            media_controls_open: self.open_media_controls.is_some(),
+            other_popup_open,
+          };
+
+          // Side panels/dialogs should take priority over "Stop loading". Swallow Escape here so it
+          // doesn't leak into page input while egui closes the panel in the frame.
+          if stop_state.downloads_panel_open
+            || stop_state.history_panel_open
+            || stop_state.bookmarks_panel_open
+            || stop_state.clear_browsing_data_dialog_open
+            || stop_state.tab_search_open
+            || stop_state.chrome_menu_open
+            || stop_state.select_dropdown_open
+            || stop_state.media_controls_open
+            || stop_state.other_popup_open
+          {
+            return;
+          }
+
+          if fastrender::ui::panel_escape::should_stop_loading_on_escape(stop_state) {
+            self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::StopLoading]);
+            self.window.request_redraw();
+            return;
           }
         }
 
