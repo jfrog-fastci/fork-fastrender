@@ -1049,7 +1049,6 @@ pub struct TextRenderState<'a> {
   pub allow_subpixel_aa: bool,
   /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
   pub font_smoothing: FontSmoothing,
-
   /// Rendering quality hint (`text-rendering`).
   pub text_rendering: TextRendering,
 }
@@ -1295,7 +1294,7 @@ impl TextRasterizer {
 
     let snap_requested = match state.text_rendering {
       TextRendering::GeometricPrecision => false,
-      TextRendering::OptimizeSpeed => true,
+      TextRendering::OptimizeSpeed => false,
       TextRendering::Auto | TextRendering::OptimizeLegibility => self.snap_glyph_positions,
     };
     let snap_glyph_positions = snap_requested && translation_only;
@@ -4230,6 +4229,64 @@ mod tests {
       state.allow_subpixel_aa = false;
       assert!(!allow_subpixel_aa_for_state(&state));
     }
+
+    #[test]
+    fn text_rendering_optimize_speed_disables_subpixel_aa_branch() {
+      let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+        ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
+        (
+          "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS".to_string(),
+          "1".to_string(),
+        ),
+        ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+      ])));
+      runtime::with_runtime_toggles(toggles, || {
+        let Some(font) = get_test_font() else {
+          return;
+        };
+        let Some(glyph_id) = glyph_for_char(&font, 'I') else {
+          return;
+        };
+
+        let (pixmap, rasterizer) = render_single_glyph(
+          &font,
+          glyph_id,
+          64.0,
+          10.25,
+          72.5,
+          Rgba::WHITE,
+          Some(tiny_skia::Color::from_rgba8(128, 128, 128, 255)),
+          TextRenderState {
+            font_smoothing: FontSmoothing::Subpixel,
+            text_rendering: TextRendering::OptimizeSpeed,
+            ..TextRenderState::default()
+          },
+        );
+
+        assert!(rasterizer.subpixel_aa_enabled);
+        assert!(
+          rasterizer.subpixel_aa_diagnostics.is_some(),
+          "expected diagnostics to be enabled for test"
+        );
+        let stats = rasterizer.subpixel_aa_diagnostics.unwrap();
+        assert_eq!(
+          stats.attempts, 0,
+          "text-rendering: optimizeSpeed should suppress LCD/subpixel AA attempts"
+        );
+        assert_eq!(stats.successes, 0);
+        assert!(
+          pixmap
+            .data()
+            .chunks_exact(4)
+            .any(|px| px[0] != 128 || px[1] != 128 || px[2] != 128),
+          "expected glyph draw to modify the backdrop"
+        );
+        assert!(
+          !any_color_fringes(&pixmap),
+          "optimizeSpeed should disable subpixel AA (no color fringes)"
+        );
+      });
+    }
   }
 
   #[test]
@@ -4503,6 +4560,162 @@ mod tests {
       assert_eq!(
         outline_stats.misses, 1,
         "expected hinting to be suppressed under scale transforms so outlines reuse across font sizes"
+      );
+    });
+  }
+
+  #[test]
+  fn text_rendering_optimize_speed_disables_hinting() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return,
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let Some(glyph_id) = face.glyph_index('H').map(|g| g.0 as u32) else {
+      return;
+    };
+
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_HINTING".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      // Baseline: Auto text-rendering should keep hinting enabled, so outlines are keyed by ppem.
+      let mut rasterizer_auto = TextRasterizer::new();
+      assert!(rasterizer_auto.hinting_enabled);
+      rasterizer_auto.reset_cache_stats();
+
+      let mut pixmap = new_pixmap(200, 120).unwrap();
+      pixmap.fill(tiny_skia::Color::WHITE);
+      rasterizer_auto
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          16.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          TextRenderState::default(),
+          &mut pixmap,
+        )
+        .unwrap();
+
+      let mut pixmap2 = new_pixmap(200, 120).unwrap();
+      pixmap2.fill(tiny_skia::Color::WHITE);
+      rasterizer_auto
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          TextRenderState::default(),
+          &mut pixmap2,
+        )
+        .unwrap();
+
+      let outline_stats_auto = rasterizer_auto
+        .cache
+        .lock()
+        .map(|cache| cache.stats())
+        .unwrap_or_default();
+      assert_eq!(
+        outline_stats_auto.misses, 2,
+        "expected hinting-enabled outlines to be keyed by ppem under text-rendering: auto"
+      );
+
+      // Under optimizeSpeed, paint-time hinting should be suppressed even when the runtime toggle is
+      // enabled, so outlines can be reused across font sizes.
+      let mut rasterizer_speed = TextRasterizer::new();
+      assert!(rasterizer_speed.hinting_enabled);
+      rasterizer_speed.reset_cache_stats();
+
+      let speed_state = TextRenderState {
+        text_rendering: TextRendering::OptimizeSpeed,
+        ..TextRenderState::default()
+      };
+
+      let mut pixmap = new_pixmap(200, 120).unwrap();
+      pixmap.fill(tiny_skia::Color::WHITE);
+      rasterizer_speed
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          16.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          speed_state,
+          &mut pixmap,
+        )
+        .unwrap();
+
+      let mut pixmap2 = new_pixmap(200, 120).unwrap();
+      pixmap2.fill(tiny_skia::Color::WHITE);
+      rasterizer_speed
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          speed_state,
+          &mut pixmap2,
+        )
+        .unwrap();
+
+      let outline_stats_speed = rasterizer_speed
+        .cache
+        .lock()
+        .map(|cache| cache.stats())
+        .unwrap_or_default();
+      assert_eq!(
+        outline_stats_speed.misses, 1,
+        "expected text-rendering: optimizeSpeed to disable hinting so outlines reuse across font sizes"
       );
     });
   }
