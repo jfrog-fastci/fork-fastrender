@@ -4231,7 +4231,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = handle.node_id;
         let document_id = handle.document_id;
         if args.is_empty() {
-          let text = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let text: Result<Option<String>, DomError> = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
               if node_id.index() >= dom.nodes_len() {
                 return Err(DomError::NotFoundError);
@@ -4260,7 +4260,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
           };
 
-          let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               match dom2_bindings::text_content_set_from_dom(dom, node_id, &value) {
                 Ok(result) => (Ok(()), result.render_affecting),
@@ -4279,6 +4279,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 node_id,
                 document_id,
               )?;
+              self.sync_live_html_collections(vm, scope)?;
               Ok(Value::Undefined)
             }
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
@@ -8456,6 +8457,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   )?;
                 }
               }
+              self.sync_live_html_collections(vm, scope)?;
               Ok(Value::Undefined)
             }
             Err(err) => {
