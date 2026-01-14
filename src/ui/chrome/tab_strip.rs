@@ -633,12 +633,14 @@ fn unpinned_tab_preview_ui(
     ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals, 1.0);
+    let mut glyph_buf = [0u8; 4];
     let glyph = title
       .trim()
       .chars()
       .next()
-      .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "?".to_string());
+      .unwrap_or('?')
+      .to_ascii_uppercase()
+      .encode_utf8(&mut glyph_buf);
     ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
@@ -765,12 +767,14 @@ fn pinned_tab_preview_ui(
     ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals, 1.0);
+    let mut glyph_buf = [0u8; 4];
     let glyph = title
       .trim()
       .chars()
       .next()
-      .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "?".to_string());
+      .unwrap_or('?')
+      .to_ascii_uppercase()
+      .encode_utf8(&mut glyph_buf);
     ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
@@ -859,12 +863,14 @@ fn paint_tab_pin_ghost(
   } else {
     placeholder_favicon(&painter, icon_rect, &visuals, 1.0);
     let title = tab.display_title();
+    let mut glyph_buf = [0u8; 4];
     let glyph = title
       .trim()
       .chars()
       .next()
-      .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "?".to_string());
+      .unwrap_or('?')
+      .to_ascii_uppercase()
+      .encode_utf8(&mut glyph_buf);
     painter.text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
@@ -1682,12 +1688,14 @@ fn tab_ui(
   } else {
     placeholder_favicon(paint_ui.painter(), icon_rect, &visuals, close_opacity);
     // Show a small deterministic glyph so blank favicons are still distinguishable at a glance.
+    let mut glyph_buf = [0u8; 4];
     let glyph = title
       .trim()
       .chars()
       .next()
-      .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "?".to_string());
+      .unwrap_or('?')
+      .to_ascii_uppercase()
+      .encode_utf8(&mut glyph_buf);
     paint_ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
@@ -2068,12 +2076,14 @@ fn pinned_tab_ui(
     }
   } else {
     placeholder_favicon(ui.painter(), icon_rect, &visuals, close_opacity);
+    let mut glyph_buf = [0u8; 4];
     let glyph = title
       .trim()
       .chars()
       .next()
-      .map(|ch| ch.to_ascii_uppercase().to_string())
-      .unwrap_or_else(|| "?".to_string());
+      .unwrap_or('?')
+      .to_ascii_uppercase()
+      .encode_utf8(&mut glyph_buf);
     ui.painter().text(
       icon_rect.center(),
       Align2::CENTER_CENTER,
