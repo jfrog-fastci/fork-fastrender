@@ -77,3 +77,21 @@ fn private_static_elements_are_not_exposed_via_symbol_introspection() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn private_static_field_initializer_super_property_resolves() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static x = 2 }
+        class C extends B {
+          static #y = super.x;
+          static getY() { return C.#y }
+        }
+        C.getY() === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

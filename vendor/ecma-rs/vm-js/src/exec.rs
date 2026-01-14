@@ -53059,12 +53059,12 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_allowed() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let err = rt
+    let value = rt
       .exec_script(
         r#"
           async function f() {
@@ -53076,9 +53076,8 @@ mod tests {
             }
           }
         "#,
-      )
-      .unwrap_err();
-    assert!(matches!(err, VmError::Syntax(_)));
+      )?;
+    assert_eq!(value, Value::Undefined);
     Ok(())
   }
 

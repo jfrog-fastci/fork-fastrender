@@ -41,3 +41,22 @@ fn compiled_hir_class_static_block_hoists_function_decls_and_does_not_leak() -> 
   assert!(matches!(result, Value::Bool(true)), "unexpected result: {result:?}");
   Ok(())
 }
+
+#[test]
+fn class_static_block_super_property_resolves() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let value = rt.exec_script(
+    r#"
+      class B { static x = 1 }
+      class C extends B {
+        static { this.y = super.x; }
+      }
+      C.y === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
