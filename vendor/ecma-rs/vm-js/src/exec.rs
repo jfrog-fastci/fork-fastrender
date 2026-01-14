@@ -37316,7 +37316,7 @@ fn gen_eval_assignment_apply_reference(
         }
       }
     }
-    OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation => {
+    OperatorName::AssignmentAddition => {
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -37331,23 +37331,9 @@ fn gen_eval_assignment_apply_reference(
             let right = v.unwrap_or(Value::Undefined);
             let mut compound_scope = op_scope.reborrow();
             compound_scope.push_root(right)?;
-            let value = match expr.operator {
-              OperatorName::AssignmentAddition => evaluator
-                .addition_operator(&mut compound_scope, left, right)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                })?,
-              OperatorName::AssignmentExponentiation => evaluator
-                .exponentiation_operator(&mut compound_scope, left, right)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                })?,
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "generator compound assignment evaluator called for unsupported operator",
-                ))
-              }
-            };
+            let value = evaluator
+              .addition_operator(&mut compound_scope, left, right)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
             compound_scope.push_root(value)?;
             evaluator
               .put_value_to_reference(&mut compound_scope, &reference, value)
@@ -39872,12 +39858,9 @@ fn gen_resume_from_frames(
               OperatorName::AssignmentAddition => evaluator
                 .addition_operator(&mut op_scope, left, right)
                 .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
-              OperatorName::AssignmentExponentiation => evaluator
-                .exponentiation_operator(&mut op_scope, left, right)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
               _ => {
                 return Err(VmError::InvariantViolation(
-                  "AssignAddAfterRhs used for non-compound operator",
+                  "AssignAddAfterRhs used for non-addition operator",
                 ))
               }
             };
@@ -40509,18 +40492,6 @@ fn gen_root_values_for_continuation(
           .saturating_add(usize::from(key.is_some()))
           .saturating_add(usize::from(receiver.is_some()));
       }
-      GenFrame::AssignExpAfterRhs {
-        base,
-        key,
-        receiver,
-        ..
-      } => {
-        needed = needed
-          .saturating_add(1) // `left`.
-          .saturating_add(usize::from(base.is_some()))
-          .saturating_add(usize::from(key.is_some()))
-          .saturating_add(usize::from(receiver.is_some()));
-      }
       _ => {}
     }
   }
@@ -40596,24 +40567,6 @@ fn gen_root_values_for_continuation(
         ..
       }
       | GenFrame::AssignExpAfterRhs {
-        base,
-        key,
-        receiver,
-        left,
-        ..
-      } => {
-        if let Some(base) = base {
-          values.push(*base);
-        }
-        if let Some(key) = key {
-          values.push(*key);
-        }
-        if let Some(receiver) = receiver {
-          values.push(*receiver);
-        }
-        values.push(*left);
-      }
-      GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
