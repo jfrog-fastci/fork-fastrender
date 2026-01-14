@@ -583,6 +583,10 @@ impl WindowRealmUserData {
   pub(crate) fn events_dom_fallback(&self) -> &dom2::Document {
     &self.events_dom_fallback
   }
+
+  pub(crate) fn events_dom_fallback_mut(&mut self) -> &mut dom2::Document {
+    &mut self.events_dom_fallback
+  }
 }
 
 impl WindowRealm {
@@ -1343,11 +1347,27 @@ impl WindowRealm {
         let mut scope = rt.heap.scope();
         drain_pending_dataset_mutation_observer_microtasks(&mut rt.vm, &mut scope, host, hooks)
       };
-      if result.is_ok() {
-        drain_result?;
-      }
+      let out = match result {
+        Ok(value) => match drain_result {
+          Ok(()) => Ok(value),
+          Err(err) => Err(err),
+        },
+        Err(err) => Err(err),
+      };
 
-      result
+      // Prune Rust-side live traversal state (e.g. NodeIterator) associated with JS wrappers that
+      // were collected in the latest GC run.
+      let _ = mutate_dom_for_vm_host(host, |dom| {
+        dom.sweep_dead_live_traversals_if_needed(&rt.heap);
+        ((), false)
+      });
+        if let Some(data) = rt.vm.user_data_mut::<WindowRealmUserData>() {
+          data
+            .events_dom_fallback_mut()
+            .sweep_dead_live_traversals_if_needed(&rt.heap);
+        }
+
+      out
     });
 
     if did_consume_script_id.get() {
@@ -2115,6 +2135,19 @@ impl WindowRealm {
       // Ensure the locally-created fallback bindings host outlives the microtask checkpoint: the
       // hooks payload stores a raw pointer to it.
       let _ = &mut fallback_webidl_bindings_host;
+
+      // Prune Rust-side live traversal state (e.g. NodeIterator) associated with JS wrappers that
+      // were collected in the latest GC run.
+      let _ = mutate_dom_for_vm_host(&mut host_ctx, |dom| {
+        dom.sweep_dead_live_traversals_if_needed(&rt.heap);
+        ((), false)
+      });
+      if let Some(data) = rt.vm.user_data_mut::<WindowRealmUserData>() {
+        data
+          .events_dom_fallback_mut()
+          .sweep_dead_live_traversals_if_needed(&rt.heap);
+      }
+
       match first_err {
         Some(err) => Err(err),
         None => Ok(()),
@@ -46969,6 +47002,7 @@ fn init_window_globals(
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_shadow_root_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     // Collections/DOM wrappers returned by host dispatch (e.g. `querySelectorAll`, `classList`)
     // need their WebIDL-generated constructors/prototypes installed as globals so wrapper objects
     // can adopt the correct prototypes and pass `instanceof` checks.
@@ -58779,6 +58813,7 @@ fn test_unimplemented_native(
 mod tests {
   use super::*;
   use crate::clock::VirtualClock;
+  use crate::js::dom_host::DomHost;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
   use crate::js::RunLimits;
@@ -59875,7 +59910,10 @@ mod tests {
   #[ignore]
   fn dom_implementation_create_html_document_basics() -> Result<(), VmError> {
     let mut host = new_host_document_state();
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
     let result = exec_script_with_dom_host(
       &mut realm,
       &mut host,
@@ -59900,7 +59938,10 @@ mod tests {
   #[ignore]
   fn dom_implementation_create_document_type_basics() -> Result<(), VmError> {
     let mut host = new_host_document_state();
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
     let result = exec_script_with_dom_host(
       &mut realm,
       &mut host,
@@ -59922,7 +59963,10 @@ mod tests {
   #[ignore]
   fn document_import_node_across_documents() -> Result<(), VmError> {
     let mut host = new_host_document_state();
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
     let result = exec_script_with_dom_host(
       &mut realm,
       &mut host,
@@ -62732,7 +62776,10 @@ mod tests {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
 
     for (state, expected) in [
       (crate::web::dom::DocumentReadyState::Loading, "loading"),
@@ -62788,7 +62835,10 @@ mod tests {
       crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
 
     let result = exec_script_with_dom_host(
       &mut realm,
@@ -64445,7 +64495,10 @@ mod tests {
     .unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
     exec_script_with_dom_host(
       &mut realm,
       &mut host,
@@ -68840,13 +68893,14 @@ mod tests {
       "<!doctype html><html><body><div id=root><div id=a><div id=a1></div></div><div id=b></div></div></body></html>",
     )
     .unwrap();
-    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
 
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
-
-    let result = exec_script_with_dom_host(
-      &mut realm,
-      &mut host,
+    let result = host.exec_script(
       "(() => {\n\
         const root = document.getElementById('root');\n\
         const a = document.getElementById('a');\n\
@@ -68870,7 +68924,7 @@ mod tests {
         return 'ok';\n\
       })()",
     )?;
-    assert_eq!(get_string(realm.heap(), result), "ok");
+    assert_eq!(get_string(host.window.heap(), result), "ok");
     Ok(())
   }
 
@@ -68882,13 +68936,14 @@ mod tests {
       "<!doctype html><html><body><div id=root><div id=a><div id=a1></div></div><div id=b></div></div></body></html>",
     )
     .unwrap();
-    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
 
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
-
-    let result = exec_script_with_dom_host(
-      &mut realm,
-      &mut host,
+    let result = host.exec_script(
       "(() => {\n\
         const root = document.getElementById('root');\n\
         const a = document.getElementById('a');\n\
@@ -68912,7 +68967,60 @@ mod tests {
         return 'ok';\n\
       })()",
     )?;
-    assert_eq!(get_string(realm.heap(), result), "ok");
+    assert_eq!(get_string(host.window.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_iterator_state_is_pruned_after_gc_at_dispatch_boundary() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><div id=a></div></div></body></html>",
+    )
+    .unwrap();
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+
+    // Create a NodeIterator wrapper in JS and drop all references.
+    let created = host.exec_script(
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        // whatToShow=1 == NodeFilter.SHOW_ELEMENT.\n\
+        let it = document.createNodeIterator(root, 1);\n\
+        it = null;\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(host.window.heap(), created), "ok");
+
+    let root_id = host
+      .with_dom(|dom| dom.get_element_by_id("root"))
+      .expect("root element should exist");
+
+    // Find the NodeIterator traversal state created above.
+    let iter_ids: Vec<dom2::NodeIteratorId> = (1u64..=1024)
+      .map(dom2::NodeIteratorId::from_u64)
+      .filter(|&id| host.with_dom(|dom| dom.node_iterator_root(id)) == Some(root_id))
+      .collect();
+    assert_eq!(
+      iter_ids.len(),
+      1,
+      "expected a single NodeIterator traversal state entry"
+    );
+    let iter_id = iter_ids[0];
+
+    // Force a GC run so the wrapper can be collected. At this point the Rust-side traversal state
+    // still exists until we cross a sweep boundary.
+    host.window.heap_mut().collect_garbage();
+    assert_eq!(host.with_dom(|dom| dom.node_iterator_root(iter_id)), Some(root_id));
+
+    // Trigger a sweep boundary by re-entering the DOM dispatch pipeline.
+    let _ = host.exec_script("document.getElementById('root');")?;
+
+    assert_eq!(host.with_dom(|dom| dom.node_iterator_root(iter_id)), None);
     Ok(())
   }
 

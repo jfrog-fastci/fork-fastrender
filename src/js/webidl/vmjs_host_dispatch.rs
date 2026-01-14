@@ -1331,6 +1331,25 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       }
     });
 
+    // Prune per-document live traversal state (e.g. NodeIterator) associated with collected JS
+    // wrappers. This must run on GC boundaries so dead traversal state does not accumulate
+    // indefinitely when JS drops NodeIterator/Range/TreeWalker wrappers without creating new ones.
+    //
+    // Best effort: this host may not have a DOM (`with_dom_host` will fail); the realm fallback
+    // document is always available when WindowRealm user data is present.
+    let _ = self.with_dom_host(vm, |host| {
+      host.mutate_dom(|dom| {
+        dom.sweep_dead_live_traversals_if_needed(heap);
+        ((), false)
+      });
+      Ok(())
+    });
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      data
+        .events_dom_fallback_mut()
+        .sweep_dead_live_traversals_if_needed(heap);
+    }
+
     // Also sweep per-document `EventListenerRegistry` tables that track opaque EventTargets via weak
     // handles. This must run on GC boundaries so the registry doesn't retain dead opaque ids
     // indefinitely.
