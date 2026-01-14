@@ -398,6 +398,8 @@ The browser supports an optional **in-window menu bar**:
   - **macOS:** hidden (but can be shown)
   - **Windows/Linux:** shown
 - Toggle: toolbar hamburger menu → Window → **Show menu bar**
+- CI/runtime override: `FASTR_BROWSER_SHOW_MENU_BAR=0|1` (forces visibility for the current process
+  without updating the persisted session preference).
 
 For parity testing, it’s recommended to enable the menu bar on all platforms.
 
@@ -457,7 +459,8 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
 
 - [ ] New Window opens (Ctrl/Cmd+N).
 - [ ] Show Downloads… opens downloads panel (Ctrl+J / Cmd+Shift+J).
-- [ ] “Show menu bar” toggles the in-window menu bar (and persists across restart).
+- [ ] “Show menu bar” toggles the in-window menu bar (and persists across restart, unless
+  `FASTR_BROWSER_SHOW_MENU_BAR` is set).
 
 ### Help
 
