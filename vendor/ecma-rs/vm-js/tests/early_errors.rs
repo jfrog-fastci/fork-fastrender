@@ -473,6 +473,34 @@ fn import_meta_in_script_is_syntax_error() {
 }
 
 #[test]
+fn escaped_import_meta_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"im\u0070ort.meta;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_import_call_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"im\u0070ort("m");"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn new_target_property_must_be_target_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("new.meta;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn import_meta_property_must_be_meta_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "import.foo;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn new_super_call_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
