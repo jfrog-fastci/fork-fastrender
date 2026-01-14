@@ -31,6 +31,19 @@ const MP4_PARSE_DEADLINE_STRIDE: usize = 1024;
 // caller will fall back to the slower linear scan path).
 const MAX_SAMPLES_PER_TRACK: u64 = 2_000_000;
 
+// Hard cap on MP4 sample table entry counts (stts/ctts/stsc/stco/co64/stss).
+//
+// These boxes include an `entry_count` field that can be set to absurd values even when the box
+// payload is tiny (e.g. a truncated file). We cap the count *before* allocating a `Vec` with that
+// capacity.
+const MAX_TABLE_ENTRIES: u32 = 1_000_000;
+
+/// Hard cap on per-sample packet bytes in the `mp4parse`-based demuxer.
+///
+/// This demuxer reads each sample into a fresh `Vec<u8>`. Without a cap, an attacker-controlled
+/// sample table can request an allocation of arbitrary size via `end_offset - start_offset`.
+const MAX_MP4_PACKET_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
+
 #[derive(Debug, Error)]
 pub enum Mp4Error {
   #[error("unexpected end of file")]
@@ -56,6 +69,12 @@ pub enum Mp4Error {
   MissingBox(&'static str),
   #[error("mp4 track has too many samples: {sample_count} (max {max})")]
   TooManySamples { sample_count: u64, max: u64 },
+  #[error("mp4 box {box_name} has too many entries: {entry_count} (max {max})")]
+  TooManyTableEntries {
+    box_name: &'static str,
+    entry_count: u64,
+    max: u64,
+  },
 }
 
 type Result<T> = std::result::Result<T, Mp4Error>;
@@ -905,6 +924,11 @@ impl<R: Read + Seek> Mp4TrackDemuxer<R> {
     let sample_len = end_offset.checked_sub(start_offset).ok_or_else(|| {
       MediaError::Demux("mp4 sample table contains end_offset < start_offset".to_string())
     })?;
+    if sample_len > MAX_MP4_PACKET_BYTES {
+      return Err(MediaError::Demux(format!(
+        "mp4 sample is too large: {sample_len} bytes (max {MAX_MP4_PACKET_BYTES})",
+      )));
+    }
     let sample_len_usize = usize::try_from(sample_len)
       .map_err(|_| MediaError::Demux("mp4 sample length too large to fit in memory".to_string()))?;
 
@@ -1436,6 +1460,17 @@ fn parse_tkhd(bytes: &[u8], tkhd: Range<usize>) -> Result<u32> {
   Ok(track_id)
 }
 
+fn checked_entry_count(box_name: &'static str, entry_count: u32) -> Result<usize> {
+  if entry_count > MAX_TABLE_ENTRIES {
+    return Err(Mp4Error::TooManyTableEntries {
+      box_name,
+      entry_count: u64::from(entry_count),
+      max: u64::from(MAX_TABLE_ENTRIES),
+    });
+  }
+  Ok(entry_count as usize)
+}
+
 fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
   let mut cur = Cursor::new(bytes, stts.start);
   let version = read_fullbox_version(&mut cur, stts.end)?;
@@ -1447,16 +1482,12 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
   }
 
   let entry_count = cur.read_u32(stts.end)?;
+  let entry_count = checked_entry_count("stts", entry_count)?;
   let remaining_bytes = stts.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("stts entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1486,16 +1517,12 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
   }
 
   let entry_count = cur.read_u32(ctts.end)?;
+  let entry_count = checked_entry_count("ctts", entry_count)?;
   let remaining_bytes = ctts.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("ctts entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1529,16 +1556,12 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
   }
 
   let entry_count = cur.read_u32(stsc.end)?;
+  let entry_count = checked_entry_count("stsc", entry_count)?;
   let remaining_bytes = stsc.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 12;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("stsc entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1619,16 +1642,12 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
   }
 
   let entry_count = cur.read_u32(stco.end)?;
+  let entry_count = checked_entry_count("stco", entry_count)?;
   let remaining_bytes = stco.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 4;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("stco entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1653,16 +1672,12 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
   }
 
   let entry_count = cur.read_u32(co64.end)?;
+  let entry_count = checked_entry_count("co64", entry_count)?;
   let remaining_bytes = co64.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("co64 entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -1687,16 +1702,12 @@ fn parse_stss(bytes: &[u8], stss: Range<usize>) -> Result<Vec<u32>> {
   }
 
   let entry_count = cur.read_u32(stss.end)?;
+  let entry_count = checked_entry_count("stss", entry_count)?;
   let remaining_bytes = stss.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 4;
-  let entry_count = entry_count as usize;
   if entry_count > max_entries_by_bytes {
     return Err(Mp4Error::UnexpectedEof);
   }
-  if entry_count as u64 > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::Invalid("stss entry_count too large"));
-  }
-
   let mut out = Vec::with_capacity(entry_count);
   let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
@@ -2124,7 +2135,10 @@ mod tests {
     // allocate an enormous vector (or panic/abort) before failing with EOF.
     let stts = [0_u8, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
     let r = std::panic::catch_unwind(|| parse_stts(&stts, 0..stts.len()));
-    assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+    assert!(matches!(
+      r,
+      Ok(Err(Mp4Error::TooManyTableEntries { box_name: "stts", .. }))
+    ));
 
     // A `stsz` box with `sample_size == 0` (meaning per-sample sizes are present) but a gigantic
     // sample_count. The parser should reject this up front to avoid OOM.
@@ -2158,5 +2172,76 @@ mod tests {
       cur.read_u64(8)
     });
     assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+
+  #[test]
+  fn parse_stsz_rejects_excessive_sample_count_without_reading_entries() {
+    // stsz (fullbox) content:
+    // version+flags (4 bytes), sample_size (4 bytes), sample_count (4 bytes)
+    //
+    // We intentionally do not include per-sample sizes in the payload; the parser must reject the
+    // sample_count before trying to allocate/read the table.
+    let sample_count = (MAX_SAMPLES_PER_TRACK as u32) + 1;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0, 0, 0, 0]); // version 0 + flags
+    bytes.extend_from_slice(&0u32.to_be_bytes()); // sample_size = 0 => would normally read table
+    bytes.extend_from_slice(&sample_count.to_be_bytes());
+
+    match parse_stsz(&bytes, 0..bytes.len()) {
+      Err(Mp4Error::TooManySamples {
+        sample_count: got,
+        max,
+      }) => {
+        assert_eq!(got, u64::from(sample_count));
+        assert_eq!(max, MAX_SAMPLES_PER_TRACK);
+      }
+      other => panic!("expected TooManySamples error, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn mp4_track_demuxer_rejects_excessive_packet_size_before_io() {
+    use mp4parse::unstable::CheckedInteger;
+
+    #[derive(Debug)]
+    struct PanicReader;
+
+    impl Read for PanicReader {
+      fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        panic!("read should not be called when sample size exceeds MAX_MP4_PACKET_BYTES");
+      }
+    }
+
+    impl Seek for PanicReader {
+      fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        panic!("seek should not be called when sample size exceeds MAX_MP4_PACKET_BYTES");
+      }
+    }
+
+    let sample_len = MAX_MP4_PACKET_BYTES + 1;
+    let sample_table = vec![Indice {
+      start_offset: CheckedInteger(0u64),
+      end_offset: CheckedInteger(sample_len),
+      start_decode: CheckedInteger(0i64),
+      start_composition: CheckedInteger(0i64),
+      end_composition: CheckedInteger(1i64),
+      sync: true,
+      ..Default::default()
+    }];
+
+    let mut demuxer =
+      Mp4TrackDemuxer::new(PanicReader, sample_table, 1, 1, MediaTrackType::Video);
+    match demuxer.next_packet() {
+      Err(MediaError::Demux(msg)) => {
+        assert!(
+          msg.contains(&sample_len.to_string()),
+          "error message should include sample length, got: {msg}"
+        );
+        assert!(
+          msg.contains(&MAX_MP4_PACKET_BYTES.to_string()),
+          "error message should include cap, got: {msg}"
+        );
+      }
+      other => panic!("expected MediaError::Demux for oversized sample, got {other:?}"),
+    }
   }
 }
