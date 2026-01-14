@@ -12468,6 +12468,12 @@ impl<'vm> HirEvaluator<'vm> {
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
             .this_value = Some(this_obj);
+          // Do not overwrite the lexical `this` binding value in the environment record.
+          //
+          // In derived constructors, vm-js represents the lexical `this` binding as the shared
+          // `DerivedConstructorState` cell itself. Nested arrow functions and direct eval code must
+          // continue to observe that cell so `super()` remains callable (and throws the correct
+          // ReferenceError on a second call).
 
           // Initialize derived instance fields immediately after `super()` returns.
           crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -25347,6 +25353,7 @@ pub(crate) fn run_compiled_function(
       func.body,
     );
   }
+
 
   let mut evaluator = HirEvaluator {
     vm,
