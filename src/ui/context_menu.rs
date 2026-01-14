@@ -100,7 +100,7 @@ mod tests {
 // Page context menu actions (windowed browser UI)
 // -----------------------------------------------------------------------------
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 use crate::ui::BookmarkStore;
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -125,8 +125,8 @@ pub enum PageContextMenuAction {
 
 /// Returns the accessibility label for a page context menu action.
 ///
-/// Visible menu text is intentionally kept stable (and may not encode state), so for "toggle"
-/// actions we include the current checked state in the a11y label.
+/// Screen readers do not always announce menu-item check marks, so for "toggle" actions we include
+/// the current checked state in the a11y label.
 #[cfg(any(test, feature = "browser_ui"))]
 pub fn format_page_context_menu_a11y_label(
   base_label: &str,
@@ -150,7 +150,7 @@ pub fn format_page_context_menu_a11y_label(
   }
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageContextMenuItem {
   pub label: &'static str,
@@ -158,14 +158,14 @@ pub struct PageContextMenuItem {
   pub checked: bool,
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageContextMenuEntry {
   Action(PageContextMenuItem),
   Separator,
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, Copy)]
 pub struct PageContextMenuBuildInput<'a> {
   pub link_url: Option<&'a str>,
@@ -180,7 +180,7 @@ pub struct PageContextMenuBuildInput<'a> {
   pub can_select_all: bool,
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn build_page_context_menu_entries(
   input: PageContextMenuBuildInput<'_>,
 ) -> Vec<PageContextMenuEntry> {
@@ -277,13 +277,24 @@ pub fn build_page_context_menu_entries(
     checked: !page_url.is_empty() && input.bookmarks.contains_url(page_url),
   }));
 
+  let history_toggle_label = if input.history_panel_open {
+    "Hide History"
+  } else {
+    "Show History"
+  };
   out.push(PageContextMenuEntry::Action(PageContextMenuItem {
-    label: "Show History",
+    label: history_toggle_label,
     action: PageContextMenuAction::ToggleHistoryPanel,
     checked: input.history_panel_open,
   }));
+
+  let bookmarks_toggle_label = if input.bookmarks_panel_open {
+    "Hide Bookmarks"
+  } else {
+    "Show Bookmarks"
+  };
   out.push(PageContextMenuEntry::Action(PageContextMenuItem {
-    label: "Show Bookmarks",
+    label: bookmarks_toggle_label,
     action: PageContextMenuAction::ToggleBookmarksPanel,
     checked: input.bookmarks_panel_open,
   }));
@@ -390,6 +401,74 @@ mod a11y_label_tests {
       ),
       "Copy Link Address"
     );
+  }
+}
+
+#[cfg(test)]
+mod entry_label_tests {
+  use super::*;
+
+  #[test]
+  fn build_page_context_menu_entries_toggle_labels_reflect_open_state() {
+    let bookmarks = BookmarkStore::default();
+    let base = PageContextMenuBuildInput {
+      link_url: None,
+      image_url: None,
+      page_url: Some("https://example.com/"),
+      bookmarks: &bookmarks,
+      history_panel_open: false,
+      bookmarks_panel_open: false,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+    };
+
+    let entries = build_page_context_menu_entries(base);
+    let history_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::ToggleHistoryPanel) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(history_label, Some("Show History"));
+
+    let bookmarks_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::ToggleBookmarksPanel) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(bookmarks_label, Some("Show Bookmarks"));
+
+    let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+      history_panel_open: true,
+      bookmarks_panel_open: true,
+      ..base
+    });
+    let history_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::ToggleHistoryPanel) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(history_label, Some("Hide History"));
+
+    let bookmarks_label = entries.iter().find_map(|entry| match entry {
+      PageContextMenuEntry::Action(item)
+        if matches!(item.action, PageContextMenuAction::ToggleBookmarksPanel) =>
+      {
+        Some(item.label)
+      }
+      _ => None,
+    });
+    assert_eq!(bookmarks_label, Some("Hide Bookmarks"));
   }
 }
 
