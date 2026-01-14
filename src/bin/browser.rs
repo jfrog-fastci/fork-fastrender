@@ -1932,6 +1932,7 @@ fn sanitize_worker_to_ui_untrusted_payloads(
     WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
+      tooltip,
       cursor,
       tooltip,
     } => Some(WorkerToUi::HoverChanged {
@@ -1940,6 +1941,10 @@ fn sanitize_worker_to_ui_untrusted_payloads(
         .as_deref()
         .map(|url| sanitize_untrusted_text(url, MAX_URL_BYTES))
         .filter(|url| !url.is_empty()),
+      tooltip: tooltip
+        .as_deref()
+        .map(|t| sanitize_untrusted_text(t, MAX_TITLE_BYTES))
+        .filter(|t| !t.is_empty()),
       cursor,
       tooltip: tooltip
         .as_deref()

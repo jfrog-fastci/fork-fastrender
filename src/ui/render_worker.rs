@@ -14119,11 +14119,7 @@ mod media_wakeup_tests {
         .recv_timeout(remaining)
         .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
       match msg {
-        WorkerToUi::RequestWakeAfter {
-          tab_id,
-          after,
-          reason,
-        } => return (tab_id, after, reason),
+        WorkerToUi::RequestWakeAfter { tab_id, after, reason } => return (tab_id, after, reason),
         _ => continue,
       }
     }

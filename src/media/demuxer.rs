@@ -735,8 +735,7 @@ fn mp4parse_extract_aac_asc(ctx: &mp4parse::MediaContext) -> MediaResult<HashMap
 
 #[cfg(all(test, feature = "media_mp4", feature = "codec_vp9_libvpx"))]
 mod tests {
-  use super::MediaDemuxer;
-  use super::Mp4PacketDemuxer;
+  use super::{MediaDemuxer, Mp4PacketDemuxer};
   use crate::media::decoder::create_video_decoder;
   use crate::media::{MediaCodec, MediaTrackType};
   use std::path::PathBuf;

@@ -821,6 +821,25 @@ mod tests {
     found.unwrap_or_else(|| panic!("missing element {tag}"))
   }
 
+  fn cursor_kind_for_hover(dom: &DomNode, hit: Option<&HitTestResult>) -> CursorKind {
+    let Some(hit) = hit else {
+      return CursorKind::Default;
+    };
+
+    // The canonical cursor helper operates on `HitTestResult`, which already stores
+    // `form_control_cursor`. These unit tests construct hits manually, so recompute the form-control
+    // cursor from the referenced DOM node to keep the test semantics aligned with real hit-testing.
+    let mut hit = hit.clone();
+    if matches!(hit.kind, HitTestKind::FormControl) {
+      let index = DomIndex::new(dom);
+      if let Some(node) = index.node(hit.dom_node_id) {
+        hit.form_control_cursor = cursor_for_form_control(node);
+      }
+    }
+
+    crate::interaction::cursor::cursor_kind_for_hit(Some(&hit))
+  }
+
   #[test]
   fn non_ascii_whitespace_hit_test_input_type_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
