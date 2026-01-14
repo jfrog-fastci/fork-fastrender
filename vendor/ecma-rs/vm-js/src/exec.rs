@@ -26994,13 +26994,33 @@ fn async_for_in_after_rhs(
   let mut visited_scan_count: usize = 0;
 
   let collect_res: Result<(), VmError> = (|| {
+    // Use a temporary scope so any stack roots created while snapshotting Proxy keys/prototypes are
+    // discarded once collection is complete (persistent roots are registered explicitly below).
+    let mut collect_scope = scope.reborrow();
+
     let mut current: Option<GcObject> = Some(object);
     while let Some(obj) = current {
       evaluator.tick()?;
+      collect_scope.push_root(Value::Object(obj))?;
 
-      let own_keys = scope
-        .ordinary_own_property_keys_with_tick(obj, || evaluator.tick())
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+      // Use Proxy-aware internal-method dispatch so `for..in` in async contexts observes the same
+      // trap semantics as synchronous `for..in`.
+      let own_keys = match collect_scope.own_property_keys_with_host_and_hooks(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        obj,
+      ) {
+        Ok(keys) => keys,
+        Err(err) => {
+          return Err(coerce_error_to_throw_for_async(
+            evaluator.vm,
+            &mut collect_scope,
+            err,
+          ))
+        }
+      };
+
       for key in own_keys {
         key_count = key_count.wrapping_add(1);
         if (key_count & (KEY_COLLECTION_TICK_EVERY - 1)) == 0 {
@@ -27011,23 +27031,13 @@ fn async_for_in_after_rhs(
           continue;
         };
 
-        let Some(desc) = scope
-          .ordinary_get_own_property(obj, key)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?
-        else {
-          continue;
-        };
-        if !desc.enumerable {
-          continue;
-        }
-
         let mut already_visited = false;
         for seen in &visited {
           visited_scan_count = visited_scan_count.wrapping_add(1);
           if (visited_scan_count & (VISITED_SCAN_TICK_EVERY - 1)) == 0 {
             evaluator.tick()?;
           }
-          if scope.heap().property_key_eq(seen, &key) {
+          if collect_scope.heap().property_key_eq(seen, &key) {
             already_visited = true;
             break;
           }
@@ -27036,23 +27046,67 @@ fn async_for_in_after_rhs(
           continue;
         }
 
+        let desc = match collect_scope.get_own_property_with_host_and_hooks(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          obj,
+          key,
+        ) {
+          Ok(desc) => desc,
+          Err(err) => {
+            return Err(coerce_error_to_throw_for_async(
+              evaluator.vm,
+              &mut collect_scope,
+              err,
+            ))
+          }
+        };
+        let Some(desc) = desc else {
+          continue;
+        };
+
+        // Suppress duplicates across own keys/prototypes, including shadowing by non-enumerable
+        // keys.
         visited.push(key);
+
+        // Non-enumerable keys shadow prototypes but are not yielded.
+        if !desc.enumerable {
+          continue;
+        }
 
         // Ensure we have space in `keys` before allocating a persistent root so we don't leak the
         // root on an OOM during `Vec` growth.
         keys.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
 
         let id = {
-          let mut root_scope = scope.reborrow();
+          let mut root_scope = collect_scope.reborrow();
           root_scope.push_root(Value::String(s))?;
           root_scope.heap_mut().add_root(Value::String(s))?
         };
         keys.push(id);
       }
 
-      current = scope
-        .object_get_prototype(obj)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+      current = match collect_scope.get_prototype_of_with_host_and_hooks(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        obj,
+      ) {
+        Ok(v) => v,
+        Err(err) => {
+          return Err(coerce_error_to_throw_for_async(
+            evaluator.vm,
+            &mut collect_scope,
+            err,
+          ))
+        }
+      };
+      if let Some(proto) = current {
+        // Root visited prototypes so a `__proto__` mutation during Proxy trap evaluation cannot
+        // invalidate the loop's internal object handle before we reach it.
+        collect_scope.push_root(Value::Object(proto))?;
+      }
     }
     Ok(())
   })();
