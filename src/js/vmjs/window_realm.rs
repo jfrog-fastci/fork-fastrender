@@ -30589,6 +30589,8 @@ fn element_append_native(
   fn convert_arg_to_node(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     dom_ptr: &mut NonNull<dom2::Document>,
     document_obj: GcObject,
     value: Value,
@@ -30603,7 +30605,10 @@ fn element_append_native(
     }
 
     // Coerce to string and create a Text node.
-    let s = scope.heap_mut().to_string(value)?;
+    let s = match value {
+      Value::String(s) => s,
+      other => scope.to_string(vm, host, hooks, other)?,
+    };
     let text = scope.heap().get_string(s)?.to_utf8_lossy();
     let text_id = unsafe { dom_ptr.as_mut() }.create_text(&text);
 
@@ -30616,7 +30621,7 @@ fn element_append_native(
   // creates a DocumentFragment and appends each converted node to it, then inserts the fragment.
   if args.len() == 1 {
     let node_value =
-      convert_arg_to_node(vm, scope, &mut dom_ptr, parent_handle.document_obj, args[0])?;
+      convert_arg_to_node(vm, scope, host, hooks, &mut dom_ptr, parent_handle.document_obj, args[0])?;
     let node_value = scope.push_root(node_value)?;
     let _ = node_append_child_native(vm, scope, host, hooks, callee, Value::Object(parent_obj), &[node_value])?;
     scope.heap_mut().truncate_stack_roots(base);
@@ -30645,7 +30650,7 @@ fn element_append_native(
   // - `node_value` (temporary; truncated each loop iteration)
   let keep_len = base + 2;
   for &arg in args {
-    let node_value = convert_arg_to_node(vm, scope, &mut dom_ptr, parent_handle.document_obj, arg)?;
+    let node_value = convert_arg_to_node(vm, scope, host, hooks, &mut dom_ptr, parent_handle.document_obj, arg)?;
     let node_value = scope.push_root(node_value)?;
     let _ = node_append_child_native(
       vm,
@@ -34847,12 +34852,11 @@ fn convert_nodes_into_node(
       }
     }
 
-    let s = scope.heap_mut().to_string(value)?;
-    let data = scope
-      .heap()
-      .get_string(s)
-      .map(|s| s.to_utf8_lossy())
-      .unwrap_or_default();
+    let s = match value {
+      Value::String(s) => s,
+      other => scope.to_string(vm, host, hooks, other)?,
+    };
+    let data = scope.heap().get_string(s)?.to_utf8_lossy();
     let node_id = unsafe { dom_ptr.as_mut() }.create_text(&data);
     let dom = unsafe { dom_ptr.as_ref() };
     let text_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?;
@@ -60283,6 +60287,26 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn parent_node_append_stringifies_objects_via_ecmascript_to_string() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"
+        (() => {
+          const el = document.createElement("div");
+          el.append({ toString() { return "x"; } });
+          return el.firstChild && el.firstChild.nodeType === 3 && el.firstChild.data === "x";
+        })()
+      "#,
+    )?;
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 
