@@ -299,6 +299,9 @@ impl From<MediaError> for Error {
       MediaError::Unsupported(message) => Error::Other(format!("[media] unsupported: {message}")),
       MediaError::Demux(message) => Error::Other(format!("[media] demux error: {message}")),
       MediaError::Decode(message) => Error::Other(format!("[media] decode error: {message}")),
+      MediaError::ResourceTooLarge(message) => {
+        Error::Other(format!("[media] resource too large: {message}"))
+      }
     }
   }
 }

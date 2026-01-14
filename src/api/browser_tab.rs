@@ -9330,20 +9330,6 @@ impl BrowserTab {
     });
   }
 
-  /// Updates the viewport size (in CSS px), marking layout+paint dirty.
-  ///
-  /// This forwards to the underlying [`BrowserDocumentDom2`] so media queries and layout can be
-  /// recomputed on the next render.
-  pub fn set_viewport(&mut self, width: u32, height: u32) {
-    self.host.document.set_viewport(width, height);
-  }
-
-  /// Updates the device pixel ratio override used for media queries and resolution-dependent
-  /// resources.
-  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
-    self.host.document.set_device_pixel_ratio(dpr);
-  }
-
   /// Updates the full scroll state (viewport + element scroll offsets) used for hit testing.
   ///
   /// This is intended for UI integrations that maintain their own scroll offsets and need to keep

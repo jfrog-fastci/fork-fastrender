@@ -1,4 +1,4 @@
-use crate::dom2::{Document, NodeId, NodeKind};
+use crate::dom2::{Document, NodeId, NodeKind, NULL_NAMESPACE};
 use crate::interaction::InteractionStateDom2;
 
 fn trim_ascii_whitespace(value: &str) -> &str {

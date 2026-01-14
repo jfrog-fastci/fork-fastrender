@@ -634,6 +634,12 @@ impl ChromeActionUrl {
   }
 }
 
+/// `chrome-action` URL scheme string.
+///
+/// Prefer [`ChromeActionUrl::SCHEME`] when possible; this constant exists for backwards-compatible
+/// call sites that imported `CHROME_ACTION_SCHEME` from `crate::ui`.
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
+
 impl std::fmt::Display for ChromeActionUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str(&self.format())
