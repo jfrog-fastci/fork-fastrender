@@ -45,6 +45,8 @@ fn context_menu_request_propagates_modifier_keys_to_js_event() {
         if (c && !s && !a && !m) ev.preventDefault();
         if (a && !c && !s && !m) ev.preventDefault();
         if (m && !c && !s && !a) ev.preventDefault();
+        // Also verify combinations (multiple modifier bits set simultaneously).
+        if (c && s && !a && !m) ev.preventDefault();
       });
     </script>
   </body>
@@ -80,6 +82,11 @@ fn context_menu_request_propagates_modifier_keys_to_js_event() {
     (PointerModifiers::CTRL, true, "ctrlKey"),
     (PointerModifiers::ALT, true, "altKey"),
     (PointerModifiers::META, true, "metaKey"),
+    (
+      PointerModifiers::SHIFT | PointerModifiers::CTRL,
+      true,
+      "shiftKey+ctrlKey",
+    ),
     (PointerModifiers::NONE, false, "no modifiers"),
   ];
   for (modifiers, expect_prevented, label) in cases {
