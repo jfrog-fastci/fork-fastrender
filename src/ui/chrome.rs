@@ -1660,8 +1660,8 @@ pub fn chrome_ui_with_bookmarks(
                   BrowserIcon::LockSecure,
                   ui.spacing().icon_width,
                   ui.visuals().text_color(),
-                )
-                .on_hover_text(label);
+                );
+                show_tooltip_on_hover_or_focus(ui, &resp, label);
                 resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
               }
               security_indicator::SecurityIndicator::Insecure => {
@@ -1671,8 +1671,8 @@ pub fn chrome_ui_with_bookmarks(
                   BrowserIcon::WarningInsecure,
                   ui.spacing().icon_width,
                   ui.visuals().warn_fg_color,
-                )
-                .on_hover_text(label);
+                );
+                show_tooltip_on_hover_or_focus(ui, &resp, label);
                 resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
               }
               security_indicator::SecurityIndicator::Neutral => {
@@ -1682,8 +1682,8 @@ pub fn chrome_ui_with_bookmarks(
                   BrowserIcon::Info,
                   ui.spacing().icon_width,
                   ui.visuals().weak_text_color(),
-                )
-                .on_hover_text(label);
+                );
+                show_tooltip_on_hover_or_focus(ui, &resp, label);
                 resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
               }
             }
