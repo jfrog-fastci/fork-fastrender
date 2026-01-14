@@ -16455,9 +16455,10 @@ enum HirAsyncResumePoint {
   /// The continuation stores a `ForAwaitOfState` state machine that drives the loop across
   /// suspensions. When the loop completes, evaluation continues from `next_stmt_index`.
   ///
-  /// If `break_label` is `Some`, this `for await..of` was wrapped in a single top-level label
-  /// statement (`label: for await (...) { ... }`). In that case, a `break label;` completion from
-  /// the loop must be consumed by the label statement and treated as a normal completion.
+  /// `break_label` is reserved for future use.
+  ///
+  /// Labelled `break <label>` completions are currently handled using the loop state's internal
+  /// label set (stored in `ForAwaitOfState`) rather than this field.
   ForAwaitOf {
     next_stmt_index: usize,
     break_label: Option<hir_js::NameId>,
@@ -16844,16 +16845,35 @@ fn hir_eval_stmt_list_until_await(
       continue;
     }
 
-    // Fast-path a single top-level label statement whose body is a `for await..of` loop.
+    // Fast-path top-level label chains whose body is a `for await..of` loop.
     //
     // This supports patterns like:
     //   `outer: for await (const x of iterable) { break outer; }`
-    //
-    // This is intentionally narrow: nested label statements still fall back to the AST executor.
-    if let hir_js::StmtKind::Labeled { label, body: labeled_body } = &stmt.kind {
-      // Budget once for the label statement itself, matching `eval_stmt_labelled`.
-      evaluator.vm.tick()?;
-      let inner_stmt = evaluator.get_stmt(body, *labeled_body)?;
+    //   `a: b: for await (const x of iterable) { break a; }`
+    if let hir_js::StmtKind::Labeled {
+      label: first_label,
+      body: first_body,
+    } = &stmt.kind
+    {
+      // Detect whether this is a pure label chain ending in a `for await..of`.
+      //
+      // We intentionally avoid ticking here unless we actually handle the construct, so label
+      // statements that do *not* contain top-level await continue to be evaluated by the normal
+      // (synchronous) evaluator without double-charging budget.
+      let mut label_count: usize = 1;
+      let mut current_stmt_id: hir_js::StmtId = *first_body;
+      loop {
+        let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+        match &inner_stmt.kind {
+          hir_js::StmtKind::Labeled { body: inner, .. } => {
+            label_count = label_count.saturating_add(1);
+            current_stmt_id = *inner;
+          }
+          _ => break,
+        }
+      }
+
+      let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
       if let hir_js::StmtKind::ForIn {
         left,
         right,
@@ -16862,11 +16882,34 @@ fn hir_eval_stmt_list_until_await(
         await_: true,
       } = &inner_stmt.kind
       {
-        // Budget once for the loop statement itself, matching the `StmtKind::ForIn` branch in
-        // `eval_stmt_labelled`.
+        // Collect the label set so:
+        // - `continue <label>` targeted at any label in the chain is consumed by the loop
+        // - `break <label>` completions can be consumed by the enclosing label statement(s)
+        let mut label_set: Vec<hir_js::NameId> = Vec::new();
+        label_set
+          .try_reserve_exact(label_count)
+          .map_err(|_| VmError::OutOfMemory)?;
+        label_set.push(*first_label);
+        let mut current_stmt_id = *first_body;
+        loop {
+          let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+          match &inner_stmt.kind {
+            hir_js::StmtKind::Labeled { label, body: inner } => {
+              label_set.push(*label);
+              current_stmt_id = *inner;
+            }
+            _ => break,
+          }
+        }
+
+        // Budget once per label statement and once for the loop statement itself, matching the
+        // synchronous evaluator's statement-entry ticks.
+        for _ in 0..label_set.len() {
+          evaluator.vm.tick()?;
+        }
         evaluator.vm.tick()?;
-        let label_set = [*label];
-        let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, &label_set)?;
+
+        let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, label_set.as_slice())?;
         match state.poll(evaluator, scope, body, None) {
           Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
             return Ok(HirAsyncEvalResult::Await {
@@ -16874,7 +16917,9 @@ fn hir_eval_stmt_list_until_await(
               await_value,
               resume: HirAsyncResumePoint::ForAwaitOf {
                 next_stmt_index: i.saturating_add(1),
-                break_label: Some(*label),
+                // `HirAsyncResumePoint` currently only carries a single optional label; the loop
+                // state itself stores the full label set for completion conversion.
+                break_label: None,
               },
               assign_reference: None,
               assign_op: None,
@@ -16886,7 +16931,7 @@ fn hir_eval_stmt_list_until_await(
             // Defensive cleanup: `poll(Init)` should return `Await`, but keep this robust.
             state.teardown(scope.heap_mut());
             let flow = match flow {
-              Flow::Break(Some(target), value) if target == *label => Flow::Normal(value),
+              Flow::Break(Some(target), value) if label_set.iter().any(|l| *l == target) => Flow::Normal(value),
               other => other,
             };
             match flow {
@@ -18218,9 +18263,11 @@ pub(crate) fn hir_async_resume_continuation(
               // returning `Complete`, but call `teardown` defensively so future changes to the state
               // machine cannot leak roots.
               state.teardown(scope.heap_mut());
-              let flow = match (break_label, flow) {
-                (Some(label), Flow::Break(Some(target), value)) if target == label => Flow::Normal(value),
-                (_, other) => other,
+              let flow = match flow {
+                Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                  Flow::Normal(value)
+                }
+                other => other,
               };
               match flow {
                 Flow::Normal(v) => {

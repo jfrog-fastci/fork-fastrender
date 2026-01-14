@@ -354,3 +354,113 @@ fn compiled_script_top_level_for_await_of_rhs_type_error_rejects_promise_with_st
   assert_eq!(has_stack, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn compiled_script_top_level_labeled_for_await_of_break_label_with_await_rhs_executes_and_closes_iterator(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var actual = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          i: 0,
+          next() {
+            if (this.i++ === 0) return Promise.resolve({ value: "a", done: false });
+            return Promise.resolve({ value: "b", done: false });
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      outer: for await (const x of await Promise.resolve(iterable)) {
+        actual += x;
+        break outer;
+      }
+      actual += "done";
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "labeled top-level for-await-of loops with direct await RHS should execute via the compiled (HIR) async script path"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let after = rt.exec_script("actual")?;
+  assert_eq!(value_to_utf8(&rt, after), "adone");
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_nested_labeled_for_await_of_break_outer_label_executes_and_closes_iterator(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var actual = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          i: 0,
+          next() {
+            if (this.i++ === 0) return Promise.resolve({ value: "a", done: false });
+            return Promise.resolve({ value: "b", done: false });
+          },
+          return() {
+            returnCalls++;
+            return Promise.resolve({ done: true });
+          },
+        };
+      };
+
+      outer: inner: for await (const x of iterable) {
+        actual += x;
+        break outer;
+      }
+      actual += "done";
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "nested labeled top-level for-await-of loops with synchronous bodies should execute via the compiled (HIR) async script path"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let after = rt.exec_script("actual")?;
+  assert_eq!(value_to_utf8(&rt, after), "adone");
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
