@@ -6767,6 +6767,7 @@ fn prepare_fragment_tree_paint_state(
                 value,
                 caret,
                 caret_affinity,
+                selection,
                 kind,
                 ..
               } = &control.control
@@ -6818,37 +6819,91 @@ fn prepare_fragment_tree_paint_state(
                   let preedit = control
                     .ime_preedit
                     .as_ref()
-                    .map(|preedit| preedit.text.as_str())
-                    .filter(|t| !t.is_empty());
+                    .filter(|state| !state.text.is_empty());
                   let committed_is_empty = value.is_empty();
                   let display_is_empty = committed_is_empty && preedit.is_none();
+                  let committed_len = value.chars().count();
+                  let (replace_start, replace_end) = (*selection).unwrap_or((*caret, *caret));
+                  let replace_start = replace_start.min(committed_len);
+                  let replace_end = replace_end.min(committed_len);
+                  let (replace_start, replace_end) = if replace_start <= replace_end {
+                    (replace_start, replace_end)
+                  } else {
+                    (replace_end, replace_start)
+                  };
+
+                  let byte_offset_for_char_idx = |text: &str, char_idx: usize| -> usize {
+                    if char_idx == 0 {
+                      return 0;
+                    }
+                    let mut count = 0usize;
+                    for (byte_idx, _) in text.char_indices() {
+                      if count == char_idx {
+                        return byte_idx;
+                      }
+                      count += 1;
+                    }
+                    text.len()
+                  };
+
                   let mut display_text_owned: Option<String> = None;
                   let mut display_text: &str = "";
+                  let mut ime_caret_idx: Option<usize> = None;
 
                   match kind {
                     crate::tree::box_tree::TextControlKind::Password => {
                       if !display_is_empty {
-                        let committed_len = value.chars().count();
-                        let preedit_len =
-                          preedit.map(|t| t.chars().count()).unwrap_or(0);
-                        let mask_len =
-                          committed_len.saturating_add(preedit_len).clamp(3, 50);
+                        let replaced_len = if preedit.is_some() {
+                          replace_end.saturating_sub(replace_start)
+                        } else {
+                          0
+                        };
+                        let preedit_len = preedit
+                          .map(|state| state.text.chars().count())
+                          .unwrap_or(0);
+                        let mask_len = committed_len
+                          .saturating_sub(replaced_len)
+                          .saturating_add(preedit_len)
+                          .clamp(3, 50);
                         display_text_owned = Some("•".repeat(mask_len));
                         display_text = display_text_owned.as_deref().unwrap_or("");
+
+                        if let Some(preedit) = preedit {
+                          let preedit_len = preedit.text.chars().count();
+                          let cursor_end = preedit
+                            .cursor
+                            .map(|(a, b)| a.max(b))
+                            .unwrap_or(preedit_len)
+                            .min(preedit_len);
+                          ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+                        }
                       }
                     }
                     crate::tree::box_tree::TextControlKind::Number
                     | crate::tree::box_tree::TextControlKind::Date
                     | crate::tree::box_tree::TextControlKind::Plain => {
                       if let Some(preedit) = preedit {
-                        if committed_is_empty {
-                          display_text = preedit;
-                        } else {
-                          let mut combined = value.clone();
-                          combined.push_str(preedit);
-                          display_text_owned = Some(combined);
-                          display_text = display_text_owned.as_deref().unwrap_or("");
-                        }
+                        let start_byte = byte_offset_for_char_idx(value, replace_start);
+                        let end_byte = byte_offset_for_char_idx(value, replace_end);
+                        let mut combined = String::with_capacity(
+                          value
+                            .len()
+                            .saturating_sub(end_byte.saturating_sub(start_byte))
+                            .saturating_add(preedit.text.len()),
+                        );
+                        combined.push_str(&value[..start_byte]);
+                        combined.push_str(&preedit.text);
+                        combined.push_str(&value[end_byte..]);
+                        display_text_owned = Some(combined);
+                        display_text = display_text_owned.as_deref().unwrap_or("");
+
+                        let preedit_len = preedit.text.chars().count();
+                        let cursor_end = preedit
+                          .cursor
+                          .map(|(a, b)| a.max(b))
+                          .unwrap_or(preedit_len)
+                          .min(preedit_len);
+                        ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
                       } else {
                         display_text = value.as_str();
                       }
@@ -6912,11 +6967,9 @@ fn prepare_fragment_tree_paint_state(
 
                   if control.focused && !control.disabled && viewport_width > 0.0 {
                     let max_chars = char_count;
-                    let caret_idx = if preedit.is_some() {
-                      max_chars
-                    } else {
-                      (*caret).min(max_chars)
-                    };
+                    let caret_idx = ime_caret_idx
+                      .unwrap_or_else(|| (*caret).min(max_chars))
+                      .min(max_chars);
                     let caret_affinity_for_paint = if preedit.is_some() {
                       crate::text::caret::CaretAffinity::Downstream
                     } else {
