@@ -13,6 +13,15 @@ fn normalize_context_title_or_url(title: Option<&str>, url: &str) -> String {
 
   let raw = if !title.is_empty() { title } else { url };
 
+  // Fast path: the common case is an ASCII URL with no whitespace. Avoid split/loop overhead.
+  if raw
+    .as_bytes()
+    .iter()
+    .all(|&b| b.is_ascii() && !b.is_ascii_whitespace())
+  {
+    return raw.to_string();
+  }
+
   // Strip newlines/tabs and collapse whitespace so screen readers get a concise name.
   let mut out = String::with_capacity(raw.len());
   for (idx, part) in raw.split_whitespace().enumerate() {
@@ -26,6 +35,14 @@ fn normalize_context_title_or_url(title: Option<&str>, url: &str) -> String {
 
 fn normalize_file_name(file_name: &str) -> String {
   let raw = file_name.trim();
+  // Fast path: most file names are ASCII and whitespace-free.
+  if raw
+    .as_bytes()
+    .iter()
+    .all(|&b| b.is_ascii() && !b.is_ascii_whitespace())
+  {
+    return raw.to_string();
+  }
   let mut out = String::with_capacity(raw.len());
   for (idx, part) in raw.split_whitespace().enumerate() {
     if idx > 0 {
