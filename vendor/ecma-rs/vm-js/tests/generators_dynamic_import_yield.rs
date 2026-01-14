@@ -14,12 +14,14 @@ fn new_runtime() -> JsRuntime {
 /// throwing synchronously.
 struct RejectingImportHooks {
   microtasks: MicrotaskQueue,
+  last_specifier: Option<String>,
 }
 
 impl RejectingImportHooks {
   fn new() -> Self {
     Self {
       microtasks: MicrotaskQueue::new(),
+      last_specifier: None,
     }
   }
 
@@ -47,6 +49,7 @@ impl VmHostHooks for RejectingImportHooks {
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
+    self.last_specifier = Some(module_request.specifier_utf8_lossy());
     vm.finish_loading_imported_module(
       scope,
       modules,
@@ -85,5 +88,37 @@ fn generator_dynamic_import_specifier_can_yield() -> Result<(), VmError> {
   )?;
   hooks.teardown_jobs(&mut rt);
   assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
+  Ok(())
+}
+
+#[test]
+fn generator_dynamic_import_options_can_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        return import(yield 0, yield 1);
+      }
+
+      var it = g();
+      var first = it.next();
+      var second = it.next("./m.js");
+      var third = it.next(undefined);
+
+      first.value === 0 &&
+        first.done === false &&
+        second.value === 1 &&
+        second.done === false &&
+        third.done === true &&
+        third.value &&
+        typeof third.value.then === "function"
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
   Ok(())
 }
