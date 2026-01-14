@@ -133,6 +133,7 @@ fn viewport_changed_syncs_js_tab_viewport_for_element_from_point_in_click_handle
       tab_id: got,
       hovered_url,
       cursor,
+      ..
     } => {
       assert_eq!(got, tab_id);
       assert_eq!(

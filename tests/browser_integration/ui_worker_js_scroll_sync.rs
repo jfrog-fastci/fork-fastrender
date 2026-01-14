@@ -137,6 +137,7 @@ fn scroll_state_updates_sync_js_tab_element_from_point_in_click_handler() {
       tab_id: got,
       hovered_url,
       cursor,
+      ..
     } => {
       assert_eq!(got, tab_id);
       assert_eq!(

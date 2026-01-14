@@ -79,15 +79,16 @@ fn wait_for_hover_changed(
   let deadline = Instant::now() + timeout;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::HoverChanged {
-        tab_id: msg_tab,
-        hovered_url,
-        cursor,
-      }) if msg_tab == tab_id => return (hovered_url, cursor),
-      Ok(_) => continue,
-      Err(RecvTimeoutError::Timeout) => continue,
-      Err(RecvTimeoutError::Disconnected) => break,
+      match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+        Ok(WorkerToUi::HoverChanged {
+          tab_id: msg_tab,
+          hovered_url,
+          cursor,
+          ..
+        }) if msg_tab == tab_id => return (hovered_url, cursor),
+        Ok(_) => continue,
+        Err(RecvTimeoutError::Timeout) => continue,
+        Err(RecvTimeoutError::Disconnected) => break,
     }
   }
   panic!("timed out waiting for HoverChanged for {tab_id:?}");
