@@ -1071,14 +1071,16 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     }
 
     let supported = match &*stmt.stx {
-      // `await <expr>;` as a standalone statement item.
-      Stmt::Expr(expr_stmt) => match &*expr_stmt.stx.expr.stx {
-        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-          // The compiled evaluator does not yet support nested `await` inside the awaited operand.
-          !expr_contains_await(&unary.stx.argument)
-        }
-        _ => false,
-      },
+      // Expression statements.
+      //
+      // Supported shapes:
+      // - `await <expr>;`
+      // - `x = await <expr>;` (for supported assignment targets)
+      Stmt::Expr(expr_stmt) => {
+        let expr = &expr_stmt.stx.expr;
+        expr_is_direct_await_without_nested_await(expr)
+          || expr_is_assignment_with_direct_await_rhs_without_nested_await(expr)
+      }
 
       // `throw await <expr>;` as a standalone statement item.
       Stmt::Throw(throw_stmt) => match &*throw_stmt.stx.value.stx {
