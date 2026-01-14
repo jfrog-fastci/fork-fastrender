@@ -198,3 +198,94 @@ fn overload_resolution_frozen_array_and_async_sequence() {
     assert_eq!(res.overload_id, "str");
     assert_eq!(rt.get_method_calls, 0);
 }
+
+#[test]
+fn union_sequence_and_frozen_array_string_object_special_case() {
+    // sequence<T> vs DOMString
+    let mut rt = ToyRuntime::default();
+    let union_ty = IdlType::Union(vec![
+        IdlType::Sequence(Box::new(IdlType::DomString)),
+        IdlType::DomString,
+    ]);
+
+    let string_obj = rt.string_object("hello");
+    // String objects are iterable; model that so we can ensure the special-case is honored.
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+
+    let v = convert_js_to_idl(&mut rt, &union_ty, string_obj).unwrap();
+    let IdlValue::Union(u) = v else {
+        panic!("expected union value");
+    };
+    assert!(matches!(u.selected_type, IdlType::DomString));
+    // Special-case (d): do not call GetMethod(@@iterator) for sequence selection when V is a string
+    // object and the union contains a string type.
+    assert_eq!(rt.get_method_calls, 0);
+
+    // FrozenArray<T> vs DOMString
+    let mut rt = ToyRuntime::default();
+    let union_ty = IdlType::Union(vec![
+        IdlType::FrozenArray(Box::new(IdlType::DomString)),
+        IdlType::DomString,
+    ]);
+
+    let string_obj = rt.string_object("hello");
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+
+    let v = convert_js_to_idl(&mut rt, &union_ty, string_obj).unwrap();
+    let IdlValue::Union(u) = v else {
+        panic!("expected union value");
+    };
+    assert!(matches!(u.selected_type, IdlType::DomString));
+    // Special-case (d): do not call GetMethod(@@iterator) for FrozenArray selection when V is a
+    // string object and the union contains a string type.
+    assert_eq!(rt.get_method_calls, 0);
+}
+
+#[test]
+fn overload_resolution_sequence_and_frozen_array_string_object_special_case() {
+    // sequence<T> vs DOMString
+    let overloads = vec![
+        Overload {
+            id: "seq",
+            types: vec![IdlType::Sequence(Box::new(IdlType::DomString))],
+            optionality: vec![Optionality::Required],
+        },
+        Overload {
+            id: "str",
+            types: vec![IdlType::DomString],
+            optionality: vec![Optionality::Required],
+        },
+    ];
+
+    let mut rt = ToyRuntime::default();
+    let string_obj = rt.string_object("hello");
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+    let res = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(res.overload_id, "str");
+    assert_eq!(rt.get_method_calls, 0);
+
+    // FrozenArray<T> vs DOMString
+    let overloads = vec![
+        Overload {
+            id: "frozen",
+            types: vec![IdlType::FrozenArray(Box::new(IdlType::DomString))],
+            optionality: vec![Optionality::Required],
+        },
+        Overload {
+            id: "str",
+            types: vec![IdlType::DomString],
+            optionality: vec![Optionality::Required],
+        },
+    ];
+
+    let mut rt = ToyRuntime::default();
+    let string_obj = rt.string_object("hello");
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+    let res = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(res.overload_id, "str");
+    assert_eq!(rt.get_method_calls, 0);
+}
