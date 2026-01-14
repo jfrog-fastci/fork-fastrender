@@ -17,9 +17,10 @@
   "notes": "Good: renders match Chrome closely. Remaining diffs are small and mostly due to text rasterization/AA and a few-pixel discrepancy in the sponsored badge background edge.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 24242,
-    "diff_percent": 2.5252,
-    "perceptual": 0.0014,
+    "diff_pixels": 24233,
+    "diff_percent": 2.5243,
+    "perceptual": 0.004,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 126,
       "y": 12,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
+    "computed_at_commit": "48aa5522a2b9ccec49df4689bdfee5c87eb47a1c"
   },
   "hotspot": "paint",
   "failure_stage": null,
