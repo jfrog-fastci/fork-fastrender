@@ -7,6 +7,7 @@
 //! (typically `src/bin/browser.rs`).
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::string_match::contains_ascii_case_insensitive;
@@ -15,20 +16,20 @@ use super::{
   theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
 
-fn format_bytes(bytes: u64) -> String {
+fn append_formatted_bytes(out: &mut String, bytes: u64) {
   const KB: f64 = 1024.0;
   const MB: f64 = KB * 1024.0;
   const GB: f64 = MB * 1024.0;
 
   let b = bytes as f64;
   if b >= GB {
-    format!("{:.1} GiB", b / GB)
+    let _ = write!(out, "{:.1} GiB", b / GB);
   } else if b >= MB {
-    format!("{:.1} MiB", b / MB)
+    let _ = write!(out, "{:.1} MiB", b / MB);
   } else if b >= KB {
-    format!("{:.1} KiB", b / KB)
+    let _ = write!(out, "{:.1} KiB", b / KB);
   } else {
-    format!("{bytes} B")
+    let _ = write!(out, "{bytes} B");
   }
 }
 
@@ -38,36 +39,39 @@ fn download_progress_a11y_label(
   total_bytes: Option<u64>,
 ) -> String {
   let file_name = file_name.trim();
+  let mut out = String::with_capacity(file_name.len() + 64);
   match total_bytes.filter(|t| *t > 0) {
     Some(total) => {
       if file_name.is_empty() {
-        format!(
-          "Downloading: {} of {}",
-          format_bytes(received_bytes),
-          format_bytes(total)
-        )
+        out.push_str("Downloading: ");
       } else {
-        format!(
-          "Downloading {file_name}: {} of {}",
-          format_bytes(received_bytes),
-          format_bytes(total)
-        )
+        out.push_str("Downloading ");
+        out.push_str(file_name);
+        out.push_str(": ");
       }
+      append_formatted_bytes(&mut out, received_bytes);
+      out.push_str(" of ");
+      append_formatted_bytes(&mut out, total);
     }
     None => {
       if received_bytes > 0 {
         if file_name.is_empty() {
-          format!("Downloading: {}", format_bytes(received_bytes))
+          out.push_str("Downloading: ");
         } else {
-          format!("Downloading {file_name}: {}", format_bytes(received_bytes))
+          out.push_str("Downloading ");
+          out.push_str(file_name);
+          out.push_str(": ");
         }
+        append_formatted_bytes(&mut out, received_bytes);
       } else if file_name.is_empty() {
-        "Downloading".to_string()
+        out.push_str("Downloading");
       } else {
-        format!("Downloading {file_name}")
+        out.push_str("Downloading ");
+        out.push_str(file_name);
       }
     }
   }
+  out
 }
 
 fn download_matches_query_lower(entry: &DownloadEntry, query_lower: &str) -> bool {
@@ -401,43 +405,63 @@ pub fn downloads_panel_ui(
                   .truncate(true),
                 );
 
-                let (status_text, status_color, show_progress) = match &entry.status {
-                  DownloadStatus::InProgress {
-                    received_bytes,
-                    total_bytes,
-                  } => {
-                    let status = if let Some(total) = total_bytes.filter(|t| *t > 0) {
-                      format!(
-                        "Downloading… {} / {}",
-                        format_bytes(*received_bytes),
-                        format_bytes(total)
-                      )
-                    } else {
-                      format!("Downloading… {}", format_bytes(*received_bytes))
-                    };
-                    (status, ui.visuals().weak_text_color(), true)
-                  }
-                  DownloadStatus::Completed => (
-                    "Completed".to_string(),
-                    ui.visuals().weak_text_color(),
-                    false,
-                  ),
-                  DownloadStatus::Cancelled => (
-                    "Cancelled".to_string(),
-                    ui.visuals().weak_text_color(),
-                    false,
-                  ),
-                  DownloadStatus::Failed { .. } => {
-                    ("Failed".to_string(), ui.visuals().error_fg_color, false)
-                  }
-                };
-
                 ui.horizontal(|ui| {
-                  ui.add(
-                    egui::Label::new(egui::RichText::new(status_text).small().color(status_color))
-                      .wrap(false)
-                      .truncate(true),
-                  );
+                  match &entry.status {
+                    DownloadStatus::InProgress {
+                      received_bytes,
+                      total_bytes,
+                    } => {
+                      let mut status = String::with_capacity(64);
+                      status.push_str("Downloading… ");
+                      append_formatted_bytes(&mut status, *received_bytes);
+                      if let Some(total) = total_bytes.filter(|t| *t > 0) {
+                        status.push_str(" / ");
+                        append_formatted_bytes(&mut status, total);
+                      }
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new(status)
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    }
+                    DownloadStatus::Completed => {
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new("Completed")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    }
+                    DownloadStatus::Cancelled => {
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new("Cancelled")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    }
+                    DownloadStatus::Failed { .. } => {
+                      ui.add(
+                        egui::Label::new(
+                          egui::RichText::new("Failed")
+                            .small()
+                            .color(ui.visuals().error_fg_color),
+                        )
+                        .wrap(false)
+                        .truncate(true),
+                      );
+                    }
+                  }
 
                   ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
@@ -609,7 +633,7 @@ pub fn downloads_panel_ui(
                 if let DownloadStatus::Failed { error } = &entry.status {
                   let err = error.trim();
                   if !err.is_empty() {
-                    ui.add(
+                    let err_resp = ui.add(
                       egui::Label::new(
                         egui::RichText::new(err)
                           .small()
@@ -617,57 +641,61 @@ pub fn downloads_panel_ui(
                       )
                       .wrap(false)
                       .truncate(true),
-                    )
-                    .on_hover_text(err);
+                    );
+                    if err_resp.hovered() {
+                      egui::show_tooltip_text(
+                        ui.ctx(),
+                        ui.make_persistent_id(("download_error_tooltip", entry.download_id.0)),
+                        err,
+                      );
+                    }
                   }
                 }
 
-                if show_progress {
-                  if let DownloadStatus::InProgress {
-                    received_bytes,
-                    total_bytes,
-                  } = &entry.status
-                  {
-                    let a11y_label = download_progress_a11y_label(
-                      &entry.file_name,
-                      *received_bytes,
-                      total_bytes.filter(|t| *t > 0),
-                    );
-                    if let Some(total) = total_bytes.filter(|t| *t > 0) {
-                      let frac = (*received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                if let DownloadStatus::InProgress {
+                  received_bytes,
+                  total_bytes,
+                } = &entry.status
+                {
+                  let received_bytes = *received_bytes;
+                  let total_bytes = total_bytes.filter(|t| *t > 0);
+                  let file_name = entry.file_name.as_str();
+
+                  match total_bytes {
+                    Some(total_bytes) => {
+                      let frac = (received_bytes as f32 / total_bytes as f32).clamp(0.0, 1.0);
                       let resp = ui.add(
                         egui::ProgressBar::new(frac)
                           .desired_width(f32::INFINITY)
                           .text(""),
                       );
-                      resp.widget_info({
-                        let label = a11y_label.clone();
-                        move || {
-                          egui::WidgetInfo::labeled(
-                            // `egui` 0.23 does not expose a dedicated progress widget type. Provide
-                            // an explicit label so screen readers announce meaningful context.
-                            egui::WidgetType::Label,
-                            label.clone(),
-                          )
-                        }
+                      resp.widget_info(move || {
+                        egui::WidgetInfo::labeled(
+                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
+                          // an explicit label so screen readers announce meaningful context.
+                          egui::WidgetType::Label,
+                          download_progress_a11y_label(
+                            file_name,
+                            received_bytes,
+                            Some(total_bytes),
+                          ),
+                        )
                       });
-                    } else {
+                    }
+                    None => {
                       let resp = ui.add(
                         egui::ProgressBar::new(0.0)
                           .desired_width(f32::INFINITY)
                           .animate(motion.enabled)
                           .text(""),
                       );
-                      resp.widget_info({
-                        let label = a11y_label.clone();
-                        move || {
-                          egui::WidgetInfo::labeled(
-                            // `egui` 0.23 does not expose a dedicated progress widget type. Provide
-                            // an explicit label so screen readers announce meaningful context.
-                            egui::WidgetType::Label,
-                            label.clone(),
-                          )
-                        }
+                      resp.widget_info(move || {
+                        egui::WidgetInfo::labeled(
+                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
+                          // an explicit label so screen readers announce meaningful context.
+                          egui::WidgetType::Label,
+                          download_progress_a11y_label(file_name, received_bytes, None),
+                        )
                       });
                     }
                   }

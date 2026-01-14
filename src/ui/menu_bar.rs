@@ -7,9 +7,9 @@ use crate::ui::zoom;
 use crate::ui::ChromeAction;
 
 #[cfg(target_os = "macos")]
-const MOD_CMD_CTRL: &str = "Cmd";
+const SHORTCUT_BOOKMARK_THIS_PAGE: &str = "Cmd+D";
 #[cfg(not(target_os = "macos"))]
-const MOD_CMD_CTRL: &str = "Ctrl";
+const SHORTCUT_BOOKMARK_THIS_PAGE: &str = "Ctrl+D";
 
 #[cfg(target_os = "macos")]
 const SHORTCUT_NEW_TAB: &str = "Cmd+T";
@@ -487,7 +487,7 @@ pub fn menu_bar_ui(
           };
           let bookmark_resp = ui.add_enabled(
             can_bookmark_this_page,
-            egui::Button::new(bookmark_label).shortcut_text(format!("{MOD_CMD_CTRL}+D")),
+            egui::Button::new(bookmark_label).shortcut_text(SHORTCUT_BOOKMARK_THIS_PAGE),
           );
           bookmark_resp.widget_info(move || {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, bookmark_a11y_label)
@@ -563,19 +563,18 @@ pub fn menu_bar_ui(
         // -------------------------------------------------------------------
         // Settings
         // -------------------------------------------------------------------
-        ui
-          .menu_button("Settings", |ui| {
-            let set_home_resp = ui.button("Set Home Page…");
-            set_home_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Set browser home page")
-            });
-            if set_home_resp.clicked() {
-              commands.push(MenuCommand::SetHomePage);
-              ui.close_menu();
-            }
-          })
-          .response
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Settings menu"));
+        ui.menu_button("Settings", |ui| {
+          let set_home_resp = ui.button("Set Home Page…");
+          set_home_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Set browser home page")
+          });
+          if set_home_resp.clicked() {
+            commands.push(MenuCommand::SetHomePage);
+            ui.close_menu();
+          }
+        })
+        .response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Settings menu"));
 
         // -------------------------------------------------------------------
         // Help
@@ -1043,7 +1042,10 @@ mod tests {
     ctx.enable_accesskit();
 
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     let output = open_menu_for_accesskit(&ctx, &app, "File");
 
     let names = a11y_test_util::accesskit_names_from_full_output(&output);
@@ -1062,7 +1064,10 @@ mod tests {
     }
     // Ensure we don't regress to placeholder labels that are less discoverable/stable for screen
     // readers.
-    for unexpected in ["Save page (not implemented)", "Print page (not implemented)"] {
+    for unexpected in [
+      "Save page (not implemented)",
+      "Print page (not implemented)",
+    ] {
       assert!(
         !names.iter().any(|n| n == unexpected),
         "did not expect placeholder AccessKit name {unexpected:?} in File menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
