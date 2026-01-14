@@ -70,6 +70,29 @@ fn duplicate_label_is_syntax_error() {
 }
 
 #[test]
+fn labelled_function_decl_in_strict_mode_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; lbl: function f(){}"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn labelled_generator_function_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("lbl: function* f(){}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn labelled_async_function_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("lbl: async function f(){}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn break_label_does_not_cross_function_boundary_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
