@@ -11019,7 +11019,21 @@ impl HirAsyncState {
               }
               Err(err) => {
                 self.active = None;
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11044,7 +11058,22 @@ impl HirAsyncState {
                 continue;
               }
               Err(err) => {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let await_stmt_index = next_stmt_index.saturating_sub(1);
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(await_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11065,7 +11094,21 @@ impl HirAsyncState {
             match resume {
               Ok(v) => return Ok(HirAsyncResult::CompleteOk(v)),
               Err(err) => {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11086,7 +11129,21 @@ impl HirAsyncState {
             match resume {
               Ok(v) => return Ok(HirAsyncResult::CompleteThrow(v)),
               Err(err) => {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11115,7 +11172,21 @@ impl HirAsyncState {
             let resumed_value = match resume {
               Ok(v) => v,
               Err(err) => {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11135,6 +11206,7 @@ impl HirAsyncState {
               "hir async var decl resume stmt index out of bounds",
             ))?;
             let stmt = evaluator.get_stmt(body, stmt_id)?;
+            let stmt_offset = stmt.span.start;
             let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
               return Err(VmError::InvariantViolation(
                 "hir async var decl resume target is not a var declaration",
@@ -11153,7 +11225,13 @@ impl HirAsyncState {
               /* init_missing */ false,
               resumed_value,
             ) {
-              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
               match err {
                 VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                   return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11179,7 +11257,13 @@ impl HirAsyncState {
                   let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
                     Ok(v) => v,
                     Err(err) => {
-                      let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                      let err = finalize_throw_with_stack_at_source_offset(
+                        &*evaluator.vm,
+                        scope,
+                        evaluator.script.source.as_ref(),
+                        stmt_offset,
+                        err,
+                      );
                       match err {
                         VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                           return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11204,7 +11288,13 @@ impl HirAsyncState {
                 Some(init) => match evaluator.eval_expr(scope, body, init) {
                   Ok(v) => v,
                   Err(err) => {
-                    let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
                     match err {
                       VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                         return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11224,7 +11314,13 @@ impl HirAsyncState {
                 init_missing,
                 value,
               ) {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -11305,6 +11401,7 @@ impl HirAsyncState {
       }
       let stmt_id = stmts[self.next_stmt_index];
       let stmt = evaluator.get_stmt(body, stmt_id)?;
+      let stmt_offset = stmt.span.start;
       if let hir_js::StmtKind::ForIn {
         left,
         right,
@@ -11342,7 +11439,13 @@ impl HirAsyncState {
           let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
             Ok(v) => v,
             Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
               return match err {
                 VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                   Ok(HirAsyncResult::CompleteThrow(value))
@@ -11370,7 +11473,13 @@ impl HirAsyncState {
           let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
             Ok(v) => v,
             Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
               return match err {
                 VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                   Ok(HirAsyncResult::CompleteThrow(value))
@@ -11396,7 +11505,13 @@ impl HirAsyncState {
           let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
             Ok(v) => v,
             Err(err) => {
-              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
               return match err {
                 VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                   Ok(HirAsyncResult::CompleteThrow(value))
@@ -11432,7 +11547,13 @@ impl HirAsyncState {
               let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
                 Ok(v) => v,
                 Err(err) => {
-                  let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    err,
+                  );
                   return match err {
                     VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                       Ok(HirAsyncResult::CompleteThrow(value))
@@ -11456,7 +11577,13 @@ impl HirAsyncState {
             Some(init) => match evaluator.eval_expr(scope, body, init) {
               Ok(v) => v,
               Err(err) => {
-                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 return match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     Ok(HirAsyncResult::CompleteThrow(value))
@@ -11475,7 +11602,13 @@ impl HirAsyncState {
             init_missing,
             value,
           ) {
-            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+            let err = finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              evaluator.script.source.as_ref(),
+              stmt_offset,
+              err,
+            );
             return match err {
               VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                 Ok(HirAsyncResult::CompleteThrow(value))
@@ -11504,7 +11637,13 @@ impl HirAsyncState {
           }
         },
         Err(err) => {
-          let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+          let err = finalize_throw_with_stack_at_source_offset(
+            &*evaluator.vm,
+            scope,
+            evaluator.script.source.as_ref(),
+            stmt_offset,
+            err,
+          );
           return match err {
             VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
               Ok(HirAsyncResult::CompleteThrow(value))
