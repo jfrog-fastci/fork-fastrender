@@ -123,7 +123,6 @@ pub struct Mp4Demuxer {
   track_states: Vec<TrackState>,
   active_track_indices: Vec<usize>,
   min_pts_ns: u64,
-  last_emitted_pts_ns: u64,
 }
 
 impl Mp4Demuxer {
@@ -220,7 +219,6 @@ impl Mp4Demuxer {
       track_states,
       active_track_indices,
       min_pts_ns: 0,
-      last_emitted_pts_ns: 0,
     })
   }
 
@@ -284,21 +282,10 @@ impl Mp4Demuxer {
         ));
       }
 
-      let mut pts_ns = sample.pts_ns;
-      if pts_ns < self.last_emitted_pts_ns {
-        // Best-effort monotonicity guard for PTS. MP4 `ctts` can express composition-time
-        // reordering (e.g. B-frames), which may yield non-monotonic PTS.
-        pts_ns = self.last_emitted_pts_ns;
-      }
-      if pts_ns < self.min_pts_ns {
-        pts_ns = self.min_pts_ns;
-      }
-      self.last_emitted_pts_ns = pts_ns;
-
       return Ok(Some(MediaPacket {
         track_id: track.id,
         dts_ns: sample.dts_ns,
-        pts_ns,
+        pts_ns: sample.pts_ns,
         duration_ns: sample.duration_ns,
         data: self.bytes[start..end].to_vec().into(),
         is_keyframe: sample.is_sync,
@@ -310,7 +297,6 @@ impl Mp4Demuxer {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
     self.min_pts_ns = time_ns;
-    self.last_emitted_pts_ns = time_ns;
 
     for &track_idx in &self.active_track_indices {
       self.track_states[track_idx].seek(time_ns);

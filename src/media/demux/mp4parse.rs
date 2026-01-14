@@ -328,7 +328,6 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
   // config via `AudioSampleEntry::codec_specific`, but the exact enum variants are not yet wired
   // into our decode pipeline.
   let mut codec = MediaCodec::Unknown("unknown".to_string());
-
   let Some(stsd) = track.stsd.as_ref() else {
     return (codec, Vec::new());
   };

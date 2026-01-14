@@ -74,7 +74,6 @@ impl AudioRingBuffer {
       available
     }
   }
-
   fn push_locked(&self, samples: &[f32]) -> usize {
     let read = self.read.load(Ordering::Acquire);
     let write = self.write.load(Ordering::Relaxed);

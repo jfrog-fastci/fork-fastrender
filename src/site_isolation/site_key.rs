@@ -235,7 +235,9 @@ impl SiteKeyFactory {
 
   fn file_origin() -> Option<&'static DocumentOrigin> {
     static FILE_ORIGIN: OnceLock<Option<DocumentOrigin>> = OnceLock::new();
-    FILE_ORIGIN.get_or_init(|| origin_from_url("file:///")).as_ref()
+    FILE_ORIGIN
+      .get_or_init(|| origin_from_url("file:///"))
+      .as_ref()
   }
 
   fn stable_file_hash_u64(&self, bytes: &[u8]) -> u64 {
