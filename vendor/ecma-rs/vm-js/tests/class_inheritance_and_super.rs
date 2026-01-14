@@ -341,7 +341,7 @@ fn derived_ctor_can_return_object_without_calling_super() -> Result<(), VmError>
 #[test]
 fn derived_ctor_can_return_object_without_calling_super_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       var side = "";
@@ -355,10 +355,9 @@ fn derived_ctor_can_return_object_without_calling_super_compiled() -> Result<(),
         (o instanceof D) === false && (o instanceof B) === false &&
         Object.getPrototypeOf(o) === Object.prototype
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value, Value::Bool(true));
   Ok(())
@@ -381,17 +380,16 @@ fn derived_ctor_returning_undefined_without_super_throws_reference_error() -> Re
 #[test]
 fn derived_ctor_returning_undefined_without_super_throws_reference_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B {}
       class D extends B { constructor() {} }
       try { new D(); "no"; } catch (e) { e.name; }
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value_to_string(&rt, value), "ReferenceError");
   Ok(())
@@ -414,17 +412,16 @@ fn derived_ctor_returning_primitive_without_super_throws_type_error() -> Result<
 #[test]
 fn derived_ctor_returning_primitive_without_super_throws_type_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B {}
       class D extends B { constructor() { return 1; } }
       try { new D(); "no"; } catch (e) { e.name; }
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value_to_string(&rt, value), "TypeError");
   Ok(())
@@ -531,7 +528,7 @@ fn super_property_reference_semantics_in_derived_method() -> Result<(), VmError>
 #[test]
 fn super_property_reference_semantics_in_derived_method_arrow_closure() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       class B { __m() { return this.__x; } }
       class D extends B {
@@ -543,11 +540,7 @@ fn super_property_reference_semantics_in_derived_method_arrow_closure() -> Resul
       }
       new D().test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -555,7 +548,7 @@ fn super_property_reference_semantics_in_derived_method_arrow_closure() -> Resul
 #[test]
 fn super_property_reference_semantics_in_derived_method_arrow_closure_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B { __m() { return this.__x; } }
@@ -568,10 +561,9 @@ fn super_property_reference_semantics_in_derived_method_arrow_closure_compiled()
       }
       new D().test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value, Value::Bool(true));
   Ok(())
@@ -580,7 +572,7 @@ fn super_property_reference_semantics_in_derived_method_arrow_closure_compiled()
 #[test]
 fn super_property_reference_semantics_in_derived_method_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B {
@@ -606,10 +598,9 @@ fn super_property_reference_semantics_in_derived_method_compiled() -> Result<(),
       }
       new D().test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value, Value::Bool(true));
   Ok(())
@@ -654,7 +645,7 @@ fn super_property_reference_semantics_in_base_class_compiled_path() -> Result<()
 #[test]
 fn super_property_reference_semantics_in_base_static_method_compiled_path() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       Object.defineProperty(Function.prototype, "__g", {
@@ -685,11 +676,7 @@ fn super_property_reference_semantics_in_base_static_method_compiled_path() -> R
 
       C.test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -746,7 +733,7 @@ fn super_property_reference_semantics_in_instance_field_initializer_compiled() -
 #[test]
 fn super_property_reference_semantics_in_derived_static_method() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       class B {
         static get __g() { return this.__x + 1; }
@@ -774,11 +761,7 @@ fn super_property_reference_semantics_in_derived_static_method() -> Result<(), V
       }
       D.test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -786,7 +769,7 @@ fn super_property_reference_semantics_in_derived_static_method() -> Result<(), V
 #[test]
 fn super_property_reference_semantics_in_derived_static_method_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B {
@@ -815,10 +798,9 @@ fn super_property_reference_semantics_in_derived_static_method_compiled() -> Res
       }
       D.test()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
+  )?
+  else {
+    return Ok(());
   };
   assert_eq!(value, Value::Bool(true));
   Ok(())
