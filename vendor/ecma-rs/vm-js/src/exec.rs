@@ -17545,16 +17545,8 @@ impl Trace for GenFrame {
         tracer.trace_value(*base);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
-      | GenFrame::BindAssignComputedMemberAfterBase { value, .. } => tracer.trace_value(*value),
-      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
-        tracer.trace_value(*base);
-        tracer.trace_value(*value);
-      }
-      GenFrame::BindAssignMemberAfterBase { value, .. }
       | GenFrame::BindAssignComputedMemberAfterBase { value, .. }
-      | GenFrame::BindAssignSuperComputedMemberAfterMember { value, .. } => {
-        tracer.trace_value(*value);
-      }
+      | GenFrame::BindAssignSuperComputedMemberAfterMember { value, .. } => tracer.trace_value(*value),
       GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
         tracer.trace_value(*base);
         tracer.trace_value(*value);
@@ -48184,65 +48176,6 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::BindAssignMemberAfterBase { member, value } => match state {
-        Completion::Normal(v) => {
-          let member_ref = unsafe { &*member };
-          match gen_bind_assignment_target_to_member_after_base(
-            evaluator,
-            scope,
-            member_ref,
-            v.unwrap_or(Value::Undefined),
-            value,
-          )? {
-            GenEval::Complete(c) => state = c,
-            GenEval::Suspend(mut suspend) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-              return Ok(GenEval::Suspend(suspend));
-            }
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::BindAssignComputedMemberAfterBase { member, value } => match state {
-        Completion::Normal(v) => {
-          let member_ref = unsafe { &*member };
-          match gen_bind_assignment_target_to_computed_member_after_base(
-            evaluator,
-            scope,
-            member_ref,
-            v.unwrap_or(Value::Undefined),
-            value,
-          )? {
-            GenEval::Complete(c) => state = c,
-            GenEval::Suspend(mut suspend) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-              return Ok(GenEval::Suspend(suspend));
-            }
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::BindAssignComputedMemberAfterMember {
-        member,
-        base,
-        value,
-      } => match state {
-        Completion::Normal(v) => {
-          let member_ref = unsafe { &*member };
-          state = gen_bind_assignment_target_to_computed_member_after_member(
-            evaluator,
-            scope,
-            member_ref,
-            base,
-            v.unwrap_or(Value::Undefined),
-            value,
-          )?;
-        }
-        abrupt => state = abrupt,
-      },
-
       GenFrame::BindAssignSuperComputedMemberAfterMember { member, value } => match state {
         Completion::Normal(v) => {
           let _member = unsafe { &*member };
@@ -50015,19 +49948,12 @@ fn gen_root_values_for_continuation(
         needed = needed.saturating_add(3);
       }
       GenFrame::BindAssignMemberAfterBase { .. }
-      | GenFrame::BindAssignComputedMemberAfterBase { .. } => {
+      | GenFrame::BindAssignComputedMemberAfterBase { .. }
+      | GenFrame::BindAssignSuperComputedMemberAfterMember { .. } => {
         needed = needed.saturating_add(1); // `value`
       }
       GenFrame::BindAssignComputedMemberAfterMember { .. } => {
         needed = needed.saturating_add(2); // `base` + `value`
-      }
-      GenFrame::BindAssignMemberAfterBase { .. }
-      | GenFrame::BindAssignComputedMemberAfterBase { .. }
-      | GenFrame::BindAssignSuperComputedMemberAfterMember { .. } => {
-        needed = needed.saturating_add(1);
-      }
-      GenFrame::BindAssignComputedMemberAfterMember { .. } => {
-        needed = needed.saturating_add(2);
       }
       GenFrame::CallArgs { args, .. } => {
         needed = needed.saturating_add(2).saturating_add(args.len());
@@ -50253,16 +50179,8 @@ fn gen_root_values_for_continuation(
         values.push(*base);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
-      | GenFrame::BindAssignComputedMemberAfterBase { value, .. } => values.push(*value),
-      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
-        values.push(*base);
-        values.push(*value);
-      }
-      GenFrame::BindAssignMemberAfterBase { value, .. }
       | GenFrame::BindAssignComputedMemberAfterBase { value, .. }
-      | GenFrame::BindAssignSuperComputedMemberAfterMember { value, .. } => {
-        values.push(*value);
-      }
+      | GenFrame::BindAssignSuperComputedMemberAfterMember { value, .. } => values.push(*value),
       GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
         values.push(*base);
         values.push(*value);
