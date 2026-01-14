@@ -1823,17 +1823,17 @@ impl<'a> Parser<'a> {
           // If the preceding expression cannot be a tag and there is a LineTerminator, allow
           // ASI to split statements (e.g. `a++\n\`x\`` should parse as `a++; \`x\``).
           let is_parenthesized = left.assoc.get::<ParenthesizedExpr>().is_some();
+          let is_optional_chain = match left.stx.as_ref() {
+            Expr::Call(call) => call.stx.optional_chaining,
+            Expr::ComputedMember(member) => member.stx.optional_chaining,
+            Expr::Member(member) => member.stx.optional_chaining,
+            _ => false,
+          };
           let is_valid_tag_expr = is_parenthesized
             || match left.stx.as_ref() {
-              // Non-standard extension (required by `vm-js`): allow optional chaining in tagged
-              // templates (e.g. `obj?.tag\`...\`` and `obj?.#tag\`...\``) so the runtime can
-              // short-circuit the *entire* tagged template expression.
-              //
-              // Note: this diverges from current ECMAScript (V8/Node reject it), but `vm-js`
-              // intentionally implements the semantics and relies on the parser accepting it.
-              Expr::Call(_call) => true,
-              Expr::ComputedMember(_member) => true,
-              Expr::Member(_member) => true,
+              Expr::Call(call) => !call.stx.optional_chaining,
+              Expr::ComputedMember(member) => !member.stx.optional_chaining,
+              Expr::Member(member) => !member.stx.optional_chaining,
               Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
               Expr::Class(_)
               | Expr::Func(_)
@@ -1864,6 +1864,10 @@ impl<'a> Parser<'a> {
               _ => false,
             };
           if !is_valid_tag_expr {
+            // Optional chaining cannot be used as a tagged template (even across a LineTerminator).
+            if is_optional_chain {
+              return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
+            }
             if asi_allowed && t.preceded_by_line_terminator {
               self.restore_checkpoint(cp);
               asi.did_end_with_asi = true;

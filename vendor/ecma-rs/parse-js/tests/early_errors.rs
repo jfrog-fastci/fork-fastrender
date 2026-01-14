@@ -23,9 +23,9 @@ fn nullish_coalescing_cannot_mix_with_logical_operators() {
 }
 
 #[test]
-fn optional_chaining_can_be_used_as_a_tagged_template() {
-  assert!(parse_ecma_script("a?.fn`hello`;").is_ok());
-  assert!(parse_ecma_script("a?.fn\n`hello`;").is_ok());
+fn optional_chaining_cannot_be_used_as_a_tagged_template() {
+  assert!(parse_ecma_script("a?.fn`hello`;").is_err());
+  assert!(parse_ecma_script("a?.fn\n`hello`;").is_err());
 }
 
 #[test]
