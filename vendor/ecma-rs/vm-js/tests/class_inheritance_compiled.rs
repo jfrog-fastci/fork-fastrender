@@ -88,3 +88,49 @@ fn derived_ctor_arrow_this_before_super_throws_reference_error_compiled() -> Res
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_this_observes_initialized_this_after_eval_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          eval("super()");
+          // Return an object wrapper so the arrow's return value is observable even if it is
+          // `undefined` (constructor primitive return values are ignored).
+          return { v: f() };
+        }
+      }
+      const o = new D();
+      o.v instanceof D
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_this_created_in_eval_observes_initialized_this_after_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = eval("(() => this)");
+          super();
+          return { v: f() };
+        }
+      }
+      const o = new D();
+      o.v instanceof D
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
