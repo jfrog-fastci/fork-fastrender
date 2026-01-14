@@ -49,7 +49,7 @@ fn selected_suggestion_index_from_dom(dom: &DomNode) -> Option<usize> {
 
 fn fill_text_for_suggestion(suggestion: &fastrender::ui::OmniboxSuggestion) -> Option<&str> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(url),
+    OmniboxAction::NavigateToUrl => suggestion.url.as_deref(),
     OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
     OmniboxAction::Search(query) => Some(query),
   }
