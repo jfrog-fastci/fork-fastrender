@@ -405,3 +405,156 @@ fn generator_super_logical_or_assignment_with_yield_in_computed_key_and_rhs_capt
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_super_logical_or_assignment_captures_super_base_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            const r = (super.x ||= (yield* rhs()));
+            return r === 5 && this._x === 5 && log.join(",") === "get1,set1:5";
+          }
+        }
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the LHS value and super base after the first yield but before resuming.
+        // Keep these mutations active through completion so engines that re-check the decision
+        // or super base after intermediate yields are caught.
+        d._x = 1; // truthy now, but should not cancel the pending assignment
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next();
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_logical_and_assignment_captures_super_base_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = 1; }
+          *gen() {
+            const r = (super.x &&= (yield* rhs()));
+            return r === 5 && this._x === 5 && log.join(",") === "get1,set1:5";
+          }
+        }
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the LHS value and super base after the first yield but before resuming.
+        // Keep these mutations active through completion so engines that re-check the decision
+        // or super base after intermediate yields are caught.
+        d._x = 0; // falsy now, but should not cancel the pending assignment
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next();
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_nullish_coalescing_assignment_captures_super_base_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = null; }
+          *gen() {
+            const r = (super.x ??= (yield* rhs()));
+            return r === 5 && this._x === 5 && log.join(",") === "get1,set1:5";
+          }
+        }
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the LHS value and super base after the first yield but before resuming.
+        // Keep these mutations active through completion so engines that re-check the decision
+        // or super base after intermediate yields are caught.
+        d._x = 0; // non-nullish now, but should not cancel the pending assignment
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next();
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
