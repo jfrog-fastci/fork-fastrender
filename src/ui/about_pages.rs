@@ -469,8 +469,8 @@ struct BuiltInPageLink {
 
 /// Built-in `about:*` pages intended to be linked from user-facing UI surfaces.
 ///
-/// This list intentionally excludes test-only pages (`about:test-*`) so they do not show up in
-/// "help"/"settings" documentation or other discovery surfaces.
+/// This list intentionally excludes test-only pages (`about:test-*`) so they do not show up in the
+/// primary navigation surfaces (e.g. the shared about-page header).
 const BUILT_IN_PAGE_LINKS: &[BuiltInPageLink] = &[
   BuiltInPageLink {
     url: ABOUT_NEWTAB,
@@ -515,6 +515,27 @@ fn built_in_pages_list_items_html() -> String {
 
   let mut out = String::new();
   for &BuiltInPageLink { url, .. } in built_in_page_links() {
+    let safe_url = escape_html(url);
+    let _ = write!(
+      out,
+      r#"<li><a href="{safe_url}">{safe_url}</a></li>"#
+    );
+  }
+  out
+}
+
+const TEST_PAGE_URLS: &[&str] = &[
+  ABOUT_TEST_SCROLL,
+  ABOUT_TEST_HEAVY,
+  ABOUT_TEST_LAYOUT_STRESS,
+  ABOUT_TEST_FORM,
+];
+
+fn test_pages_list_items_html() -> String {
+  use std::fmt::Write;
+
+  let mut out = String::new();
+  for &url in TEST_PAGE_URLS {
     let safe_url = escape_html(url);
     let _ = write!(
       out,
@@ -1111,6 +1132,7 @@ fn settings_html(_full_url: &str) -> String {
 
 fn help_html() -> String {
   let built_in_pages = built_in_pages_list_items_html();
+  let test_pages = test_pages_list_items_html();
   about_layout_html(
     "Help",
     ABOUT_HELP,
@@ -1162,8 +1184,17 @@ fn help_html() -> String {
       <h2>Built-in pages</h2>
       <ul>
         {built_in_pages}
+      </ul>
+
+      <h2>Test pages</h2>
+      <p class=\"muted\">
+        Deterministic offline fixtures used by browser integration tests and responsiveness benchmarks:
+      </p>
+      <ul>
+        {test_pages}
       </ul>",
-      built_in_pages = built_in_pages
+      built_in_pages = built_in_pages,
+      test_pages = test_pages,
     ),
     "",
   )
