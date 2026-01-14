@@ -94,3 +94,66 @@ fn legacy_text_input_forces_single_line_value_no_wrap() {
     "expected `<input>` value to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
   );
 }
+
+#[test]
+fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
+  ensure_test_env();
+
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "legacy".to_string(),
+  )]));
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .runtime_toggles(toggles.clone())
+    .resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
+    .paint_parallelism(PaintParallelism::disabled())
+    .layout_parallelism(LayoutParallelism::disabled())
+    .build()
+    .expect("renderer");
+
+  let html = r#"
+    <!doctype html>
+    <style>
+      html, body { margin: 0; background: white; }
+      input {
+        width: 30px;
+        height: 80px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        font-size: 16px;
+        color: black;
+      }
+      /* Ensure placeholder pseudo styles would normally allow wrapping. */
+      input::placeholder {
+        white-space: pre-wrap;
+        text-wrap: wrap;
+        color: black;
+        opacity: 1;
+      }
+    </style>
+    <input type="text" placeholder="MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM" />
+  "#;
+
+  let options = RenderOptions::new()
+    .with_viewport(120, 120)
+    .with_runtime_toggles(toggles);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+
+  let (_, min_y, _, max_y) =
+    bbox_for_ink(&pixmap).expect("expected input placeholder text to paint ink");
+  let ink_height = max_y - min_y + 1;
+
+  assert!(
+    ink_height < 30,
+    "expected `<input>` placeholder to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
+  );
+}
