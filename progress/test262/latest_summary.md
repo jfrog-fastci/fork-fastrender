@@ -2,6 +2,11 @@
 
 Committed snapshot of `vm-js` conformance on the curated `test262-semantic` suite.
 
+Notable deltas vs the previous committed snapshot:
+- Overall mismatches: 1269 → 575 (XFAIL: 612 → 298; unexpected: 657 → 277).
+- `built-ins` mismatches: 310 → 8 (notably `built-ins/Set`: 302 → 0).
+- VmError::Unimplemented mismatches: 439 → 0 (incl. `unimplemented: async generator functions`, previously 413 cases); `value is not callable` (206) also dropped out of the top mismatch reasons.
+
 ## Command
 
 ```bash
