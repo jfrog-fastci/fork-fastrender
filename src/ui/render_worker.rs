@@ -4216,18 +4216,18 @@ impl BrowserRuntime {
                 let result = engine.wheel_step_number_input(
                   dom,
                   box_tree,
-                  fragment_tree,
-                  &scroll_snapshot,
-                  Point::new(pointer_css.0, pointer_css.1),
-                  delta_y,
-                );
-                let changed = result.unwrap_or(false);
-                (changed, result)
-              })
-            {
-              scroll_handled = true;
-              changed |= dom_changed;
-            }
+	                  fragment_tree,
+	                  &scroll_snapshot,
+	                  Point::new(pointer_css.0, pointer_css.1),
+	                  delta_y,
+	                );
+	                let changed = result.unwrap_or(false);
+	                (changed, result)
+	              })
+	            {
+	              scroll_handled = true;
+	              changed |= dom_changed;
+	            }
 
             if scroll_handled {
               // Numeric stepping does not update scroll state.
