@@ -1734,9 +1734,14 @@ impl<'vm> HirEvaluator<'vm> {
               // - `for..of` with await-in-pattern
               // - `for (...)` with await in init/test/update
               //
+              // Also support label chains around direct-await statement forms (`expr`/`var`/`throw`/
+              // `return`). These statements cannot produce `break`/`continue` completions, so label
+              // semantics are irrelevant and the compiled async evaluator can safely "see through"
+              // the labels.
+              //
               // Any other labeled statement containing `await` remains unsupported (requires AST
               // fallback) because the compiled async evaluator does not preserve label semantics for
-              // arbitrary awaiting statements.
+              // arbitrary awaiting statements that may produce break/continue completions.
               let mut current_stmt_id: hir_js::StmtId = *inner;
               loop {
                 self.async_analysis_tick(&mut steps)?;
@@ -1858,6 +1863,208 @@ impl<'vm> HirEvaluator<'vm> {
                       )? {
                         return Ok(false);
                       }
+                    }
+                    break;
+                  }
+                  // Mirror the top-level statement-list checks above for direct-await statement forms
+                  // under label chains.
+                  hir_js::StmtKind::Expr(expr_id) => {
+                    let expr = self.get_expr(body, *expr_id)?;
+                    if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                      if self.hir_expr_contains_await_for_async_analysis(
+                        script,
+                        body,
+                        awaited_expr,
+                        &mut steps,
+                      )? {
+                        return Ok(false);
+                      }
+                      break;
+                    }
+
+                    if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+                      let rhs = self.get_expr(body, *value)?;
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+                        if *op == hir_js::AssignOp::Assign
+                          || compound_assign_op_supported(*op)
+                          || logical_assign_op_supported(*op)
+                        {
+                          if assignment_target_is_supported(self, body, *target)? {
+                            if !assignment_target_has_no_await(self, script, body, *target, &mut steps)? {
+                              return Ok(false);
+                            }
+                            if !direct_await_operand_has_no_await(
+                              self,
+                              script,
+                              body,
+                              awaited_expr,
+                              &mut steps,
+                            )? {
+                              return Ok(false);
+                            }
+                            break;
+                          }
+
+                          if *op == hir_js::AssignOp::Assign {
+                            let target_pat = self.get_pat(body, *target)?;
+                            if !matches!(
+                              target_pat.kind,
+                              hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+                            ) {
+                              if self.hir_pat_contains_await_for_async_analysis(
+                                script,
+                                body,
+                                *target,
+                                &mut steps,
+                              )? {
+                                return Ok(false);
+                              }
+                              if !direct_await_operand_has_no_await(
+                                self,
+                                script,
+                                body,
+                                awaited_expr,
+                                &mut steps,
+                              )? {
+                                return Ok(false);
+                              }
+                              break;
+                            }
+                          }
+                          return Ok(false);
+                        }
+                      }
+
+                      if *op == hir_js::AssignOp::Assign {
+                        let target_pat = self.get_pat(body, *target)?;
+                        if matches!(&target_pat.kind, hir_js::PatKind::Object(_))
+                          && self.hir_pat_contains_await_for_async_analysis(
+                            script,
+                            body,
+                            *target,
+                            &mut steps,
+                          )?
+                        {
+                          if self.hir_expr_contains_await_for_async_analysis(
+                            script,
+                            body,
+                            *value,
+                            &mut steps,
+                          )? {
+                            return Ok(false);
+                          }
+                          if !object_pat_allows_direct_await_in_keys_and_defaults(
+                            self,
+                            script,
+                            body,
+                            *target,
+                            &mut steps,
+                            /* value_is_assignment_target */ true,
+                          )? {
+                            return Ok(false);
+                          }
+                          break;
+                        }
+                      }
+                    }
+                    if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                      return Ok(false);
+                    }
+                    break;
+                  }
+                  hir_js::StmtKind::Var(var_decl) => {
+                    for declarator in &var_decl.declarators {
+                      let pat_contains_await = self.hir_pat_contains_await_for_async_analysis(
+                        script,
+                        body,
+                        declarator.pat,
+                        &mut steps,
+                      )?;
+                      if pat_contains_await {
+                        if !matches!(
+                          var_decl.kind,
+                          hir_js::VarDeclKind::Var
+                            | hir_js::VarDeclKind::Let
+                            | hir_js::VarDeclKind::Const
+                        ) {
+                          return Ok(false);
+                        }
+                        if !object_pat_allows_direct_await_in_keys_and_defaults(
+                          self,
+                          script,
+                          body,
+                          declarator.pat,
+                          &mut steps,
+                          /* value_is_assignment_target */ false,
+                        )? {
+                          return Ok(false);
+                        }
+                        if let Some(init_id) = declarator.init {
+                          if self.hir_expr_contains_await_for_async_analysis(
+                            script,
+                            body,
+                            init_id,
+                            &mut steps,
+                          )? {
+                            return Ok(false);
+                          }
+                        }
+                        continue;
+                      }
+                      let Some(init_id) = declarator.init else {
+                        continue;
+                      };
+                      let init_expr = self.get_expr(body, init_id)?;
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                        if self.hir_expr_contains_await_for_async_analysis(
+                          script,
+                          body,
+                          awaited_expr,
+                          &mut steps,
+                        )? {
+                          return Ok(false);
+                        }
+                        continue;
+                      }
+                      if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
+                        return Ok(false);
+                      }
+                    }
+                    break;
+                  }
+                  hir_js::StmtKind::Return(Some(expr_id)) => {
+                    let expr = self.get_expr(body, *expr_id)?;
+                    if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                      if self.hir_expr_contains_await_for_async_analysis(
+                        script,
+                        body,
+                        awaited_expr,
+                        &mut steps,
+                      )? {
+                        return Ok(false);
+                      }
+                      break;
+                    }
+                    if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                      return Ok(false);
+                    }
+                    break;
+                  }
+                  hir_js::StmtKind::Throw(expr_id) => {
+                    let expr = self.get_expr(body, *expr_id)?;
+                    if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                      if self.hir_expr_contains_await_for_async_analysis(
+                        script,
+                        body,
+                        awaited_expr,
+                        &mut steps,
+                      )? {
+                        return Ok(false);
+                      }
+                      break;
+                    }
+                    if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                      return Ok(false);
                     }
                     break;
                   }
@@ -23001,6 +23208,96 @@ mod async_function_hir_exec_tests {
         FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
       ),
       "expected async function to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    // The suspension should create an async continuation backed by a HIR async frame.
+    let cont_ids = rt.vm.async_continuation_ids();
+    assert_eq!(
+      cont_ids.len(),
+      1,
+      "expected exactly one async continuation after a single suspension, got {cont_ids:?}"
+    );
+    let id = cont_ids[0];
+    let cont = rt
+      .vm
+      .take_async_continuation(id)
+      .expect("expected async continuation to be present in VM");
+    let VmAsyncContinuation::Ast(cont) = cont else {
+      panic!("expected async function suspension to create an AST-style async continuation");
+    };
+    assert!(
+      cont
+        .frames
+        .iter()
+        .any(|f| matches!(f, AsyncFrame::HirAsync { .. })),
+      "expected continuation to contain a HIR async frame, got frames={:?}",
+      cont.frames
+    );
+
+    // Ensure we tear down persistent roots even though the awaited promise will never settle.
+    let mut scope = rt.heap.scope();
+    crate::exec::async_teardown_continuation(&mut scope, cont);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_labeled_direct_await_suspends_via_hir_async_frame() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        // Keep a reference to the async function so we can inspect it from Rust after compilation.
+        var f;
+
+        async function g() {
+          // Pending promise: suspends the async function so a continuation is created.
+          outer: await new Promise(() => {});
+          return 1;
+        }
+
+        f = g;
+        g();
+      "#,
+    )?;
+
+    assert!(script.contains_async_functions);
+    assert!(!script.contains_generators);
+    assert!(!script.contains_async_generators);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should not require AST fallback just because they contain async functions",
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(promise_obj) = result else {
+      panic!("expected Promise from async function call, got {result:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    // The function object should be a compiled user function without per-function AST fallback.
+    let func_value = rt.exec_script("f")?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected function object in global `f`, got {func_value:?}");
+    };
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected compiled async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected labeled direct-await stmt to execute via HIR (no per-function AST fallback), got {func_data:?}"
     );
 
     // The suspension should create an async continuation backed by a HIR async frame.
