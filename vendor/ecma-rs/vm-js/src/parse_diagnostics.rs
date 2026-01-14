@@ -9,6 +9,8 @@ const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V1: &str =
   "'arguments' is not allowed in class field initializer or static initialization block";
 const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V2: &str =
   "`arguments` is not allowed in class field initializers or static blocks";
+const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V3: &str =
+  "`arguments` is not allowed in class field initializers or static initialization blocks";
 const AWAIT_DISALLOWED_IN_STATIC_BLOCK: &str =
   "'await' is not allowed in class static initialization block";
 
@@ -17,6 +19,7 @@ fn parse_js_error_is_vmjs_early_error(typ: SyntaxErrorType) -> bool {
     SyntaxErrorType::ExpectedSyntax(message)
       if message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V1
         || message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V2
+        || message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V3
         || message == AWAIT_DISALLOWED_IN_STATIC_BLOCK =>
     {
       true
