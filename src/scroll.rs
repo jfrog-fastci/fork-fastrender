@@ -1551,6 +1551,21 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
   }
 }
 
+/// Convenience wrapper for applying scroll anchoring between two layout results.
+///
+/// This function captures scroll anchors from `prev` and then applies them to `next`, returning the
+/// adjusted scroll state. Callers that need to keep the updated snapshot should use
+/// [`apply_scroll_anchoring`] directly.
+pub fn apply_scroll_anchoring_between_fragment_trees(
+  prev: &FragmentTree,
+  next: &FragmentTree,
+  scroll: &ScrollState,
+) -> ScrollState {
+  let snapshot = capture_scroll_anchors(prev, scroll);
+  let (anchored, _next_snapshot) = apply_scroll_anchoring(&snapshot, next, scroll);
+  anchored
+}
+
 fn apply_viewport_scroll_cancel_to_fixed(
   node: &mut FragmentNode,
   viewport_scroll: Point,

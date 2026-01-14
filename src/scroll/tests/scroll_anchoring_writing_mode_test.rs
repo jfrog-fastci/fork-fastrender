@@ -1,5 +1,5 @@
 use crate::geometry::{Point, Rect, Size};
-use crate::scroll::{apply_scroll_anchoring, capture_scroll_anchors, ScrollState};
+use crate::scroll::{apply_scroll_anchoring_between_fragment_trees, ScrollState};
 use crate::style::types::WritingMode;
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
@@ -38,8 +38,7 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
   // Non-zero scroll offset in the block axis (horizontal for vertical writing modes).
   let scroll_state = ScrollState::with_viewport(Point::new(20.0, 0.0));
 
-  let snapshot = capture_scroll_anchors(&prev_tree, &scroll_state);
-  let (adjusted, _next_snapshot) = apply_scroll_anchoring(&snapshot, &next_tree, &scroll_state);
+  let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
   // The scroll adjustment is the movement of the anchor fragment's origin in physical coordinates.
   let expected_x = scroll_state.viewport.x + (anchor_new_bounds.x() - anchor_old_bounds.x());
