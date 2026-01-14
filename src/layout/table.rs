@@ -7586,6 +7586,9 @@ impl FormattingContext for TableFormattingContext {
           }
 
           child_fragment.bounds = Rect::new(border_origin, border_size);
+          if matches!(child.style.position, crate::style::position::Position::Absolute) {
+            child_fragment.abs_containing_block_box_id = cb.box_id();
+          }
           child_fragment.style = Some(original_style);
           fragment.children_mut().push(child_fragment);
         }
@@ -7660,6 +7663,7 @@ impl FormattingContext for TableFormattingContext {
           // Percentage offsets on absolutely positioned boxes resolve against the used height of
           // the padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
           let block_base = Some(padding_rect.size.height);
+          let table_box_id = (table_box.id != 0).then_some(table_box.id);
           let padding_cb = ContainingBlock::with_viewport_and_bases(
             padding_rect,
             self.viewport_size,
@@ -7669,7 +7673,8 @@ impl FormattingContext for TableFormattingContext {
           .with_writing_mode_and_direction(
             table_root_style.writing_mode,
             table_root_style.direction,
-          );
+          )
+          .with_box_id(table_box_id);
           let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
           let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
           let cb_for_absolute = if establishes_abs_cb {
@@ -9723,13 +9728,15 @@ impl FormattingContext for TableFormattingContext {
         // Percentage offsets on absolutely positioned boxes resolve against the used height of the
         // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
         let block_base = Some(padding_rect.size.height);
+        let table_box_id = (table_box.id != 0).then_some(table_box.id);
         let padding_cb = ContainingBlock::with_viewport_and_bases(
           padding_rect,
           self.viewport_size,
           Some(padding_rect.size.width),
           block_base,
         )
-        .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
+        .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction)
+        .with_box_id(table_box_id);
         let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
         let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
         let cb_for_absolute = if establishes_abs_cb {

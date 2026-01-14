@@ -66,13 +66,18 @@ use crate::tree::fragment_tree::FragmentNode;
 /// - **sticky**: Content box of nearest block container ancestor
 ///
 /// CSS 2.1 Section 10.1: Definition of "containing block"
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct ContainingBlock {
   /// The rectangle of the containing block
   ///
   /// For absolute positioning, this is the padding box.
   /// For fixed positioning, this is the viewport.
   pub rect: Rect,
+  /// Box id of the element that established this containing block when available.
+  ///
+  /// This is plumbing for features (such as CSS Scroll Anchoring) that need to relate positioned
+  /// descendants back to their containing block element.
+  pub(crate) box_id: Option<usize>,
   viewport_size: Size,
   inline_percentage_base: Option<f32>,
   block_percentage_base: Option<f32>,
@@ -80,6 +85,19 @@ pub struct ContainingBlock {
   pub writing_mode: WritingMode,
   /// Text direction of the element that established this containing block.
   pub direction: Direction,
+}
+
+// NOTE: Containing blocks are compared for layout caching and formatting-context reuse.
+// The `box_id` is metadata and must not invalidate those comparisons.
+impl PartialEq for ContainingBlock {
+  fn eq(&self, other: &Self) -> bool {
+    self.rect == other.rect
+      && self.viewport_size == other.viewport_size
+      && self.inline_percentage_base == other.inline_percentage_base
+      && self.block_percentage_base == other.block_percentage_base
+      && self.writing_mode == other.writing_mode
+      && self.direction == other.direction
+  }
 }
 
 impl ContainingBlock {
@@ -116,6 +134,7 @@ impl ContainingBlock {
   ) -> Self {
     Self {
       rect,
+      box_id: None,
       viewport_size,
       inline_percentage_base: inline_base,
       block_percentage_base: block_base,
@@ -177,6 +196,16 @@ impl ContainingBlock {
   /// Percentage base for block-axis offsets (None when block-size is auto).
   pub fn block_percentage_base(&self) -> Option<f32> {
     self.block_percentage_base
+  }
+
+  /// Returns the box id of the element that established this containing block, if known.
+  pub(crate) fn box_id(&self) -> Option<usize> {
+    self.box_id
+  }
+
+  /// Returns a copy of this containing block with the supplied box id metadata.
+  pub(crate) fn with_box_id(self, box_id: Option<usize>) -> Self {
+    Self { box_id, ..self }
   }
 
   /// Returns a copy of this containing block with the supplied writing mode and direction.

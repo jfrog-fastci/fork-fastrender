@@ -8518,13 +8518,15 @@ impl GridFormattingContext {
     let block_base = Some(padding_rect.size.height);
     let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
     let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
+    let root_box_id = ensure_box_id(box_node);
     let padding_cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
       padding_rect,
       self.viewport_size,
       Some(padding_rect.size.width),
       block_base,
     )
-    .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
+    .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction)
+    .with_box_id(Some(root_box_id));
     let cb_for_absolute = if establishes_abs_cb {
       padding_cb
     } else {
@@ -9105,12 +9107,17 @@ impl GridFormattingContext {
           if rect != cb.rect {
             cb_origin_delta =
               Point::new(rect.origin.x - old_origin.x, rect.origin.y - old_origin.y);
+            let wm = cb.writing_mode;
+            let dir = cb.direction;
+            let box_id = cb.box_id();
             cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
               rect,
               cb.viewport_size(),
               cb.inline_percentage_base().map(|_| rect.size.width),
               cb.block_percentage_base().map(|_| rect.size.height),
-            );
+            )
+            .with_writing_mode_and_direction(wm, dir)
+            .with_box_id(box_id);
           }
         }
       }
@@ -9465,6 +9472,9 @@ impl GridFormattingContext {
         }
       }
       child_fragment.bounds = crate::geometry::Rect::new(border_origin, border_size);
+      if matches!(child.style.position, crate::style::position::Position::Absolute) {
+        child_fragment.abs_containing_block_box_id = cb.box_id();
+      }
       child_fragment.style = Some(child.style.clone());
       fragments.push(child_fragment);
     }
@@ -15889,6 +15899,7 @@ impl FormattingContext for GridFormattingContext {
         let block_base = Some(padding_rect.size.height);
         let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
         let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
+        let root_box_id = ensure_box_id(box_node);
         let padding_cb =
           crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
             padding_rect,
@@ -15896,8 +15907,8 @@ impl FormattingContext for GridFormattingContext {
             Some(padding_rect.size.width),
             block_base,
           )
-          .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
-        let root_box_id = ensure_box_id(box_node);
+          .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction)
+          .with_box_id(Some(root_box_id));
         let mut anchor_index =
           crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
             fragment.children_ref(),
@@ -16199,12 +16210,17 @@ impl FormattingContext for GridFormattingContext {
               if rect != cb.rect {
                 cb_origin_delta =
                   Point::new(rect.origin.x - old_origin.x, rect.origin.y - old_origin.y);
+                let wm = cb.writing_mode;
+                let dir = cb.direction;
+                let box_id = cb.box_id();
                 cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
                   rect,
                   cb.viewport_size(),
                   cb.inline_percentage_base().map(|_| rect.size.width),
                   cb.block_percentage_base().map(|_| rect.size.height),
-                );
+                )
+                .with_writing_mode_and_direction(wm, dir)
+                .with_box_id(box_id);
               }
             }
           }
@@ -16580,6 +16596,9 @@ impl FormattingContext for GridFormattingContext {
             }
           }
           child_fragment.bounds = crate::geometry::Rect::new(border_origin, border_size);
+          if matches!(child.style.position, crate::style::position::Position::Absolute) {
+            child_fragment.abs_containing_block_box_id = cb.box_id();
+          }
           child_fragment.style = Some(child.style.clone());
           let child_box_id = ensure_box_id(child);
           match &mut child_fragment.content {

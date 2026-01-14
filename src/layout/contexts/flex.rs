@@ -1475,6 +1475,7 @@ impl FormattingContext for FlexFormattingContext {
       // viewport during the Taffy measurement phase.
       let establishes_abs_cb = style.establishes_abs_containing_block();
       let establishes_fixed_cb = style.establishes_fixed_containing_block();
+      let root_box_id = ensure_box_id(box_node);
 
       // Establish the positioned containing block for descendants when this flex container is
       // positioned (or otherwise establishes a containing block such as via transforms/filters).
@@ -1518,6 +1519,7 @@ impl FormattingContext for FlexFormattingContext {
           // Only treat the block percentage base as definite when the border box height is definite.
           container_used_border_box_height.map(|_| padding_rect.size.height),
         )
+        .with_box_id(Some(root_box_id))
       } else {
         self.nearest_positioned_cb
       };
@@ -1553,6 +1555,7 @@ impl FormattingContext for FlexFormattingContext {
           container_used_border_box_height.map(|_| padding_rect.size.height),
         )
         .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(root_box_id))
       } else {
         self.nearest_fixed_cb
       };
@@ -5254,14 +5257,15 @@ impl FormattingContext for FlexFormattingContext {
         let block_base = Some(padding_rect.size.height);
         let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
         let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
+        let root_box_id = ensure_box_id(box_node);
         let padding_cb = ContainingBlock::with_viewport_and_bases(
           padding_rect,
           self.viewport_size,
           Some(padding_rect.size.width),
           block_base,
         )
-        .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
-        let root_box_id = ensure_box_id(box_node);
+        .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction)
+        .with_box_id(Some(root_box_id));
         let mut anchor_index =
           crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
             fragment.children_ref(),
@@ -5603,7 +5607,11 @@ impl FormattingContext for FlexFormattingContext {
             }
           }
           child_fragment.bounds = Rect::new(border_origin, border_size);
+          let is_absolute = matches!(candidate.original_style.position, Position::Absolute);
           child_fragment.style = Some(candidate.original_style.clone());
+          if is_absolute {
+            child_fragment.abs_containing_block_box_id = candidate.cb.box_id();
+          }
           match &mut child_fragment.content {
             FragmentContent::Block { box_id }
             | FragmentContent::Inline { box_id, .. }
@@ -10759,7 +10767,8 @@ impl FlexFormattingContext {
         // computed padding box height as the percentage base.
         Some(padding_rect.size.height),
       )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      .with_box_id(Some(ensure_box_id(box_node)));
       if establishes_abs_cb && padding_cb != factory.nearest_positioned_cb() {
         factory = factory.with_positioned_cb(padding_cb);
       }
@@ -12094,7 +12103,8 @@ impl FlexFormattingContext {
                 Some(padding_rect.size.width),
                 Some(padding_rect.size.height),
               )
-              .with_writing_mode_and_direction(style.writing_mode, style.direction);
+              .with_writing_mode_and_direction(style.writing_mode, style.direction)
+              .with_box_id(Some(child_box.id));
 
               let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
               let font_context = self.font_context.clone();
@@ -12274,6 +12284,12 @@ impl FlexFormattingContext {
                 }
                 child_fragment.bounds = Rect::new(border_origin, border_size);
                 child_fragment.style = Some(original_style);
+                if matches!(
+                  child_fragment.style.as_deref().map(|s| s.position),
+                  Some(Position::Absolute)
+                ) {
+                  child_fragment.abs_containing_block_box_id = cb.box_id();
+                }
                 match &mut child_fragment.content {
                   FragmentContent::Block { box_id: id } => *id = Some(positioned_child.id),
                   FragmentContent::Inline { box_id: id, .. } => *id = Some(positioned_child.id),

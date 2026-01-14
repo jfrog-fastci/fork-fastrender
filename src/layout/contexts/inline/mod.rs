@@ -9926,11 +9926,13 @@ impl InlineFormattingContext {
             Some(cb_physical_width),
             Some(cb_physical_height),
           )
-          .with_writing_mode_and_direction(style.writing_mode, style.direction);
+          .with_writing_mode_and_direction(style.writing_mode, style.direction)
+          .with_box_id(Some(box_item.box_id));
 
           map
             .entry(containing_block_box_id)
             .and_modify(|existing| {
+              let box_id = existing.box_id();
               let union = Rect::from_points(
                 Point::new(
                   existing.rect.min_x().min(padding_rect.min_x()),
@@ -9959,7 +9961,8 @@ impl InlineFormattingContext {
                   },
                 ),
               )
-              .with_writing_mode_and_direction(existing.writing_mode, existing.direction);
+              .with_writing_mode_and_direction(existing.writing_mode, existing.direction)
+              .with_box_id(box_id);
             })
             .or_insert(new_cb);
         };
@@ -16482,30 +16485,31 @@ impl InlineFormattingContext {
         } else {
           (padding_rect.size.width, padding_rect.size.height)
         };
-      let cb_block_base = Some(cb_physical_height);
-      let cb = ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        self.viewport_size,
-        Some(cb_physical_width),
-        cb_block_base,
-      )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
-      // The inline formatting context is often invoked on synthetic wrapper boxes created during
-      // block layout (e.g. the anonymous inline container used to lay out a run of inline-level
-      // children). These wrappers may inherit `position`/`transform` from the real block box, but
-      // they are not element boxes and must not establish containing blocks for absolute/fixed
+        let cb_block_base = Some(cb_physical_height);
+        let root_is_element_box = !box_node.is_anonymous();
+        let cb = ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          self.viewport_size,
+          Some(cb_physical_width),
+          cb_block_base,
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(root_is_element_box.then_some(root_box_id));
+        // The inline formatting context is often invoked on synthetic wrapper boxes created during
+        // block layout (e.g. the anonymous inline container used to lay out a run of inline-level
+        // children). These wrappers may inherit `position`/`transform` from the real block box, but
+        // they are not element boxes and must not establish containing blocks for absolute/fixed
       // descendants. Otherwise, absolutely positioned descendants nested under inline children can
       // incorrectly use the wrapper's line-box height as their containing block, collapsing
       // "absolute fill" patterns (e.g. responsive images).
       // Inline formatting contexts are sometimes invoked for anonymous wrapper boxes created during
       // layout (e.g. anonymous inline containers for runs of inline-level children). Those
-      // generated boxes can share `ComputedStyle` with their originating element, but must not
-      // establish containing blocks for positioned descendants. Gate root-level containing block
-      // establishment on the box being non-anonymous rather than having a stable box-tree id so
-      // unit tests (which often construct `BoxNode`s without assigning ids) still exercise the
-      // correct CSS behavior for element boxes.
-      let root_is_element_box = !box_node.is_anonymous();
-      let root_establishes_abs_cb = root_is_element_box && style.establishes_abs_containing_block();
+        // generated boxes can share `ComputedStyle` with their originating element, but must not
+        // establish containing blocks for positioned descendants. Gate root-level containing block
+        // establishment on the box being non-anonymous rather than having a stable box-tree id so
+        // unit tests (which often construct `BoxNode`s without assigning ids) still exercise the
+        // correct CSS behavior for element boxes.
+        let root_establishes_abs_cb = root_is_element_box && style.establishes_abs_containing_block();
       let root_establishes_fixed_cb =
         root_is_element_box && style.establishes_fixed_containing_block();
       let mut abs_cb = if root_establishes_abs_cb {
@@ -16530,6 +16534,7 @@ impl InlineFormattingContext {
           0.0
         };
         let resolved_height = (abs_cb.rect.size.height + content_height).max(0.0);
+        let box_id = abs_cb.box_id();
         abs_cb = ContainingBlock::with_viewport_and_bases(
           Rect::new(
             abs_cb.rect.origin,
@@ -16539,7 +16544,8 @@ impl InlineFormattingContext {
           abs_cb.inline_percentage_base(),
           Some(resolved_height),
         )
-        .with_writing_mode_and_direction(abs_cb.writing_mode, abs_cb.direction);
+        .with_writing_mode_and_direction(abs_cb.writing_mode, abs_cb.direction)
+        .with_box_id(box_id);
       }
       if !root_establishes_fixed_cb && default_fixed_cb.block_percentage_base().is_none() {
         let content_height = if bounds.height().is_finite() {
@@ -16548,6 +16554,7 @@ impl InlineFormattingContext {
           0.0
         };
         let resolved_height = (default_fixed_cb.rect.size.height + content_height).max(0.0);
+        let box_id = default_fixed_cb.box_id();
         default_fixed_cb = ContainingBlock::with_viewport_and_bases(
           Rect::new(
             default_fixed_cb.rect.origin,
@@ -16557,7 +16564,8 @@ impl InlineFormattingContext {
           default_fixed_cb.inline_percentage_base(),
           Some(resolved_height),
         )
-        .with_writing_mode_and_direction(default_fixed_cb.writing_mode, default_fixed_cb.direction);
+        .with_writing_mode_and_direction(default_fixed_cb.writing_mode, default_fixed_cb.direction)
+        .with_box_id(box_id);
       }
       let default_static_position = static_position;
 
@@ -16714,7 +16722,8 @@ impl InlineFormattingContext {
             child_cb.inline_percentage_base(),
             child_cb.block_percentage_base(),
           )
-          .with_writing_mode_and_direction(child_cb.writing_mode, child_cb.direction);
+          .with_writing_mode_and_direction(child_cb.writing_mode, child_cb.direction)
+          .with_box_id(child_cb.box_id());
           let anchors = anchor_index_physical.as_ref();
           (anchors, physical_cb)
         } else {
@@ -17025,6 +17034,9 @@ impl InlineFormattingContext {
         child_fragment =
           crate::layout::contexts::block::unconvert_fragment_axes_root(child_fragment);
         child_fragment.bounds = Rect::new(border_origin, border_size);
+        if matches!(child.style.position, crate::style::position::Position::Absolute) {
+          child_fragment.abs_containing_block_box_id = child_cb.box_id();
+        }
         child_fragment.style = Some(original_style);
         match &mut child_fragment.content {
           FragmentContent::Block { box_id: id } => *id = Some(box_id),

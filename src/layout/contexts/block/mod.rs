@@ -2089,6 +2089,7 @@ impl BlockFormattingContext {
           cb_block_base,
         )
         .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(child.id))
       } else {
         inherited_positioned_cb
       };
@@ -2100,6 +2101,7 @@ impl BlockFormattingContext {
           cb_block_base,
         )
         .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(child.id))
       } else {
         inherited_fixed_cb
       };
@@ -2759,7 +2761,9 @@ impl BlockFormattingContext {
             self.viewport_size,
             Some(used_padding_size.width),
             used_cb_block_base,
-          );
+          )
+          .with_writing_mode_and_direction(style.writing_mode, style.direction)
+          .with_box_id(Some(child.id));
         }
         if establishes_fixed_cb {
           descendant_nearest_fixed_cb = ContainingBlock::with_viewport_and_bases(
@@ -2767,7 +2771,9 @@ impl BlockFormattingContext {
             self.viewport_size,
             Some(used_padding_size.width),
             used_cb_block_base,
-          );
+          )
+          .with_writing_mode_and_direction(style.writing_mode, style.direction)
+          .with_box_id(Some(child.id));
         }
 
         let (frags, _relayout_height, positioned, info) = if use_columns {
@@ -2898,7 +2904,8 @@ impl BlockFormattingContext {
               Some(padding_rect_physical.size.width),
               Some(padding_rect_physical.size.height),
             )
-            .with_writing_mode_and_direction(style.writing_mode, style.direction),
+            .with_writing_mode_and_direction(style.writing_mode, style.direction)
+            .with_box_id(Some(child.id)),
           );
         }
         let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
@@ -2907,7 +2914,8 @@ impl BlockFormattingContext {
           Some(padding_size.width),
           Some(padding_size.height),
         )
-        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(child.id));
         let base_factory = self.factory.clone();
         let viewport_cb = ContainingBlock::viewport(self.viewport_size);
         let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
@@ -3455,6 +3463,10 @@ impl BlockFormattingContext {
             child_fragment.translate_root_in_place(content_origin);
           }
           child_fragment.style = Some(original_style);
+          if matches!(child_fragment.style.as_deref().map(|s| s.position), Some(Position::Absolute))
+          {
+            child_fragment.abs_containing_block_box_id = cb.box_id();
+          }
           if trace_positioned.contains(&pos_child.id) {
             let (text_count, total) = count_text_fragments(&child_fragment);
             let mut snippets = Vec::new();
@@ -4423,7 +4435,8 @@ impl BlockFormattingContext {
         Some(padding_rect.size.width),
         Some(padding_rect.size.height),
       )
-      .with_writing_mode_and_direction(style.writing_mode, style.direction);
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
+      .with_box_id(Some(child.id));
 
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
@@ -4620,6 +4633,10 @@ impl BlockFormattingContext {
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
+        if matches!(child_fragment.style.as_deref().map(|s| s.position), Some(Position::Absolute))
+        {
+          child_fragment.abs_containing_block_box_id = cb.box_id();
+        }
         match &mut child_fragment.content {
           FragmentContent::Block { box_id: id } => *id = Some(positioned_child.id),
           FragmentContent::Inline { box_id: id, .. } => *id = Some(positioned_child.id),
@@ -9824,6 +9841,7 @@ impl FormattingContext for BlockFormattingContext {
           cb_block_base,
         )
         .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(box_node.id))
       } else {
         self.nearest_positioned_cb
       };
@@ -9835,6 +9853,7 @@ impl FormattingContext for BlockFormattingContext {
           cb_block_base,
         )
         .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(box_node.id))
       } else {
         self.nearest_fixed_cb
       };
@@ -10604,7 +10623,8 @@ impl FormattingContext for BlockFormattingContext {
               Some(padding_rect_physical.size.width),
               Some(padding_rect_physical.size.height),
             )
-            .with_writing_mode_and_direction(style.writing_mode, style.direction),
+            .with_writing_mode_and_direction(style.writing_mode, style.direction)
+            .with_box_id(Some(box_node.id)),
           );
         }
         let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
@@ -10613,7 +10633,8 @@ impl FormattingContext for BlockFormattingContext {
           Some(padding_size.width),
           Some(padding_size.height),
         )
-        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+        .with_writing_mode_and_direction(style.writing_mode, style.direction)
+        .with_box_id(Some(box_node.id));
         let base_factory = self.factory.clone();
         let viewport_cb = ContainingBlock::viewport(self.viewport_size);
         let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
@@ -11097,6 +11118,10 @@ impl FormattingContext for BlockFormattingContext {
             child_fragment.translate_root_in_place(content_origin);
           }
           child_fragment.style = Some(original_style);
+          if matches!(child_fragment.style.as_deref().map(|s| s.position), Some(Position::Absolute))
+          {
+            child_fragment.abs_containing_block_box_id = cb.box_id();
+          }
           if trace_positioned.contains(&child.id) {
             let (text_count, total) = count_text_fragments(&child_fragment);
             eprintln!(

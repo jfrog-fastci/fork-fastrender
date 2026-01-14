@@ -434,6 +434,180 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
   }
 }
 
+#[derive(Clone, Copy)]
+struct AbsPosCandidate<'a> {
+  node: &'a FragmentNode,
+  origin: Point,
+}
+
+fn collect_abspos_candidates<'a>(root: &'a FragmentNode) -> HashMap<usize, Vec<AbsPosCandidate<'a>>> {
+  let mut map: HashMap<usize, Vec<AbsPosCandidate<'a>>> = HashMap::new();
+
+  let mut stack: Vec<(&'a FragmentNode, Point)> = Vec::new();
+  stack.push((root, Point::ZERO));
+
+  while let Some((node, origin)) = stack.pop() {
+    if node
+      .style
+      .as_deref()
+      .is_some_and(|style| matches!(style.position, Position::Absolute))
+    {
+      if let Some(cb) = node.abs_containing_block_box_id {
+        map
+          .entry(cb)
+          .or_default()
+          .push(AbsPosCandidate { node, origin });
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      stack.push((child, child_origin));
+    }
+  }
+
+  map
+}
+
+#[derive(Clone, Copy)]
+enum ScrollAnchorTask<'a> {
+  Enter {
+    node: &'a FragmentNode,
+    origin: Point,
+    excluded: bool,
+  },
+  AfterChildren {
+    node_id: usize,
+    excluded: bool,
+  },
+  SelectSelf {
+    node_id: usize,
+    excluded: bool,
+  },
+}
+
+/// Selects a scroll anchoring node within a scroll container.
+///
+/// Implements a best-effort version of the candidate examination algorithm from
+/// css-scroll-anchoring-1 §2.2, including step 2.2 which examines out-of-flow absolutely positioned
+/// descendants whose containing block is the currently examined partially-visible candidate.
+pub(crate) fn select_scroll_anchor(scroller: &FragmentNode, viewport: Size) -> Option<usize> {
+  let scrollport = Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height);
+  let abspos_by_cb = collect_abspos_candidates(scroller);
+
+  let rect_in_scrollport = |origin: Point, node: &FragmentNode| -> Option<(Rect, bool)> {
+    let width = node.bounds.width();
+    let height = node.bounds.height();
+    if !origin.x.is_finite()
+      || !origin.y.is_finite()
+      || !width.is_finite()
+      || !height.is_finite()
+      || width <= 0.0
+      || height <= 0.0
+    {
+      return None;
+    }
+    let rect = Rect::from_xywh(origin.x, origin.y, width.max(0.0), height.max(0.0));
+    let visible = rect.intersection(scrollport)?;
+    let fully_visible = rect.min_x() >= scrollport.min_x()
+      && rect.max_x() <= scrollport.max_x()
+      && rect.min_y() >= scrollport.min_y()
+      && rect.max_y() <= scrollport.max_y();
+    Some((visible, fully_visible))
+  };
+
+  let mut stack: Vec<ScrollAnchorTask<'_>> = Vec::new();
+
+  for child in scroller.children.iter().rev() {
+    let origin = Point::new(child.bounds.x(), child.bounds.y());
+    stack.push(ScrollAnchorTask::Enter {
+      node: child,
+      origin,
+      excluded: false,
+    });
+  }
+
+  while let Some(task) = stack.pop() {
+    match task {
+      ScrollAnchorTask::Enter {
+        node,
+        origin,
+        excluded,
+      } => {
+        let excluded = excluded
+          || node
+            .style
+            .as_deref()
+            .is_some_and(|style| matches!(style.overflow_anchor, crate::style::types::OverflowAnchor::None));
+        if excluded {
+          continue;
+        }
+
+        let Some((_visible, fully_visible)) = rect_in_scrollport(origin, node) else {
+          continue;
+        };
+
+        let node_id = fragment_box_id(node);
+
+        if fully_visible {
+          if let Some(id) = node_id {
+            return Some(id);
+          }
+          // Fragments without a stable box id cannot be anchors, but still may contain anchorable
+          // descendants.
+          for child in node.children.iter().rev() {
+            let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+            stack.push(ScrollAnchorTask::Enter {
+              node: child,
+              origin: child_origin,
+              excluded,
+            });
+          }
+          continue;
+        }
+
+        if let Some(id) = node_id {
+          stack.push(ScrollAnchorTask::AfterChildren { node_id: id, excluded });
+        }
+
+        for child in node.children.iter().rev() {
+          let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+          stack.push(ScrollAnchorTask::Enter {
+            node: child,
+            origin: child_origin,
+            excluded,
+          });
+        }
+      }
+      ScrollAnchorTask::AfterChildren { node_id, excluded } => {
+        if excluded {
+          continue;
+        }
+        if let Some(abspos) = abspos_by_cb.get(&node_id) {
+          stack.push(ScrollAnchorTask::SelectSelf { node_id, excluded });
+          for candidate in abspos.iter().rev() {
+            stack.push(ScrollAnchorTask::Enter {
+              node: candidate.node,
+              origin: candidate.origin,
+              excluded,
+            });
+          }
+        } else {
+          return Some(node_id);
+        }
+      }
+      ScrollAnchorTask::SelectSelf { node_id, excluded } => {
+        if excluded {
+          continue;
+        }
+        return Some(node_id);
+      }
+    }
+  }
+
+  None
+}
+
 #[inline]
 fn overflow_axis_clips(overflow: Overflow) -> bool {
   matches!(
@@ -2831,6 +3005,7 @@ mod tests {
   mod effective_scroll_state_test;
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
+  mod scroll_anchoring_abspos_candidate_examination_test;
   mod scroll_anchoring_depends_on_scroll_offset_test;
   mod scroll_anchoring_missing_anchor_test;
   mod scroll_anchoring_scroll_padding_test;

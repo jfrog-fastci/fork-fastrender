@@ -852,6 +852,14 @@ pub struct FragmentNode {
   /// ancestor scroll ranges or paint bounds.
   pub scroll_overflow: Rect,
 
+  /// For absolutely positioned fragments, stores the box id of the element that established this
+  /// fragment's containing block.
+  ///
+  /// This is used by the CSS Scroll Anchoring algorithm (css-scroll-anchoring-1 §2.2) to examine
+  /// out-of-flow absolutely positioned descendants whose containing block is an ancestor that is
+  /// not their DOM parent.
+  pub abs_containing_block_box_id: Option<usize>,
+
   /// Space reserved for scrollbars inside this fragment's scrollport.
   pub scrollbar_reservation: ScrollbarReservation,
 
@@ -883,6 +891,7 @@ impl Clone for FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      abs_containing_block_box_id: self.abs_containing_block_box_id,
       scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
@@ -981,6 +990,7 @@ impl FragmentNode {
       fragmentainer,
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
+      abs_containing_block_box_id: None,
       scrollbar_reservation: ScrollbarReservation::default(),
       fragmentation: None,
       grid_fragmentation: None,
@@ -1014,6 +1024,7 @@ impl FragmentNode {
       fragmentainer,
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
+      abs_containing_block_box_id: None,
       scrollbar_reservation: ScrollbarReservation::default(),
       fragmentation: None,
       grid_fragmentation: None,
@@ -1450,6 +1461,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      abs_containing_block_box_id: self.abs_containing_block_box_id,
       scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
@@ -1642,6 +1654,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      abs_containing_block_box_id: self.abs_containing_block_box_id,
       scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
@@ -1690,6 +1703,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      abs_containing_block_box_id: self.abs_containing_block_box_id,
       scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
