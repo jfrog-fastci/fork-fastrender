@@ -2,11 +2,6 @@
 
 Committed snapshot of `vm-js` conformance on the curated `test262-semantic` suite.
 
-Notable deltas vs the previous committed snapshot:
-- Overall mismatches: 1269 → 575 (XFAIL: 612 → 298; unexpected: 657 → 277).
-- `built-ins` mismatches: 310 → 8 (notably `built-ins/Set`: 302 → 0).
-- VmError::Unimplemented mismatches: 439 → 0 (incl. `unimplemented: async generator functions`, previously 413 cases); `value is not callable` (206) also dropped out of the top mismatch reasons.
-
 ## Command
 
 ```bash
@@ -87,18 +82,18 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 16743 (96.68%) |
-| Mismatched upstream expected | 575 (3.32%) |
+| Matched upstream expected | 16824 (97.15%) |
+| Mismatched upstream expected | 494 (2.85%) |
 | Timeouts | 0 |
 | Skipped | 40 |
-| Unexpected mismatches | 277 |
+| Unexpected mismatches | 245 |
 
 ### Outcomes (runner)
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 16703 |
-| failed | 575 |
+| passed | 16784 |
+| failed | 494 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -115,28 +110,28 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 8569 |
-| FAIL (unexpected) | 277 |
-| XFAIL | 298 |
-| XPASS | 8134 |
+| PASS | 8601 |
+| FAIL (unexpected) | 245 |
+| XFAIL | 249 |
+| XPASS | 8183 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7177 | 8 | 0.11% | 6389 | 0 | 8 | 748 | 40 |
-| language | 10128 | 9561 | 567 | 5.60% | 2175 | 277 | 290 | 7386 | 0 |
+| built-ins | 7185 | 7175 | 10 | 0.14% | 6389 | 0 | 10 | 746 | 40 |
+| language | 10128 | 9644 | 484 | 4.78% | 2207 | 245 | 239 | 7437 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 555 | 7.75% | 1143 | 277 | 278 | 5463 | 0 |
-| `language/expressions` | 2337 | 12 | 0.51% | 1032 | 0 | 12 | 1293 | 0 |
+| `language/statements` | 7161 | 473 | 6.61% | 1175 | 245 | 228 | 5513 | 0 |
+| `language/expressions` | 2337 | 11 | 0.47% | 1032 | 0 | 11 | 1294 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
-| `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
+| `built-ins/Object` | 1692 | 4 | 0.24% | 1332 | 0 | 4 | 356 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
@@ -149,7 +144,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 575 (100.00%)
+- exception/other: 494 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -159,24 +154,24 @@ Mismatched cases by high-level bucket:
 | ---: | --- | ---: | --- |
 | 1 | exception/other | 122 | `Expected a Test262Error to be thrown but no exception was thrown at all` |
 | 2 | exception/other | 76 | `Expected a TypeError to be thrown but no exception was thrown at all` |
-| 3 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
-| 4 | exception/other | 60 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
-| 5 | exception/other | 36 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
+| 3 | exception/other | 50 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
+| 4 | exception/other | 44 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
+| 5 | exception/other | 34 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
 | 6 | exception/other | 23 | `Maximum call stack size exceeded` |
-| 7 | exception/other | 21 | `Identifier has already been declared` |
-| 8 | exception/other | 14 | `Expected SameValue(«0», «1») to be true` |
-| 9 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
-| 10 | exception/other | 10 | `Expected true but got false` |
-| 11 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
-| 12 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
-| 13 | exception/other | 8 | `Test262Error: Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
-| 14 | exception/other | 8 | `Test262Error: Expected SameValue(«"xCover"», «"xCover"») to be false` |
-| 15 | exception/other | 8 | `error[PS0002]: expected expression operator` |
-| 16 | exception/other | 6 | `Expected a TypeError but got a Test262Error` |
-| 17 | exception/other | 6 | `Object` |
-| 18 | exception/other | 6 | `TypeError: Cannot convert undefined or null to object` |
-| 19 | exception/other | 4 | `Actual [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] and expected [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] should have the same contents. TestIterationAndResize: list of iterated values` |
-| 20 | exception/other | 4 | `Cannot convert a BigInt value to a number` |
+| 7 | exception/other | 14 | `Expected SameValue(«0», «1») to be true` |
+| 8 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
+| 9 | exception/other | 10 | `Expected true but got false` |
+| 10 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
+| 11 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
+| 12 | exception/other | 8 | `error[PS0002]: expected expression operator` |
+| 13 | exception/other | 6 | `Expected a TypeError but got a Test262Error` |
+| 14 | exception/other | 6 | `Object` |
+| 15 | exception/other | 6 | `TypeError: Cannot convert undefined or null to object` |
+| 16 | exception/other | 4 | `#1: __evaluated === 4. Actual:  __evaluated ===4 Expected SameValue(«4», «undefined») to be true` |
+| 17 | exception/other | 4 | `Actual [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] and expected [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] should have the same contents. TestIterationAndResize: list of iterated values` |
+| 18 | exception/other | 4 | `Cannot convert a BigInt value to a number` |
+| 19 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
+| 20 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
 
 ## Timed-out tests
 
@@ -189,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (32 shown / 555 mismatches)
+### `language/statements` (30 shown / 473 mismatches)
 
 - `language/statements/async-generator/dflt-params-abrupt.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dflt-params-abrupt.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
@@ -203,10 +198,6 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/async-generator/dstr/ary-init-iter-get-err.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-elem-ary-val-null.js#non_strict`: `Expected a TypeError to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-elem-ary-val-null.js#strict`: `Expected a TypeError to be thrown but no exception was thrown at all`
-- `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-fn-name-class.js#non_strict`: `Test262Error: Expected SameValue(«"xCls2"», «"xCls2"») to be false`
-- `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-fn-name-class.js#strict`: `Test262Error: Expected SameValue(«"xCls2"», «"xCls2"») to be false`
-- `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-fn-name-cover.js#non_strict`: `Test262Error: Expected SameValue(«"xCover"», «"xCover"») to be false`
-- `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-fn-name-cover.js#strict`: `Test262Error: Expected SameValue(«"xCover"», «"xCover"») to be false`
 - `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-throws.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-throws.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-elem-id-init-unresolvable.js#non_strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
@@ -223,8 +214,10 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-rest-id-elision-next-err.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 - `language/statements/async-generator/dstr/ary-ptrn-rest-id-elision-next-err.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
 
-### `language/expressions` (10 shown / 12 mismatches)
+### `language/expressions` (10 shown / 11 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -246,7 +239,9 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `built-ins/Array/prototype/slice/resizable-buffer.js#non_strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
 - `built-ins/Array/prototype/slice/resizable-buffer.js#strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
 
-### `built-ins/Object` (2 shown / 2 mismatches)
+### `built-ins/Object` (4 shown / 4 mismatches)
 
 - `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#non_strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
 - `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
+- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#non_strict`: `Expected SameValue(«"[object Error]"», «"[object test262]"») to be true`
+- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#strict`: `Cannot assign to read-only property`
