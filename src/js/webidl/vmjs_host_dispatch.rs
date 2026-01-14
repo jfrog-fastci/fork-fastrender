@@ -2887,7 +2887,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
           // Spec note (minimal): we only accept HTML <body> or <frameset> elements in the HTML
           // namespace, otherwise throw HierarchyRequestError (DOMException).
-          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          let result: Result<(NodeId, Option<NodeId>), DomError> = self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               if element_id.index() >= dom.nodes_len() {
                 return (Err(DomError::NotFoundError), false);
@@ -2909,6 +2909,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 return (Err(DomError::HierarchyRequestError), false);
               }
 
+              let old_parent = match dom.parent(element_id) {
+                Ok(v) => v,
+                Err(err) => return (Err(err), false),
+              };
+
               let Some(document_element) = dom.document_element_for(document_node_id) else {
                 return (Err(DomError::HierarchyRequestError), false);
               };
@@ -2919,14 +2924,47 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 None => dom.append_child(document_element, element_id),
               };
               match changed {
-                Ok(changed) => (Ok(()), changed),
+                Ok(changed) => (Ok((document_element, old_parent)), changed),
                 Err(err) => (Err(err), false),
               }
             }))
           })?;
 
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok((document_element_id, old_parent_id)) => {
+              // Keep cached `childNodes` NodeLists updated on the document element.
+              if let Some(wrapper) = require_dom_platform_mut(vm)?
+                .get_existing_wrapper_for_document_id(scope.heap(), document_id, document_element_id)
+              {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  wrapper,
+                  document_element_id,
+                  document_id,
+                )?;
+              }
+              // If the new body element was moved from another parent, sync that parent's cached
+              // NodeList too.
+              if let Some(old_parent_id) = old_parent_id {
+                if old_parent_id != document_element_id {
+                  if let Some(wrapper) = require_dom_platform_mut(vm)?
+                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent_id)
+                  {
+                    self.sync_cached_child_nodes_for_wrapper(
+                      vm,
+                      scope,
+                      wrapper,
+                      old_parent_id,
+                      document_id,
+                    )?;
+                  }
+                }
+              }
+
+              self.sync_live_html_collections(vm, scope)?;
+              Ok(Value::Undefined)
+            }
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
           }
         }
@@ -9998,6 +10036,24 @@ mod window_document_tests {
           if (p1Nodes.length !== 0) return false;
           if (p2Nodes.length !== 1) return false;
           if (p2Nodes[0] !== x) return false;
+
+          // `document.body` setter replaces/appends under `documentElement`. Ensure cached collections
+          // on the document element stay live.
+          const html = document.createElement('html');
+          document.appendChild(html);
+          const head = document.createElement('head');
+          const body1 = document.createElement('body');
+          html.appendChild(head);
+          html.appendChild(body1);
+          const htmlKids = html.children;
+          const htmlNodes = html.childNodes;
+          if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
+          if (htmlKids[1] !== body1 || htmlNodes[1] !== body1) return false;
+
+          const body2 = document.createElement('body');
+          document.body = body2;
+          if (htmlKids.length !== 2 || htmlNodes.length !== 2) return false;
+          if (htmlKids[1] !== body2 || htmlNodes[1] !== body2) return false;
 
           return true;
         } catch (e) {
