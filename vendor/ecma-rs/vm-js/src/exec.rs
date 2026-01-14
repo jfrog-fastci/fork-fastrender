@@ -47069,10 +47069,18 @@ fn gen_bind_assignment_target_to_member(
     };
     let reference = Reference::SuperProperty { base, key, receiver };
 
-    let assign_result = evaluator.put_value_to_reference(&mut super_scope, &reference, value);
+    let assign_result = (|| -> Result<(), VmError> {
+      evaluator.root_reference(&mut super_scope, &reference)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(&mut super_scope, &reference, value)?;
+      evaluator.put_value_to_reference(&mut super_scope, &reference, value)
+    })();
     return match assign_result {
       Ok(()) => Ok(GenEval::Complete(Completion::empty())),
-      Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut super_scope, err)?)),
+      Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator,
+        &mut super_scope,
+        err,
+      )?)),
     };
   }
 
@@ -47130,7 +47138,13 @@ fn gen_bind_assignment_target_to_member_after_base(
     }
   };
 
-  match evaluator.put_value_to_reference(&mut assign_scope, &reference, value) {
+  let assign_result = (|| -> Result<(), VmError> {
+    evaluator.root_reference(&mut assign_scope, &reference)?;
+    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
+    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+  })();
+
+  match assign_result {
     Ok(()) => Ok(GenEval::Complete(Completion::empty())),
     Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
       evaluator,
@@ -47287,7 +47301,13 @@ fn gen_bind_assignment_target_to_computed_member_after_member(
     }
   };
 
-  match evaluator.put_value_to_reference(&mut assign_scope, &reference, value) {
+  let assign_result = (|| -> Result<(), VmError> {
+    evaluator.root_reference(&mut assign_scope, &reference)?;
+    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
+    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+  })();
+
+  match assign_result {
     Ok(()) => Ok(Completion::empty()),
     Err(err) => gen_error_to_completion(evaluator, &mut assign_scope, err),
   }
@@ -47313,7 +47333,13 @@ fn gen_bind_assignment_target_to_super_computed_member_after_member(
     }
   };
 
-  match evaluator.put_value_to_reference(&mut assign_scope, &reference, value) {
+  let assign_result = (|| -> Result<(), VmError> {
+    evaluator.root_reference(&mut assign_scope, &reference)?;
+    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
+    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+  })();
+
+  match assign_result {
     Ok(()) => Ok(Completion::empty()),
     Err(err) => gen_error_to_completion(evaluator, &mut assign_scope, err),
   }
