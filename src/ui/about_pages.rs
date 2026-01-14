@@ -290,6 +290,26 @@ pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+pub fn sync_about_page_snapshot_runtime_paths(
+  session_path: Option<String>,
+  bookmarks_path: Option<String>,
+  history_path: Option<String>,
+  download_dir: Option<String>,
+) {
+  let mut guard = about_page_snapshot_lock().write();
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.session_path = session_path;
+  snapshot.bookmarks_path = bookmarks_path;
+  snapshot.history_path = history_path;
+  snapshot.download_dir = download_dir;
+  *guard = Arc::new(snapshot);
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn sync_about_page_snapshot_download_dir(download_dir: Option<String>) {
   let mut guard = about_page_snapshot_lock().write();
   let current = std::mem::take(&mut *guard);
