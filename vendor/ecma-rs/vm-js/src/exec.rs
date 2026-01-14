@@ -15543,17 +15543,29 @@ pub(crate) enum AsyncFrame {
     member: *const ComputedMemberExpr,
     base_root: RootId,
   },
+  /// Continue an assignment expression to a `super[expr]` computed member target after evaluating
+  /// the member key expression.
+  ///
+  /// Unlike ordinary computed members, `super[expr]` does not evaluate a base expression; instead
+  /// it resolves a Super Reference using `[[HomeObject]].[[Prototype]]` and the current `this`
+  /// binding as the receiver.
+  AssignSuperComputedMemberAfterMember {
+    expr: *const BinaryExpr,
+    member: *const ComputedMemberExpr,
+  },
   /// Continue a simple assignment after evaluating the RHS.
   AssignAfterRhs {
     expr: *const BinaryExpr,
     base_root: Option<RootId>,
     key_root: Option<RootId>,
+    receiver_root: Option<RootId>,
   },
   /// Continue an `+=` assignment after evaluating the RHS.
   AssignAddAfterRhs {
     expr: *const BinaryExpr,
     base_root: Option<RootId>,
     key_root: Option<RootId>,
+    receiver_root: Option<RootId>,
     left_root: RootId,
   },
 
@@ -16327,6 +16339,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     AsyncFrame::AssignAfterRhs {
       base_root,
       key_root,
+      receiver_root,
       ..
     } => {
       if let Some(id) = base_root.take() {
@@ -16335,10 +16348,14 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       if let Some(id) = key_root.take() {
         heap.remove_root(id);
       }
+      if let Some(id) = receiver_root.take() {
+        heap.remove_root(id);
+      }
     }
     AsyncFrame::AssignAddAfterRhs {
       base_root,
       key_root,
+      receiver_root,
       left_root,
       ..
     } => {
@@ -16346,6 +16363,9 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
         heap.remove_root(id);
       }
       if let Some(id) = key_root.take() {
+        heap.remove_root(id);
+      }
+      if let Some(id) = receiver_root.take() {
         heap.remove_root(id);
       }
       heap.remove_root(*left_root);
@@ -24621,6 +24641,7 @@ fn async_eval_assignment_to_binding(
           expr: expr as *const BinaryExpr,
           base_root: None,
           key_root: None,
+          receiver_root: None,
         },
       )?;
       Ok(AsyncEval::Suspend(suspend))
@@ -24684,6 +24705,37 @@ fn async_eval_assignment_to_member(
     return Err(VmError::InvariantViolation(
       "optional chaining used in assignment target",
     ));
+  }
+
+  // `super.prop` in assignment target position is a Super Reference, not a normal property
+  // reference. Evaluate it without evaluating the synthetic `super` base expression.
+  if matches!(&*member.left.stx, Expr::Super(_)) {
+    if member.right.starts_with('#') {
+      return Err(VmError::InvariantViolation(
+        "super private member access is not valid (early errors should prevent this)",
+      ));
+    }
+    if evaluator.derived_constructor && !evaluator.this_initialized {
+      return Err(throw_reference_error(
+        evaluator.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+    let receiver = evaluator.this;
+
+    let mut key_scope = scope.reborrow();
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    key_scope.push_root(receiver)?;
+    let key_s = key_scope.alloc_string(&member.right)?;
+    key_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    let reference = Reference::SuperProperty { base, key, receiver };
+    return async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference);
   }
 
   match async_eval_expr(evaluator, scope, &member.left)? {
@@ -24755,19 +24807,70 @@ fn async_eval_assignment_to_computed_member(
     ));
   }
 
-  match async_eval_expr(evaluator, scope, &member.object)? {
-    AsyncEval::Complete(base) => {
-      async_eval_assignment_to_computed_member_after_base(evaluator, scope, expr, member, base)
+  // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
+  // reference.
+  if matches!(&*member.object.stx, Expr::Super(_)) {
+    // Evaluating a super property reference requires an initialized `this` binding. In derived
+    // constructors before `super()`, this check happens before evaluating the computed key
+    // expression.
+    if evaluator.derived_constructor && !evaluator.this_initialized {
+      return Err(throw_reference_error(
+        evaluator.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
     }
-    AsyncEval::Suspend(mut suspend) => {
-      async_frames_push(
-        &mut suspend.frames,
-        AsyncFrame::AssignComputedMemberAfterBase {
-          expr: expr as *const BinaryExpr,
-          member: member as *const ComputedMemberExpr,
-        },
-      )?;
-      Ok(AsyncEval::Suspend(suspend))
+    let receiver = evaluator.this;
+
+    // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(receiver)?;
+    match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
+      AsyncEval::Complete(member_value) => {
+        let mut key_scope = member_scope.reborrow();
+        key_scope.push_root(member_value)?;
+        let key = evaluator
+          .to_property_key_operator(&mut key_scope, member_value)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+        // Root the key across `GetSuperBase()` which can invoke proxy traps.
+        match key {
+          PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+          PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+        };
+
+        let base = evaluator
+          .get_super_base(&mut key_scope)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+        let reference = Reference::SuperProperty { base, key, receiver };
+        async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
+      }
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::AssignSuperComputedMemberAfterMember {
+            expr: expr as *const BinaryExpr,
+            member: member as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+    }
+  } else {
+    match async_eval_expr(evaluator, scope, &member.object)? {
+      AsyncEval::Complete(base) => {
+        async_eval_assignment_to_computed_member_after_base(evaluator, scope, expr, member, base)
+      }
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::AssignComputedMemberAfterBase {
+            expr: expr as *const BinaryExpr,
+            member: member as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
     }
   }
 }
@@ -24854,8 +24957,8 @@ fn async_eval_assignment_apply_reference(
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
-          let (base_root, key_root) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base_root, key_root, receiver_root) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let mut root_scope = rhs_scope.reborrow();
               root_scope.push_root(base)?;
@@ -24868,12 +24971,24 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that suspends (async evaluator)",
-              ));
+            Reference::SuperProperty { base, key, receiver } => {
+              let mut root_scope = rhs_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              root_scope.push_root(receiver)?;
+              let receiver_root = root_scope.heap_mut().add_root(receiver)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root), Some(receiver_root))
             }
             Reference::Private { base, sym, .. } => {
               let mut root_scope = rhs_scope.reborrow();
@@ -24883,7 +24998,7 @@ fn async_eval_assignment_apply_reference(
               let key_value = Value::Symbol(sym);
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
           };
 
@@ -24893,6 +25008,7 @@ fn async_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base_root,
               key_root,
+              receiver_root,
             },
           )?;
           Ok(AsyncEval::Suspend(suspend))
@@ -25013,8 +25129,8 @@ fn async_eval_assignment_apply_reference(
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
-          let (base_root, key_root) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base_root, key_root, receiver_root) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
@@ -25027,12 +25143,24 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that suspends (async evaluator)",
-              ));
+            Reference::SuperProperty { base, key, receiver } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              root_scope.push_root(receiver)?;
+              let receiver_root = root_scope.heap_mut().add_root(receiver)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root), Some(receiver_root))
             }
             Reference::Private { base, sym, .. } => {
               let mut root_scope = op_scope.reborrow();
@@ -25043,7 +25171,7 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
           };
 
@@ -25057,6 +25185,7 @@ fn async_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base_root,
               key_root,
+              receiver_root,
               left_root,
             },
           )?;
@@ -25095,8 +25224,8 @@ fn async_eval_assignment_apply_reference(
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
-          let (base_root, key_root) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base_root, key_root, receiver_root) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
@@ -25109,12 +25238,24 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that suspends (async evaluator)",
-              ));
+            Reference::SuperProperty { base, key, receiver } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              root_scope.push_root(receiver)?;
+              let receiver_root = root_scope.heap_mut().add_root(receiver)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root), Some(receiver_root))
             }
             Reference::Private { base, sym, .. } => {
               let mut root_scope = op_scope.reborrow();
@@ -25125,7 +25266,7 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
           };
 
@@ -25139,6 +25280,7 @@ fn async_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base_root,
               key_root,
+              receiver_root,
               left_root,
             },
           )?;
@@ -25182,8 +25324,8 @@ fn async_eval_assignment_apply_reference(
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
-          let (base_root, key_root) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base_root, key_root, receiver_root) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
@@ -25196,12 +25338,24 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that suspends (async evaluator)",
-              ));
+            Reference::SuperProperty { base, key, receiver } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              root_scope.push_root(receiver)?;
+              let receiver_root = root_scope.heap_mut().add_root(receiver)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root), Some(receiver_root))
             }
             Reference::Private { base, sym, .. } => {
               let mut root_scope = op_scope.reborrow();
@@ -25211,7 +25365,7 @@ fn async_eval_assignment_apply_reference(
               let key_value = Value::Symbol(sym);
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
           };
 
@@ -25221,6 +25375,7 @@ fn async_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base_root,
               key_root,
+              receiver_root,
             },
           )?;
           Ok(AsyncEval::Suspend(suspend))
@@ -25262,8 +25417,8 @@ fn async_eval_assignment_apply_reference(
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
-          let (base_root, key_root) = match reference {
-            Reference::Binding(_) => (None, None),
+          let (base_root, key_root, receiver_root) = match reference {
+            Reference::Binding(_) => (None, None, None),
             Reference::Property { base, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
@@ -25276,12 +25431,24 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { .. } => {
-              return Err(VmError::Unimplemented(
-                "super property assignment that suspends (async evaluator)",
-              ));
+            Reference::SuperProperty { base, key, receiver } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              root_scope.push_root(receiver)?;
+              let receiver_root = root_scope.heap_mut().add_root(receiver)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root), Some(receiver_root))
             }
             Reference::Private { base, sym, .. } => {
               let mut root_scope = op_scope.reborrow();
@@ -25292,7 +25459,7 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
-              (Some(base_root), Some(key_root))
+              (Some(base_root), Some(key_root), None)
             }
           };
 
@@ -25306,6 +25473,7 @@ fn async_eval_assignment_apply_reference(
               expr: expr as *const BinaryExpr,
               base_root,
               key_root,
+              receiver_root,
               left_root,
             },
           )?;
@@ -30265,10 +30433,81 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::AssignSuperComputedMemberAfterMember { expr, member } => match state {
+        AsyncState::Expr(member_res) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+
+          match member_res {
+            Ok(member_value) => {
+              let assign_res = (|| -> Result<AsyncEval<Value>, VmError> {
+                // Reconstruct the Super Reference: `super[expr]` uses the current `this` binding as
+                // the receiver and `[[HomeObject]].[[Prototype]]` as the base.
+                if evaluator.derived_constructor && !evaluator.this_initialized {
+                  return Err(throw_reference_error(
+                    evaluator.vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                if member.optional_chaining {
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
+                }
+
+                let receiver = evaluator.this;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_roots(&[receiver, member_value])?;
+
+                let key = evaluator
+                  .to_property_key_operator(&mut key_scope, member_value)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+                // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
+                match key {
+                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+                  PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+                };
+
+                let base = evaluator
+                  .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                let reference = Reference::SuperProperty { base, key, receiver };
+                async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
+              })();
+
+              match assign_res {
+                Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  suspend.frames.append(&mut frames);
+                  return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
+            }
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "assignment super computed member after member frame received completion state",
+          ))
+        }
+      },
+
       AsyncFrame::AssignAfterRhs {
         expr,
         base_root,
         key_root,
+        receiver_root,
       } => match state {
         AsyncState::Expr(rhs_res) => {
           let expr = unsafe { &*expr };
@@ -30276,21 +30515,26 @@ fn async_resume_from_frames(
           match rhs_res {
             Ok(value) => {
               let assign_res = (|| -> Result<(), VmError> {
-                let reference = match (base_root, key_root) {
-                  (None, None) => match &*expr.left.stx {
-                    Expr::Id(id) => Reference::Binding(&id.stx.name),
-                    Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-                    _ => {
+                let reference = match receiver_root {
+                  Some(receiver_root) => {
+                    let Some(base_root) = base_root else {
                       return Err(VmError::InvariantViolation(
-                        "AssignAfterRhs used for non-binding LHS without roots",
-                      ))
-                    }
-                  },
-                  (Some(base_root), Some(key_root)) => {
+                        "AssignAfterRhs super reference missing base root",
+                      ));
+                    };
+                    let Some(key_root) = key_root else {
+                      return Err(VmError::InvariantViolation(
+                        "AssignAfterRhs super reference missing key root",
+                      ));
+                    };
                     let base = scope
                       .heap()
                       .get_root(base_root)
                       .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
+                    let receiver = scope
+                      .heap()
+                      .get_root(receiver_root)
+                      .ok_or(VmError::InvariantViolation("missing assignment receiver root"))?;
                     let key_value = scope
                       .heap()
                       .get_root(key_root)
@@ -30304,24 +30548,55 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    match key {
-                      PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
-                        // Internal symbols are not observable from JS, so an internal symbol key
-                        // here corresponds to a private-name reference.
-                        let name = match &*expr.left.stx {
-                          Expr::Member(member) => member.stx.right.as_str(),
-                          _ => "",
-                        };
-                        Reference::Private { base, sym, name }
+                    Reference::SuperProperty { base, key, receiver }
+                  }
+                  None => match (base_root, key_root) {
+                    (None, None) => match &*expr.left.stx {
+                      Expr::Id(id) => Reference::Binding(&id.stx.name),
+                      Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "AssignAfterRhs used for non-binding LHS without roots",
+                        ))
                       }
-                      other => Reference::Property { base, key: other },
+                    },
+                    (Some(base_root), Some(key_root)) => {
+                      let base = scope
+                        .heap()
+                        .get_root(base_root)
+                        .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
+                      let key_value = scope
+                        .heap()
+                        .get_root(key_root)
+                        .ok_or(VmError::InvariantViolation("missing assignment key root"))?;
+                      let key = match key_value {
+                        Value::String(s) => PropertyKey::from_string(s),
+                        Value::Symbol(s) => PropertyKey::Symbol(s),
+                        _ => {
+                          return Err(VmError::InvariantViolation(
+                            "assignment key root should be a string or symbol",
+                          ))
+                        }
+                      };
+                      match key {
+                        PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                          // Internal symbols are not observable from JS, so an internal symbol key
+                          // here corresponds to a private-name reference.
+                          let name = match &*expr.left.stx {
+                            Expr::Member(member) => member.stx.right.as_str(),
+                            _ => "",
+                          };
+                          Reference::Private { base, sym, name }
+                        }
+                        other => Reference::Property { base, key: other },
+                      }
                     }
-                  }
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "AssignAfterRhs has mismatched base/key roots",
-                    ))
-                  }
+                    _ => {
+                      return Err(VmError::InvariantViolation(
+                        "AssignAfterRhs has mismatched base/key roots",
+                      ))
+                    }
+                  },
                 };
 
                 let mut put_scope = scope.reborrow();
@@ -30340,6 +30615,9 @@ fn async_resume_from_frames(
               if let Some(id) = key_root {
                 scope.heap_mut().remove_root(id);
               }
+              if let Some(id) = receiver_root {
+                scope.heap_mut().remove_root(id);
+              }
 
               match assign_res {
                 Ok(()) => state = AsyncState::Expr(Ok(value)),
@@ -30354,6 +30632,9 @@ fn async_resume_from_frames(
                 scope.heap_mut().remove_root(id);
               }
               if let Some(id) = key_root {
+                scope.heap_mut().remove_root(id);
+              }
+              if let Some(id) = receiver_root {
                 scope.heap_mut().remove_root(id);
               }
               state = AsyncState::Expr(Err(err));
@@ -30371,6 +30652,7 @@ fn async_resume_from_frames(
         expr,
         base_root,
         key_root,
+        receiver_root,
         left_root,
       } => match state {
         AsyncState::Expr(rhs_res) => {
@@ -30386,21 +30668,26 @@ fn async_resume_from_frames(
                 ))?;
 
               let assign_res = (|| -> Result<Value, VmError> {
-                let reference = match (base_root, key_root) {
-                  (None, None) => match &*expr.left.stx {
-                    Expr::Id(id) => Reference::Binding(&id.stx.name),
-                    Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-                    _ => {
+                let reference = match receiver_root {
+                  Some(receiver_root) => {
+                    let Some(base_root) = base_root else {
                       return Err(VmError::InvariantViolation(
-                        "AssignAddAfterRhs used for non-binding LHS without roots",
-                      ))
-                    }
-                  },
-                  (Some(base_root), Some(key_root)) => {
+                        "AssignAddAfterRhs super reference missing base root",
+                      ));
+                    };
+                    let Some(key_root) = key_root else {
+                      return Err(VmError::InvariantViolation(
+                        "AssignAddAfterRhs super reference missing key root",
+                      ));
+                    };
                     let base = scope
                       .heap()
                       .get_root(base_root)
                       .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
+                    let receiver = scope
+                      .heap()
+                      .get_root(receiver_root)
+                      .ok_or(VmError::InvariantViolation("missing assignment receiver root"))?;
                     let key_value = scope
                       .heap()
                       .get_root(key_root)
@@ -30414,24 +30701,55 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    match key {
-                      PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
-                        // Internal symbols are not observable from JS, so an internal symbol key
-                        // here corresponds to a private-name reference.
-                        let name = match &*expr.left.stx {
-                          Expr::Member(member) => member.stx.right.as_str(),
-                          _ => "",
-                        };
-                        Reference::Private { base, sym, name }
+                    Reference::SuperProperty { base, key, receiver }
+                  }
+                  None => match (base_root, key_root) {
+                    (None, None) => match &*expr.left.stx {
+                      Expr::Id(id) => Reference::Binding(&id.stx.name),
+                      Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "AssignAddAfterRhs used for non-binding LHS without roots",
+                        ))
                       }
-                      other => Reference::Property { base, key: other },
+                    },
+                    (Some(base_root), Some(key_root)) => {
+                      let base = scope
+                        .heap()
+                        .get_root(base_root)
+                        .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
+                      let key_value = scope
+                        .heap()
+                        .get_root(key_root)
+                        .ok_or(VmError::InvariantViolation("missing assignment key root"))?;
+                      let key = match key_value {
+                        Value::String(s) => PropertyKey::from_string(s),
+                        Value::Symbol(s) => PropertyKey::Symbol(s),
+                        _ => {
+                          return Err(VmError::InvariantViolation(
+                            "assignment key root should be a string or symbol",
+                          ))
+                        }
+                      };
+                      match key {
+                        PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                          // Internal symbols are not observable from JS, so an internal symbol key
+                          // here corresponds to a private-name reference.
+                          let name = match &*expr.left.stx {
+                            Expr::Member(member) => member.stx.right.as_str(),
+                            _ => "",
+                          };
+                          Reference::Private { base, sym, name }
+                        }
+                        other => Reference::Property { base, key: other },
+                      }
                     }
-                  }
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "AssignAddAfterRhs has mismatched base/key roots",
-                    ))
-                  }
+                    _ => {
+                      return Err(VmError::InvariantViolation(
+                        "AssignAddAfterRhs has mismatched base/key roots",
+                      ))
+                    }
+                  },
                 };
 
                 let mut compound_scope = scope.reborrow();
@@ -30578,6 +30896,9 @@ fn async_resume_from_frames(
               if let Some(id) = key_root {
                 scope.heap_mut().remove_root(id);
               }
+              if let Some(id) = receiver_root {
+                scope.heap_mut().remove_root(id);
+              }
               scope.heap_mut().remove_root(left_root);
 
               match assign_res {
@@ -30593,6 +30914,9 @@ fn async_resume_from_frames(
                 scope.heap_mut().remove_root(id);
               }
               if let Some(id) = key_root {
+                scope.heap_mut().remove_root(id);
+              }
+              if let Some(id) = receiver_root {
                 scope.heap_mut().remove_root(id);
               }
               scope.heap_mut().remove_root(left_root);

@@ -55,3 +55,51 @@ fn async_super_member_and_computed_member_calls() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn async_super_property_assignments_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      class B {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class D extends B {
+        constructor() { super(); this._x = 1; }
+        async assign() {
+          super.x = await Promise.resolve(2);
+          return this._x;
+        }
+        async add() {
+          super.x += await Promise.resolve(3);
+          return this._x;
+        }
+        async computed() {
+          super[await Promise.resolve("x")] = await Promise.resolve(7);
+          return this._x;
+        }
+      }
+      async function f() {
+        let d = new D();
+        let a = await d.assign();
+        let b = await d.add();
+        let c = await d.computed();
+        return a + "," + b + "," + c;
+      }
+      f().then(v => out = String(v));
+    "#,
+  )?;
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "2,5,7");
+
+  Ok(())
+}
