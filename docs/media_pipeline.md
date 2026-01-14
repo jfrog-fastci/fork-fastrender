@@ -394,7 +394,10 @@ Useful runtime toggles while debugging:
     `FASTRENDER_AVSYNC_*` vars are read directly from the process environment.
 - VP9 decode threading (libvpx, used by `src/media/decoder.rs::create_video_decoder`):
   - `FASTR_VP9_DECODE_THREADS=<N>` (defaults to `min(available_parallelism(), 4)`).
-- Audio output tuning (used by `src/media/audio/config.rs` + `src/media/audio/engine.rs`):
+- Audio output tuning + backend selection (used by `src/media/audio/mod.rs`, `src/media/audio/config.rs`,
+  and `src/media/audio/engine.rs`):
+  - `FASTR_AUDIO_BACKEND=null|cpal|auto` (default: `auto`)
+  - `FASTR_AUDIO_DEVICE=<substring>` (CPAL device selection; optional)
   - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS`
   - `FASTR_AUDIO_MAX_STREAMS`
   - `FASTR_AUDIO_BUFFER_BUDGET`

@@ -42,6 +42,13 @@ hosts don't need system audio development packages.
   - Linux note: typically requires system packages (e.g. ALSA headers).
 - `audio_wav`: pure-Rust WAV debug backend (writes PCM samples into a `.wav` file).
 
+Runtime selection (CI-friendly):
+
+- `FASTR_AUDIO_BACKEND=null|cpal|auto` – select which backend to use at runtime when constructing the
+  default `AudioBackend` (default: `auto` → prefer CPAL when compiled, else null/silence).
+- `FASTR_AUDIO_DEVICE=<substring>` – best-effort output device selection for CPAL (case-insensitive
+  substring match on the device name; unset uses the host default device).
+
 CI note: the `ci` feature umbrella intentionally avoids enabling `audio_cpal` by default (to keep
 Linux CI/agent builds free of system audio development dependencies). Developers can opt in locally
 with `--features audio_cpal`.

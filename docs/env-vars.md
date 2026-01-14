@@ -17,8 +17,8 @@ without mutating the process environment by constructing a `RuntimeToggles` inst
 it via `FastRender::builder().runtime_toggles(...)` or `RenderOptions::with_runtime_toggles(...)`.
 
 Some knobs are intentionally read directly from the process environment (`std::env`) instead of via
-`RuntimeToggles` (for example, `FASTRENDER_AVSYNC_*` in `src/media/av_sync.rs` and the audio engine
-`FASTR_AUDIO_*` configuration in `src/media/audio/config.rs`).
+`RuntimeToggles` (for example, `FASTRENDER_AVSYNC_*` in `src/media/av_sync.rs` and audio playback
+knobs like `FASTR_AUDIO_*` in `src/media/audio/config.rs` + `src/media/audio/mod.rs`).
 
 Pageset/profiling runners typically invoke FastRender in `--release` mode, so `FASTR_*` toggles are the primary way to run controlled compatibility experiments (A/B against Chrome/pageset fixtures) without rebuilding.
 
@@ -93,9 +93,15 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
     decoder (used by `src/media/decoder.rs`).
   - Defaults to `min(available_parallelism(), 4)` and is clamped to at least 1.
 - Media playback (audio output / `FASTR_AUDIO_*`):
-  - These are parsed by `AudioEngineConfig` (`src/media/audio/config.rs`) and are read directly from
-    the process environment (not via `RuntimeToggles`).
-  - Invalid/empty values fall back to defaults and emit a warning to stderr.
+  - Backend selection (read directly from the process environment; `src/media/audio/mod.rs`):
+    - `FASTR_AUDIO_BACKEND=null|cpal|auto` – select which audio backend to use.
+      - Default: `auto` (prefers CPAL when compiled, else uses the null backend/silence).
+      - Invalid values are treated as `auto` with a warning.
+    - `FASTR_AUDIO_DEVICE=<substring>` – best-effort output device selection for the CPAL backend
+      (case-insensitive substring match on the device name). Unset/empty uses the host default device.
+  - Engine configuration (`AudioEngineConfig` in `src/media/audio/config.rs`; also read directly from
+    the process environment, not via `RuntimeToggles`):
+    - Invalid/empty values fall back to defaults and emit a warning to stderr.
   - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS=<ms>` – per-stream buffered-audio cap (ring-buffer capacity).
     - Default: 2000ms.
     - Clamped to `MAX_BUFFERED_DURATION` (currently 5000ms; see `src/media/audio/limits.rs`).
@@ -117,13 +123,6 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `FASTR_AUDIO_PREROLL_MS=<ms>`, `FASTR_AUDIO_LOW_BUFFER_MS=<ms>`,
     `FASTR_AUDIO_LOW_BUFFER_DEBOUNCE_MS=<ms>` – buffering thresholds used by the media pipeline.
     - Note: these are currently experimental and may not be fully wired into playback state yet.
-  - Legacy / test-only (deprecated; `src/media/audio/legacy.rs`):
-    - `FASTR_AUDIO_BACKEND=null|wav` – select the legacy audio backend used by
-      `audio::legacy::audio_backend_from_env` (used by `tests/audio_wav_backend.rs`).
-      - Default: `null`.
-      - Note: this does **not** affect the modern `AudioBackend::new_best_effort(...)` selection used
-        by the current media playback pipeline.
-    - `FASTR_AUDIO_WAV_PATH=/path/to/out.wav` – required when `FASTR_AUDIO_BACKEND=wav`.
 - `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
   - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
   - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.
