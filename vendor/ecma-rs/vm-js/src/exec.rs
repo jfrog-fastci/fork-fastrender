@@ -15713,6 +15713,16 @@ pub(crate) enum GenFrame {
   /// Continue evaluating a non-`yield` unary expression after its operand completes.
   UnaryAfterArgument { expr: *const UnaryExpr },
 
+  /// Continue evaluating a `new` expression after evaluating the constructor value.
+  NewAfterCallee { expr: *const UnaryExpr },
+  /// Continue evaluating a `new` expression while evaluating arguments.
+  NewArgs {
+    expr: *const UnaryExpr,
+    callee: Value,
+    args: Vec<Value>,
+    arg_index: usize,
+  },
+
   /// Continue evaluating a `delete` expression after evaluating its operand.
   DeleteAfterArgument,
   /// Continue evaluating a `delete` member expression after evaluating its base.
@@ -15866,6 +15876,14 @@ pub(crate) enum GenFrame {
     receiver: Option<Value>,
     left: Value,
   },
+  /// Continue an `**=` assignment after evaluating the RHS.
+  AssignExpAfterRhs {
+    expr: *const BinaryExpr,
+    base: Option<Value>,
+    key: Option<Value>,
+    receiver: Option<Value>,
+    left: Value,
+  },
 
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
@@ -15952,11 +15970,35 @@ impl Trace for GenFrame {
         }
         tracer.trace_value(*left);
       }
+      GenFrame::AssignExpAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
+      } => {
+        if let Some(b) = base {
+          tracer.trace_value(*b);
+        }
+        if let Some(k) = key {
+          tracer.trace_value(*k);
+        }
+        if let Some(r) = receiver {
+          tracer.trace_value(*r);
+        }
+        tracer.trace_value(*left);
+      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {
         tracer.trace_value(*callee);
         tracer.trace_value(*this);
+        for v in args.iter().copied() {
+          tracer.trace_value(v);
+        }
+      }
+      GenFrame::NewArgs { callee, args, .. } => {
+        tracer.trace_value(*callee);
         for v in args.iter().copied() {
           tracer.trace_value(v);
         }
@@ -34609,6 +34651,9 @@ fn gen_eval_expr_chain(
         }
       }
     }
+    Expr::Unary(unary) if unary.stx.operator == OperatorName::New => {
+      gen_eval_new_expr(evaluator, scope, &unary.stx)
+    }
     Expr::Unary(unary) if unary.stx.operator == OperatorName::Delete => {
       gen_eval_delete_expr(evaluator, scope, &unary.stx)
     }
@@ -34725,7 +34770,7 @@ fn gen_eval_expr_chain(
     Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
-        OperatorName::Assignment | OperatorName::AssignmentAddition
+        OperatorName::Assignment | OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation
       ) =>
     {
       gen_eval_assignment_expr(evaluator, scope, &binary.stx)
@@ -34844,6 +34889,162 @@ fn gen_yield_star_begin(
     yielded: GenYield::IteratorResult(value),
     frames,
   }))
+}
+
+fn gen_eval_new_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
+  //
+  // Important: `new (f())` must *not* use `f` as the constructor. It must first evaluate the
+  // parenthesized call expression and then construct the *result* with no arguments.
+  //
+  // `parse-js` stores parentheses via the `ParenthesizedExpr` assoc marker, so treat parenthesized
+  // call expressions as the `new (expr)` form (no argument list for `new`).
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
+  let callee_expr = match &*expr.argument.stx {
+    Expr::Call(call) if !is_parenthesized => &call.stx.callee,
+    _ => &expr.argument,
+  };
+
+  match gen_eval_expr(evaluator, scope, callee_expr)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_new_begin(evaluator, scope, expr, v.unwrap_or(Value::Undefined)),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::NewAfterCallee {
+          expr: expr as *const UnaryExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_new_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+  callee_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
+  let call_args = match &*expr.argument.stx {
+    Expr::Call(call) if !is_parenthesized => Some(&call.stx.arguments),
+    _ => None,
+  };
+
+  // Fast path: `new C` / `new C()` (no arguments) cannot suspend once the callee is known.
+  if call_args.map_or(true, |args| args.is_empty()) {
+    let mut new_scope = scope.reborrow();
+    new_scope.push_root(callee_value)?;
+    let res = evaluator.vm.construct_with_host_and_hooks(
+      &mut *evaluator.host,
+      &mut new_scope,
+      &mut *evaluator.hooks,
+      callee_value,
+      &[],
+      // For `new`, the `newTarget` is the same as the constructor.
+      callee_value,
+    );
+    return match res {
+      Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+      Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err)),
+    };
+  }
+
+  gen_new_continue_args(evaluator, scope, expr, callee_value, Vec::new(), 0)
+}
+
+fn gen_new_continue_args(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &UnaryExpr,
+  callee_value: Value,
+  mut args: Vec<Value>,
+  start_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
+  let Expr::Call(call) = &*expr.argument.stx else {
+    return Err(VmError::InvariantViolation(
+      "generator new arg continuation without call expression",
+    ));
+  };
+  if is_parenthesized {
+    return Err(VmError::InvariantViolation(
+      "generator new arg continuation with parenthesized call expression",
+    ));
+  }
+
+  for (idx, arg) in call.stx.arguments.iter().enumerate().skip(start_index) {
+    match gen_eval_expr(evaluator, scope, &arg.stx.value)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          if let Err(err) =
+            gen_call_store_arg_value(evaluator, scope, arg.stx.spread, value, &mut args)
+          {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+            match err {
+              VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+                return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+              }
+              other => return Err(other),
+            }
+          }
+        }
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        // Root the callee/args so they survive until the next yield boundary.
+        let mut roots: Vec<Value> = Vec::new();
+        roots
+          .try_reserve_exact(args.len().saturating_add(1))
+          .map_err(|_| VmError::OutOfMemory)?;
+        roots.push(callee_value);
+        roots.extend_from_slice(&args);
+        scope.push_roots(&roots)?;
+
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::NewArgs {
+            expr: expr as *const UnaryExpr,
+            callee: callee_value,
+            args,
+            arg_index: idx,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let mut new_scope = scope.reborrow();
+  let mut roots: Vec<Value> = Vec::new();
+  roots
+    .try_reserve_exact(args.len().saturating_add(1))
+    .map_err(|_| VmError::OutOfMemory)?;
+  roots.push(callee_value);
+  roots.extend_from_slice(&args);
+  new_scope.push_roots(&roots)?;
+
+  let res = evaluator.vm.construct_with_host_and_hooks(
+    &mut *evaluator.host,
+    &mut new_scope,
+    &mut *evaluator.hooks,
+    callee_value,
+    &args,
+    // For `new`, the `newTarget` is the same as the constructor.
+    callee_value,
+  );
+  match res {
+    Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err)),
+  }
 }
 
 fn gen_eval_delete_expr(
@@ -35570,6 +35771,34 @@ fn gen_eval_assignment_expr(
       }
     }
 
+    OperatorName::AssignmentExponentiation => {
+      if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+        return Err(VmError::Unimplemented(
+          "assignment exponentiation to destructuring patterns",
+        ));
+      }
+
+      match &*expr.left.stx {
+        Expr::Id(id) => gen_eval_assignment_apply_reference(
+          evaluator,
+          scope,
+          expr,
+          Reference::Binding(id.stx.name.as_str()),
+        ),
+        Expr::IdPat(id) => gen_eval_assignment_apply_reference(
+          evaluator,
+          scope,
+          expr,
+          Reference::Binding(id.stx.name.as_str()),
+        ),
+        Expr::Member(member) => gen_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+        Expr::ComputedMember(member) => {
+          gen_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+        }
+        _ => Err(VmError::Unimplemented("expression is not a reference")),
+      }
+    }
+
     _ => Err(VmError::InvariantViolation(
       "generator assignment evaluator called for non-assignment operator",
     )),
@@ -36005,6 +36234,84 @@ fn gen_eval_assignment_apply_reference(
           gen_frames_push(
             &mut suspend.frames,
             GenFrame::AssignAddAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base,
+              key,
+              receiver,
+              left,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentExponentiation => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator
+        .get_value_from_reference(&mut op_scope, &reference)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      op_scope.push_root(left)?;
+
+      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let right = v.unwrap_or(Value::Undefined);
+            let mut exp_scope = op_scope.reborrow();
+            exp_scope.push_root(right)?;
+            let value = evaluator
+              .exponentiation_operator(&mut exp_scope, left, right)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
+            exp_scope.push_root(value)?;
+            evaluator
+              .put_value_to_reference(&mut exp_scope, &reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          let (base, key, receiver) = match reference {
+            Reference::Binding(_) => (None, None, None),
+            Reference::Property { base, key } => {
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(sym) => Value::Symbol(sym),
+              };
+              (Some(base), Some(key_value), None)
+            }
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(sym) => Value::Symbol(sym),
+              };
+              (Some(base), Some(key_value), Some(receiver))
+            }
+            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
+          };
+
+          // Root the reference components (and the saved left value) so they survive until the next
+          // yield boundary.
+          drop(op_scope);
+          if let Some(b) = base {
+            scope.push_root(b)?;
+          }
+          if let Some(k) = key {
+            scope.push_root(k)?;
+          }
+          if let Some(r) = receiver {
+            scope.push_root(r)?;
+          }
+          scope.push_root(left)?;
+
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::AssignExpAfterRhs {
               expr: expr as *const BinaryExpr,
               base,
               key,
@@ -37396,6 +37703,70 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::NewAfterCallee { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_new_begin(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::NewArgs {
+        expr,
+        callee,
+        mut args,
+        arg_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let Expr::Call(call) = &*expr.argument.stx else {
+            return Err(VmError::InvariantViolation(
+              "generator new args continuation without call expression",
+            ));
+          };
+          let Some(arg) = call.stx.arguments.get(arg_index) else {
+            return Err(VmError::InvariantViolation(
+              "generator new args continuation out of bounds",
+            ));
+          };
+
+          if let Err(err) = gen_call_store_arg_value(
+            evaluator,
+            scope,
+            arg.stx.spread,
+            v.unwrap_or(Value::Undefined),
+            &mut args,
+          ) {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          match gen_new_continue_args(
+            evaluator,
+            scope,
+            expr,
+            callee,
+            args,
+            arg_index.saturating_add(1),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::DeleteAfterArgument => match state {
         Completion::Normal(_) => state = Completion::normal(Value::Bool(true)),
         abrupt => state = abrupt,
@@ -38265,6 +38636,94 @@ fn gen_resume_from_frames(
             evaluator
               .put_value_to_reference(&mut add_scope, &reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
+            Ok(value)
+          })();
+
+          match assign_res {
+            Ok(value) => state = Completion::normal(value),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignExpAfterRhs {
+        expr,
+        base,
+        key,
+        receiver,
+        left,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let right = v.unwrap_or(Value::Undefined);
+
+          let assign_res = (|| -> Result<Value, VmError> {
+            let reference = match (base, key, receiver) {
+              (None, None, None) => match &*expr.left.stx {
+                Expr::Id(id) => Reference::Binding(&id.stx.name),
+                Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "AssignExpAfterRhs used for non-binding LHS without stored reference",
+                  ))
+                }
+              },
+              (Some(base), Some(key_value), None) => {
+                let key = match key_value {
+                  Value::String(s) => PropertyKey::from_string(s),
+                  Value::Symbol(s) => PropertyKey::from_symbol(s),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "assignment key should be a string or symbol",
+                    ))
+                  }
+                };
+                Reference::Property { base, key }
+              }
+              (Some(base), Some(key_value), Some(receiver)) => {
+                let key = match key_value {
+                  Value::String(s) => PropertyKey::from_string(s),
+                  Value::Symbol(s) => PropertyKey::from_symbol(s),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "assignment key should be a string or symbol",
+                    ))
+                  }
+                };
+                Reference::SuperProperty {
+                  base,
+                  key,
+                  receiver,
+                }
+              }
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignExpAfterRhs has mismatched stored reference components",
+                ))
+              }
+            };
+
+            let mut exp_scope = scope.reborrow();
+            match (base, key, receiver) {
+              (Some(base), Some(key_value), Some(receiver)) => {
+                exp_scope.push_roots(&[base, key_value, receiver, left, right])?
+              }
+              (Some(base), Some(key_value), None) => exp_scope.push_roots(&[base, key_value, left, right])?,
+              (None, None, None) => exp_scope.push_roots(&[left, right])?,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignExpAfterRhs has mismatched stored reference components",
+                ))
+              }
+            };
+            let value = evaluator
+              .exponentiation_operator(&mut exp_scope, left, right)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
+            exp_scope.push_root(value)?;
+            evaluator
+              .put_value_to_reference(&mut exp_scope, &reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
             Ok(value)
           })();
 
