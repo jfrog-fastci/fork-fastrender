@@ -50,9 +50,10 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     Some(false),
     "run_config.isolate should default to false"
   );
-  assert!(
-    summary["run_config"]["rayon_threads"].as_u64().is_some(),
-    "run_config.rayon_threads should be present"
+  assert_eq!(
+    summary["run_config"]["rayon_threads"].as_u64(),
+    Some(1),
+    "run_config.rayon_threads should record the requested thread count"
   );
   assert_eq!(
     summary["run_config"]["rayon_threads_source"].as_str(),

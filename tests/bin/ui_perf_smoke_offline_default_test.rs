@@ -14,10 +14,10 @@ fn ui_perf_smoke_denies_network_by_default() {
   cmd
     .current_dir(temp.path())
     // Ensure the harness never waits on network I/O under the default offline policy.
-    .args(["--only", "network_denied", "--output"])
+    .args(["--only", "network_denied", "--rayon-threads", "1", "--output"])
     .arg(output_path.to_str().expect("output path"))
-    // Keep the worker deterministic/cheap even if the parent environment has a larger Rayon pool.
-    .env("RAYON_NUM_THREADS", "1");
+    // Ensure we exercise the CLI override path (rather than inheriting a parent env var).
+    .env_remove("RAYON_NUM_THREADS");
 
   let mut child = cmd.spawn().expect("spawn ui_perf_smoke");
   let start = Instant::now();
@@ -46,6 +46,11 @@ fn ui_perf_smoke_denies_network_by_default() {
     json["run_config"]["allow_network"],
     Value::Bool(false),
     "expected allow_network=false, got {raw}"
+  );
+  assert_eq!(
+    json["run_config"]["rayon_threads_source"],
+    Value::String("cli".to_string()),
+    "expected rayon_threads_source=cli when --rayon-threads is provided, got {raw}"
   );
 
   let scenarios = json["scenarios"]
