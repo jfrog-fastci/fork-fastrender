@@ -386,6 +386,17 @@ mod tests {
     let err = parse_with_options("class C { x = () => arguments; }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
 
+    // Arrow parameter initializers similarly have no `arguments` binding.
+    let err = parse_with_options("class C { x = (y = arguments) => y; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    let err = parse_with_options(
+      "class C { static { ((x = arguments) => x); } }",
+      opts,
+    )
+    .unwrap_err();
+    assert_eq!(err.typ, expected);
+
     // Non-arrow functions (and arrow functions nested within them) may reference their own
     // `arguments` binding.
     parse_with_options("class C { x = function () { return arguments; }; }", opts).unwrap();
