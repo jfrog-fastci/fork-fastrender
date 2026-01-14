@@ -28,7 +28,18 @@ pub struct ParsedTestSource {
 
 pub fn parse_test_source(source: &str) -> Result<ParsedTestSource> {
   let source_no_bom = source.strip_prefix('\u{feff}').unwrap_or(source);
-  let Some(start) = find_frontmatter_start(source_no_bom) else {
+  // Most test262 files place the `/*--- ... ---*/` YAML frontmatter block at the top of the file,
+  // after optional whitespace/comments (and optionally a literal `#!` hashbang line).
+  //
+  // However, some `flags: [raw]` tests deliberately start with source text that is *not* valid JS
+  // (e.g. hashbang escape tests beginning with `#\\u0021`). Those tests still include YAML
+  // frontmatter later in the file, and we need to discover it to classify the test correctly.
+  //
+  // We handle this by first trying the strict "prefix-only" scan, then falling back to an
+  // "anywhere" scan that only accepts frontmatter blocks marked `raw`.
+  let Some(start) =
+    find_frontmatter_start(source_no_bom).or_else(|| find_raw_frontmatter_start(source_no_bom))
+  else {
     return Ok(ParsedTestSource {
       frontmatter: None,
       body: source_no_bom.to_string(),
@@ -134,6 +145,40 @@ fn find_frontmatter_start(source: &str) -> Option<usize> {
     return None;
   }
 
+  None
+}
+
+/// Fallback frontmatter scan that searches the entire file and returns the offset of the first
+/// `/*--- ... ---*/` block whose YAML metadata includes `flags: [raw]`.
+///
+/// This is primarily needed for test262 `raw` tests that must begin with non-comment source text
+/// (for example, hashbang escape sequences).
+fn find_raw_frontmatter_start(source: &str) -> Option<usize> {
+  let mut search_start = 0usize;
+  while search_start < source.len() {
+    let Some(rel) = source[search_start..].find("/*---") else {
+      return None;
+    };
+    let start = search_start + rel;
+    let yaml_start = start + "/*---".len();
+    let Some(end_rel) = source[yaml_start..].find("---*/") else {
+      // No terminator: treat as "not frontmatter" and keep searching.
+      search_start = yaml_start;
+      continue;
+    };
+
+    let yaml_end = yaml_start + end_rel;
+    let yaml = &source[yaml_start..yaml_end];
+
+    if let Ok(frontmatter) = serde_yaml::from_str::<Frontmatter>(yaml) {
+      if frontmatter.flags.iter().any(|flag| flag == "raw") {
+        return Some(start);
+      }
+    }
+
+    // Continue searching after this block.
+    search_start = yaml_end + "---*/".len();
+  }
   None
 }
 
@@ -285,6 +330,30 @@ let x = 1;
 
     let parsed = parse_test_source(src).unwrap();
     assert_eq!(parsed.frontmatter.unwrap().flags, vec!["raw"]);
+    assert_eq!(parsed.body, src);
+  }
+
+  #[test]
+  fn parses_raw_frontmatter_after_non_comment_prefix() {
+    // Some raw test262 files intentionally begin with non-comment source text that would not be
+    // valid JavaScript (e.g. hashbang escape tests). Ensure we still detect their frontmatter so
+    // they can be classified/executed correctly.
+    let src = r#"#\u0021
+
+/*---
+flags: [raw]
+negative:
+  phase: parse
+  type: SyntaxError
+---*/
+throw "should not run";
+"#;
+
+    let parsed = parse_test_source(src).unwrap();
+    let fm = parsed.frontmatter.unwrap();
+    assert_eq!(fm.flags, vec!["raw"]);
+    assert!(fm.negative.is_some());
+    // Raw tests must preserve the original source, including the frontmatter block.
     assert_eq!(parsed.body, src);
   }
 }
