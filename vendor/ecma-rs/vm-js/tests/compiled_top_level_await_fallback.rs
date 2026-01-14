@@ -24,10 +24,15 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
     "compiled_top_level_await_fallback.js",
     r#"
       var out = "";
-      out = await Promise.resolve("ok");
+      out += await Promise.resolve("ok");
       out
     "#,
   )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "compound assignment with await is not supported by the HIR async classic-script executor"
+  );
 
   let completion = rt.exec_compiled_script(script)?;
   let completion_root = rt.heap_mut().add_root(completion)?;
@@ -85,6 +90,11 @@ fn compiled_script_falls_back_for_top_level_for_await_of() -> Result<(), VmError
       out
     "#,
   )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "top-level for-await-of is not supported by the HIR async classic-script executor"
+  );
 
   let completion = rt.exec_compiled_script(script)?;
   let completion_root = rt.heap_mut().add_root(completion)?;
@@ -132,6 +142,11 @@ fn compiled_script_falls_back_for_await_in_class_static_block() -> Result<(), Vm
       out
     "#,
   )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await in a class static block is not supported by the HIR async classic-script executor"
+  );
 
   let completion = rt.exec_compiled_script(script)?;
   let completion_root = rt.heap_mut().add_root(completion)?;

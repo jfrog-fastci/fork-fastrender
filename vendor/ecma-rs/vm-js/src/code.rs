@@ -58,6 +58,20 @@ pub struct CompiledScript {
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
   /// async evaluation.
   pub contains_top_level_await: bool,
+  /// True if this classic script's top-level await usage is not currently supported by the HIR
+  /// async classic-script executor and requires a full fallback to the AST interpreter.
+  ///
+  /// The compiled async classic-script executor currently supports only a small subset of top-level
+  /// await patterns:
+  /// - expression statements of the form `await <expr>;`
+  /// - expression statements of the form `x = await <expr>;` (for supported assignment targets)
+  /// - `var`/`let`/`const` declarator initializers of the form `= await <expr>`
+  ///
+  /// Any other top-level await usage (e.g. `for await..of`, `await` inside nested blocks like
+  /// `class static {}`, or nested `await` inside the awaited subexpression) must be executed via
+  /// the AST interpreter to avoid partially executing compiled HIR before discovering an
+  /// unsupported construct.
+  pub top_level_await_requires_ast_fallback: bool,
   #[allow(dead_code)]
   source_type: SourceType,
   #[allow(dead_code)]
@@ -133,6 +147,13 @@ impl CompiledScript {
       )?;
     }
 
+    let top_level_await_requires_ast_fallback = contains_top_level_await
+      && parsed
+        .stx
+        .body
+        .iter()
+        .any(stmt_contains_unsupported_await_for_hir_async_scripts);
+
     let feature_flags = ast_feature_flags(&parsed);
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
@@ -169,6 +190,7 @@ impl CompiledScript {
       contains_async_functions,
       requires_ast_fallback,
       contains_top_level_await,
+      top_level_await_requires_ast_fallback,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -192,6 +214,9 @@ impl CompiledScript {
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    // The compiled module executor does not currently support top-level await, so any module with
+    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
+    let top_level_await_requires_ast_fallback = contains_top_level_await;
     {
       let mut tick = || Ok(());
       crate::early_errors::validate_top_level(
@@ -226,6 +251,7 @@ impl CompiledScript {
       contains_async_functions,
       requires_ast_fallback,
       contains_top_level_await,
+      top_level_await_requires_ast_fallback,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -277,6 +303,12 @@ impl CompiledScript {
       detect_use_strict_directive(source.text.as_ref(), &parsed.stx.body, &mut tick)?
     };
     let has_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    let top_level_await_requires_ast_fallback = has_top_level_await
+      && parsed
+        .stx
+        .body
+        .iter()
+        .any(stmt_contains_unsupported_await_for_hir_async_scripts);
     {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
@@ -318,6 +350,7 @@ impl CompiledScript {
       contains_async_functions,
       requires_ast_fallback,
       contains_top_level_await: has_top_level_await,
+      top_level_await_requires_ast_fallback,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -338,6 +371,9 @@ impl CompiledScript {
 
     let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    // The compiled module executor does not currently support top-level await, so any module with
+    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
+    let top_level_await_requires_ast_fallback = contains_top_level_await;
     {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
@@ -366,6 +402,7 @@ impl CompiledScript {
       contains_async_functions,
       requires_ast_fallback,
       contains_top_level_await,
+      top_level_await_requires_ast_fallback,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -390,6 +427,9 @@ impl CompiledScript {
     let contains_private_names = feature_flags.contains_private_names;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
+    // The compiled module executor does not currently support top-level await, so any module with
+    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
+    let top_level_await_requires_ast_fallback = contains_top_level_await;
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))
@@ -407,6 +447,7 @@ impl CompiledScript {
       contains_async_functions,
       requires_ast_fallback,
       contains_top_level_await,
+      top_level_await_requires_ast_fallback,
       source_type: SourceType::Module,
       external_memory,
       hir,

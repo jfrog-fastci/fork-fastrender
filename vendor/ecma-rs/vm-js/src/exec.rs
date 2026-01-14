@@ -2071,7 +2071,9 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    if script.requires_ast_fallback {
+    if script.requires_ast_fallback
+      || (script.contains_top_level_await && script.top_level_await_requires_ast_fallback)
+    {
       // Some script bodies are not yet supported by the compiled (HIR) executor.
       //
       // Async function bodies execute via the AST interpreter at call-time (see

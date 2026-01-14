@@ -28,6 +28,11 @@ fn compiled_script_top_level_await_executes_via_hir_and_resumes_in_microtasks() 
       actual.push("post");
     "#,
   )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "simple top-level await should be supported by the HIR async classic-script executor"
+  );
 
   let result = rt.exec_compiled_script(script)?;
   let Value::Object(promise_obj) = result else {
@@ -62,6 +67,11 @@ fn compiled_script_top_level_await_in_var_initializer_suspends_and_resumes() -> 
       actual.push(x);
     "#,
   )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a var/let/const initializer should be supported by the HIR async classic-script executor"
+  );
 
   let result = rt.exec_compiled_script(script)?;
   let Value::Object(promise_obj) = result else {
