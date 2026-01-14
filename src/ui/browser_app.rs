@@ -363,7 +363,7 @@ mod download_entry_retry_tests {
   }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DownloadsState {
   pub downloads: Vec<DownloadEntry>,
 }
@@ -484,6 +484,86 @@ impl DownloadsState {
     } else {
       self.downloads.push(entry);
       self.prune_overflow(MAX_DOWNLOAD_ENTRIES);
+    }
+  }
+
+  /// Apply a download-related worker message to this store.
+  ///
+  /// Returns `true` when the store changed and the UI should redraw.
+  ///
+  /// ## Invariant
+  /// `DownloadId` values are process-unique (see [`crate::ui::messages::DownloadId::new`]), so they
+  /// can be used as stable keys when merging download updates from multiple UI workers/windows into
+  /// a single profile-global store.
+  pub fn apply_worker_msg(&mut self, msg: &WorkerToUi) -> bool {
+    match msg {
+      WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        url,
+        file_name,
+        path,
+        total_bytes,
+      } => {
+        let safe_url = sanitize_untrusted_text(url, MAX_URL_BYTES);
+        let safe_file_name = sanitize_untrusted_text(file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
+        // `file_name` is used only for display in the downloads panel; sanitize it defensively so
+        // untrusted worker messages cannot inject path separators/control characters into the UI.
+        let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
+        // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
+        // clamp again to our protocol limits.
+        let safe_file_name = crate::ui::untrusted::clamp_untrusted_utf8(
+          &safe_file_name,
+          MAX_DOWNLOAD_FILE_NAME_BYTES,
+        );
+        self.insert_or_update(DownloadEntry {
+          download_id: *download_id,
+          tab_id: *tab_id,
+          url: safe_url,
+          file_name: safe_file_name,
+          path: path.clone(),
+          status: DownloadStatus::InProgress {
+            received_bytes: 0,
+            total_bytes: *total_bytes,
+          },
+        });
+        true
+      }
+      WorkerToUi::DownloadProgress {
+        tab_id: _,
+        download_id,
+        received_bytes,
+        total_bytes,
+      } => {
+        if let Some(entry) = self.get_mut(*download_id) {
+          if matches!(entry.status, DownloadStatus::InProgress { .. }) {
+            entry.status = DownloadStatus::InProgress {
+              received_bytes: *received_bytes,
+              total_bytes: *total_bytes,
+            };
+            return true;
+          }
+        }
+        false
+      }
+      WorkerToUi::DownloadFinished {
+        tab_id: _,
+        download_id,
+        outcome,
+      } => {
+        if let Some(entry) = self.get_mut(*download_id) {
+          entry.status = match outcome {
+            DownloadOutcome::Completed => DownloadStatus::Completed,
+            DownloadOutcome::Cancelled => DownloadStatus::Cancelled,
+            DownloadOutcome::Failed { error } => DownloadStatus::Failed {
+              error: sanitize_untrusted_text(error, MAX_ERROR_BYTES),
+            },
+          };
+          return true;
+        }
+        false
+      }
+      _ => false,
     }
   }
 }
@@ -3507,72 +3587,21 @@ impl BrowserAppState {
         // model does not store clipboard contents.
         update.request_redraw = true;
       }
-      WorkerToUi::DownloadStarted {
-        tab_id,
-        download_id,
-        url,
-        file_name,
-        path,
-        total_bytes,
-      } => {
+      msg @ WorkerToUi::DownloadStarted { tab_id, .. } => {
         // Renderer-driven downloads are untrusted in a multi-process world. Only accept new
         // downloads for known tabs so compromised renderers can't grow memory by inventing tab ids.
-        if self.tab(tab_id).is_some() {
-          let safe_url = sanitize_untrusted_text(&url, MAX_URL_BYTES);
-          let safe_file_name = sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
-          // `file_name` is used only for display in the downloads panel; sanitize it defensively so
-          // untrusted worker messages cannot inject path separators/control characters into the UI.
-          let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
-          // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
-          // clamp again to our protocol limits.
-          let safe_file_name = crate::ui::untrusted::clamp_untrusted_utf8(
-            &safe_file_name,
-            MAX_DOWNLOAD_FILE_NAME_BYTES,
-          );
-          self.downloads.insert_or_update(DownloadEntry {
-            download_id,
-            tab_id,
-            url: safe_url,
-            file_name: safe_file_name,
-            path,
-            status: DownloadStatus::InProgress {
-              received_bytes: 0,
-              total_bytes,
-            },
-          });
+        if self.tab(tab_id).is_some() && self.downloads.apply_worker_msg(&msg) {
           self.bump_session_revision();
           update.request_redraw = true;
         }
       }
-      WorkerToUi::DownloadProgress {
-        tab_id: _,
-        download_id,
-        received_bytes,
-        total_bytes,
-      } => {
-        if let Some(entry) = self.downloads.get_mut(download_id) {
-          if let DownloadStatus::InProgress { .. } = &mut entry.status {
-            entry.status = DownloadStatus::InProgress {
-              received_bytes,
-              total_bytes,
-            };
-            update.request_redraw = true;
-          }
+      msg @ WorkerToUi::DownloadProgress { .. } => {
+        if self.downloads.apply_worker_msg(&msg) {
+          update.request_redraw = true;
         }
       }
-      WorkerToUi::DownloadFinished {
-        tab_id: _,
-        download_id,
-        outcome,
-      } => {
-        if let Some(entry) = self.downloads.get_mut(download_id) {
-          entry.status = match outcome {
-            DownloadOutcome::Completed => DownloadStatus::Completed,
-            DownloadOutcome::Cancelled => DownloadStatus::Cancelled,
-            DownloadOutcome::Failed { error } => DownloadStatus::Failed {
-              error: sanitize_untrusted_text(&error, MAX_ERROR_BYTES),
-            },
-          };
+      msg @ WorkerToUi::DownloadFinished { .. } => {
+        if self.downloads.apply_worker_msg(&msg) {
           self.bump_session_revision();
           update.request_redraw = true;
         }
@@ -3588,6 +3617,110 @@ impl BrowserAppState {
       self.bump_tabs_revision();
     }
     update
+  }
+}
+
+#[cfg(test)]
+mod downloads_state_tests {
+  use super::*;
+  use crate::ui::messages::{DownloadId, DownloadOutcome, TabId, WorkerToUi};
+  use std::path::PathBuf;
+
+  #[test]
+  fn download_started_sanitizes_and_inserts() {
+    let mut downloads = DownloadsState::default();
+    let download_id = DownloadId(10);
+    let tab_id = TabId(1);
+    downloads.apply_worker_msg(&WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url: "  https://example.com/\n".to_string(),
+      file_name: "  file \t name  ".to_string(),
+      path: PathBuf::from("file.txt"),
+      total_bytes: Some(123),
+    });
+
+    assert_eq!(downloads.downloads.len(), 1);
+    let entry = &downloads.downloads[0];
+    assert_eq!(entry.download_id, download_id);
+    assert_eq!(entry.tab_id, tab_id);
+    assert_eq!(entry.url, "https://example.com/".to_string());
+    assert_eq!(entry.file_name, "file name".to_string());
+    assert!(matches!(
+      entry.status,
+      DownloadStatus::InProgress {
+        received_bytes: 0,
+        total_bytes: Some(123)
+      }
+    ));
+  }
+
+  #[test]
+  fn progress_is_ignored_without_a_started_entry_or_after_completion() {
+    let mut downloads = DownloadsState::default();
+    let download_id = DownloadId(11);
+
+    // No entry yet.
+    assert!(!downloads.apply_worker_msg(&WorkerToUi::DownloadProgress {
+      tab_id: TabId(1),
+      download_id,
+      received_bytes: 5,
+      total_bytes: Some(10),
+    }));
+
+    // Now start and finish the download.
+    downloads.apply_worker_msg(&WorkerToUi::DownloadStarted {
+      tab_id: TabId(1),
+      download_id,
+      url: "https://example.com".to_string(),
+      file_name: "file.txt".to_string(),
+      path: PathBuf::from("file.txt"),
+      total_bytes: Some(10),
+    });
+    downloads.apply_worker_msg(&WorkerToUi::DownloadFinished {
+      tab_id: TabId(1),
+      download_id,
+      outcome: DownloadOutcome::Completed,
+    });
+
+    // Progress after completion should be ignored.
+    assert!(!downloads.apply_worker_msg(&WorkerToUi::DownloadProgress {
+      tab_id: TabId(1),
+      download_id,
+      received_bytes: 9,
+      total_bytes: Some(10),
+    }));
+    let entry = downloads.downloads.iter().find(|d| d.download_id == download_id).unwrap();
+    assert!(matches!(entry.status, DownloadStatus::Completed));
+  }
+
+  #[test]
+  fn finished_sanitizes_error_text() {
+    let mut downloads = DownloadsState::default();
+    let download_id = DownloadId(12);
+    downloads.apply_worker_msg(&WorkerToUi::DownloadStarted {
+      tab_id: TabId(1),
+      download_id,
+      url: "https://example.com".to_string(),
+      file_name: "file.txt".to_string(),
+      path: PathBuf::from("file.txt"),
+      total_bytes: None,
+    });
+
+    let long_error = " bad \n".repeat(10_000);
+    downloads.apply_worker_msg(&WorkerToUi::DownloadFinished {
+      tab_id: TabId(1),
+      download_id,
+      outcome: DownloadOutcome::Failed { error: long_error },
+    });
+
+    let entry = downloads.downloads.iter().find(|d| d.download_id == download_id).unwrap();
+    let DownloadStatus::Failed { error } = &entry.status else {
+      panic!("expected Failed status, got {:?}", entry.status);
+    };
+    assert!(!error.starts_with(' '));
+    assert!(!error.ends_with(' '));
+    assert!(error.len() <= MAX_ERROR_BYTES);
   }
 }
 

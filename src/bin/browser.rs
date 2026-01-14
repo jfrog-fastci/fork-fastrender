@@ -4354,6 +4354,8 @@ use fastrender::ui::os_clipboard;
 #[derive(Debug)]
 enum UserEvent {
   WorkerWake,
+  /// Clear completed downloads from the profile-global downloads store.
+  ClearCompletedDownloads,
   SearchSuggestWake(winit::window::WindowId),
   RequestNewWindow(winit::window::WindowId),
   RequestNewWindowWithSession {
@@ -7362,6 +7364,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut global_bookmarks = bookmarks;
   let mut global_history = history;
+  // Downloads are profile-global (shared across all windows), matching history/bookmarks.
+  //
+  // We merge per-window worker messages into this store keyed by `DownloadId`. This relies on the
+  // invariant that `DownloadId` values are process-unique across all workers/windows (see
+  // `ui::messages::NEXT_DOWNLOAD_ID` / `DownloadId::new`).
+  let mut global_downloads = fastrender::ui::DownloadsState::default();
 
   // Throttle/clamp expensive "clone full store" autosave update messages so frequent history
   // mutations (e.g. navigating a lot) don't repeatedly clone large stores on the UI thread.
@@ -7646,10 +7654,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       global_bookmarks.clone(),
       global_history.clone(),
     )?;
+    app.browser_state.downloads = global_downloads.clone();
     app.profile_autosave_tx = profile_autosave_tx.clone();
     app.home_url = home_url.clone();
     app.browser_state.appearance = startup_appearance.clone();
     app.startup(session_window);
+    // `App::startup` restores any persisted download history for this window. Downloads are
+    // profile-global, so fold any restored entries into the shared store as we create windows.
+    if app.browser_state.downloads != global_downloads {
+      global_downloads = app.browser_state.downloads.clone();
+    }
     // Show crash recovery UI once at process startup; prefer the active window when multiple
     // session windows are restored.
     app.crash_recovery_infobar_open = should_open_crash_recovery_infobar_for_window(
@@ -7767,6 +7781,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         bridge_join: Some(bridge_join),
       },
     );
+  }
+
+  // Ensure all restored windows start with the merged profile-global downloads state.
+  for win in windows.values_mut() {
+    win.app.browser_state.downloads = global_downloads.clone();
   }
 
   let mut window_order: Vec<WindowId> = window_ids_by_index.into_iter().flatten().collect();
@@ -8252,6 +8271,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // and starve input/resize/OS events.
         let mut session_dirty = false;
         let mut needs_follow_up_wake_any = false;
+        let mut downloads_changed_any = false;
 
         for window_id in window_order.iter().copied() {
           let mut request_redraw = false;
@@ -8307,6 +8327,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | fastrender::ui::WorkerToUi::DownloadStarted { .. }
                     | fastrender::ui::WorkerToUi::DownloadFinished { .. }
                 );
+                match msg {
+                  fastrender::ui::WorkerToUi::DownloadStarted { tab_id, .. } => {
+                    // Renderer-driven downloads are untrusted. Only accept new downloads for known
+                    // tabs so compromised renderers can't grow memory by inventing tab ids.
+                    if win.app.browser_state.tab(*tab_id).is_some() {
+                      downloads_changed_any |= global_downloads.apply_worker_msg(msg);
+                    }
+                  }
+                  fastrender::ui::WorkerToUi::DownloadProgress { .. }
+                  | fastrender::ui::WorkerToUi::DownloadFinished { .. } => {
+                    downloads_changed_any |= global_downloads.apply_worker_msg(msg);
+                  }
+                  _ => {}
+                }
               }
               let window_is_active = active_window_id == Some(window_id);
               let result = match item {
@@ -8519,6 +8553,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
+        if downloads_changed_any {
+          let now = std::time::Instant::now();
+          for win in windows.values_mut() {
+            win.app.browser_state.downloads = global_downloads.clone();
+            win.app.schedule_worker_redraw(now);
+          }
+        }
+
         // Re-arm the global wake coalescer now that we've drained the worker message queues.
         //
         // We intentionally clear the global "pending" bit *after* draining so that bridge threads
@@ -8537,6 +8579,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if session_dirty {
+          session_save_scheduler.mark_dirty(std::time::Instant::now());
+        }
+      }
+      Event::UserEvent(UserEvent::ClearCompletedDownloads) => {
+        let removed = global_downloads.clear_completed();
+        if removed > 0 {
+          for win in windows.values_mut() {
+            win.app.browser_state.downloads = global_downloads.clone();
+            if !(win.app.window_occluded || win.app.window_minimized) {
+              win.app.window.request_redraw();
+            }
+          }
           session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
       }
@@ -8751,6 +8805,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return;
           }
         };
+        app.browser_state.downloads = global_downloads.clone();
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
@@ -8954,12 +9009,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return;
           }
         };
+        app.browser_state.downloads = global_downloads.clone();
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
         app.set_session_autosave_status(session_autosave_status.clone());
 
         app.startup(session_window);
+        let downloads_changed = app.browser_state.downloads != global_downloads;
+        if downloads_changed {
+          global_downloads = app.browser_state.downloads.clone();
+        }
         // For a detached-tab window, match typical browser UX by keeping keyboard focus in the page
         // rather than stealing it for the address bar (unlike a fresh `about:newtab` window).
         app.page_has_focus = true;
@@ -9024,6 +9084,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         window_order.push(window_id);
         active_window_id = Some(window_id);
+        if downloads_changed {
+          let now = std::time::Instant::now();
+          for win in windows.values_mut() {
+            win.app.browser_state.downloads = global_downloads.clone();
+            win.app.schedule_worker_redraw(now);
+          }
+        }
         session_save_scheduler.mark_dirty(std::time::Instant::now());
       }
       Event::RedrawRequested(window_id) => {
@@ -21008,10 +21075,10 @@ impl App {
     }
 
     if output.clear_completed_requested {
-      let removed = self.browser_state.downloads.clear_completed();
-      if removed > 0 {
-        self.window.request_redraw();
-      }
+      // Best-effort: if the event loop has already been torn down, ignore failures.
+      let _ = self
+        .event_loop_proxy
+        .send_event(UserEvent::ClearCompletedDownloads);
     }
 
     for (tab_id, download_id) in output.cancel_requests {
