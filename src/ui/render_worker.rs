@@ -258,7 +258,8 @@ mod media_controls_anchor_fallback_tests {
     let factory = default_ui_worker_factory().expect("expected default ui worker factory");
 
     let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
-    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let worker_rx = WorkerToUiInbox::new(worker_rx);
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
     let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory.clone(), downloads);
@@ -830,6 +831,12 @@ struct TabState {
   /// a corresponding `FrameReady` (e.g. cancelled paints), avoiding redundant messages in the hot
   /// paint path.
   last_reported_scroll_state: ScrollState,
+  /// Last tick scheduling hint reported to the UI for this tab.
+  ///
+  /// This is updated when emitting:
+  /// - [`WorkerToUi::FrameReady`] (`RenderedFrame.next_tick`), or
+  /// - [`WorkerToUi::TickHint`] (schedule updates without a new frame).
+  last_reported_next_tick: Option<Duration>,
   /// Scroll state used for the most recently emitted `WorkerToUi::FrameReady` for this tab.
   ///
   /// This is used by scroll-blit diagnostics to compute the scroll delta between frames.
@@ -923,6 +930,7 @@ impl TabState {
       dpr: 1.0,
       scroll_state: ScrollState::default(),
       last_reported_scroll_state: ScrollState::default(),
+      last_reported_next_tick: None,
       last_painted_scroll_state: None,
       scroll_coalesce: false,
       next_paint_is_scroll: false,
@@ -1939,6 +1947,22 @@ fn mirror_dom1_radio_group_state_into_dom2(
     };
     if should_set {
       let _ = js_tab.dom_mut().set_input_checked(dom2_node, desired_checked);
+    }
+  }
+
+  fn desired_next_tick(&mut self) -> Option<Duration> {
+    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
+    let css_tick = self
+      .document
+      .as_mut()
+      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
+    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
+
+    match (css_tick, js_tick) {
+      (Some(a), Some(b)) => Some(a.min(b)),
+      (Some(a), None) => Some(a),
+      (None, Some(b)) => Some(b),
+      (None, None) => None,
     }
   }
 }
@@ -3099,9 +3123,15 @@ impl BrowserRuntime {
             WorkerToUi::FrameReady { tab_id, frame } => {
               if let Some(tab) = self.tabs.get_mut(tab_id) {
                 tab.last_reported_scroll_state = frame.scroll_state.clone();
+                tab.last_reported_next_tick = frame.next_tick;
                 if let Some(tick_time) = painted_tick_time {
                   tab.last_painted_tick_time = tick_time;
                 }
+              }
+            }
+            WorkerToUi::TickHint { tab_id, next_tick } => {
+              if let Some(tab) = self.tabs.get_mut(tab_id) {
+                tab.last_reported_next_tick = *next_tick;
               }
             }
             WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
@@ -5735,6 +5765,19 @@ impl BrowserRuntime {
       // signal; media state must not treat it as a fixed-time-step update.
       tab.media.on_tick(Instant::now());
 
+      // If time-based work has changed (e.g. JS timers were scheduled/cleared) but we didn't
+      // schedule a repaint, notify the UI so it can update its tick cadence without relying on
+      // constant 16ms ticks.
+      if !tab.needs_repaint {
+        let next_tick = tab.desired_next_tick();
+        if next_tick != tab.last_reported_next_tick {
+          tab.last_reported_next_tick = next_tick;
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::TickHint { tab_id, next_tick }));
+        }
+      }
+
       #[cfg(feature = "browser_ui")]
       {
         if UI_WORKER_TICK_STATS_ENABLED.load(Ordering::Relaxed) {
@@ -6249,6 +6292,9 @@ impl BrowserRuntime {
     }
 
     let generation_after_dispatch = js_tab.dom().mutation_generation();
+    // Release the mutable borrow of `tab.js_tab` before querying tick scheduling state (which also
+    // needs to borrow it mutably).
+    drop(js_tab);
     if generation_before_dispatch != prev_generation
       || generation_after_dispatch != generation_before_dispatch
     {
@@ -6257,6 +6303,14 @@ impl BrowserRuntime {
       tab.needs_repaint = true;
     }
     tab.js_dom_mutation_generation = generation_after_dispatch;
+
+    if !tab.needs_repaint {
+      let next_tick = tab.desired_next_tick();
+      if next_tick != tab.last_reported_next_tick {
+        tab.last_reported_next_tick = next_tick;
+        let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::TickHint { tab_id, next_tick }));
+      }
+    }
   }
 
   fn handle_pointer_move(
@@ -12588,17 +12642,7 @@ impl BrowserRuntime {
 
         let scroll_metrics =
           compute_scroll_metrics(tab.document.as_ref(), viewport_css, &tab.scroll_state);
-        let animation_time_ms = duration_to_ms_f32(tab.tick_time);
-        let css_next_tick = tab
-          .document
-          .as_mut()
-          .and_then(|doc| document_next_tick(doc, animation_time_ms));
-        let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
-          (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
-          (Some(css), false) => Some(css),
-          (None, true) => Some(DEFAULT_TICK_INTERVAL),
-          (None, false) => None,
-        };
+        let next_tick = tab.desired_next_tick();
 
         msgs.push(WorkerToUi::FrameReady {
           tab_id,
@@ -12895,18 +12939,7 @@ impl BrowserRuntime {
       .unwrap_or(tab.dpr);
     let scroll_metrics =
       compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state);
-
-    let animation_time_ms = duration_to_ms_f32(tab.tick_time);
-    let css_next_tick = tab
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, animation_time_ms));
-    let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
-      (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
-      (Some(css), false) => Some(css),
-      (None, true) => Some(DEFAULT_TICK_INTERVAL),
-      (None, false) => None,
-    };
+    let next_tick = tab.desired_next_tick();
 
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
@@ -13173,17 +13206,7 @@ impl BrowserRuntime {
 
       let scroll_metrics =
         compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state);
-      let animation_time_ms = duration_to_ms_f32(tab.tick_time);
-      let css_next_tick = tab
-        .document
-        .as_mut()
-        .and_then(|doc| document_next_tick(doc, animation_time_ms));
-      let next_tick = match (css_next_tick, tab.js_tab.is_some()) {
-        (Some(css), true) => Some(css.min(DEFAULT_TICK_INTERVAL)),
-        (Some(css), false) => Some(css),
-        (None, true) => Some(DEFAULT_TICK_INTERVAL),
-        (None, false) => None,
-      };
+      let next_tick = tab.desired_next_tick();
 
       msgs.push(WorkerToUi::FrameReady {
         tab_id,
@@ -13705,10 +13728,9 @@ mod base_url_tests {
 #[cfg(test)]
 mod media_wakeup_tests {
   use super::*;
-  use std::sync::mpsc::Receiver;
   use std::time::{Duration, Instant};
-  
-  fn recv_media_wake(rx: &Receiver<WorkerToUi>) -> (TabId, Duration, WakeReason) {
+
+  fn recv_media_wake(rx: &WorkerToUiInbox) -> (TabId, Duration, WakeReason) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
       let remaining = deadline.saturating_duration_since(Instant::now());
@@ -13725,7 +13747,8 @@ mod media_wakeup_tests {
   #[test]
   fn media_wakeup_requests_are_emitted_and_cancelled() -> crate::Result<()> {
     let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
-    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let worker_rx = WorkerToUiInbox::new(worker_rx);
 
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
@@ -13804,13 +13827,116 @@ mod media_wakeup_tests {
 }
 
 #[cfg(test)]
+mod tick_hint_tests {
+  use super::*;
+  use std::time::Duration;
+
+  fn recv_tick_hint(rx: &WorkerToUiInbox) -> (TabId, Option<Duration>) {
+    let msg = rx
+      .recv_timeout(Duration::from_secs(1))
+      .unwrap_or_else(|err| panic!("timed out waiting for TickHint: {err:?}"));
+    match msg {
+      WorkerToUi::TickHint { tab_id, next_tick } => (tab_id, next_tick),
+      other => panic!("unexpected WorkerToUi message while waiting for TickHint: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn js_tick_hint_updates_when_timers_schedule_without_repaint() -> crate::Result<()> {
+    let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let worker_rx = WorkerToUiInbox::new(worker_rx);
+
+    let factory = default_ui_worker_factory()?;
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    runtime.handle_message(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: CancelGens::new(),
+    });
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <script>
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                // Schedule a long-delay timer without mutating the DOM so the worker won't repaint.
+                setTimeout(() => {}, 10000);
+              }, 0);
+            });
+          </script>
+        </head>
+        <body></body>
+      </html>"#;
+
+    let options = RenderOptions::default()
+      .with_viewport(32, 32)
+      .with_device_pixel_ratio(1.0);
+
+    let mut js_tab = BrowserTab::from_html_with_vmjs(html, options)?;
+    let limits = RunLimits {
+      max_tasks: 1024,
+      max_microtasks: 1024,
+      max_wall_time: None,
+    };
+    let _ = js_tab.run_event_loop_until_idle(limits)?;
+    // Ensure the document is clean so `next_tick_due_in` reflects scheduling state, not an initial
+    // render.
+    let _ = js_tab.render_frame()?;
+
+    assert_eq!(
+      js_tab.next_tick_due_in(),
+      Some(Duration::from_millis(16)),
+      "expected pending rAF callback to request ~60Hz ticks"
+    );
+    let generation = js_tab.dom().mutation_generation();
+
+    {
+      let tab = runtime.tabs.get_mut(&tab_id).expect("tab state");
+      tab.js_tab = Some(js_tab);
+      tab.js_dom_mutation_generation = generation;
+      tab.last_reported_next_tick = Some(Duration::from_millis(16));
+    }
+
+    // First tick runs the rAF callback, which schedules a due (0ms) timer.
+    runtime.handle_message(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    });
+    let (hint_tab, hint1) = recv_tick_hint(&worker_rx);
+    assert_eq!(hint_tab, tab_id);
+    assert_eq!(hint1, Some(Duration::ZERO));
+
+    // Second tick runs the due timer, which schedules a long-delay timer. The worker should update
+    // its tick hint without requiring a repaint.
+    runtime.handle_message(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    });
+    let (hint_tab, hint2) = recv_tick_hint(&worker_rx);
+    assert_eq!(hint_tab, tab_id);
+    assert!(
+      hint2.is_some_and(|d| d >= Duration::from_secs(1)),
+      "expected long-delay timer to request a coarser tick cadence, got: {hint2:?}"
+    );
+
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod drain_messages_viewport_coalescing_tests {
   use super::*;
 
   #[test]
   fn drain_messages_coalesces_viewport_changed_per_tab() -> crate::Result<()> {
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
-    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
 
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
@@ -14037,7 +14163,7 @@ mod hover_composed_shadow_dom_tests {
 
     // Create a runtime with a single tab containing both documents.
     let (_ui_to_worker_tx, ui_to_worker_rx) = mpsc::channel::<UiToWorker>();
-    let (worker_to_ui_tx, _worker_to_ui_rx) = mpsc::channel::<WorkerToUi>();
+    let (worker_to_ui_tx, _worker_to_ui_rx) = mpsc::channel::<WorkerToUiMsg>();
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
     let factory = default_ui_worker_factory().expect("default ui worker factory");

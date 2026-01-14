@@ -971,6 +971,15 @@ pub enum WorkerToUi {
     tab_id: TabId,
     frame: RenderedFrame,
   },
+  /// Update to the worker's tick scheduling hint for this tab.
+  ///
+  /// This has the same semantics as [`RenderedFrame::next_tick`], but can be emitted even when the
+  /// worker did not produce a new frame (e.g. when JS timers are scheduled/cleared without causing a
+  /// repaint).
+  TickHint {
+    tab_id: TabId,
+    next_tick: Option<Duration>,
+  },
   /// Snapshot of the currently rendered page's accessibility tree.
   ///
   /// `bounds_css` maps DOM preorder node id → viewport-local CSS rect. The vector is sorted by id
@@ -1283,6 +1292,7 @@ impl WorkerToUi {
       | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
       | WorkerToUi::FrameReady { tab_id, .. }
+      | WorkerToUi::TickHint { tab_id, .. }
       | WorkerToUi::PageAccessibility { tab_id, .. }
       | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }

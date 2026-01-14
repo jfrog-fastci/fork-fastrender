@@ -3054,6 +3054,13 @@ impl BrowserAppState {
           }
         }
       }
+      WorkerToUi::TickHint { tab_id, next_tick } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          if let Some(meta) = tab.latest_frame_meta.as_mut() {
+            meta.next_tick = next_tick;
+          }
+        }
+      }
       WorkerToUi::RequestWakeAfter { .. } => {
         // Wakeup scheduling is handled by the host UI event loop (e.g. `src/bin/browser.rs`).
       }
