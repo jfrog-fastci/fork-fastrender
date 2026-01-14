@@ -1938,6 +1938,14 @@ fn using_declaration_in_switch_default_clause_is_syntax_error() {
 }
 
 #[test]
+fn using_declaration_in_nested_block_in_switch_clause_is_allowed() {
+  let mut rt = new_runtime();
+  rt
+    .exec_script("switch (true) { case true: { using x = null; } }")
+    .unwrap();
+}
+
+#[test]
 fn switch_case_block_duplicate_lexical_decl_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
@@ -2038,12 +2046,11 @@ fn await_using_declaration_in_for_in_head_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_switch_clause_is_syntax_error() {
+fn await_using_declaration_in_nested_block_in_switch_clause_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_script("async function f(){ switch (true) { default: await using x = null; } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  rt
+    .exec_script("async function f(){ switch (true) { case true: { await using x = null; } } }")
+    .unwrap();
 }
 
 #[test]
