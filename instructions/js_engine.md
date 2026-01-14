@@ -27,6 +27,8 @@ Run the same suite locally with:
 bash scripts/run_vm_js_generator_yield_tests.sh
 ```
 
+This script is safe to run directly: it wraps each `cargo test` invocation in `timeout -k`.
+
 This executes (at minimum):
 - `generators_yield_operators`
 - `generators_delete_yield`
