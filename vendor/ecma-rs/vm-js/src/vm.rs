@@ -1043,6 +1043,11 @@ impl Vm {
   /// via Promise jobs. If an embedding abandons/discards the microtask queue while intending to
   /// reuse the heap, leaving suspended continuations in the VM would leak their persistent roots.
   pub fn teardown_microtasks(&mut self, heap: &mut Heap) {
+    #[cfg(debug_assertions)]
+    let root_stack_len_at_entry = heap.root_stack.len();
+    #[cfg(debug_assertions)]
+    let env_root_stack_len_at_entry = heap.env_root_stack.len();
+
     struct TeardownCtx<'a> {
       heap: &'a mut Heap,
     }
@@ -1083,20 +1088,48 @@ impl Vm {
       self.microtasks.teardown(&mut ctx);
     }
 
-    if self.async_continuations.is_empty() {
-      return;
+    if !self.async_continuations.is_empty() {
+      // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
+      // execution and will not resume the event loop. This does *not* settle the associated
+      // Promises; it only unregisters the continuation's persistent roots so the heap can be reused
+      // safely.
+      let continuations = mem::take(&mut self.async_continuations);
+      let mut scope = heap.scope();
+      for (_, cont) in continuations {
+        match cont {
+          VmAsyncContinuation::Ast(cont) => {
+            crate::exec::async_teardown_continuation(&mut scope, cont)
+          }
+          VmAsyncContinuation::Hir(cont) => {
+            crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont)
+          }
+        }
+      }
     }
 
-    // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
-    // execution and will not resume the event loop. This does *not* settle the associated Promises;
-    // it only unregisters the continuation's persistent roots so the heap can be reused safely.
-    let continuations = mem::take(&mut self.async_continuations);
-    let mut scope = heap.scope();
-    for (_, cont) in continuations {
-      match cont {
-        VmAsyncContinuation::Ast(cont) => crate::exec::async_teardown_continuation(&mut scope, cont),
-        VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont),
-      }
+    // Ensure this teardown path does not leave behind leaked continuation frames or stack roots.
+    // This is debug-only to avoid surprising host behaviour (e.g. embeddings that keep explicit
+    // stack roots across teardown).
+    #[cfg(debug_assertions)]
+    {
+      debug_assert!(
+        self.microtasks.is_empty(),
+        "expected microtask queue to be empty after Vm::teardown_microtasks"
+      );
+      debug_assert!(
+        self.async_continuations.is_empty(),
+        "expected async continuations to be empty after Vm::teardown_microtasks"
+      );
+      debug_assert_eq!(
+        heap.root_stack.len(),
+        root_stack_len_at_entry,
+        "Vm::teardown_microtasks leaked value stack roots"
+      );
+      debug_assert_eq!(
+        heap.env_root_stack.len(),
+        env_root_stack_len_at_entry,
+        "Vm::teardown_microtasks leaked env stack roots"
+      );
     }
   }
 
@@ -4640,7 +4673,6 @@ impl Vm {
       // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
       // construction (regardless of constructor kind).
       Value::Object(o) => Ok(Value::Object(o)),
-
       // `return;` / no explicit return / `return undefined;` -> return `this`.
       //
       // Derived constructors are special only in that they may still have an uninitialized `this`
@@ -4682,13 +4714,11 @@ impl Vm {
           Ok(Value::Object(this_obj))
         }
       },
-
       // Derived constructors may only return an object or `undefined`. Any other explicit non-object
       // return value must throw a TypeError.
       _ if derived_constructor => Err(VmError::TypeError(
         "Derived constructors may only return an object or undefined",
       )),
-
       // Base/ordinary constructors ignore explicit non-object return values.
       _ => {
         let this_obj = this_obj.ok_or(VmError::InvariantViolation(
@@ -5176,6 +5206,61 @@ mod tests {
     let second = vm.module_namespace_getter_call_id()?;
     assert_eq!(first, second);
     assert_eq!(len, vm.native_calls.len());
+    Ok(())
+  }
+
+  #[test]
+  fn teardown_microtasks_clears_hir_async_continuations_and_roots() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let script = crate::CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        await 1;
+      "#,
+    )?;
+    assert!(
+      script.contains_top_level_await,
+      "expected compiled script to contain top-level await"
+    );
+
+    let baseline_roots = rt.heap.persistent_root_count();
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    for _ in 0..8 {
+      let _promise = rt.exec_compiled_script(script.clone())?;
+
+      // The script should suspend at the top-level await, leaving behind a queued Promise job and a
+      // stored continuation.
+      assert!(
+        !rt.vm.microtask_queue().is_empty(),
+        "expected top-level await to enqueue a microtask"
+      );
+      assert!(
+        rt.vm.async_continuation_count() > 0,
+        "expected top-level await to store an async continuation"
+      );
+
+      rt.vm.teardown_microtasks(&mut rt.heap);
+
+      assert!(rt.vm.microtask_queue().is_empty());
+      assert_eq!(rt.vm.async_continuation_count(), 0);
+      assert_eq!(
+        rt.heap.persistent_root_count(),
+        baseline_roots,
+        "expected persistent value roots to return to baseline after teardown"
+      );
+      assert_eq!(
+        rt.heap.persistent_env_root_count(),
+        baseline_env_roots,
+        "expected persistent env roots to return to baseline after teardown"
+      );
+
+      // Ensure heap allocations from the abandoned async execution are collectible and won't cause
+      // the loop to OOM under tight `HeapLimits`.
+      rt.heap.collect_garbage();
+    }
+
     Ok(())
   }
 

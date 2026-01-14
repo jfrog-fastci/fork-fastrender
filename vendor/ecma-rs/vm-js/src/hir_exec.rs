@@ -13024,6 +13024,14 @@ fn run_compiled_async_function(
         return Err(err);
       }
 
+      // Reserve async continuation capacity before we create roots and move `state` into the
+      // continuation so insertion cannot fail and leak `HirAsyncState`-owned roots.
+      if let Err(err) = vm.reserve_async_continuations(1) {
+        state.teardown(root_scope.heap_mut());
+        env.teardown(root_scope.heap_mut());
+        return Err(err);
+      }
+
       // Create persistent roots for the async continuation.
       let values = [
         this_at_suspend,
@@ -13035,9 +13043,11 @@ fn run_compiled_async_function(
         awaited_promise,
       ];
       let mut roots: Vec<RootId> = Vec::new();
-      roots
-        .try_reserve_exact(values.len())
-        .map_err(|_| VmError::OutOfMemory)?;
+      if roots.try_reserve_exact(values.len()).is_err() {
+        state.teardown(root_scope.heap_mut());
+        env.teardown(root_scope.heap_mut());
+        return Err(VmError::OutOfMemory);
+      }
       for &value in &values {
         match root_scope.heap_mut().add_root(value) {
           Ok(id) => roots.push(id),
@@ -13061,9 +13071,14 @@ fn run_compiled_async_function(
       let awaited_root = roots[6];
 
       let mut frames: VecDeque<crate::exec::AsyncFrame> = VecDeque::new();
-      frames
-        .try_reserve(1)
-        .map_err(|_| VmError::OutOfMemory)?;
+      if frames.try_reserve(1).is_err() {
+        for id in roots.drain(..) {
+          root_scope.heap_mut().remove_root(id);
+        }
+        state.teardown(root_scope.heap_mut());
+        env.teardown(root_scope.heap_mut());
+        return Err(VmError::OutOfMemory);
+      }
       let allow_new_target_in_eval = state.allow_new_target_in_eval;
       frames.push_back(crate::exec::AsyncFrame::HirAsync { state });
 
@@ -13084,16 +13099,7 @@ fn run_compiled_async_function(
         frames,
       };
 
-      let id = match vm.insert_async_continuation(VmAsyncContinuation::Ast(cont)) {
-        Ok(id) => id,
-        Err(e) => {
-          for id in roots.drain(..) {
-            root_scope.heap_mut().remove_root(id);
-          }
-          env.teardown(root_scope.heap_mut());
-          return Err(e);
-        }
-      };
+      let id = vm.insert_async_continuation_reserved(VmAsyncContinuation::Ast(cont));
 
       let schedule_res: Result<(), VmError> = (|| {
         let call_id = vm.async_resume_call_id()?;
@@ -16032,31 +16038,43 @@ pub(crate) fn hir_async_resume_continuation(
     scope.heap_mut().remove_root(root);
   }
 
-  let resolve = scope
-    .heap()
-    .get_root(cont.resolve_root)
-    .ok_or(VmError::InvariantViolation(
-      "hir async continuation missing resolve root",
-    ))?;
-  let reject = scope
-    .heap()
-    .get_root(cont.reject_root)
-    .ok_or(VmError::InvariantViolation(
-      "hir async continuation missing reject root",
-    ))?;
+  let resolve = match scope.heap().get_root(cont.resolve_root) {
+    Some(v) => v,
+    None => {
+      hir_async_teardown_continuation(scope, cont);
+      return Err(VmError::InvariantViolation(
+        "hir async continuation missing resolve root",
+      ));
+    }
+  };
+  let reject = match scope.heap().get_root(cont.reject_root) {
+    Some(v) => v,
+    None => {
+      hir_async_teardown_continuation(scope, cont);
+      return Err(VmError::InvariantViolation(
+        "hir async continuation missing reject root",
+      ));
+    }
+  };
 
-  let this = scope
-    .heap()
-    .get_root(cont.this_root)
-    .ok_or(VmError::InvariantViolation(
-      "hir async continuation missing this root",
-    ))?;
-  let new_target = scope
-    .heap()
-    .get_root(cont.new_target_root)
-    .ok_or(VmError::InvariantViolation(
-      "hir async continuation missing new.target root",
-    ))?;
+  let this = match scope.heap().get_root(cont.this_root) {
+    Some(v) => v,
+    None => {
+      hir_async_teardown_continuation(scope, cont);
+      return Err(VmError::InvariantViolation(
+        "hir async continuation missing this root",
+      ));
+    }
+  };
+  let new_target = match scope.heap().get_root(cont.new_target_root) {
+    Some(v) => v,
+    None => {
+      hir_async_teardown_continuation(scope, cont);
+      return Err(VmError::InvariantViolation(
+        "hir async continuation missing new.target root",
+      ));
+    }
+  };
 
   let resume_segment = |vm: &mut Vm,
                         scope: &mut Scope<'_>,
@@ -16656,11 +16674,14 @@ pub(crate) fn hir_async_resume_continuation(
   };
 
   if let Some(exec_ctx) = cont.exec_ctx {
-    vm.push_execution_context(exec_ctx)?;
-    let res = resume_segment(vm, scope, host, hooks, cont);
-    let popped = vm.pop_execution_context();
-    debug_assert_eq!(popped, Some(exec_ctx));
-    return res;
+    let mut vm_ctx = match vm.execution_context_guard(exec_ctx) {
+      Ok(g) => g,
+      Err(err) => {
+        hir_async_teardown_continuation(scope, cont);
+        return Err(err);
+      }
+    };
+    return resume_segment(&mut *vm_ctx, scope, host, hooks, cont);
   }
 
   resume_segment(vm, scope, host, hooks, cont)

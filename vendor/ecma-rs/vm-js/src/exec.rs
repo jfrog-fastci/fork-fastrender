@@ -17685,46 +17685,61 @@ pub(crate) fn async_resume_call(
         scope.heap_mut().remove_root(root);
       }
 
-      let resolve = scope
-        .heap()
-        .get_root(cont.resolve_root)
-        .ok_or(VmError::InvariantViolation(
-          "async continuation missing resolve root",
-        ))?;
-      let reject = scope
-        .heap()
-        .get_root(cont.reject_root)
-        .ok_or(VmError::InvariantViolation(
-          "async continuation missing reject root",
-        ))?;
+      let resolve = match scope.heap().get_root(cont.resolve_root) {
+        Some(v) => v,
+        None => {
+          async_teardown_continuation(scope, cont);
+          return Err(VmError::InvariantViolation(
+            "async continuation missing resolve root",
+          ));
+        }
+      };
+      let reject = match scope.heap().get_root(cont.reject_root) {
+        Some(v) => v,
+        None => {
+          async_teardown_continuation(scope, cont);
+          return Err(VmError::InvariantViolation(
+            "async continuation missing reject root",
+          ));
+        }
+      };
 
-      let this = scope
-        .heap()
-        .get_root(cont.this_root)
-        .ok_or(VmError::InvariantViolation(
-          "async continuation missing this root",
-        ))?;
-      let new_target =
-        scope
-          .heap()
-          .get_root(cont.new_target_root)
-          .ok_or(VmError::InvariantViolation(
+      let this = match scope.heap().get_root(cont.this_root) {
+        Some(v) => v,
+        None => {
+          async_teardown_continuation(scope, cont);
+          return Err(VmError::InvariantViolation(
+            "async continuation missing this root",
+          ));
+        }
+      };
+      let new_target = match scope.heap().get_root(cont.new_target_root) {
+        Some(v) => v,
+        None => {
+          async_teardown_continuation(scope, cont);
+          return Err(VmError::InvariantViolation(
             "async continuation missing new.target root",
-          ))?;
+          ));
+        }
+      };
       let home_object = {
-        let value = scope
-          .heap()
-          .get_root(cont.home_object_root)
-          .ok_or(VmError::InvariantViolation(
-            "async continuation missing home object root",
-          ))?;
+        let value = match scope.heap().get_root(cont.home_object_root) {
+          Some(v) => v,
+          None => {
+            async_teardown_continuation(scope, cont);
+            return Err(VmError::InvariantViolation(
+              "async continuation missing home object root",
+            ));
+          }
+        };
         match value {
           Value::Object(o) => Some(o),
           Value::Undefined => None,
           _ => {
+            async_teardown_continuation(scope, cont);
             return Err(VmError::InvariantViolation(
               "async continuation home object root is not an object or undefined",
-            ))
+            ));
           }
         }
       };
@@ -17732,39 +17747,52 @@ pub(crate) fn async_resume_call(
       // If this continuation carries an execution context (used by top-level await in modules),
       // install it for the duration of the resumed evaluation segment so `import.meta` and dynamic
       // `import()` can observe the active module.
-       if let Some(exec_ctx) = cont.exec_ctx {
-         vm.push_execution_context(exec_ctx)?;
-         let prev_state = vm.load_realm_state(scope.heap_mut(), exec_ctx.realm)?;
-         let res = (|| {
-           let mut evaluator = Evaluator {
-             vm,
-             host,
-             hooks,
-             env: &mut cont.env,
-             strict: cont.strict,
-             this,
-             new_target,
-             allow_new_target_in_eval: cont.allow_new_target_in_eval,
-             home_object,
-             class_constructor: None,
-             derived_constructor: false,
-             this_initialized: true,
-             this_root_idx: None,
-           };
+      if let Some(exec_ctx) = cont.exec_ctx {
+        let mut vm_ctx = match vm.execution_context_guard(exec_ctx) {
+          Ok(g) => g,
+          Err(err) => {
+            async_teardown_continuation(scope, cont);
+            return Err(err);
+          }
+        };
+        let prev_state = match vm_ctx.load_realm_state(scope.heap_mut(), exec_ctx.realm) {
+          Ok(s) => s,
+          Err(err) => {
+            async_teardown_continuation(scope, cont);
+            return Err(err);
+          }
+        };
 
-           let frames = mem::take(&mut cont.frames);
-           let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
-           let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
-           // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
-           // evaluation forces strict mode). Persist the current strictness into the continuation so it
-           // is restored correctly across subsequent `await` suspensions.
-           cont.strict = evaluator.strict;
-           cont.allow_new_target_in_eval = evaluator.allow_new_target_in_eval;
-           // `this` / `new.target` can also be overridden temporarily by nested constructs that can
-           // suspend (e.g. class static blocks). Persist them so resumed execution observes the correct
-           // values.
-           scope.heap_mut().set_root(cont.this_root, evaluator.this);
-           scope
+        let res = (|| {
+          let mut evaluator = Evaluator {
+            vm: &mut *vm_ctx,
+            host,
+            hooks,
+            env: &mut cont.env,
+            strict: cont.strict,
+            this,
+            new_target,
+            allow_new_target_in_eval: cont.allow_new_target_in_eval,
+            home_object,
+            class_constructor: None,
+            derived_constructor: false,
+            this_initialized: true,
+            this_root_idx: None,
+          };
+
+          let frames = mem::take(&mut cont.frames);
+          let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
+          let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
+          // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
+          // evaluation forces strict mode). Persist the current strictness into the continuation so it
+          // is restored correctly across subsequent `await` suspensions.
+          cont.strict = evaluator.strict;
+          cont.allow_new_target_in_eval = evaluator.allow_new_target_in_eval;
+          // `this` / `new.target` can also be overridden temporarily by nested constructs that can
+          // suspend (e.g. class static blocks). Persist them so resumed execution observes the correct
+          // values.
+          scope.heap_mut().set_root(cont.this_root, evaluator.this);
+          scope
             .heap_mut()
             .set_root(cont.new_target_root, evaluator.new_target);
           scope.heap_mut().set_root(
@@ -17775,11 +17803,10 @@ pub(crate) fn async_resume_call(
               .unwrap_or(Value::Undefined),
           );
 
-          async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
+          async_handle_body_result(&mut *vm_ctx, scope, host, hooks, id, cont, resolve, reject, result)
         })();
 
-        let popped = vm.pop_execution_context();
-        debug_assert_eq!(popped, Some(exec_ctx));
+        drop(vm_ctx);
         let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
         return match (res, restore_res) {
           (Ok(v), Ok(())) => Ok(v),
@@ -17788,6 +17815,7 @@ pub(crate) fn async_resume_call(
           (Err(err), Err(_)) => Err(err),
         };
       }
+
       let mut evaluator = Evaluator {
         vm,
         host,
@@ -17826,14 +17854,7 @@ pub(crate) fn async_resume_call(
       async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
     }
     VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_resume_continuation(
-      vm,
-      scope,
-      host,
-      hooks,
-      id,
-      cont,
-      is_reject,
-      arg0,
+      vm, scope, host, hooks, id, cont, is_reject, arg0,
     ),
   }
 }
@@ -49479,7 +49500,9 @@ mod oom_async_frame_merge_tests {
           }
         }
         rt.vm.replace_async_continuation(id, cont)?;
-        break;
+        if outer_frames_len.is_some() {
+          break;
+        }
       }
     }
     let expected_outer_frames = outer_frames_len.ok_or(VmError::InvariantViolation(
