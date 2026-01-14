@@ -63067,6 +63067,67 @@ mod tests {
   }
 
   #[test]
+  fn dom_implementation_create_document_with_root_element_basics() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc = document.implementation.createDocument(null, "root", null);
+        if (doc === window.document) {
+          throw new Error("expected createDocument to return a new Document");
+        }
+        if (doc.nodeType !== 9) throw new Error(`expected nodeType 9, got ${doc.nodeType}`);
+        if (doc.contentType !== "application/xml") {
+          throw new Error(`expected application/xml, got ${doc.contentType}`);
+        }
+        if (!doc.documentElement) throw new Error("expected documentElement to be non-null");
+        if (doc.documentElement.tagName !== "root") {
+          throw new Error(`expected documentElement.tagName === root, got ${doc.documentElement.tagName}`);
+        }
+        return true;
+      })()"#,
+    )?;
+
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_implementation_create_document_with_root_element_basics_webidl() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let result = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const doc = document.implementation.createDocument(null, "root", null);
+        if (doc === window.document) {
+          throw new Error("expected createDocument to return a new Document");
+        }
+        if (doc.nodeType !== 9) throw new Error(`expected nodeType 9, got ${doc.nodeType}`);
+        if (doc.contentType !== "application/xml") {
+          throw new Error(`expected application/xml, got ${doc.contentType}`);
+        }
+        if (!doc.documentElement) throw new Error("expected documentElement to be non-null");
+        if (doc.documentElement.tagName !== "root") {
+          throw new Error(`expected documentElement.tagName === root, got ${doc.documentElement.tagName}`);
+        }
+        return true;
+      })()"#,
+    )?;
+
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn document_constructor_creates_windowless_xml_document() -> Result<(), VmError> {
     let mut host = new_host_document_state();
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
