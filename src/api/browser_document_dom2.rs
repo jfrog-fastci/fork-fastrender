@@ -5765,7 +5765,7 @@ html { scroll-snap-type: y mandatory; }
   }
 
   #[test]
-  fn textarea_text_mutation_updates_form_control_model_without_full_restyle() -> Result<()> {
+  fn textarea_text_mutation_updates_textarea_form_control_without_full_restyle() -> Result<()> {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
       renderer,
