@@ -270,7 +270,8 @@ impl AccessKitTestTree {
 
     // Track ids present in the update so we don't consider the stored (older) version of the same
     // node id as a separate match.
-    let update_ids: HashSet<accesskit::NodeId> = update.nodes.iter().map(|(id, _node)| *id).collect();
+    let update_ids: HashSet<accesskit::NodeId> =
+      update.nodes.iter().map(|(id, _node)| *id).collect();
 
     let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
     let mut duplicates: Vec<(String, String)> = Vec::new();
@@ -318,6 +319,45 @@ impl AccessKitTestTree {
     None
   }
 
+  pub fn expect_node_by_name<'a>(
+    &'a self,
+    update: &'a accesskit::TreeUpdate,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    self.node_by_name(update, name).unwrap_or_else(|| {
+      let needle = name.trim();
+      let mut seen: Vec<String> = Vec::new();
+
+      let update_ids: HashSet<accesskit::NodeId> =
+        update.nodes.iter().map(|(id, _node)| *id).collect();
+
+      for (id, node) in update.nodes.iter() {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          continue;
+        }
+        seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+      }
+
+      let mut stored_nodes: Vec<(accesskit::NodeId, &accesskit::Node)> = self
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| (!update_ids.contains(id)).then_some((*id, node)))
+        .collect();
+      stored_nodes.sort_by_key(|(id, _node)| id.0.get());
+      for (id, node) in stored_nodes {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          continue;
+        }
+        seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+      }
+
+      seen.sort();
+      panic!("expected AccessKit node named {needle:?}, got named nodes={seen:#?}");
+    })
+  }
+
   pub fn node_by_name_from_platform_output<'a>(
     &'a self,
     output: &'a egui::PlatformOutput,
@@ -335,6 +375,23 @@ impl AccessKitTestTree {
     self.node_by_name_from_platform_output(&output.platform_output, name)
   }
 
+  pub fn expect_node_by_name_from_platform_output<'a>(
+    &'a self,
+    output: &'a egui::PlatformOutput,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let update = accesskit_update_from_platform_output(output);
+    self.expect_node_by_name(update, name)
+  }
+
+  pub fn expect_node_by_name_from_full_output<'a>(
+    &'a self,
+    output: &'a egui::FullOutput,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    self.expect_node_by_name_from_platform_output(&output.platform_output, name)
+  }
+
   pub fn node_by_role_and_name<'a>(
     &'a self,
     update: &'a accesskit::TreeUpdate,
@@ -343,7 +400,8 @@ impl AccessKitTestTree {
   ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
     let needle = name.trim();
 
-    let update_ids: HashSet<accesskit::NodeId> = update.nodes.iter().map(|(id, _node)| *id).collect();
+    let update_ids: HashSet<accesskit::NodeId> =
+      update.nodes.iter().map(|(id, _node)| *id).collect();
 
     let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
     let mut duplicates: Vec<(String, String)> = Vec::new();
@@ -393,6 +451,54 @@ impl AccessKitTestTree {
     None
   }
 
+  pub fn expect_node_by_role_and_name<'a>(
+    &'a self,
+    update: &'a accesskit::TreeUpdate,
+    role: accesskit::Role,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    self
+      .node_by_role_and_name(update, role, name)
+      .unwrap_or_else(|| {
+        let needle = name.trim();
+        let mut seen: Vec<String> = Vec::new();
+
+        let update_ids: HashSet<accesskit::NodeId> =
+          update.nodes.iter().map(|(id, _node)| *id).collect();
+
+        for (id, node) in update.nodes.iter() {
+          if node.role() != role {
+            continue;
+          }
+          let node_name = node.name().unwrap_or("").trim();
+          if node_name.is_empty() {
+            continue;
+          }
+          seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+        }
+
+        let mut stored_nodes: Vec<(accesskit::NodeId, &accesskit::Node)> = self
+          .nodes
+          .iter()
+          .filter_map(|(id, node)| (!update_ids.contains(id)).then_some((*id, node)))
+          .collect();
+        stored_nodes.sort_by_key(|(id, _node)| id.0.get());
+        for (id, node) in stored_nodes {
+          if node.role() != role {
+            continue;
+          }
+          let node_name = node.name().unwrap_or("").trim();
+          if node_name.is_empty() {
+            continue;
+          }
+          seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+        }
+
+        seen.sort();
+        panic!("expected AccessKit node with role={role:?} name {needle:?}, got nodes={seen:#?}");
+      })
+  }
+
   pub fn node_by_role_and_name_from_platform_output<'a>(
     &'a self,
     output: &'a egui::PlatformOutput,
@@ -412,6 +518,25 @@ impl AccessKitTestTree {
     self.node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
   }
 
+  pub fn expect_node_by_role_and_name_from_platform_output<'a>(
+    &'a self,
+    output: &'a egui::PlatformOutput,
+    role: accesskit::Role,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let update = accesskit_update_from_platform_output(output);
+    self.expect_node_by_role_and_name(update, role, name)
+  }
+
+  pub fn expect_node_by_role_and_name_from_full_output<'a>(
+    &'a self,
+    output: &'a egui::FullOutput,
+    role: accesskit::Role,
+    name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    self.expect_node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
+  }
+
   /// Resolve the focused node's accessible name, searching this store when the focused node is not
   /// included in the update (incremental updates).
   pub fn focus_name(&self, update: &accesskit::TreeUpdate) -> Option<String> {
@@ -425,6 +550,44 @@ impl AccessKitTestTree {
     (!name.is_empty()).then_some(name.to_string())
   }
 
+  pub fn expect_focus_name(&self, update: &accesskit::TreeUpdate) -> String {
+    self.focus_name(update).unwrap_or_else(|| {
+      let focus_id = update.focus.map(|id| id.0.get().to_string());
+      let mut seen: Vec<String> = Vec::new();
+
+      let update_ids: HashSet<accesskit::NodeId> =
+        update.nodes.iter().map(|(id, _node)| *id).collect();
+
+      for (id, node) in update.nodes.iter() {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          continue;
+        }
+        seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+      }
+
+      let mut stored_nodes: Vec<(accesskit::NodeId, &accesskit::Node)> = self
+        .nodes
+        .iter()
+        .filter_map(|(id, node)| (!update_ids.contains(id)).then_some((*id, node)))
+        .collect();
+      stored_nodes.sort_by_key(|(id, _node)| id.0.get());
+      for (id, node) in stored_nodes {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          continue;
+        }
+        seen.push(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name));
+      }
+
+      seen.sort();
+      panic!(
+        "expected AccessKit focus to resolve to a non-empty name (focus_id={focus_id:?}), \
+        got named nodes={seen:#?}"
+      );
+    })
+  }
+
   pub fn focus_name_from_platform_output(&self, output: &egui::PlatformOutput) -> Option<String> {
     let update = accesskit_update_from_platform_output(output);
     self.focus_name(update)
@@ -432,6 +595,15 @@ impl AccessKitTestTree {
 
   pub fn focus_name_from_full_output(&self, output: &egui::FullOutput) -> Option<String> {
     self.focus_name_from_platform_output(&output.platform_output)
+  }
+
+  pub fn expect_focus_name_from_platform_output(&self, output: &egui::PlatformOutput) -> String {
+    let update = accesskit_update_from_platform_output(output);
+    self.expect_focus_name(update)
+  }
+
+  pub fn expect_focus_name_from_full_output(&self, output: &egui::FullOutput) -> String {
+    self.expect_focus_name_from_platform_output(&output.platform_output)
   }
 
   #[track_caller]
@@ -793,9 +965,7 @@ pub fn accesskit_reachable_nodes_pretty_json_from_platform_output(
     .expect("accesskit reachable node snapshot must serialize to JSON")
 }
 
-pub fn accesskit_reachable_nodes_pretty_json_from_full_output(
-  output: &egui::FullOutput,
-) -> String {
+pub fn accesskit_reachable_nodes_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
   accesskit_reachable_nodes_pretty_json_from_platform_output(&output.platform_output)
 }
 
@@ -1169,7 +1339,10 @@ pub fn expect_accesskit_node_selected(node: &accesskit::Node) -> bool {
 /// - `Role::Switch` → "toggled"
 /// - everything else → "checked"
 pub fn accesskit_node_checked(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
-  if matches!(node.role(), accesskit::Role::ToggleButton | accesskit::Role::Switch) {
+  if matches!(
+    node.role(),
+    accesskit::Role::ToggleButton | accesskit::Role::Switch
+  ) {
     return None;
   }
   node.checked_state()
@@ -1300,7 +1473,8 @@ mod tests {
       }]
     );
 
-    let snapshot = accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
+    let snapshot =
+      accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
     assert_eq!(
       snapshot,
       vec![
@@ -1383,12 +1557,22 @@ mod tests {
       focus: Some(child_id),
     };
 
-    assert_eq!(store.reachable_node_ids(&incremental), vec![root_id, child_id]);
+    assert_eq!(
+      store.reachable_node_ids(&incremental),
+      vec![root_id, child_id]
+    );
     assert_eq!(store.orphan_node_ids(&incremental), vec![orphan_id]);
     assert_eq!(
-      store.node_by_name(&incremental, "child").map(|(id, _node)| id),
+      store
+        .node_by_name(&incremental, "child")
+        .map(|(id, _node)| id),
       Some(child_id),
       "expected AccessKitTestTree to find nodes that were only present in prior updates"
+    );
+    assert_eq!(
+      store.expect_node_by_name(&incremental, "child").0,
+      child_id,
+      "expected AccessKitTestTree expect_node_by_name to work across incremental updates"
     );
     assert_eq!(
       store
@@ -1398,10 +1582,17 @@ mod tests {
       "expected AccessKitTestTree role+name lookup to find nodes from stored updates"
     );
     assert_eq!(
+      store
+        .expect_node_by_role_and_name(&incremental, accesskit::Role::Button, "child")
+        .0,
+      child_id
+    );
+    assert_eq!(
       store.focus_name(&incremental),
       Some("child".to_string()),
       "expected focus name to be resolved via stored nodes for incremental updates"
     );
+    assert_eq!(store.expect_focus_name(&incremental), "child".to_string());
 
     let snapshot = store.connectivity_snapshot(&incremental);
     assert_eq!(snapshot.root_id, root_id.0.get().to_string());
@@ -1514,8 +1705,14 @@ mod tests {
       id(2),
       "expect_* helper should return the same node"
     );
-    assert_eq!(accesskit_focus_name(&update), Some("Focus target".to_string()));
-    assert_eq!(expect_accesskit_focus_name(&update), "Focus target".to_string());
+    assert_eq!(
+      accesskit_focus_name(&update),
+      Some("Focus target".to_string())
+    );
+    assert_eq!(
+      expect_accesskit_focus_name(&update),
+      "Focus target".to_string()
+    );
     assert_eq!(
       accesskit_node_by_role_and_name(&update, Role::Button, "Focus target").map(|(id, _node)| id),
       Some(id(2))
@@ -1551,13 +1748,21 @@ mod tests {
     );
     assert!(accesskit_node_by_name_from_platform_output(&platform_output, "Missing").is_none());
     assert_eq!(
-      accesskit_node_by_role_and_name_from_platform_output(&platform_output, Role::Button, "Focus target")
-        .map(|(id, _node)| id),
+      accesskit_node_by_role_and_name_from_platform_output(
+        &platform_output,
+        Role::Button,
+        "Focus target"
+      )
+      .map(|(id, _node)| id),
       Some(id(2))
     );
     assert_eq!(
-      expect_accesskit_node_by_role_and_name_from_platform_output(&platform_output, Role::Button, "Focus target")
-        .0,
+      expect_accesskit_node_by_role_and_name_from_platform_output(
+        &platform_output,
+        Role::Button,
+        "Focus target"
+      )
+      .0,
       id(2)
     );
   }
