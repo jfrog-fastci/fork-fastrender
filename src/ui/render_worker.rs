@@ -6361,7 +6361,7 @@ impl BrowserRuntime {
   }
 
   fn pump_js_event_loop_after_dom_event_dispatch_inner(
-    ui_tx: &Sender<WorkerToUiMsg>,
+    ui_tx: &WorkerToUiSender,
     debug_log_enabled: bool,
     tab_id: TabId,
     tab: &mut TabState,
@@ -13884,8 +13884,13 @@ mod media_wakeup_tests {
       let msg = rx
         .recv_timeout(remaining)
         .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
-      if let WorkerToUi::RequestWakeAfter { tab_id, after, reason } = msg {
-        return (tab_id, after, reason);
+      match msg {
+        WorkerToUi::RequestWakeAfter {
+          tab_id,
+          after,
+          reason,
+        } => return (tab_id, after, reason),
+        _ => continue,
       }
     }
   }
@@ -14074,6 +14079,44 @@ mod tick_hint_tests {
     );
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod scroll_state_updated_tests {
+  use super::*;
+  use std::time::Duration;
+
+  #[test]
+  fn direct_scroll_state_updated_sends_use_helper_and_update_last_reported() {
+    // Direct `ScrollStateUpdated` sends must go through `emit_scroll_state_updated` so we keep
+    // `last_reported_scroll_state` in sync and avoid redundant scroll updates after canceled paints.
+    let src = include_str!("render_worker.rs");
+    let re =
+      regex::Regex::new(r"send\s*\(\s*WorkerToUiMsg::Single\s*\(\s*WorkerToUi::ScrollStateUpdated\b")
+        .expect("regex");
+    let matches = re.find_iter(src).count();
+    assert_eq!(
+      matches, 1,
+      "expected only one direct `ScrollStateUpdated` send (in `emit_scroll_state_updated`), found {matches}"
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let tx = WorkerToUiSender::new(tx, None);
+    let tab_id = TabId::new();
+    let mut tab = TabState::new(CancelGens::new());
+    tab.scroll_state = ScrollState::with_viewport(Point::new(10.0, 20.0));
+
+    BrowserRuntime::emit_scroll_state_updated(&tx, tab_id, &mut tab);
+
+    assert_eq!(tab.last_reported_scroll_state, tab.scroll_state);
+    match rx.recv_timeout(Duration::from_millis(50)).expect("ScrollStateUpdated") {
+      WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated { tab_id: got, scroll }) => {
+        assert_eq!(got, tab_id);
+        assert_eq!(scroll, tab.scroll_state);
+      }
+      WorkerToUiMsg::Batch(msgs) => panic!("unexpected worker msg batch: {msgs:?}"),
+    }
   }
 }
 
