@@ -76,3 +76,47 @@ fn generator_array_literal_elision_and_yield_preserves_holes() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_array_literal_yield_throw_aborts_remaining_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ran = false;
+      function* g() { return [ (yield 1), (ran = true) ]; }
+      var it = g();
+      var r1 = it.next();
+      var threw = false;
+      try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+      var r2 = it.next();
+      r1.value === 1 && r1.done === false &&
+      threw === true &&
+      ran === false &&
+      r2.done === true && r2.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_literal_yield_return_aborts_remaining_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ran = false;
+      function* g() { return [ (yield 1), (ran = true) ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.return(99);
+      var r3 = it.next();
+      r1.value === 1 && r1.done === false &&
+      r2.value === 99 && r2.done === true &&
+      ran === false &&
+      r3.done === true && r3.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
