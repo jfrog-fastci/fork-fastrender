@@ -35,7 +35,7 @@ const SESSION_VERSION: u32 = 2;
 ///
 /// When this limit is exceeded, we refuse to read/parse the session and attempt to fall back to
 /// the `.bak` backup file (if present).
-const MAX_SESSION_FILE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+pub const MAX_SESSION_FILE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
 
 const MAX_WINDOW_DIM_PX: i64 = 16_384;
 const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
