@@ -238,6 +238,37 @@ function __safe_string(value) {
   }
 }
 //
+// WPT helper: format_value(value)
+//
+// Many upstream tests use `format_value` when constructing assertion messages and test names.
+// The exact formatting is not important for pass/fail; it must be:
+// - deterministic
+// - best-effort (never throw)
+// - reasonably informative for debugging
+function format_value(value) {
+  try {
+    if (value === undefined) return "undefined";
+    if (value === null) return "null";
+  } catch (_e0) {}
+  try {
+    var ty = typeof value;
+    if (ty === "string") {
+      // Quote strings similar to upstream WPT.
+      return ['"', value, '"'].join("");
+    }
+    if (ty === "number") {
+      if (value !== value) return "NaN";
+      // Distinguish +0 and -0.
+      if (value === 0 && 1 / value === -Infinity) return "-0";
+      return __safe_string(value);
+    }
+    if (ty === "boolean") {
+      return value ? "true" : "false";
+    }
+  } catch (_e1) {}
+  return __safe_string(value);
+}
+//
 function __format_assertion_message(user_message, auto_message) {
   if (user_message === undefined || user_message === null || user_message === "") {
     return auto_message;
