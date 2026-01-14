@@ -10973,6 +10973,13 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     // Static field initializers run with `this` bound to the class constructor object and
     // `new.target` set to `undefined`.
+    //
+    // In addition, any arrow functions created inside a static private field initializer must
+    // capture this lexical `this`/`new.target` binding. `vm-js` models lexical `this` for arrows by
+    // walking the environment chain to the nearest environment record that has `new_target: Some`
+    // (`Heap::resolve_this_env`). Ensure we create such an environment record here so closures
+    // created inside the initializer (including inside direct `eval`) can later resolve the correct
+    // `this` binding (the class constructor) instead of falling back to the global environment.
     let mut field_scope = scope.reborrow();
     field_scope.push_roots(&[Value::Object(receiver), Value::Symbol(sym)])?;
 
@@ -10980,6 +10987,8 @@ impl<'a> Evaluator<'a> {
     let saved_this_initialized = self.this_initialized;
     let saved_new_target = self.new_target;
     let saved_home_object = self.home_object;
+    let saved_lex = self.env.lexical_env;
+    let saved_var_env = self.env.var_env();
     let saved_meta_property_context = self.env.meta_property_context();
     self.this = Value::Object(receiver);
     // Static field initializers have their own initialized `this` binding (the class constructor),
@@ -10992,6 +11001,21 @@ impl<'a> Evaluator<'a> {
       .set_meta_property_context(MetaPropertyContext::METHOD);
 
     let res: Result<(), VmError> = (|| {
+      // Mirror `eval_class_static_block`: evaluate the initializer in a fresh var environment so
+      // sloppy direct `eval("var x")` does not pollute the surrounding class/global var env.
+      let var_env = field_scope.env_create(Some(saved_lex))?;
+      let body_lex = field_scope.env_create(Some(var_env))?;
+      self.env.set_var_env(VarEnv::Env(var_env));
+      self.env.set_lexical_env(field_scope.heap_mut(), body_lex);
+
+      // Mark `body_lex` as the "this environment" for arrow function lexical bindings.
+      field_scope
+        .heap_mut()
+        .env_set_new_target(body_lex, Some(Value::Undefined))?;
+      field_scope
+        .heap_mut()
+        .env_set_this_value(body_lex, Some(Value::Object(receiver)))?;
+
       let value = match init {
         Some(expr) => self.eval_expr(&mut field_scope, expr)?,
         None => Value::Undefined,
@@ -11014,6 +11038,9 @@ impl<'a> Evaluator<'a> {
       Ok(())
     })();
 
+    // Restore the surrounding class evaluation context regardless of initializer completion.
+    self.env.set_lexical_env(field_scope.heap_mut(), saved_lex);
+    self.env.set_var_env(saved_var_env);
     self.this = saved_this;
     self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
