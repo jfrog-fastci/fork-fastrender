@@ -243,3 +243,156 @@ fn compiled_logical_assignment_super_property_dot_and_computed() -> Result<(), V
   assert_eq!(rt.exec_compiled_script(script)?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn logical_assignment_super_computed_key_to_property_key_is_evaluated_once() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        (() => {
+          const log = [];
+          let rhsCount = 0;
+          function rhs(v) { rhsCount++; log.push("rhs"); return v; }
+          function key() {
+            log.push("key");
+            return { toString() { log.push("toString"); return "p"; } };
+          }
+
+          const proto = {
+            get p() { log.push("get"); return this._p; },
+            set p(v) { log.push("set:" + v); this._p = v; },
+          };
+
+          const obj = {
+            __proto__: proto,
+            _p: 1,
+            m() {
+              let res;
+
+              // `&&=` assigns when truthy.
+              log.length = 0; rhsCount = 0; this._p = 1;
+              res = (super[key()] &&= rhs(2));
+              if (res !== 2 || this._p !== 2 || rhsCount !== 1) return false;
+              if (log.join(",") !== "key,toString,get,rhs,set:2") return false;
+
+              log.length = 0; rhsCount = 0; this._p = 0;
+              res = (super[key()] &&= rhs(2));
+              if (res !== 0 || this._p !== 0 || rhsCount !== 0) return false;
+              if (log.join(",") !== "key,toString,get") return false;
+
+              // `||=` assigns when falsy.
+              log.length = 0; rhsCount = 0; this._p = 0;
+              res = (super[key()] ||= rhs(3));
+              if (res !== 3 || this._p !== 3 || rhsCount !== 1) return false;
+              if (log.join(",") !== "key,toString,get,rhs,set:3") return false;
+
+              log.length = 0; rhsCount = 0; this._p = 5;
+              res = (super[key()] ||= rhs(3));
+              if (res !== 5 || this._p !== 5 || rhsCount !== 0) return false;
+              if (log.join(",") !== "key,toString,get") return false;
+
+              // `??=` assigns when nullish.
+              log.length = 0; rhsCount = 0; this._p = 0;
+              res = (super[key()] ??= rhs(4));
+              if (res !== 0 || this._p !== 0 || rhsCount !== 0) return false;
+              if (log.join(",") !== "key,toString,get") return false;
+
+              log.length = 0; rhsCount = 0; delete this._p;
+              res = (super[key()] ??= rhs(4));
+              if (res !== 4 || this._p !== 4 || rhsCount !== 1) return false;
+              if (log.join(",") !== "key,toString,get,rhs,set:4") return false;
+
+              return true;
+            },
+          };
+
+          return obj.m();
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn compiled_logical_assignment_super_computed_key_to_property_key_is_evaluated_once() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      (() => {
+        const log = [];
+        let rhsCount = 0;
+        function rhs(v) { rhsCount++; log.push("rhs"); return v; }
+        function key() {
+          log.push("key");
+          return { toString() { log.push("toString"); return "p"; } };
+        }
+
+        const proto = {
+          get p() { log.push("get"); return this._p; },
+          set p(v) { log.push("set:" + v); this._p = v; },
+        };
+
+        const obj = {
+          __proto__: proto,
+          _p: 1,
+          m() {
+            let res;
+
+            // `&&=` assigns when truthy.
+            log.length = 0; rhsCount = 0; this._p = 1;
+            res = (super[key()] &&= rhs(2));
+            if (res !== 2 || this._p !== 2 || rhsCount !== 1) return false;
+            if (log.join(",") !== "key,toString,get,rhs,set:2") return false;
+
+            log.length = 0; rhsCount = 0; this._p = 0;
+            res = (super[key()] &&= rhs(2));
+            if (res !== 0 || this._p !== 0 || rhsCount !== 0) return false;
+            if (log.join(",") !== "key,toString,get") return false;
+
+            // `||=` assigns when falsy.
+            log.length = 0; rhsCount = 0; this._p = 0;
+            res = (super[key()] ||= rhs(3));
+            if (res !== 3 || this._p !== 3 || rhsCount !== 1) return false;
+            if (log.join(",") !== "key,toString,get,rhs,set:3") return false;
+
+            log.length = 0; rhsCount = 0; this._p = 5;
+            res = (super[key()] ||= rhs(3));
+            if (res !== 5 || this._p !== 5 || rhsCount !== 0) return false;
+            if (log.join(",") !== "key,toString,get") return false;
+
+            // `??=` assigns when nullish.
+            log.length = 0; rhsCount = 0; this._p = 0;
+            res = (super[key()] ??= rhs(4));
+            if (res !== 0 || this._p !== 0 || rhsCount !== 0) return false;
+            if (log.join(",") !== "key,toString,get") return false;
+
+            log.length = 0; rhsCount = 0; delete this._p;
+            res = (super[key()] ??= rhs(4));
+            if (res !== 4 || this._p !== 4 || rhsCount !== 1) return false;
+            if (log.join(",") !== "key,toString,get,rhs,set:4") return false;
+
+            return true;
+          },
+        };
+
+        return obj.m();
+      })()
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "script should execute via compiled (HIR) path"
+  );
+
+  assert_eq!(rt.exec_compiled_script(script)?, Value::Bool(true));
+  Ok(())
+}
