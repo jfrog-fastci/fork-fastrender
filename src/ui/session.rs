@@ -10,7 +10,7 @@ use crate::ui::browser_app::{
 };
 use crate::ui::protocol_limits;
 use crate::ui::protocol_limits::{MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_TITLE_BYTES};
-use crate::ui::untrusted::clamp_untrusted_utf8;
+use crate::ui::untrusted::{clamp_untrusted_utf8, sanitize_untrusted_text};
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
@@ -402,38 +402,34 @@ impl BrowserSessionDownload {
   }
 
   fn sanitized(mut self) -> Self {
-    let trimmed = self.url.trim();
-    self.url = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_URL_BYTES)
-      .trim()
-      .to_string();
+    self.url = sanitize_untrusted_text(&self.url, MAX_SESSION_URL_BYTES);
 
     let file_name = self.file_name.trim();
-    if file_name.is_empty() {
-      self.file_name = self
+    let mut file_name = if file_name.is_empty() {
+      self
         .path
         .file_name()
-        .map(|name| name.to_string_lossy().to_string())
+        .map(|name| name.to_string_lossy())
+        .map(|name| sanitize_untrusted_text(name.as_ref(), MAX_DOWNLOAD_FILE_NAME_BYTES))
         .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "download".to_string());
+        .unwrap_or_else(|| "download".to_string())
     } else {
-      self.file_name = file_name.to_string();
+      sanitize_untrusted_text(file_name, MAX_DOWNLOAD_FILE_NAME_BYTES)
+    };
+    file_name = crate::ui::downloads::sanitize_download_filename(&file_name);
+    if file_name.as_bytes().len() > MAX_DOWNLOAD_FILE_NAME_BYTES {
+      file_name = clamp_untrusted_utf8(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
     }
-    if self.file_name.as_bytes().len() > MAX_DOWNLOAD_FILE_NAME_BYTES {
-      self.file_name = clamp_untrusted_utf8(&self.file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
-    }
+    self.file_name = file_name;
 
     self.status = self.status.sanitized();
     if self.status != BrowserSessionDownloadStatus::Failed {
       self.error = None;
-    } else if let Some(err) = self.error.as_mut() {
-      let trimmed = err.trim();
-      if trimmed.is_empty() {
-        self.error = None;
-      } else if trimmed.as_bytes().len() > MAX_ERROR_BYTES {
-        *err = clamp_untrusted_utf8(trimmed, MAX_ERROR_BYTES);
-      } else {
-        *err = trimmed.to_string();
-      }
+    } else {
+      self.error = self.error.take().and_then(|raw| {
+        let sanitized = sanitize_untrusted_text(&raw, MAX_ERROR_BYTES);
+        (!sanitized.is_empty()).then_some(sanitized)
+      });
     }
     self
   }
@@ -1751,6 +1747,36 @@ mod tests {
       MAX_SESSION_URL_BYTES,
       window.downloads[0].url.as_bytes().len()
     );
+  }
+
+  #[test]
+  fn session_sanitizes_persisted_download_file_name() {
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads: vec![BrowserSessionDownload {
+        url: "https://example.com/file".to_string(),
+        file_name: "a/b\\c\u{0000}d".to_string(),
+        path: PathBuf::from("/tmp/a.bin"),
+        status: BrowserSessionDownloadStatus::Completed,
+        error: None,
+      }],
+      tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
+      active_tab_index: 0,
+      bookmarks_bar_visible: false,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.downloads.len(), 1);
+    assert_eq!(window.downloads[0].file_name, "abcd");
   }
 
   #[test]
