@@ -1,7 +1,8 @@
 use fastrender::api::{ConsoleMessageLevel, DiagnosticsLevel};
 use fastrender::js::{Clock, EventLoop, JsExecutionOptions, ParseBudget, RunLimits, RunUntilIdleOutcome, VirtualClock};
+use fastrender::resource::{FetchedResource, ResourceFetcher};
 use fastrender::{BrowserTab, RenderOptions, Result, VmJsBrowserTabExecutor};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn console_messages(tab: &BrowserTab, level: ConsoleMessageLevel) -> Vec<String> {
@@ -50,6 +51,37 @@ impl Harness {
       options.clone(),
       VmJsBrowserTabExecutor::default(),
       event_loop,
+      js_execution_options,
+    )?;
+
+    Ok(Self {
+      tab,
+      clock,
+      document_url: document_url.to_string(),
+      options,
+    })
+  }
+
+  fn new_with_fetcher(
+    document_url: &str,
+    js_execution_options: JsExecutionOptions,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
+    let options = RenderOptions::new()
+      .with_viewport(32, 32)
+      .with_diagnostics_level(DiagnosticsLevel::Basic);
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<fastrender::BrowserTabHost>::with_clock(clock_for_loop);
+
+    // Start with an empty document and drive the real navigation pipeline for each test.
+    let tab = BrowserTab::from_html_with_event_loop_and_fetcher_and_js_execution_options(
+      "",
+      options.clone(),
+      VmJsBrowserTabExecutor::default(),
+      event_loop,
+      fetcher,
       js_execution_options,
     )?;
 
@@ -1586,6 +1618,79 @@ fn p2_import_map_parse_warnings_surface_as_console_warnings() -> Result<()> {
     warns.contains(&expected.to_string()),
     "expected import map warning {expected:?} to be recorded as a console warning, got: {warns:?}"
   );
+  Ok(())
+}
+
+#[test]
+fn p2_importmap_with_src_is_rejected_and_fires_error_event() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+
+  #[derive(Clone, Default)]
+  struct RecordingFetcher {
+    requests: Arc<Mutex<Vec<String>>>,
+  }
+
+  impl ResourceFetcher for RecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(url.to_string());
+      Err(fastrender::Error::Other(format!("unexpected fetch: {url}")))
+    }
+  }
+
+  let fetcher = RecordingFetcher::default();
+  let fetcher_requests = Arc::clone(&fetcher.requests);
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(fetcher);
+
+  let mut h = Harness::new_with_fetcher(
+    "https://example.invalid/p2_importmap_src_rejected.html",
+    js_options,
+    fetcher,
+  )?;
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script id="im" type="importmap" src="https://example.invalid/map.json" onerror="console.log('error')"></script>
+      <script>
+        document.getElementById("im").addEventListener("error", () => console.log("error"));
+      </script>
+      <script type="module">import foo from 'foo'; console.log('foo:' + foo);</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert!(
+    logs.contains(&"error".to_string()),
+    "expected import map with src to fire an error event, got: {logs:?}"
+  );
+  assert!(
+    !logs.iter().any(|m| m.starts_with("foo:")),
+    "expected module log to be absent because foo should not resolve, got: {logs:?}"
+  );
+
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("bare module specifier")
+      || exc.contains("bare specifier")
+      || exc.contains("bare specifiers"),
+    "expected module resolution to fail for bare specifier 'foo', got: {exc:?}"
+  );
+
+  let fetches = fetcher_requests
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+  assert!(
+    fetches.is_empty(),
+    "expected import map with src to be rejected without fetching; got fetches: {fetches:?}"
+  );
+
   Ok(())
 }
 
