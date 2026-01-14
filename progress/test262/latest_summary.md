@@ -81,9 +81,9 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 17387 |
-| Matched upstream expected | 17103 (98.37%) |
-| Mismatched upstream expected | 284 (1.63%) |
+| Total cases | 17437 |
+| Matched upstream expected | 17151 (98.36%) |
+| Mismatched upstream expected | 286 (1.64%) |
 | Timeouts | 0 |
 | Skipped | 44 |
 | Unexpected mismatches | 0 |
@@ -92,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17059 |
-| failed | 284 |
+| passed | 17107 |
+| failed | 286 |
 | timed_out | 0 |
 | skipped | 44 |
 
@@ -101,8 +101,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Kind | Count |
 | --- | ---: |
-| pass | 10186 |
-| xfail | 7157 |
+| pass | 10220 |
+| xfail | 7173 |
 | skip | 44 |
 | flaky | 0 |
 
@@ -110,26 +110,26 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 10186 |
+| PASS | 10220 |
 | FAIL (unexpected) | 0 |
-| XFAIL | 284 |
-| XPASS | 6873 |
+| XFAIL | 286 |
+| XPASS | 6887 |
 | SKIP | 44 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7171 | 14 | 0.19% | 7113 | 0 | 14 | 14 | 44 |
-| language | 10197 | 9927 | 270 | 2.65% | 3068 | 0 | 270 | 6859 | 0 |
+| built-ins | 7185 | 7171 | 14 | 0.19% | 7127 | 0 | 14 | 0 | 44 |
+| language | 10247 | 9975 | 272 | 2.65% | 3088 | 0 | 272 | 6887 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7188 | 251 | 3.49% | 2036 | 0 | 251 | 4901 | 0 |
-| `language/expressions` | 2379 | 19 | 0.80% | 1032 | 0 | 19 | 1328 | 0 |
+| `language/statements` | 7208 | 251 | 3.48% | 2056 | 0 | 251 | 4901 | 0 |
+| `language/expressions` | 2409 | 21 | 0.87% | 1032 | 0 | 21 | 1356 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1453 | 0 | 6 | 0 | 44 |
 | `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 0 | 6 | 0 | 0 |
 | `built-ins/Object` | 1692 | 2 | 0.12% | 1690 | 0 | 2 | 0 | 0 |
@@ -144,7 +144,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 284 (100.00%)
+- exception/other: 286 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -213,9 +213,11 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/async-generator/yield-star-async-next.js#non_strict`: `TypeError: Cannot convert undefined or null to object`
 - `language/statements/async-generator/yield-star-async-next.js#strict`: `TypeError: Cannot convert undefined or null to object`
 
-### `language/expressions` (10 shown / 19 mismatches)
+### `language/expressions` (10 shown / 21 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
+- `language/expressions/in/private-field-invalid-assignment-reference.js#non_strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
+- `language/expressions/in/private-field-invalid-assignment-reference.js#strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-or/tco-right.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/member-expression/computed-reference-null-or-undefined.js#non_strict`: `Expected a TypeError but got a Test262Error`
@@ -223,8 +225,6 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/expressions/new/non-ctor-err-realm.js#non_strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 - `language/expressions/new/non-ctor-err-realm.js#strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 - `language/expressions/super/call-proto-not-ctor.js#non_strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
-- `language/expressions/super/call-proto-not-ctor.js#strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
-- `language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js#non_strict`: `Expected SameValue(«"bad"», «"ok"») to be true`
 
 ### `built-ins/Array` (6 shown / 6 mismatches)
 

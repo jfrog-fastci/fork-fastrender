@@ -2143,6 +2143,39 @@ status = "pass"
 id = "built-ins/WeakSet/iterable-with-symbol-values.js"
 status = "pass"
 
+# --- WeakMap / WeakSet (iterator-close semantics) ---
+#
+# These tests are included in the curated suite specifically to keep spec-sensitive iterator-close
+# behavior regression-tested. They now pass, so keep them as `pass` even though broader WeakMap/WeakSet
+# coverage remains `xfail` below.
+[[expectations]]
+id = "built-ins/WeakMap/iterator-close-after-set-failure.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakMap/iterator-items-are-not-object-close-iterator.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakMap/iterator-next-failure.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakMap/iterator-value-failure.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakSet/iterator-close-after-add-failure.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakSet/iterator-next-failure.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakSet/iterator-value-failure.js"
+status = "pass"
+
 # --- WeakRef / FinalizationRegistry (symbols-as-weakmap-keys) ---
 [[expectations]]
 id = "built-ins/WeakRef/throws-when-target-cannot-be-held-weakly.js"
