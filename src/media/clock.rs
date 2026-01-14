@@ -169,7 +169,9 @@ impl AudioStreamClock {
     let device_now = self.device_clock.now();
 
     let media_now_nanos = duration_to_nanos_u64(media_now);
-    self.start_media_time.store(media_now_nanos, Ordering::Relaxed);
+    self
+      .start_media_time
+      .store(media_now_nanos, Ordering::Relaxed);
     self.last_now.store(media_now_nanos, Ordering::Relaxed);
 
     let start_device_time = duration_to_nanos_u64(device_now).saturating_add(preroll_nanos);
@@ -210,10 +212,13 @@ impl AudioStreamClock {
     let preroll_nanos = self.preroll_nanos.load(Ordering::Relaxed);
 
     let media_now_nanos = duration_to_nanos_u64(media_now);
+    self.start_device_time.store(
+      duration_to_nanos_u64(device_now).saturating_add(preroll_nanos),
+      Ordering::Relaxed,
+    );
     self
-      .start_device_time
-      .store(duration_to_nanos_u64(device_now).saturating_add(preroll_nanos), Ordering::Relaxed);
-    self.start_media_time.store(media_now_nanos, Ordering::Relaxed);
+      .start_media_time
+      .store(media_now_nanos, Ordering::Relaxed);
     self.last_now.store(media_now_nanos, Ordering::Relaxed);
     self.rate.store(new_rate.to_bits(), Ordering::Relaxed);
   }
@@ -223,10 +228,13 @@ impl AudioStreamClock {
     let device_now = self.device_clock.now();
     let preroll_nanos = self.preroll_nanos.load(Ordering::Relaxed);
     let new_media_nanos = duration_to_nanos_u64(new_media_time);
+    self.start_device_time.store(
+      duration_to_nanos_u64(device_now).saturating_add(preroll_nanos),
+      Ordering::Relaxed,
+    );
     self
-      .start_device_time
-      .store(duration_to_nanos_u64(device_now).saturating_add(preroll_nanos), Ordering::Relaxed);
-    self.start_media_time.store(new_media_nanos, Ordering::Relaxed);
+      .start_media_time
+      .store(new_media_nanos, Ordering::Relaxed);
     self.last_now.store(new_media_nanos, Ordering::Relaxed);
   }
 
@@ -247,10 +255,12 @@ impl AudioStreamClock {
         return last;
       }
 
-      match self
-        .last_now
-        .compare_exchange_weak(last, candidate, Ordering::Relaxed, Ordering::Relaxed)
-      {
+      match self.last_now.compare_exchange_weak(
+        last,
+        candidate,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+      ) {
         Ok(_) => return candidate,
         Err(observed) => last = observed,
       }
@@ -350,8 +360,12 @@ impl PlaybackClock {
     let timeline_now = self.now();
     let master_now = self.master_clock.now();
     let timeline_now_nanos = duration_to_nanos_u64(timeline_now);
-    self.base_master_time.store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
-    self.base_timeline_time.store(timeline_now_nanos, Ordering::Relaxed);
+    self
+      .base_master_time
+      .store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
+    self
+      .base_timeline_time
+      .store(timeline_now_nanos, Ordering::Relaxed);
     self.last_now.store(timeline_now_nanos, Ordering::Relaxed);
     self.playing.store(true, Ordering::Relaxed);
   }
@@ -361,8 +375,12 @@ impl PlaybackClock {
     let timeline_now = self.now();
     let master_now = self.master_clock.now();
     let timeline_now_nanos = duration_to_nanos_u64(timeline_now);
-    self.base_master_time.store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
-    self.base_timeline_time.store(timeline_now_nanos, Ordering::Relaxed);
+    self
+      .base_master_time
+      .store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
+    self
+      .base_timeline_time
+      .store(timeline_now_nanos, Ordering::Relaxed);
     self.last_now.store(timeline_now_nanos, Ordering::Relaxed);
     self.playing.store(false, Ordering::Relaxed);
   }
@@ -380,7 +398,9 @@ impl PlaybackClock {
   pub fn seek(&self, new_time: Duration) {
     let master_now = self.master_clock.now();
     let new_nanos = duration_to_nanos_u64(new_time);
-    self.base_master_time.store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
+    self
+      .base_master_time
+      .store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
     self.base_timeline_time.store(new_nanos, Ordering::Relaxed);
     // Explicit seeks are allowed to go backwards, so reset the monotonic clamp.
     self.last_now.store(new_nanos, Ordering::Relaxed);
@@ -403,8 +423,12 @@ impl PlaybackClock {
     let master_now = self.master_clock.now();
 
     let timeline_now_nanos = duration_to_nanos_u64(timeline_now);
-    self.base_master_time.store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
-    self.base_timeline_time.store(timeline_now_nanos, Ordering::Relaxed);
+    self
+      .base_master_time
+      .store(duration_to_nanos_u64(master_now), Ordering::Relaxed);
+    self
+      .base_timeline_time
+      .store(timeline_now_nanos, Ordering::Relaxed);
     self.last_now.store(timeline_now_nanos, Ordering::Relaxed);
     self.rate.store(new_rate.to_bits(), Ordering::Relaxed);
   }
@@ -431,10 +455,12 @@ impl PlaybackClock {
         return last;
       }
 
-      match self
-        .last_now
-        .compare_exchange_weak(last, candidate, Ordering::Relaxed, Ordering::Relaxed)
-      {
+      match self.last_now.compare_exchange_weak(
+        last,
+        candidate,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+      ) {
         Ok(_) => return candidate,
         Err(observed) => last = observed,
       }
