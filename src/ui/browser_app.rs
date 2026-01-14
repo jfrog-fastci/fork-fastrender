@@ -5131,6 +5131,7 @@ mod address_bar_tests {
 #[cfg(test)]
 mod tab_group_tests {
   use super::*;
+  use crate::geometry::Point;
 
   fn assert_group_contiguous(app: &BrowserAppState, group_id: TabGroupId) {
     let indices: Vec<usize> = app
