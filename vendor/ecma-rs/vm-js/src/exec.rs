@@ -2676,6 +2676,10 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
+    // `Vm::parse_top_level_with_budget` retries classic scripts with top-level `await` enabled when
+    // the initial parse fails, without switching to module grammar (so `await` remains a valid
+    // identifier in scripts). Keep script execution aligned with those parsing semantics so
+    // `await using` remains a SyntaxError in scripts even when top-level await is supported.
     self
       .vm
       .parse_top_level_with_budget(&source.text, opts)

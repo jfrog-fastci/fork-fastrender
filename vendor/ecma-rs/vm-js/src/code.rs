@@ -28,7 +28,7 @@ use parse_js::ast::stmt::decl::VarDeclMode;
 use parse_js::ast::stmt::{ForInOfLhs, ForOfStmt, ForTripleStmt, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
-use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use parse_js::{parse_with_options, parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
 use std::sync::Arc;
 
 /// A compiled JavaScript source file (source text + lowered HIR).
@@ -114,32 +114,23 @@ impl CompiledScript {
       match parsed_script {
         Ok(parsed) => parsed,
         Err(script_err) => {
-          // `parse-js` only enables `AwaitExpression` parsing at top-level in module mode. Classic
-          // scripts that use top-level await are parsed using the module grammar as a best-effort
-          // fallback, then validated/evaluated with Script semantics.
-          let opts = ParseOptions {
-            dialect: Dialect::Ecma,
-            source_type: SourceType::Module,
-          };
-          let parsed_module = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_with_options(source.text.as_ref(), opts)
+          // Retry classic scripts with top-level `await` enabled ("async classic scripts") without
+          // switching to module grammar. This keeps `await` available as an identifier in scripts
+          // while still allowing embedders to opt into top-level await.
+          let retry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_with_options_cancellable_by_with_init(
+              source.text.as_ref(),
+              opts,
+              || false,
+              |p| {
+                p.set_allow_top_level_await_in_script(true);
+              },
+            )
           }))
           .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?;
 
-          match parsed_module {
-            Ok(parsed) => {
-              // Only accept the module parse as a script when it actually contains top-level await
-              // and does not contain module-only syntax (import/export).
-              let has_await = parsed.stx.body.iter().any(stmt_contains_await);
-              let has_module_syntax = parsed.stx.body.iter().any(stmt_is_module_only);
-              if has_await && !has_module_syntax {
-                parsed
-              } else {
-                let diag =
-                  crate::parse_diagnostics::parse_js_error_to_diagnostic(&script_err, FileId(0));
-                return Err(VmError::Syntax(vec![diag]));
-              }
-            }
+          match retry {
+            Ok(parsed) => parsed,
             Err(_) => {
               let diag =
                 crate::parse_diagnostics::parse_js_error_to_diagnostic(&script_err, FileId(0));
@@ -290,31 +281,10 @@ impl CompiledScript {
       source_type: SourceType::Script,
     };
 
-    let parsed = match vm.parse_top_level_with_budget(&source.text, opts) {
-      Ok(parsed) => parsed,
-      Err(VmError::Syntax(script_diags)) => {
-        // See `compile_script`: top-level await scripts are parsed using the module grammar as a
-        // best-effort fallback.
-        let opts = ParseOptions {
-          dialect: Dialect::Ecma,
-          source_type: SourceType::Module,
-        };
-        match vm.parse_top_level_with_budget(&source.text, opts) {
-          Ok(parsed) => {
-            let has_await = parsed.stx.body.iter().any(stmt_contains_await);
-            let has_module_syntax = parsed.stx.body.iter().any(stmt_is_module_only);
-            if has_await && !has_module_syntax {
-              parsed
-            } else {
-              return Err(VmError::Syntax(script_diags));
-            }
-          }
-          Err(VmError::Syntax(_)) => return Err(VmError::Syntax(script_diags)),
-          Err(err) => return Err(err),
-        }
-      }
-      Err(err) => return Err(err),
-    };
+    // `Vm::parse_top_level_with_budget` already retries classic scripts with top-level `await`
+    // enabled (async classic scripts). Avoid falling back to module grammar so `await` remains a
+    // valid identifier in scripts.
+    let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
     let strict = {
       let mut tick = || vm.tick();
       detect_use_strict_directive(source.text.as_ref(), &parsed.stx.body, &mut tick)?
