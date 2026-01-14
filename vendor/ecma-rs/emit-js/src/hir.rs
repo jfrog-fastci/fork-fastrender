@@ -347,6 +347,11 @@ fn emit_import_es(em: &mut Emitter, ctx: &HirContext<'_>, es: &ImportEs) -> Emit
     return Ok(());
   }
   let named_specifiers: Vec<_> = es.named.iter().filter(|s| !s.is_type_only).collect();
+  if es.is_source_phase && (es.namespace.is_some() || !named_specifiers.is_empty()) {
+    return Err(EmitError::unsupported(
+      "source phase imports do not support namespace or named specifiers",
+    ));
+  }
   if es.default.is_none()
     && es.namespace.is_none()
     && named_specifiers.is_empty()
@@ -355,6 +360,9 @@ fn emit_import_es(em: &mut Emitter, ctx: &HirContext<'_>, es: &ImportEs) -> Emit
     return Ok(());
   }
   em.write_keyword("import");
+  if es.is_source_phase {
+    em.write_keyword("source");
+  }
   let mut wrote = false;
   if let Some(default) = &es.default {
     em.write_identifier(ctx.name(default.local));

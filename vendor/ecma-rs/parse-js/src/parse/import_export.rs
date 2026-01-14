@@ -282,7 +282,7 @@ impl<'a> Parser<'a> {
     //   import source from "mod";
     //
     // Disambiguate by requiring a binding identifier *and* a `from` keyword after `source`.
-    let (default, can_have_names) = {
+    let (source_phase, default, can_have_names) = {
       let t0 = self.peek();
       if !type_only
         && !ctx.in_namespace
@@ -295,7 +295,7 @@ impl<'a> Parser<'a> {
       {
         self.consume(); // consume contextual `source`
         let binding = self.id_pat_decl(ctx)?;
-        (Some(binding), false)
+        (true, Some(binding), false)
       } else if is_valid_pattern_identifier(t0.typ, ctx.rules) {
         let alias = self.id_pat_decl(ctx)?;
 
@@ -310,14 +310,14 @@ impl<'a> Parser<'a> {
           )));
         }
 
-        (Some(alias), self.consume_if(TT::Comma).is_match())
+        (false, Some(alias), self.consume_if(TT::Comma).is_match())
       } else {
         if ctx.in_namespace {
           return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax(
             "import equals declarations require an identifier",
           )));
         }
-        (None, true)
+        (false, None, true)
       }
     };
     let names = if !can_have_names {
@@ -403,6 +403,7 @@ impl<'a> Parser<'a> {
       loc,
       ImportStmt {
         type_only,
+        source_phase,
         default,
         module,
         names,
@@ -854,6 +855,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+  use crate::ast::expr::pat::Pat;
   use crate::ast::stmt::Stmt;
   use crate::ast::ts_stmt::ImportEqualsRhs;
   use crate::{parse_with_options, Dialect, ParseOptions, SourceType};
@@ -950,11 +952,60 @@ mod tests {
     let opts = ecma_module_opts();
 
     // Source phase imports (stage-3 / test262 `features: [source-phase-imports]`).
-    assert!(parse_with_options(r#"import source x from "./m.js";"#, opts).is_ok());
-    assert!(parse_with_options(r#"import source source from "./m.js";"#, opts).is_ok());
-    assert!(parse_with_options(r#"import source from from "./m.js";"#, opts).is_ok());
+    let ast = parse_with_options(r#"import source x from "./m.js";"#, opts).unwrap();
+    assert_eq!(ast.stx.body.len(), 1);
+    match ast.stx.body[0].stx.as_ref() {
+      Stmt::Import(import) => {
+        assert!(import.stx.source_phase);
+        assert!(import.stx.names.is_none());
+        let default = import.stx.default.as_ref().expect("default binding");
+        match default.stx.pat.stx.as_ref() {
+          Pat::Id(id) => assert_eq!(id.stx.name, "x"),
+          other => panic!("expected IdPat, got {other:?}"),
+        }
+      }
+      other => panic!("expected import statement, got {other:?}"),
+    }
 
-    // `source` remains a valid default import binding identifier.
-    assert!(parse_with_options(r#"import source from "./m.js";"#, opts).is_ok());
+    // Source-phase imports may bind `source` and other names (including keywords like `from`).
+    let ast = parse_with_options(r#"import source source from "./m.js";"#, opts).unwrap();
+    match ast.stx.body[0].stx.as_ref() {
+      Stmt::Import(import) => {
+        assert!(import.stx.source_phase);
+        let default = import.stx.default.as_ref().expect("default binding");
+        match default.stx.pat.stx.as_ref() {
+          Pat::Id(id) => assert_eq!(id.stx.name, "source"),
+          other => panic!("expected IdPat, got {other:?}"),
+        }
+      }
+      other => panic!("expected import statement, got {other:?}"),
+    }
+
+    let ast = parse_with_options(r#"import source from from "./m.js";"#, opts).unwrap();
+    match ast.stx.body[0].stx.as_ref() {
+      Stmt::Import(import) => {
+        assert!(import.stx.source_phase);
+        let default = import.stx.default.as_ref().expect("default binding");
+        match default.stx.pat.stx.as_ref() {
+          Pat::Id(id) => assert_eq!(id.stx.name, "from"),
+          other => panic!("expected IdPat, got {other:?}"),
+        }
+      }
+      other => panic!("expected import statement, got {other:?}"),
+    }
+
+    // `source` remains a valid default import binding identifier (non-source-phase).
+    let ast = parse_with_options(r#"import source from "./m.js";"#, opts).unwrap();
+    match ast.stx.body[0].stx.as_ref() {
+      Stmt::Import(import) => {
+        assert!(!import.stx.source_phase);
+        let default = import.stx.default.as_ref().expect("default binding");
+        match default.stx.pat.stx.as_ref() {
+          Pat::Id(id) => assert_eq!(id.stx.name, "source"),
+          other => panic!("expected IdPat, got {other:?}"),
+        }
+      }
+      other => panic!("expected import statement, got {other:?}"),
+    }
   }
 }

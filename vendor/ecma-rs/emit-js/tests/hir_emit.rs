@@ -119,6 +119,11 @@ fn roundtrip_matrix() {
       FileKind::Js,
       "import * as ns from \"pkg\" with { type: \"json\" };export { a as b } from \"pkg\" with { type: \"json\" };",
     ),
+    (
+      FileKind::Js,
+      // Stage-3 source phase imports must roundtrip through HIR + emission.
+      "import source x from \"pkg\";export const y = 1;",
+    ),
   ];
   for (kind, case) in cases {
     roundtrip(kind, case);

@@ -161,6 +161,8 @@ pub struct IfStmt {
 pub struct ImportStmt {
   #[drive(skip)]
   pub type_only: bool, // TypeScript: import type
+  #[drive(skip)]
+  pub source_phase: bool, // Stage-3: import source
   // PatDecl always contains IdPat.
   pub default: Option<Node<PatDecl>>,
   pub names: Option<ImportNames>,

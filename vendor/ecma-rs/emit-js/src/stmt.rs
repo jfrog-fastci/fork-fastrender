@@ -676,8 +676,15 @@ fn emit_method_like(
 
 fn emit_import_stmt(em: &mut Emitter, import: &ImportStmt) -> EmitResult {
   em.write_keyword("import");
+  if import.type_only && import.source_phase {
+    return Err(EmitError::unsupported(
+      "source phase imports cannot be emitted as TypeScript type-only imports",
+    ));
+  }
   if import.type_only {
     em.write_keyword("type");
+  } else if import.source_phase {
+    em.write_keyword("source");
   }
 
   let mut wrote_specifier = false;

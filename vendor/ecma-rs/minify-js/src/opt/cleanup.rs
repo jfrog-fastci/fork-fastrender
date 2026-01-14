@@ -148,6 +148,7 @@ fn clean_stmt(stmt: Node<Stmt>, changed: &mut bool) -> Node<Stmt> {
         assoc: inner_assoc,
         stx: Box::new(ImportStmt {
           type_only: false,
+          source_phase: false,
           default: None,
           names: None,
           module: from.expect("guarded by is_some"),

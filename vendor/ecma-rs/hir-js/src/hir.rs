@@ -85,6 +85,7 @@ pub struct ImportEs {
   pub specifier: ModuleSpecifier,
   pub attributes: Option<ModuleAttributes>,
   pub is_type_only: bool,
+  pub is_source_phase: bool,
   pub default: Option<ImportBinding>,
   pub namespace: Option<ImportBinding>,
   pub named: Vec<ImportNamed>,
