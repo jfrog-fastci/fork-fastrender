@@ -16252,6 +16252,14 @@ pub(crate) enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     needs_explicit_iter_tick: bool,
+    /// Outer lexical environment for lexically-declared `for` loops (`for (let/const/using ...)`).
+    ///
+    /// When present, the async evaluator must:
+    /// - enter a loop-scoped TDZ environment while evaluating the initializer,
+    /// - switch into a per-iteration environment before the first condition check,
+    /// - create a fresh per-iteration environment before each update expression,
+    /// - and restore the outer lexical environment after the loop completes.
+    outer_lex: Option<GcEnv>,
   },
   /// Continue a `for (init; cond; post) { ... }` loop after evaluating the test expression.
   ForTripleAfterTest {
@@ -16259,6 +16267,7 @@ pub(crate) enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     needs_explicit_iter_tick: bool,
+    outer_lex: Option<GcEnv>,
   },
   /// Continue a `for (init; cond; post) { ... }` loop after evaluating the body.
   ForTripleAfterBody {
@@ -16266,6 +16275,7 @@ pub(crate) enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     needs_explicit_iter_tick: bool,
+    outer_lex: Option<GcEnv>,
   },
   /// Continue a `for (init; cond; post) { ... }` loop after evaluating the post expression.
   ForTripleAfterPost {
@@ -16273,6 +16283,7 @@ pub(crate) enum AsyncFrame {
     label_set: Vec<String>,
     v_root: RootId,
     needs_explicit_iter_tick: bool,
+    outer_lex: Option<GcEnv>,
   },
 
   /// Continue a `for..in` loop after evaluating the RHS expression.
@@ -23844,24 +23855,138 @@ fn async_eval_for_triple(
   let needs_explicit_iter_tick =
     stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty();
 
-  match &stmt.init {
-    parse_js::ast::stmt::ForTripleStmtInit::None => async_for_triple_begin_iteration(
-      evaluator,
-      scope,
-      stmt,
-      label_vec,
-      v_root,
-      needs_explicit_iter_tick,
-    ),
-    parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => {
-      match async_eval_expr(evaluator, scope, expr) {
-        Ok(AsyncEval::Complete(_)) => async_for_triple_begin_iteration(
+  // Lexically-declared `for` loops require a loop-scoped TDZ environment for the initializer, and
+  // per-iteration environments so closures capture the correct binding value (ECMA-262
+  // `CreatePerIterationEnvironment`).
+  //
+  // Mirror the synchronous evaluator's `ForLoopEvaluation` behaviour for async `for` loops that
+  // contain `await` and therefore cannot run through `Evaluator::eval_stmt_labelled`.
+  let lexical_init_decl = match &stmt.init {
+    parse_js::ast::stmt::ForTripleStmtInit::Decl(decl)
+      if matches!(
+        decl.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      Some(decl)
+    }
+    _ => None,
+  };
+
+  if let Some(init_decl) = lexical_init_decl {
+    let outer_lex = evaluator.env.lexical_env;
+
+    // Create a loop-scoped declarative environment for the lexical declaration and evaluate the
+    // initializer with TDZ semantics.
+    let loop_env = match scope.env_create(Some(outer_lex)) {
+      Ok(env) => env,
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        return Err(err);
+      }
+    };
+    evaluator.env.set_lexical_env(scope.heap_mut(), loop_env);
+
+    let mutable = init_decl.stx.mode == VarDeclMode::Let;
+    for declarator in &init_decl.stx.declarators {
+      if let Err(err) = evaluator.tick() {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        scope.heap_mut().remove_root(v_root);
+        return Err(err);
+      }
+      if let Err(err) = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        loop_env,
+        &declarator.pattern.stx.pat.stx,
+        init_decl.loc,
+        mutable,
+      ) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        scope.heap_mut().remove_root(v_root);
+        return Err(err);
+      }
+    }
+
+    let init_eval = async_eval_var_decl(evaluator, scope, &init_decl.stx, 0);
+    return match init_eval {
+      Ok(AsyncEval::Complete(c)) => {
+        if c.is_abrupt() {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          scope.heap_mut().remove_root(v_root);
+          return Ok(AsyncEval::Complete(c));
+        }
+
+        let loop_eval = async_for_triple_after_init(
           evaluator,
           scope,
           stmt,
           label_vec,
           v_root,
           needs_explicit_iter_tick,
+          Some(outer_lex),
+        );
+        match loop_eval {
+          Ok(AsyncEval::Complete(c)) => {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+            Ok(AsyncEval::Complete(c))
+          }
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            // Restore the outer lexical environment after the loop completes.
+            async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+          Err(err) => {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+            if scope.heap().get_root(v_root).is_some() {
+              scope.heap_mut().remove_root(v_root);
+            }
+            Err(err)
+          }
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
+            v_root,
+            needs_explicit_iter_tick,
+            outer_lex: Some(outer_lex),
+          },
+        )?;
+        // Restore the outer lexical environment after the loop completes.
+        async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        scope.heap_mut().remove_root(v_root);
+        Err(err)
+      }
+    };
+  }
+
+  match &stmt.init {
+    parse_js::ast::stmt::ForTripleStmtInit::None => async_for_triple_after_init(
+      evaluator,
+      scope,
+      stmt,
+      label_vec,
+      v_root,
+      needs_explicit_iter_tick,
+      None,
+    ),
+    parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => {
+      match async_eval_expr(evaluator, scope, expr) {
+        Ok(AsyncEval::Complete(_)) => async_for_triple_after_init(
+          evaluator,
+          scope,
+          stmt,
+          label_vec,
+          v_root,
+          needs_explicit_iter_tick,
+          None,
         ),
         Ok(AsyncEval::Suspend(mut suspend)) => {
           async_frames_push(
@@ -23871,6 +23996,7 @@ fn async_eval_for_triple(
               label_set: label_vec,
               v_root,
               needs_explicit_iter_tick,
+              outer_lex: None,
             },
           )?;
           Ok(AsyncEval::Suspend(suspend))
@@ -23888,13 +24014,14 @@ fn async_eval_for_triple(
             scope.heap_mut().remove_root(v_root);
             return Ok(AsyncEval::Complete(c));
           }
-          async_for_triple_begin_iteration(
+          async_for_triple_after_init(
             evaluator,
             scope,
             stmt,
             label_vec,
             v_root,
             needs_explicit_iter_tick,
+            None,
           )
         }
         Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -23905,6 +24032,7 @@ fn async_eval_for_triple(
               label_set: label_vec,
               v_root,
               needs_explicit_iter_tick,
+              outer_lex: None,
             },
           )?;
           Ok(AsyncEval::Suspend(suspend))
@@ -23918,6 +24046,33 @@ fn async_eval_for_triple(
   }
 }
 
+fn async_for_triple_after_init(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root: RootId,
+  needs_explicit_iter_tick: bool,
+  outer_lex: Option<GcEnv>,
+) -> Result<AsyncEval<Completion>, VmError> {
+  // Enter the first per-iteration environment for lexically declared `for` loops.
+  if let Some(outer) = outer_lex {
+    let loop_env = evaluator.env.lexical_env;
+    let iter_env = evaluator.create_for_triple_per_iteration_env(scope, outer, loop_env)?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), iter_env);
+  }
+
+  async_for_triple_begin_iteration(
+    evaluator,
+    scope,
+    stmt,
+    label_set,
+    v_root,
+    needs_explicit_iter_tick,
+    outer_lex,
+  )
+}
+
 fn async_for_triple_begin_iteration(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -23925,6 +24080,7 @@ fn async_for_triple_begin_iteration(
   label_set: Vec<String>,
   v_root: RootId,
   needs_explicit_iter_tick: bool,
+  outer_lex: Option<GcEnv>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   if needs_explicit_iter_tick {
     if let Err(err) = evaluator.tick() {
@@ -23942,6 +24098,7 @@ fn async_for_triple_begin_iteration(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
         test,
       ),
       Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -23952,6 +24109,7 @@ fn async_for_triple_begin_iteration(
             label_set,
             v_root,
             needs_explicit_iter_tick,
+            outer_lex,
           },
         )?;
         Ok(AsyncEval::Suspend(suspend))
@@ -23968,6 +24126,7 @@ fn async_for_triple_begin_iteration(
       label_set,
       v_root,
       needs_explicit_iter_tick,
+      outer_lex,
       Value::Bool(true),
     ),
   }
@@ -23980,6 +24139,7 @@ fn async_for_triple_after_test(
   label_set: Vec<String>,
   v_root: RootId,
   needs_explicit_iter_tick: bool,
+  outer_lex: Option<GcEnv>,
   test_value: Value,
 ) -> Result<AsyncEval<Completion>, VmError> {
   let v = scope
@@ -24000,6 +24160,7 @@ fn async_for_triple_after_test(
       label_set,
       v_root,
       needs_explicit_iter_tick,
+      outer_lex,
       c,
     ),
     Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -24010,6 +24171,7 @@ fn async_for_triple_after_test(
           label_set,
           v_root,
           needs_explicit_iter_tick,
+          outer_lex,
         },
       )?;
       Ok(AsyncEval::Suspend(suspend))
@@ -24028,6 +24190,7 @@ fn async_for_triple_after_body(
   label_set: Vec<String>,
   v_root: RootId,
   needs_explicit_iter_tick: bool,
+  outer_lex: Option<GcEnv>,
   body_completion: Completion,
 ) -> Result<AsyncEval<Completion>, VmError> {
   let mut v = scope
@@ -24046,6 +24209,14 @@ fn async_for_triple_after_body(
     scope.heap_mut().set_root(v_root, v);
   }
 
+  // Create the next iteration's environment *before* evaluating the update expression so closures
+  // created in the body do not observe the post-update value.
+  if let Some(outer) = outer_lex {
+    let iter_env = evaluator.env.lexical_env;
+    let next_env = evaluator.create_for_triple_per_iteration_env(scope, outer, iter_env)?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), next_env);
+  }
+
   match &stmt.post {
     Some(post) => match async_eval_expr(evaluator, scope, post) {
       Ok(AsyncEval::Complete(_)) => async_for_triple_begin_iteration(
@@ -24055,6 +24226,7 @@ fn async_for_triple_after_body(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
       ),
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(
@@ -24064,6 +24236,7 @@ fn async_for_triple_after_body(
             label_set,
             v_root,
             needs_explicit_iter_tick,
+            outer_lex,
           },
         )?;
         Ok(AsyncEval::Suspend(suspend))
@@ -24080,6 +24253,7 @@ fn async_for_triple_after_body(
       label_set,
       v_root,
       needs_explicit_iter_tick,
+      outer_lex,
     ),
   }
 }
@@ -35378,17 +35552,19 @@ fn async_resume_from_frames(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
       } => match state {
         AsyncState::Expr(init_res) => match init_res {
           Ok(_) => {
             let stmt = unsafe { &*stmt };
-            match async_for_triple_begin_iteration(
+            match async_for_triple_after_init(
               evaluator,
               scope,
               stmt,
               label_set,
               v_root,
               needs_explicit_iter_tick,
+              outer_lex,
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -35430,13 +35606,14 @@ fn async_resume_from_frames(
           }
 
           let stmt = unsafe { &*stmt };
-          match async_for_triple_begin_iteration(
+          match async_for_triple_after_init(
             evaluator,
             scope,
             stmt,
             label_set,
             v_root,
             needs_explicit_iter_tick,
+            outer_lex,
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -35468,6 +35645,7 @@ fn async_resume_from_frames(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
       } => match state {
         AsyncState::Expr(test_res) => match test_res {
           Ok(test_value) => {
@@ -35479,6 +35657,7 @@ fn async_resume_from_frames(
               label_set,
               v_root,
               needs_explicit_iter_tick,
+              outer_lex,
               test_value,
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
@@ -35523,6 +35702,7 @@ fn async_resume_from_frames(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
       } => match state {
         AsyncState::Completion(body_completion) => {
           let stmt = unsafe { &*stmt };
@@ -35533,6 +35713,7 @@ fn async_resume_from_frames(
             label_set,
             v_root,
             needs_explicit_iter_tick,
+            outer_lex,
             body_completion,
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
@@ -35570,6 +35751,7 @@ fn async_resume_from_frames(
         label_set,
         v_root,
         needs_explicit_iter_tick,
+        outer_lex,
       } => match state {
         AsyncState::Expr(post_res) => match post_res {
           Ok(_) => {
@@ -35581,6 +35763,7 @@ fn async_resume_from_frames(
               label_set,
               v_root,
               needs_explicit_iter_tick,
+              outer_lex,
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
