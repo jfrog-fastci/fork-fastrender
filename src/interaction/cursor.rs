@@ -45,7 +45,7 @@ mod tests {
       box_id: 1,
       css_cursor: CursorKeyword::Auto,
       is_selectable_text: false,
-      dom_element_id: None,
+      element_id: None,
       is_editable_text_drop_target_candidate: false,
       form_control_cursor: CursorKind::Default,
       styled_node_id: 1,
