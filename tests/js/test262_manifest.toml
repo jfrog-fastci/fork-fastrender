@@ -165,11 +165,6 @@ glob = "language/expressions/tagged-template/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/tagged-template/cache-realm.js"
-status = "xfail"
-reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
-
-[[expectations]]
 id = "language/expressions/tagged-template/tco-call.js"
 status = "xfail"
 reason = "vm-js does not yet implement proper tail calls (PTC)."
@@ -182,23 +177,19 @@ reason = "vm-js does not yet implement proper tail calls (PTC)."
 # --- Private name brand-check operator (`#x in obj`) ---
 [[expectations]]
 id = "language/expressions/in/private-field-presence-field.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields (required for private field brand checks)."
+status = "pass"
 
 [[expectations]]
 id = "language/expressions/in/private-field-presence-method.js"
-status = "xfail"
-reason = "vm-js does not yet implement the private-name brand-check operator (`#x in obj`)."
+status = "pass"
 
 [[expectations]]
 id = "language/expressions/in/private-field-presence-accessor.js"
-status = "xfail"
-reason = "vm-js does not yet implement the private-name brand-check operator (`#x in obj`)."
+status = "pass"
 
 [[expectations]]
 id = "language/expressions/in/private-field-rhs-non-object.js"
-status = "xfail"
-reason = "vm-js does not yet implement class fields (required for private field brand checks)."
+status = "pass"
 
 # --- Broad xfail fallback (keep below any `pass` globs) ---
 [[expectations]]
@@ -207,11 +198,6 @@ status = "xfail"
 reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated test262 progress."
 
 # --- Generators ---
-[[expectations]]
-id = "language/statements/generators/arguments-with-arguments-fn.js"
-status = "xfail"
-reason = "vm-js: generator arguments object semantics are still incomplete."
-
 [[expectations]]
 id = "language/statements/generators/generator-created-after-decl-inst.js"
 status = "xfail"
@@ -498,21 +484,6 @@ id = "language/statements/class/elements/privatefieldget-typeerror-4.js"
 status = "pass"
 
 [[expectations]]
-id = "language/statements/class/elements/get-access-of-missing-private-getter.js"
-status = "xfail"
-reason = "vm-js: Private accessors do not yet enforce the spec-mandated TypeError when reading a setter-only private accessor (missing [[Get]])."
-
-[[expectations]]
-id = "language/statements/class/elements/get-access-of-missing-private-static-getter.js"
-status = "xfail"
-reason = "vm-js: Private static accessors do not yet enforce the spec-mandated TypeError when reading a setter-only private accessor (missing [[Get]])."
-
-[[expectations]]
-id = "language/statements/class/elements/privategetter-on-proxy.js"
-status = "xfail"
-reason = "vm-js: private getter access on Proxy instances is still buggy (invalid handle)."
-
-[[expectations]]
 id = "language/statements/class/elements/private-methods/prod-private-method.js"
 status = "pass"
 
@@ -571,6 +542,79 @@ status = "pass"
 
 [[expectations]]
 glob = "language/statements/for-in/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/break/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/continue/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/debugger/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/empty/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/expression/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/throw/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/const/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/let/**"
+status = "pass"
+
+# --- Variable statements ---
+#
+# Variable declarations are mostly spec-compliant; keep the remaining `with`-related edge case narrow
+# so regressions are not hidden by the broad `language/statements/**` xfail fallback.
+[[expectations]]
+id = "language/statements/variable/binding-resolution.js"
+status = "xfail"
+reason = "vm-js: `with` statement name resolution still incorrectly prefers `var` bindings over object properties."
+
+[[expectations]]
+glob = "language/statements/variable/**"
+status = "pass"
+
+# --- Function statements ---
+#
+# Function declaration instantiation is mostly implemented; keep the remaining `with`/scope edge
+# cases narrow so regressions are not hidden by the broad `language/statements/**` xfail fallback.
+[[expectations]]
+id = "language/statements/function/S13.2.2_A17_T3.js"
+status = "xfail"
+reason = "vm-js: `with` statement environment resolution still differs from spec for `var` declarations inside `with`."
+
+[[expectations]]
+id = "language/statements/function/S13.2.2_A18_T1.js"
+status = "xfail"
+reason = "vm-js: `with (arguments)` environment resolution still differs from spec (assignment should target the `arguments` object, not outer bindings)."
+
+[[expectations]]
+id = "language/statements/function/S13.2.2_A18_T2.js"
+status = "xfail"
+reason = "vm-js: `with (arguments)` environment resolution still differs from spec (assignment should target the `arguments` object, not outer bindings)."
+
+[[expectations]]
+id = "language/statements/function/scope-paramsbody-var-open.js"
+status = "xfail"
+reason = "vm-js: function parameter/body environment separation (when parameter expressions are present) is not fully spec-compliant."
+
+[[expectations]]
+glob = "language/statements/function/**"
 status = "pass"
 
 [[expectations]]
@@ -1153,11 +1197,6 @@ glob = "built-ins/Array/prototype/indexOf/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js"
-status = "skip"
-reason = "Performance: vm-js can exceed the curated suite's per-test 10s timeout when scanning very sparse arrays with large lengths (this test passes with a higher timeout)."
-
-[[expectations]]
 id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-grow.js"
 status = "skip"
 reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
@@ -1490,11 +1529,6 @@ status = "pass"
 glob = "built-ins/Object/prototype/toString/**"
 status = "pass"
 
-[[expectations]]
-id = "built-ins/Object/prototype/toString/symbol-tag-override-instances.js"
-status = "xfail"
-reason = "vm-js: Object.prototype.toString @@toStringTag override handling is still incomplete."
-
 # --- RegExp + String (regex methods) ---
 #
 # RegExp itself is still incomplete. This block is primarily used by the focused RegExp suite:
@@ -1569,11 +1603,6 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/RegExp/escape/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/RegExp/escape/cross-realm.js"
-status = "xfail"
-reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
 
 [[expectations]]
 glob = "built-ins/String/prototype/match/**"
@@ -2202,18 +2231,30 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/JSON/stringify/replacer-array-number-object.js"
-status = "xfail"
-reason = "vm-js: JSON.stringify handling of Number objects differs from spec."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/JSON/stringify/space-number-object.js"
-status = "xfail"
-reason = "vm-js: JSON.stringify spacing with Number objects differs from spec."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/JSON/stringify/value-number-object.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/JSON/stringify/replacer-array-string-object.js"
 status = "xfail"
-reason = "vm-js: JSON.stringify handling of Number objects differs from spec."
+reason = "vm-js: JSON.stringify handling of String objects differs from spec."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/space-string-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify spacing with String objects differs from spec."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/value-string-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of String objects differs from spec."
 
 [[expectations]]
 glob = "built-ins/JSON/rawJSON/**"
