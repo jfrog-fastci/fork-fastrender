@@ -171,7 +171,17 @@ impl AudioStreamHandle {
 
     // Fast path: no resampling needed.
     if rate == 1.0 && in_rate_hz == out_rate_hz {
-      return Ok(self.inner.sink.push_interleaved_f32(decoded_samples));
+      let produced = decoded_samples.len();
+      let accepted = self.inner.sink.push_interleaved_f32(decoded_samples);
+      if accepted < produced && self.inner.trace.is_enabled() {
+        let mut span = self.inner.trace.span("audio.sink.drop", "audio");
+        span.arg_u64("produced_samples", produced as u64);
+        span.arg_u64("accepted_samples", accepted as u64);
+        span.arg_u64("dropped_samples", produced.saturating_sub(accepted) as u64);
+        span.arg_u64("channels", channels as u64);
+        span.arg_u64("output_rate_hz", out_rate_hz as u64);
+      }
+      return Ok(accepted);
     }
 
     let input_frames = decoded_samples.len() / channels;
@@ -223,10 +233,7 @@ impl AudioStreamHandle {
     if let Some(span) = resample_span.as_mut() {
       span.arg_u64("produced_samples", out.len() as u64);
       span.arg_u64("accepted_samples", accepted as u64);
-      span.arg_u64(
-        "dropped_samples",
-        out.len().saturating_sub(accepted) as u64,
-      );
+      span.arg_u64("dropped_samples", out.len().saturating_sub(accepted) as u64);
     }
     drop(resample_span);
 
@@ -291,6 +298,36 @@ mod tests {
         .checked_div(self.sample_rate_hz as u128)
         .unwrap_or(0);
       Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+    }
+  }
+
+  #[derive(Debug)]
+  struct DroppingSink {
+    config: AudioStreamConfig,
+    accept_samples: usize,
+    frames_played: Arc<AtomicU64>,
+    discontinuities: Arc<AtomicU64>,
+  }
+
+  impl AudioSink for DroppingSink {
+    fn config(&self) -> AudioStreamConfig {
+      self.config
+    }
+
+    fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
+      let channels = usize::from(self.config.channels.max(1));
+      let mut accepted = self.accept_samples.min(samples.len());
+      // Avoid accepting partial frames.
+      accepted -= accepted % channels;
+      let frames = (accepted / channels) as u64;
+      self.frames_played.fetch_add(frames, Ordering::Relaxed);
+      accepted
+    }
+
+    fn set_volume(&self, _volume: f32) {}
+
+    fn notify_discontinuity(&self) {
+      self.discontinuities.fetch_add(1, Ordering::Relaxed);
     }
   }
 
@@ -372,9 +409,7 @@ mod tests {
     let json = std::fs::read_to_string(&path).expect("read trace");
     let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
 
-    let trace_events = value["traceEvents"]
-      .as_array()
-      .expect("traceEvents array");
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
     let names: Vec<&str> = trace_events
       .iter()
       .filter_map(|event| event["name"].as_str())
@@ -383,6 +418,55 @@ mod tests {
       names.iter().any(|name| *name == "audio.resample"),
       "expected audio.resample span in trace"
     );
+  }
+
+  #[test]
+  fn fast_path_drop_emits_audio_sink_drop_trace_event() {
+    let trace = TraceHandle::enabled_with_max_events(16);
+
+    let frames_played = Arc::new(AtomicU64::new(0));
+    let discontinuities = Arc::new(AtomicU64::new(0));
+    let sink = Arc::new(DroppingSink {
+      config: AudioStreamConfig::new(48_000, 1),
+      accept_samples: 64,
+      frames_played: frames_played.clone(),
+      discontinuities: discontinuities.clone(),
+    });
+    let sink_dyn: Arc<dyn AudioSink> = sink.clone();
+
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(FramesDeviceClock {
+      frames_played: frames_played.clone(),
+      sample_rate_hz: 48_000,
+    });
+
+    let decoded_cfg = AudioStreamConfig::new(48_000, 1);
+    let stream = AudioStreamHandle::new_with_trace(
+      decoded_cfg,
+      sink_dyn,
+      device_clock,
+      Duration::ZERO,
+      trace.clone(),
+    )
+    .unwrap();
+
+    let decoded = vec![0.0_f32; 128];
+    let accepted = stream.push_interleaved_f32(&decoded).unwrap();
+    assert_eq!(accepted, 64);
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    trace.write_chrome_trace(&path).expect("write trace");
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
+    let sink_drop = trace_events
+      .iter()
+      .find(|event| event["name"].as_str() == Some("audio.sink.drop"))
+      .expect("expected audio.sink.drop span in trace");
+    assert_eq!(sink_drop["args"]["produced_samples"].as_u64(), Some(128));
+    assert_eq!(sink_drop["args"]["accepted_samples"].as_u64(), Some(64));
+    assert_eq!(sink_drop["args"]["dropped_samples"].as_u64(), Some(64));
   }
 
   #[test]
