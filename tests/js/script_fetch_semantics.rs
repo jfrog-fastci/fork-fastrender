@@ -1313,6 +1313,110 @@ fn module_crossorigin_use_credentials_includes_cookies_and_honors_same_origin_de
 }
 
 #[test]
+fn module_scripts_default_credentials_include_cookies_for_same_origin() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(listener) = try_bind_localhost("module same-origin credentials server") else {
+    return Ok(());
+  };
+
+  let addr = listener.local_addr().expect("server addr");
+  let doc_url = format!("http://{}/page.html", addr);
+
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let server_thread = std::thread::spawn(move || {
+    use std::time::{Duration, Instant};
+
+    listener.set_nonblocking(true).expect("listener nonblocking");
+    let start = Instant::now();
+    let mut handled_doc = false;
+    let mut handled_script = false;
+    while !(handled_doc && handled_script) {
+      match listener.accept() {
+        Ok((mut stream, _)) => {
+          let (path, headers) = read_http_request(&mut stream);
+          match path.as_str() {
+            "/page.html" => {
+              handled_doc = true;
+              let body = r#"<!doctype html><html><head>
+                <script type="module" src="/module.js"></script>
+              </head><body></body></html>"#;
+              write_http_response(
+                stream,
+                "200 OK",
+                "text/html",
+                body,
+                &[("Set-Cookie", "session=abc; Path=/")],
+              );
+            }
+            "/module.js" => {
+              handled_script = true;
+              *captured_script_headers_for_thread
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
+              // Same-origin CORS-mode module scripts must not require ACAO.
+              write_http_response(stream, "200 OK", "application/javascript", "MODULE", &[]);
+            }
+            _ => write_http_response(stream, "404 Not Found", "text/plain", "not found", &[]),
+          }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+          assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "timed out waiting for document/script requests; handled_doc={handled_doc} handled_script={handled_script}"
+          );
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(err) => panic!("accept: {err}"),
+      }
+    }
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+      js_options,
+    )?;
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  server_thread.join().expect("join server thread");
+
+  assert_eq!(executor.take_log(), vec!["MODULE".to_string()]);
+
+  let headers = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone()
+    .unwrap_or_default();
+
+  assert_eq!(
+    headers.get("sec-fetch-mode").map(String::as_str),
+    Some("cors"),
+    "expected module scripts to use CORS mode; headers={headers:?}"
+  );
+  let cookie = headers.get("cookie").cloned().unwrap_or_default();
+  assert!(
+    cookie.contains("session=abc"),
+    "expected default (same-origin) module scripts to include Cookie on same-origin requests; headers={headers:?}"
+  );
+  Ok(())
+}
+
+#[test]
 fn module_crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard_acao(
 ) -> Result<()> {
   let _net_lock = net_test_lock();
