@@ -329,6 +329,80 @@ $DONE();
 }
 
 #[test]
+fn vm_js_executor_module_var_initializer_smoke() {
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let temp = tempdir().unwrap();
+
+  // Minimal fake test262 checkout: harness + test directories.
+  fs::create_dir_all(temp.path().join("harness")).unwrap();
+  fs::write(
+    temp.path().join("harness/assert.js"),
+    r#"
+var assert = {};
+assert.sameValue = function (actual, expected) {
+  if (actual !== expected) {
+    throw new Error("assert.sameValue failed: expected " + expected + ", got " + actual);
+  }
+};
+"#,
+  )
+  .unwrap();
+  fs::write(temp.path().join("harness/sta.js"), "").unwrap();
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  // Regression test: `var` bindings are created during `ModuleDeclarationInstantiation`, so runtime
+  // evaluation of `var` declarations must *not* throw `SyntaxError("Identifier has already been declared")`.
+  fs::write(
+    test_dir.join("var_init.js"),
+    r#"/*---
+flags: [module]
+---*/
+var x = 1;
+assert.sameValue(x, 1);
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases = expand_cases(
+    &discovered,
+    &Filter::Regex(Regex::new(r"^var_init\.js$").unwrap()),
+  )
+  .unwrap();
+  assert_eq!(cases.len(), 1);
+  assert_eq!(cases[0].variant, test262_semantic::report::Variant::Module);
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    false,
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  assert_eq!(results.len(), 1);
+  let result = &results[0];
+  assert_eq!(result.id, "var_init.js");
+  assert_eq!(result.variant, test262_semantic::report::Variant::Module);
+  assert_eq!(
+    result.outcome,
+    TestOutcome::Passed,
+    "expected module case to pass: {result:#?}"
+  );
+}
+
+#[test]
 fn vm_js_executor_module_dynamic_import_of_async_module_smoke() {
   let _guard = VM_JS_SMOKE_LOCK
     .lock()
