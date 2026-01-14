@@ -443,6 +443,13 @@ fn new_import_call_is_syntax_error() {
 }
 
 #[test]
+fn import_meta_in_script_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("import.meta;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn new_super_call_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
