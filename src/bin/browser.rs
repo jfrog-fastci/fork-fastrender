@@ -21368,9 +21368,17 @@ impl App {
       }
     }
 
-    for text in output.copy_requests {
+    if let Some(text) = output.copy_requests.into_iter().last() {
+      // Treat download data as untrusted (originates from the renderer/worker). Clamp clipboard
+      // writes to our hard byte limit so we never pass huge strings into OS clipboard APIs.
+      let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
+      let text = if text.len() > limit {
+        fastrender::ui::untrusted::clamp_untrusted_utf8(&text, limit)
+      } else {
+        text
+      };
       if os_clipboard::write_text(&text) {
-        self.show_chrome_toast("Copied to clipboard");
+        self.show_chrome_toast("Copied");
       } else {
         self.show_chrome_toast_kind(
           fastrender::ui::ToastKind::Warning,

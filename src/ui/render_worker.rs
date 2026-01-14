@@ -1052,6 +1052,7 @@ impl TabState {
       (None, None) => None,
     }
   }
+
   fn hit_test_fragment_tree_for_scroll(
     cache: &mut Option<HitTestFragmentTreeCache>,
     doc: &BrowserDocument,
@@ -1060,6 +1061,7 @@ impl TabState {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
 }
+
 fn hit_test_fragment_tree_for_scroll_cached(
   cache: &mut Option<HitTestFragmentTreeCache>,
   doc: &BrowserDocument,
