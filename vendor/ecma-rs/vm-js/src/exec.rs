@@ -40379,11 +40379,7 @@ fn gen_resume_from_frames(
                     ))
                   }
                 };
-                Reference::SuperProperty {
-                  base,
-                  key,
-                  receiver,
-                }
+                Reference::SuperProperty { base, key, receiver }
               }
               _ => {
                 return Err(VmError::InvariantViolation(
