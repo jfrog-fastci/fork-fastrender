@@ -1090,6 +1090,19 @@ impl SinkState {
       return;
     }
 
+    // Resuming from an intentional pause is a discontinuity boundary: we transition from global
+    // silence back into potentially non-zero audio. Arm a short fade-in from zero so unpausing does
+    // not click.
+    //
+    // Do not override an explicit discontinuity request (seek/flush/etc) which may already be
+    // managing its own fade-out + fade-in behavior.
+    if self.discontinuity_state.load(Ordering::Relaxed) == DISC_STATE_NONE {
+      self
+        .discontinuity_state
+        .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+      self.force_ramp_to_zero();
+    }
+
     // Resuming: if we still have buffered audio, re-activate the output stream so the samples can
     // play out (or drain if muted). Restore the `maybe_audible` hint based on the current volume.
     if self.buffer.has_data() {
@@ -1110,7 +1123,9 @@ impl SinkState {
     self.buffer.pop_discard(usize::MAX);
     // Treat flush like a discontinuity boundary: ensure the next non-empty buffer fades in from 0
     // and doesn't inherit any in-progress fade-out state.
-    self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+    self
+      .discontinuity_state
+      .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
     self.force_ramp_to_zero();
     self.maybe_audible.store(false, Ordering::Relaxed);
     // Best-effort: if the engine is already torn down, ignore.
@@ -1159,9 +1174,24 @@ impl SinkState {
       discontinuity_state = DISC_STATE_NONE;
     }
 
+    let channels = channels.max(1);
+    let requested_samples = dst.len() - (dst.len() % channels);
+    if requested_samples == 0 {
+      return;
+    }
+
+    // Use `buffered_samples()` so we treat wrapped indices as an empty buffer. In that case we must
+    // repair invariants by draining, otherwise we could get stuck in a permanent "has_data but can't
+    // pop" state.
+    let available_samples = self.buffer.buffered_samples();
+
     // If the buffer is empty, ensure the hint is cleared so the callback can fast-path to silence.
-    if !self.buffer.has_data() {
-      if discontinuity_state == DISC_STATE_FADE_OUT {
+    //
+    // Treat an empty buffer as a discontinuity boundary: when audio resumes after a gap we want to
+    // fade in from 0 to avoid a click.
+    if available_samples == 0 {
+      self.buffer.pop_discard(usize::MAX);
+      if discontinuity_state != DISC_STATE_WAIT_DATA {
         self
           .discontinuity_state
           .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
@@ -1221,11 +1251,74 @@ impl SinkState {
       frames_remaining: remaining,
     };
 
-    self.buffer.pop_add_into_ramped(dst, channels, &mut ramp);
+    // Determine how much audio we can actually read this callback.
+    let mut to_read_samples = available_samples.min(requested_samples);
+    // Keep frame alignment so ramping applies equally across channels.
+    to_read_samples -= to_read_samples % channels;
 
-    self
-      .ramp_target_bits
-      .store(ramp_target_bits, Ordering::Relaxed);
+    // If we have less than one frame, drop the partial and arm a fade-in for when full frames
+    // resume.
+    if to_read_samples == 0 {
+      self.buffer.pop_discard(usize::MAX);
+      self
+        .discontinuity_state
+        .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+      self.force_ramp_to_zero();
+      self.maybe_audible.store(false, Ordering::Relaxed);
+      return;
+    }
+
+    let requested_frames = requested_samples / channels;
+    let available_frames = to_read_samples / channels;
+    let did_underrun = available_frames < requested_frames;
+
+    if !did_underrun {
+      // Fast path: enough buffered audio to cover the callback.
+      self
+        .buffer
+        .pop_add_into_ramped(&mut dst[..requested_samples], channels, &mut ramp);
+    } else {
+      // We will run out of samples before the callback ends. Avoid a hard step discontinuity by
+      // fading out over the last ~N frames of the available audio so we converge to silence before
+      // the output buffer's implicit zeros.
+      let fade_frames = (self.ramp_frames as usize).min(available_frames);
+      let head_frames = available_frames.saturating_sub(fade_frames);
+      let head_samples = head_frames.saturating_mul(channels);
+      let fade_samples = fade_frames.saturating_mul(channels);
+
+      if head_samples != 0 {
+        self
+          .buffer
+          .pop_add_into_ramped(&mut dst[..head_samples], channels, &mut ramp);
+      }
+
+      if fade_samples != 0 {
+        let fade_frames_u32 = u32::try_from(fade_frames).unwrap_or(u32::MAX).max(1);
+        ramp.target_gain = 0.0;
+        if (ramp.current_gain - ramp.target_gain).abs() <= f32::EPSILON {
+          ramp.current_gain = ramp.target_gain;
+          ramp.step = 0.0;
+          ramp.frames_remaining = 0;
+        } else {
+          ramp.frames_remaining = fade_frames_u32;
+          ramp.step = (ramp.target_gain - ramp.current_gain) / ramp.frames_remaining as f32;
+        }
+        self.buffer.pop_add_into_ramped(
+          &mut dst[head_samples..head_samples + fade_samples],
+          channels,
+          &mut ramp,
+        );
+      }
+    }
+
+    self.ramp_target_bits.store(
+      if did_underrun {
+        0.0f32.to_bits()
+      } else {
+        ramp_target_bits
+      },
+      Ordering::Relaxed,
+    );
     self
       .ramp_current_bits
       .store(ramp.current_gain.to_bits(), Ordering::Relaxed);
@@ -1240,13 +1333,23 @@ impl SinkState {
     let mut gain_nonzero = (ramp.target_gain.is_finite() && ramp.target_gain > 0.0)
       || (ramp.current_gain.is_finite() && ramp.current_gain > 0.0);
 
+    // Buffer underrun -> enter "wait for data" so the next segment fades in from silence.
+    if did_underrun {
+      self
+        .discontinuity_state
+        .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+      self.force_ramp_to_zero();
+      has_data = self.buffer.has_data();
+      gain_nonzero = self.gain_nonzero_for_hint(volume_target);
+    }
+
     // After a discontinuity, fade out to silence, then discard any remaining queued samples so the
     // next playback segment starts from a clean slate and can fade back in from zero.
     if discontinuity_state == DISC_STATE_FADE_OUT {
       let fade_complete =
         ramp.frames_remaining == 0 && ramp.current_gain == 0.0 && ramp.target_gain == 0.0;
 
-      if fade_complete {
+      if fade_complete && !did_underrun {
         self.buffer.pop_discard(usize::MAX);
         self
           .discontinuity_state
