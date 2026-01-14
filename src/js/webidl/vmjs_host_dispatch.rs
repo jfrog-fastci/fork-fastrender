@@ -9427,7 +9427,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
             // Sync old parents for moved nodes (if wrappers exist / had `childNodes` cached).
             for old_parent in old_parents {
-              if old_parent.node_id == parent_id {
+              // `NodeId` values are only unique within a document, so only skip when the old parent
+              // is *actually* the same node as the insertion parent (same document + same id).
+              if old_parent.document_id == document_id && old_parent.node_id == parent_id {
                 continue;
               }
               let wrapper = {
