@@ -4493,7 +4493,7 @@ mod tests {
       let source_a = SourceText::new_charged_arc(&mut heap, "a", src_a)?;
       let mut record_a = SourceTextModuleRecord::compile_source(&mut heap, source_a)?;
       // Simulate an embedding that discards parse trees after compilation/linking.
-      record_a.ast = None;
+      record_a.clear_ast();
       record_a.source = None;
       let _module_a = graph.add_module_with_specifier("a", record_a)?;
 
