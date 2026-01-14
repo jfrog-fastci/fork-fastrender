@@ -8122,7 +8122,7 @@ impl<'a> Evaluator<'a> {
         heap: heap_ptr,
         len: super_root_len,
       };
-
+ 
       // Count instance elements stored in the class constructor's native slots so the wrapper can
       // preallocate its hidden storage.
       //
@@ -40169,7 +40169,6 @@ fn gen_eval_assignment_add_to_computed_member(
 ) -> Result<GenEval<Completion>, VmError> {
   gen_eval_assignment_to_computed_member(evaluator, scope, expr, member)
 }
-
 fn gen_eval_call(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,

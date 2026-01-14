@@ -5183,7 +5183,9 @@ mod tests {
     use crate::{ExecutionContext, HeapLimits, Realm};
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    // This test exercises two live realms simultaneously. Keep limits reasonably small to catch
+    // leaks, but large enough for allocating two sets of intrinsics and globals.
+    let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let realm_id = realm.id();
 

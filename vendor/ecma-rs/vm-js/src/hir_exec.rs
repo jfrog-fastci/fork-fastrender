@@ -3334,15 +3334,14 @@ impl<'vm> HirEvaluator<'vm> {
           } else {
             Some(self.resolve_name(def.name)?)
           };
-          let (binding_name, func_name, inner_binding): (&str, &str, Option<&str>) =
-            if is_default_anon {
-              ("*default*", "default", None)
-            } else {
-              let name = name
-                .as_deref()
-                .ok_or(VmError::InvariantViolation("class name resolution failed"))?;
-              (name, name, Some(name))
-            };
+          let (binding_name, func_name, inner_binding): (&str, &str, Option<&str>) = if is_default_anon {
+            ("*default*", "default", None)
+          } else {
+            let name = name
+              .as_deref()
+              .ok_or(VmError::InvariantViolation("class name resolution failed"))?;
+            (name, name, Some(name))
+          };
 
           // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
           // outer is the surrounding lexical environment. That environment contains an immutable
@@ -3366,13 +3365,12 @@ impl<'vm> HirEvaluator<'vm> {
           init_scope.push_root(Value::Object(func_obj))?;
 
           if !init_scope.heap().env_has_binding(outer, binding_name)? {
-            if is_default_anon {
-              return Err(VmError::InvariantViolation(
-                "export default class declaration missing *default* binding",
-              ));
-            }
             // Non-block statement contexts may not have performed lexical hoisting yet.
-            init_scope.env_create_mutable_binding(outer, binding_name)?;
+            if binding_name == "*default*" {
+              init_scope.env_create_immutable_binding(outer, binding_name)?;
+            } else {
+              init_scope.env_create_mutable_binding(outer, binding_name)?;
+            }
           }
           init_scope
             .heap_mut()
@@ -3630,7 +3628,10 @@ impl<'vm> HirEvaluator<'vm> {
         self.env.set_lexical_env(with_scope.heap_mut(), outer);
         result
       }
-      hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
+      hir_js::StmtKind::Empty => {
+        Ok(Flow::empty())
+      }
+      hir_js::StmtKind::Debugger => Ok(Flow::empty()),
     };
 
     let Err(err) = res else {
@@ -5346,6 +5347,56 @@ impl<'vm> HirEvaluator<'vm> {
         return Ok(l);
       }
       hir_js::BinaryOp::In => {
+        // `#x in obj` is a private brand check, not a normal property-name `in` operation.
+        //
+        // In HIR, the LHS is lowered as an `Ident` expression containing the raw private identifier
+        // text (including the leading `#`), but it must *not* be evaluated as an identifier
+        // reference.
+        let private_name_id = match self.get_expr(body, left)?.kind {
+          hir_js::ExprKind::Ident(name_id) => match self.hir().names.resolve(name_id) {
+            Some(s) if s.starts_with('#') => Some(name_id),
+            _ => None,
+          },
+          _ => None,
+        };
+
+        if let Some(private_name_id) = private_name_id {
+          let r = self.eval_expr(scope, body, right)?;
+          let Value::Object(obj) = r else {
+            return Err(VmError::TypeError("Right-hand side of 'in' should be an object"));
+          };
+
+          // Root the RHS object across private-name resolution and own-property lookup.
+          let mut rhs_scope = scope.reborrow();
+          rhs_scope.push_root(Value::Object(obj))?;
+
+          let private_name = self
+            .hir()
+            .names
+            .resolve(private_name_id)
+            .ok_or(VmError::InvariantViolation(
+              "hir name id missing from interner",
+            ))?;
+
+          let sym = rhs_scope
+            .heap()
+            .resolve_private_name_symbol(self.env.lexical_env(), private_name)?
+            .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+
+          // Private elements are not accessible through Proxy objects; `#x in proxy` always fails
+          // the brand check without consulting any traps.
+          if rhs_scope.heap().is_proxy_object(obj) {
+            return Ok(Value::Bool(false));
+          }
+
+          rhs_scope.push_root(Value::Symbol(sym))?;
+          let key = PropertyKey::from_symbol(sym);
+          let has = rhs_scope.heap().get_own_property(obj, key)?.is_some();
+          return Ok(Value::Bool(has));
+        }
+
+        // Ordinary `in` operator: evaluate LHS expression, convert it to a property key, and
+        // perform `[[HasProperty]]` (which can invoke proxy traps and user code).
         // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
         let l = self.eval_expr(scope, body, left)?;
         let mut rhs_scope = scope.reborrow();
@@ -12657,7 +12708,6 @@ pub(crate) fn run_compiled_module(
         .ok_or(VmError::InvariantViolation("compiled module root body not found"))?;
 
       let eval_res = evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice());
-
       match eval_res {
         Ok(Flow::Normal(_)) => Ok(()),
         Ok(Flow::Return(_)) => Err(VmError::InvariantViolation(
