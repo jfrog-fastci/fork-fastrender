@@ -980,3 +980,142 @@ fn generator_for_of_const_default_initializer_has_tdz_across_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_assignment_target_computed_member_base_yield_evaluates_key_after_resume() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var k = "x";
+          var resumed = {};
+          function* g() {
+            for ((yield 1)[k] of [3]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          k = "k";
+          var r2 = it.next(resumed);
+          return r1.done === false && r1.value === 1 &&
+            r2.done === true && r2.value === 0 &&
+            resumed.k === 3 &&
+            Object.prototype.hasOwnProperty.call(resumed, "x") === false;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_prop_assignment_target_computed_member_base_yield_evaluates_key_after_resume()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var k = "x";
+          var resumed = {};
+          function* g() {
+            for ({a: (yield 1)[k]} of [{a: 3}]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          k = "k";
+          var r2 = it.next(resumed);
+          return r1.done === false && r1.value === 1 &&
+            r2.done === true && r2.value === 0 &&
+            resumed.k === 3 &&
+            Object.prototype.hasOwnProperty.call(resumed, "x") === false;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member_base_yield_evaluates_key_after_resume()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var k = "x";
+          var resumed = {};
+          function* g() {
+            for ({...(yield 1)[k]} of [{a: 1, b: 2}]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          k = "k";
+          var r2 = it.next(resumed);
+          return r1.done === false && r1.value === 1 &&
+            r2.done === true && r2.value === 0 &&
+            resumed.k.b === 2 &&
+            Object.prototype.hasOwnProperty.call(resumed, "x") === false;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_elem_assignment_target_computed_member_base_yield_evaluates_key_after_resume()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var k = "x";
+          var resumed = {};
+          function* g() {
+            for ([(yield 1)[k]] of [[3]]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          k = "k";
+          var r2 = it.next(resumed);
+          return r1.done === false && r1.value === 1 &&
+            r2.done === true && r2.value === 0 &&
+            resumed.k === 3 &&
+            Object.prototype.hasOwnProperty.call(resumed, "x") === false;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_member_base_yield_evaluates_key_after_resume()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var k = "x";
+          var resumed = {};
+          function* g() {
+            for ([...(yield 1)[k]] of [[1, 2, 3]]) { return 0; }
+          }
+          var it = g();
+          var r1 = it.next();
+          k = "k";
+          var r2 = it.next(resumed);
+          return r1.done === false && r1.value === 1 &&
+            r2.done === true && r2.value === 0 &&
+            resumed.k[1] === 2 &&
+            Object.prototype.hasOwnProperty.call(resumed, "x") === false;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
