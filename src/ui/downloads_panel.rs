@@ -254,11 +254,11 @@ pub fn downloads_panel_ui(
         &mut request_focus_search,
         "Search downloads",
       );
-      #[cfg(test)]
-      store_test_id(ui.ctx(), "downloads_panel_search_input_id", search_out.response.id);
       if search_out.request_close {
         out.close_requested = true;
       }
+      #[cfg(test)]
+      store_test_id(ui.ctx(), "downloads_panel_search_input_id", search_out.response.id);
 
       ui.add_space(8.0);
       ui.separator();
