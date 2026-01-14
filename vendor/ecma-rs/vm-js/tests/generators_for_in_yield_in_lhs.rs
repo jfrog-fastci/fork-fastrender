@@ -1457,3 +1457,126 @@ fn generator_for_in_throw_while_suspended_in_object_pattern_prop_super_computed_
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_in_object_pattern_prop_assignment_target_super_computed_to_property_key_is_delayed_until_putvalue(
+)
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+
+          Object.defineProperty(String.prototype, "missing", {
+            configurable: true,
+            get() { log.push("get"); return 7; },
+          });
+
+          class Base { set k(v) { log.push("set"); this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ({missing: super[yield 0]} in {abc: 0}) { return log.join("|"); }
+            }
+          }
+
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "get|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_array_pattern_elem_assignment_target_super_computed_to_property_key_is_delayed_until_putvalue()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+
+          String.prototype[Symbol.iterator] = function() {
+            var done = false;
+            return {
+              next() {
+                log.push("next");
+                if (done) return { value: undefined, done: true };
+                done = true;
+                return { value: 7, done: false };
+              },
+            };
+          };
+
+          class Base { set k(v) { log.push("set"); this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([super[yield 0]] in {abc: 0}) { return log.join("|"); }
+            }
+          }
+
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "next|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_array_pattern_rest_assignment_target_super_computed_to_property_key_is_delayed_until_putvalue()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+
+          String.prototype[Symbol.iterator] = function() {
+            var done = false;
+            return {
+              next() {
+                log.push("next");
+                if (done) return { value: undefined, done: true };
+                done = true;
+                return { value: 1, done: false };
+              },
+            };
+          };
+
+          class Base { set k(v) { log.push("set"); this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([...super[yield 0]] in {abc: 0}) { return log.join("|"); }
+            }
+          }
+
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "next|next|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
