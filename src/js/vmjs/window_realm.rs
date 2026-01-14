@@ -37333,6 +37333,26 @@ fn range_end_offset_get_native(
   Ok(Value::Number(offset as f64))
 }
 
+fn range_common_ancestor_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_common_ancestor_container(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
 fn range_collapsed_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -53438,6 +53458,25 @@ fn init_window_globals(
         idl_attribute_desc(Value::Object(end_offset_func), Value::Undefined),
       )?;
 
+      // Range.prototype.commonAncestorContainer
+      let common_ancestor_call_id =
+        vm.register_native_call(range_common_ancestor_container_get_native)?;
+      let common_ancestor_name = scope.alloc_string("get commonAncestorContainer")?;
+      scope.push_root(Value::String(common_ancestor_name))?;
+      let common_ancestor_func =
+        scope.alloc_native_function(common_ancestor_call_id, None, common_ancestor_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        common_ancestor_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(common_ancestor_func))?;
+      let common_ancestor_key = alloc_key(&mut scope, "commonAncestorContainer")?;
+      scope.define_property(
+        range_proto,
+        common_ancestor_key,
+        idl_attribute_desc(Value::Object(common_ancestor_func), Value::Undefined),
+      )?;
+
       // Range.prototype.collapsed
       let collapsed_call_id = vm.register_native_call(range_collapsed_get_native)?;
       let collapsed_name = scope.alloc_string("get collapsed")?;
@@ -62076,6 +62115,31 @@ mod tests {
       "[[\"popstate\",1],[\"hashchange\",\"https://example.com/#two\",\"https://example.com/#one\"]]"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn range_common_ancestor_container_returns_expected_node() -> Result<(), VmError> {
+    let dom =
+      dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut host = DocumentHostState::new(dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        document.body.innerHTML = '<div id=\"host\"><span id=\"a\"></span><span id=\"b\"></span></div>';\n\
+        const hostEl = document.getElementById('host');\n\
+        const a = document.getElementById('a');\n\
+        const b = document.getElementById('b');\n\
+        const r = document.createRange();\n\
+        r.setStart(a, 0);\n\
+        r.setEnd(b, 0);\n\
+        return r.commonAncestorContainer === hostEl;\n\
+      })()",
+    )?;
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 
