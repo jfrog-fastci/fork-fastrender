@@ -1357,7 +1357,11 @@ impl ModuleGraph {
       for attr in &value.attributes {
         attributes.push(try_clone_import_attribute(attr)?);
       }
-      Ok(ModuleRequest::new(specifier, attributes))
+      // `ModuleGraph` stores canonicalized `ModuleRequest`s (attribute list sorting), so cloning can
+      // preserve ordering without re-sorting. Avoid an unnecessary `sort_unstable_by` here.
+      Ok(ModuleRequest::new_with_canonicalized_attributes(
+        specifier, attributes,
+      ))
     }
 
     for referrer_idx in 0..self.modules.len() {
