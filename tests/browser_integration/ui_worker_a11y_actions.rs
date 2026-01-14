@@ -284,8 +284,8 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
     .send(UiToWorker::A11ySetTextSelectionRange {
       tab_id,
       node_id: input_node_id,
-      start: 0,
-      end: 5,
+      anchor: 0,
+      focus: 5,
     })
     .expect("a11y set selection");
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
