@@ -1544,6 +1544,7 @@ impl<'vm> HirEvaluator<'vm> {
               // - `x = await expr;`
               // - `x <op>= await expr;` (supported compound ops only)
               // - `x &&= await expr;` / `x ||= await expr;` / `x ??= await expr;`
+              // - `({x} = await expr);` / `[x] = await expr;` (destructuring assignment; pattern must be await-free)
               //
               // Ensure:
               // - assignment target contains no await, and
@@ -1555,16 +1556,47 @@ impl<'vm> HirEvaluator<'vm> {
                     || compound_assign_op_supported(*op)
                     || logical_assign_op_supported(*op)
                   {
-                    if !assignment_target_is_supported(self, body, *target)? {
-                      return Ok(false);
+                    if assignment_target_is_supported(self, body, *target)? {
+                      if !assignment_target_has_no_await(self, script, body, *target, &mut steps)? {
+                        return Ok(false);
+                      }
+                      if !direct_await_operand_has_no_await(self, script, body, awaited_expr, &mut steps)? {
+                        return Ok(false);
+                      }
+                      continue;
                     }
-                    if !assignment_target_has_no_await(self, script, body, *target, &mut steps)? {
-                      return Ok(false);
+
+                    // Destructuring assignment statements with a direct await RHS are supported via
+                    // `HirAsyncActive::AwaitDestructuringAssignStmt` so long as the pattern itself is
+                    // await-free (pattern evaluation happens after the await boundary via the
+                    // synchronous evaluator).
+                    if *op == hir_js::AssignOp::Assign {
+                      let target_pat = self.get_pat(body, *target)?;
+                      if !matches!(
+                        target_pat.kind,
+                        hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+                      ) {
+                        if self.hir_pat_contains_await_for_async_analysis(
+                          script,
+                          body,
+                          *target,
+                          &mut steps,
+                        )? {
+                          return Ok(false);
+                        }
+                        if !direct_await_operand_has_no_await(
+                          self,
+                          script,
+                          body,
+                          awaited_expr,
+                          &mut steps,
+                        )? {
+                          return Ok(false);
+                        }
+                        continue;
+                      }
                     }
-                    if !direct_await_operand_has_no_await(self, script, body, awaited_expr, &mut steps)? {
-                      return Ok(false);
-                    }
-                    continue;
+                    return Ok(false);
                   }
                 }
 
@@ -21014,6 +21046,72 @@ mod async_function_hir_exec_tests {
     assert_eq!(
       rt.heap.promise_result(promise_obj)?,
       Some(Value::Number(2.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_await_destructuring_assign_stmt_executes_via_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() {
+          let x;
+          ({ x } = await Promise.resolve({ x: 1 }));
+          let y;
+          [y] = await Promise.resolve([2]);
+          return x + y;
+        }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected await destructuring assignment statement to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(3.0))
     );
     rt.heap.remove_root(promise_root);
     Ok(())
