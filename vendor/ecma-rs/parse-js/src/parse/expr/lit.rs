@@ -3356,6 +3356,20 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn unicode_property_escapes_are_valid_in_unicode_mode() {
+    // Basic u-mode property escapes should be accepted by the RegExp literal validator so they can
+    // reach runtime (where `vm-js` performs the actual Unicode property name/value resolution).
+    for raw in [
+      r"/\p{ASCII}/u",
+      r"/\P{ASCII}/u",
+      r"/\p{Lu}/u",
+      r"/\p{Script=Greek}/u",
+    ] {
+      validate_regex_literal(raw).unwrap_or_else(|e| panic!("{raw}: {e:?}"));
+    }
+  }
+
+  #[test]
   fn unicode_sets_mode_accepts_class_string_disjunction() {
     assert_valid(r"/^[\q{0|2|4|9\uFE0F\u20E3}_]+$/v");
     assert_valid(r"/^[[0-9]\q{0|2|4|9\uFE0F\u20E3}]+$/v");
