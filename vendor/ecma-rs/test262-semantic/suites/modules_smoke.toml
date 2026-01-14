@@ -10,6 +10,9 @@ tests = [
   # Stable baseline module early error.
   "language/module-code/early-export-unresolvable.js",
 
+  # Top-level await basic semantics.
+  "language/module-code/top-level-await/await-expr-resolution.js",
+
   # Standalone module syntax tests outside `language/module-code/`.
   "language/import/dup-bound-names.js",
   "language/export/escaped-default.js",

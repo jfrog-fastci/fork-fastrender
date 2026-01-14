@@ -10,10 +10,12 @@ fn modules_smoke_suite_selects_module_tests() {
 
   // Minimal fake test262 checkout: only the `test/` directory is required for discovery.
   let module_dir = temp.path().join("test/language/module-code");
+  let tla_dir = temp.path().join("test/language/module-code/top-level-await");
   let import_dir = temp.path().join("test/language/import");
   let export_dir = temp.path().join("test/language/export");
   let import_meta_dir = temp.path().join("test/language/expressions/import.meta");
   fs::create_dir_all(&module_dir).unwrap();
+  fs::create_dir_all(&tla_dir).unwrap();
   fs::create_dir_all(&import_dir).unwrap();
   fs::create_dir_all(&export_dir).unwrap();
   fs::create_dir_all(&import_meta_dir).unwrap();
@@ -22,6 +24,11 @@ fn modules_smoke_suite_selects_module_tests() {
   fs::write(
     module_dir.join("early-export-unresolvable.js"),
     "/*---\nflags: [module]\n---*/\nexport { x } from './does-not-exist.js';\n",
+  )
+  .unwrap();
+  fs::write(
+    tla_dir.join("await-expr-resolution.js"),
+    "/*---\nflags: [module, async]\n---*/\nawait 42;\n$DONE();\n",
   )
   .unwrap();
   fs::write(
@@ -50,6 +57,12 @@ fn modules_smoke_suite_selects_module_tests() {
       .iter()
       .any(|id| id == "language/module-code/early-export-unresolvable.js"),
     "expected suite to include early-export-unresolvable.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/top-level-await/await-expr-resolution.js"),
+    "expected suite to include language/module-code/top-level-await/await-expr-resolution.js, got: {selected:#?}"
   );
   assert!(
     selected.iter().any(|id| id == "language/import/dup-bound-names.js"),

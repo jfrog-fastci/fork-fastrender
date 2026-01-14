@@ -102,7 +102,7 @@ The runner ships with built-in suites:
 
 ```bash
 bash scripts/cargo_agent.sh run -p test262-semantic -- --suite smoke
-# Module tests (import/export/import.meta/module early errors):
+# Module tests (import/export/import.meta/top-level await/module early errors):
 bash scripts/cargo_agent.sh run -p test262-semantic -- --suite modules_smoke --list
 ```
 
