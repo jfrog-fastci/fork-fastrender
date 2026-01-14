@@ -4782,4 +4782,43 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn teardown_clears_loaded_modules_caches_even_when_already_torn_down() -> Result<(), VmError> {
+    // `ModuleGraph::new` starts in the `torn_down = true` state (no persistent roots). The
+    // Script/Realm `[[LoadedModules]]` caches can still be populated before the graph owns any
+    // roots (e.g. if module loading aborts early), so `teardown` must clear them even when it takes
+    // the idempotent early-return path.
+    let mut graph = ModuleGraph::new();
+
+    let script_id = ScriptId::from_raw(1);
+    let realm_id = RealmId::from_raw(1);
+    let module = ModuleId::from_raw(0);
+
+    graph
+      .script_loaded_modules_mut(script_id)?
+      .push(LoadedModuleRequest::new(
+        module_request_from_specifier("m")?,
+        module,
+      ));
+    graph
+      .realm_loaded_modules_mut(realm_id)?
+      .push(LoadedModuleRequest::new(
+        module_request_from_specifier("n")?,
+        module,
+      ));
+
+    assert!(!graph.script_loaded_modules.is_empty());
+    assert!(!graph.realm_loaded_modules.is_empty());
+
+    // Graph is still `torn_down = true` here, since populating the caches does not create any GC
+    // roots owned by the graph.
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    graph.teardown(&mut vm, &mut heap);
+
+    assert!(graph.script_loaded_modules.is_empty());
+    assert!(graph.realm_loaded_modules.is_empty());
+    Ok(())
+  }
 }
