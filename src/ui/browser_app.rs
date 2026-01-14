@@ -1058,18 +1058,21 @@ impl BrowserTabState {
   }
 
   pub fn apply_optimistic_viewport_scroll_delta(&mut self, delta_css: (f32, f32)) -> bool {
-    let prev = self.scroll_state.clone();
+    let prev_viewport = self.scroll_state.viewport;
     let bounds_css = self.scroll_metrics.map(|metrics| metrics.bounds_css);
-    let (next_viewport, _applied_delta) =
-      crate::ui::scroll::apply_viewport_delta_css(prev.viewport, delta_css, bounds_css);
+    let (next_viewport, applied_delta) =
+      crate::ui::scroll::apply_viewport_delta_css(prev_viewport, delta_css, bounds_css);
+
     self.scroll_state.viewport = next_viewport;
-    self.scroll_state.update_deltas_from(&prev);
+    self.scroll_state.viewport_delta = applied_delta;
+    // Viewport-only scroll update: element deltas should not leak from previous scroll operations.
+    self.scroll_state.elements_delta.clear();
 
     if let Some(metrics) = self.scroll_metrics.as_mut() {
       metrics.scroll_css = (self.scroll_state.viewport.x, self.scroll_state.viewport.y);
     }
 
-    prev.viewport != self.scroll_state.viewport
+    prev_viewport != self.scroll_state.viewport
   }
 
   fn reset_load_progress(&mut self) {

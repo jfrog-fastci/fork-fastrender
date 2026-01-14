@@ -2408,8 +2408,12 @@ impl ScrollCoalescer {
     } else {
       0.0
     };
-    self.delta_css.0 += dx;
-    self.delta_css.1 += dy;
+    let add_saturating = |base: f32, delta: f32| {
+      let next = base + delta;
+      if next.is_finite() { next } else { base }
+    };
+    self.delta_css.0 = add_saturating(self.delta_css.0, dx);
+    self.delta_css.1 = add_saturating(self.delta_css.1, dy);
     // Preserve pointer-targeted semantics by remembering the most recent pointer location.
     self.pointer_css = pointer_css;
   }
