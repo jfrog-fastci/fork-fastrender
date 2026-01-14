@@ -336,9 +336,13 @@ impl<'a> Parser<'a> {
       self.expr_with_min_prec(ctx, 1, [TT::ParenthesisClose], asi)?
     };
     let close = self.require(TT::ParenthesisClose)?;
-    // Preserve the full span of the parenthesized expression (including the parentheses) so
-    // downstream consumers can slice and reparse syntax like `(() => 1)()` reliably.
-    expr.loc = open.loc + close.loc;
+    // `parse-js` does not keep parentheses as distinct AST nodes; preserve the information via an
+    // association marker instead so downstream consumers can implement syntax-sensitive behaviors
+    // (e.g. restricted production rules).
+    //
+    // Note: The expression node's `loc` remains the location of the inner expression itself, not
+    // including the parentheses, so that spans stay "tight" around their actual syntactic form.
+    let _ = (open, close);
     expr.assoc.set(ParenthesizedExpr);
     Ok(expr)
   }
