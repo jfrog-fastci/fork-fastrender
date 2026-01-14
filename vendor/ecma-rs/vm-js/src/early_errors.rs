@@ -193,8 +193,8 @@ struct ControlContext {
   /// - inside class static initialization blocks.
   ///
   /// Note: This is **not** equivalent to [`ControlContext::await_allowed`]. For example, class static
-  /// blocks treat `await` as a reserved identifier regardless of whether `await` expressions are
-  /// permitted in the surrounding context.
+  /// blocks reserve `await` as an identifier regardless of whether `await` expressions are permitted
+  /// in the surrounding context.
   await_is_reserved: bool,
   /// Whether `yield` is reserved as an identifier due to being inside a generator function.
   ///
@@ -1965,11 +1965,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     // Static initialization blocks introduce early-error boundaries:
     // - `return` is always invalid (they are not function bodies),
-    // - `await` is only valid when permitted by the surrounding context (async function / module /
-    //   async classic script). `vm-js` supports suspending class evaluation when a static block
-    //   contains `await`, so we allow it when the outer context would allow an `await` expression.
+    // - `await` validity follows the enclosing context (module top-level / async classic script /
+    //   async function bodies), but `await` is always reserved as an identifier,
     // - `yield` is always invalid (even inside generator functions),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
+    let saved_yield_is_reserved = ctx.yield_is_reserved;
     let await_allowed = ctx.await_allowed;
     let saved = self.save_and_enter_function(
       ctx,
@@ -1977,7 +1977,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* await_allowed */ await_allowed,
       /* yield_allowed */ false,
       /* await_is_reserved */ true,
-      /* yield_is_reserved */ ctx.yield_is_reserved,
+      /* yield_is_reserved */ saved_yield_is_reserved,
       /* super_call_allowed */ false,
       /* arguments_allowed */ false,
     );

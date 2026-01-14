@@ -271,7 +271,8 @@ impl<'a> Parser<'a> {
               p.new_target_allowed += 1;
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
-              // Static blocks have their own `Await` / `Yield` context:
+              // Static blocks have their own `Await` / `Yield` context and parse as
+              // `StatementList[~Yield, +Await, ~Return]opt`:
               // - `await` is reserved as an identifier,
               // - `yield` is not treated as a keyword from an enclosing generator, and
               // - `return` is not permitted (handled above via `in_function = 0`).
