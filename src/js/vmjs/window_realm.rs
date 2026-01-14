@@ -41609,7 +41609,7 @@ fn html_media_element_load_native(
   };
   let key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_html_media_element_handle(scope.heap(), this)?;
+    .require_html_media_element_handle(scope.heap(), Value::Object(obj))?;
   html_media_element_ensure_loaded(vm, scope, host, hooks, obj, key)?;
   Ok(Value::Undefined)
 }
