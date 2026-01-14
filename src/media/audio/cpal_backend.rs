@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -1348,129 +1349,153 @@ where
     .build_output_stream(
       config,
       move |output: &mut [T], info| {
-        super::thread_priority::promote_current_thread_for_audio();
         let frames = if channels == 0 {
           0u64
         } else {
           (output.len() / channels) as u64
         };
+        let mut clock_updated = false;
 
-        let mut callback_span = if trace_enabled {
-          let mut span = trace.span("audio.callback", "audio");
-          span.arg_u64("frames", frames);
-          Some(span)
-        } else {
-          None
-        };
+        let res = catch_unwind(AssertUnwindSafe(|| {
+          super::thread_priority::promote_current_thread_for_audio();
 
-        // If we've already panicked once, keep outputting silence to avoid repeated unwinds from
-        // unpredictable RT callback state. Still advance the clock/counters so A/V sync doesn't
-        // stall completely.
-        if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
-          output.fill(T::SILENCE);
-          if channels != 0 {
-            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-            last_callback_frames.store(frames_u32, Ordering::Relaxed);
-            clock.on_callback_end_at(Instant::now(), frames_u32, None);
-            if fixed_callback_frames.is_none() {
-              let latency = frames_to_duration(sample_rate_hz, frames);
-              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
-            }
-          }
-          return;
-        }
-
-        if let Some(span) = callback_span.as_mut() {
-          let stats = mixer.stats_for_output_len(output.len());
-          span.arg_u64("streams", stats.streams);
-          span.arg_u64("underruns", stats.underruns);
-          span.arg_u64("buffered_frames", stats.buffered_frames);
-        }
-
-        let did_panic =
-          guard_output_callback(output, &diagnostics.panic_in_callback, |output| {
-          let ts = info.timestamp();
-          let latency = ts.playback.duration_since(&ts.callback);
-
-          match mixer.mix_for_callback(output.len()) {
-            MixerCallbackAction::Mix => {
-              // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
-              // in the callback; instead, process in bounded chunks using the preallocated mix
-              // buffer.
-              let mix_span = if trace_enabled {
-                Some(trace.span("audio.mix", "audio"))
-              } else {
-                None
-              };
-
-              for out_chunk in output.chunks_mut(mix_buf.len()) {
-                let mix = &mut mix_buf[..out_chunk.len()];
-                mix.fill(0.0);
-                mixer.mix_into(mix);
-                for (out, sample) in out_chunk.iter_mut().zip(mix.iter()) {
-                  *out = T::from_mixed_f32(*sample);
-                }
+          // If we've already panicked once, keep outputting silence to avoid repeated unwinds from
+          // unpredictable RT callback state. Still advance the clock/counters so A/V sync doesn't
+          // stall completely.
+          if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
+            output.fill(T::SILENCE);
+            if channels != 0 {
+              let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+              last_callback_frames.store(frames_u32, Ordering::Relaxed);
+              clock.on_callback_end_at(Instant::now(), frames_u32, None);
+              clock_updated = true;
+              if fixed_callback_frames.is_none() {
+                let latency = frames_to_duration(sample_rate_hz, frames);
+                estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
               }
-              drop(mix_span);
             }
-            MixerCallbackAction::Silence | MixerCallbackAction::SilenceAndDrain => {
-              // Fill output with silence without doing any per-sample mixing work.
-              output.fill(T::SILENCE);
-            }
+            return;
           }
 
-          if channels != 0 {
-            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-            last_callback_frames.store(frames_u32, Ordering::Relaxed);
-            let callback_end = Instant::now();
+          let mut callback_span = if trace_enabled {
+            let mut span = trace.span("audio.callback", "audio");
+            span.arg_u64("frames", frames);
+            Some(span)
+          } else {
+            None
+          };
 
-            // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
-            // pure frame counter when unavailable.
-            let device_time_at_end = {
-              let playback = ts.playback;
-              let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
-              let buffer_duration = frames_to_duration(sample_rate_hz, frames);
+          if let Some(span) = callback_span.as_mut() {
+            let stats = mixer.stats_for_output_len(output.len());
+            span.arg_u64("streams", stats.streams);
+            span.arg_u64("underruns", stats.underruns);
+            span.arg_u64("buffered_frames", stats.buffered_frames);
+          }
 
-               match playback_origin.as_ref() {
-                 Some(origin) => match playback.duration_since(origin) {
-                  Some(since_origin) => Some(
-                    playback_origin_offset
-                      .saturating_add(since_origin)
-                      .saturating_add(buffer_duration),
-                  ),
-                  None => {
-                    // Playback timestamps went backwards (device restart/glitch). Re-anchor and
-                    // align to the frame counter so timestamp-based clocking can resume without a
-                    // discontinuity.
-                    playback_origin = Some(playback);
-                    playback_origin_offset = frame_counter_time;
-                    Some(frame_counter_time.saturating_add(buffer_duration))
+          let did_panic =
+            guard_output_callback(output, &diagnostics.panic_in_callback, |output| {
+              let ts = info.timestamp();
+              let latency = ts.playback.duration_since(&ts.callback);
+
+              match mixer.mix_for_callback(output.len()) {
+                MixerCallbackAction::Mix => {
+                  // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
+                  // in the callback; instead, process in bounded chunks using the preallocated mix
+                  // buffer.
+                  let mix_span = if trace_enabled {
+                    Some(trace.span("audio.mix", "audio"))
+                  } else {
+                    None
+                  };
+
+                  for out_chunk in output.chunks_mut(mix_buf.len()) {
+                    let mix = &mut mix_buf[..out_chunk.len()];
+                    mix.fill(0.0);
+                    mixer.mix_into(mix);
+                    for (out, sample) in out_chunk.iter_mut().zip(mix.iter()) {
+                      *out = T::from_mixed_f32(*sample);
+                    }
                   }
-                },
-                None => {
-                  playback_origin = Some(playback);
-                  playback_origin_offset = frame_counter_time;
-                  Some(frame_counter_time.saturating_add(buffer_duration))
+                  drop(mix_span);
+                }
+                MixerCallbackAction::Silence | MixerCallbackAction::SilenceAndDrain => {
+                  // Fill output with silence without doing any per-sample mixing work.
+                  output.fill(T::SILENCE);
                 }
               }
-            };
 
-            clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
+              if channels != 0 {
+                let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+                last_callback_frames.store(frames_u32, Ordering::Relaxed);
+                let callback_end = Instant::now();
 
-            // Best-effort latency estimate:
-            // - prefer CPAL timestamps when available (callback vs playback instant),
-            // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
-            if let Some(latency) = latency {
-              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
-            } else if fixed_callback_frames.is_none() {
-              let latency = frames_to_duration(sample_rate_hz, frames);
-              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+                // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
+                // pure frame counter when unavailable.
+                let device_time_at_end = {
+                  let playback = ts.playback;
+                  let frame_counter_time =
+                    frames_to_duration(sample_rate_hz, clock.frames_written());
+                  let buffer_duration = frames_to_duration(sample_rate_hz, frames);
+
+                  match playback_origin.as_ref() {
+                    Some(origin) => match playback.duration_since(origin) {
+                      Some(since_origin) => Some(
+                        playback_origin_offset
+                          .saturating_add(since_origin)
+                          .saturating_add(buffer_duration),
+                      ),
+                      None => {
+                        // Playback timestamps went backwards (device restart/glitch). Re-anchor and
+                        // align to the frame counter so timestamp-based clocking can resume without a
+                        // discontinuity.
+                        playback_origin = Some(playback);
+                        playback_origin_offset = frame_counter_time;
+                        Some(frame_counter_time.saturating_add(buffer_duration))
+                      }
+                    },
+                    None => {
+                      playback_origin = Some(playback);
+                      playback_origin_offset = frame_counter_time;
+                      Some(frame_counter_time.saturating_add(buffer_duration))
+                    }
+                  }
+                };
+
+                clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
+                clock_updated = true;
+
+                // Best-effort latency estimate:
+                // - prefer CPAL timestamps when available (callback vs playback instant),
+                // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
+                if let Some(latency) = latency {
+                  estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+                } else if fixed_callback_frames.is_none() {
+                  let latency = frames_to_duration(sample_rate_hz, frames);
+                  estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+                }
+              }
+            });
+
+          if did_panic {
+            if channels != 0 {
+              let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+              last_callback_frames.store(frames_u32, Ordering::Relaxed);
+              clock.on_callback_end_at(Instant::now(), frames_u32, None);
+              clock_updated = true;
+
+              if fixed_callback_frames.is_none() {
+                let latency = frames_to_duration(sample_rate_hz, frames);
+                estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+              }
             }
           }
-        });
+        }));
 
-        if did_panic {
-          if channels != 0 {
+        if res.is_err() {
+          diagnostics.set_panic_in_callback();
+          output.fill(T::SILENCE);
+
+          if !clock_updated && channels != 0 {
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             clock.on_callback_end_at(Instant::now(), frames_u32, None);
