@@ -192,3 +192,29 @@ fn generator_array_literal_yield_in_spread_non_iterable_throws_type_error() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_spread_yield_star_final_value_is_spread() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* inner() { yield 1; yield 2; return [3, 4]; }
+      function* g() { return [ ...(yield* inner()), 5 ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("x");
+      var r3 = it.next("y");
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true &&
+      Array.isArray(r3.value) &&
+      r3.value.length === 3 &&
+      r3.value[0] === 3 &&
+      r3.value[1] === 4 &&
+      r3.value[2] === 5
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
