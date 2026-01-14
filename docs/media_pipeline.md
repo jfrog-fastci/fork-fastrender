@@ -130,7 +130,10 @@ Current behavior:
   - When enabled (`WebmDemuxerOptions.inter_track_reordering = true`), `next_packet()` yields
     non-decreasing PTS across tracks using a small bounded queue per track.
 - Seeking:
-  - `WebmDemuxer::seek(time_ns)` uses `MatroskaFile::seek(...)` and compensates for codec delay.
+  - `WebmDemuxer::seek(time_ns)` uses `MatroskaFile::seek(...)` and compensates for codec delay and
+    Matroska `SeekPreRoll` by seeking slightly earlier.
+    - After seeking, the demuxer may emit preroll packets with `pts_ns < time_ns` to allow decoder
+      warm-up (notably for Opus).
   - In damaged/unindexed files, seeking may return
     `MediaError::Unsupported("Matroska seek unsupported (no cluster index)")`.
 
@@ -376,14 +379,17 @@ primarily a smoke test for `<video>/<audio>` layout and for future playback wiri
 - MP4 (`Mp4ParseDemuxer`):
   - Seek is not currently keyframe-aware (it does not backtrack to sync samples), so seeking into
     the middle of a GOP may fail to decode until the next keyframe.
-  - MP4 currently has no per-sample size cap, and `Mp4ParseDemuxer` builds full sample lists without
-    explicit caps; corrupted/adversarial MP4s can force large allocations.
+  - MP4 sample payloads are capped (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`) to
+    avoid unbounded per-sample allocations on corrupted/adversarial files.
+  - `Mp4ParseDemuxer` still builds full sample lists without explicit caps; corrupted/adversarial MP4s
+    can force large allocations.
 - MP4 (mp4-crate path, `Mp4PacketDemuxer`):
   - Still in-tree (not used by `NativeBackend`), with sample-table caps + best-effort keyframe seek.
   - Fragmented MP4 is unsupported on this path.
 - WebM (`WebmDemuxer`):
-  - Seek is best-effort and currently does not account for Matroska `SeekPreRoll` (some codecs may
-    require decode before the target PTS after seeking).
+  - Seek is best-effort but does account for Matroska `SeekPreRoll`; callers should expect preroll
+    packets with `pts_ns < seek_target` that must be decoded+discarded to warm up some codecs
+    (notably Opus).
 - Opus:
   - Only mapping family 0 mono/stereo is supported today (no multichannel mapping tables).
 - Audio output:
