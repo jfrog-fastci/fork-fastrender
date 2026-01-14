@@ -3,13 +3,12 @@
 use super::support;
 use fastrender::ui::messages::{CursorKind, NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -23,7 +22,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
   }
 }
 
-fn next_hover_changed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Option<String>, CursorKind) {
+fn next_hover_changed(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> (Option<String>, CursorKind) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::HoverChanged { .. })
   })
@@ -218,4 +220,3 @@ fn pointer_click_outside_viewport_does_not_navigate_or_trigger_interaction_repai
 
   worker.join().unwrap();
 }
-

@@ -3,12 +3,11 @@
 use super::support;
 use fastrender::ui::messages::{PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -158,4 +157,3 @@ line 30</textarea>
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

@@ -60,7 +60,10 @@ fn next_navigation_committed(
   }
 }
 
-fn next_hovered_url(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Option<String> {
+fn next_hovered_url(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> Option<String> {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::HoverChanged { .. })
   })
@@ -71,7 +74,10 @@ fn next_hovered_url(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Option<String> 
   }
 }
 
-fn next_context_menu_link_url(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Option<String> {
+fn next_context_menu_link_url(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> Option<String> {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ContextMenu { .. })
   })
