@@ -1737,6 +1737,36 @@ mod tests {
   }
 
   #[test]
+  fn demuxer_packets_are_interleaved_by_global_dts() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let mut demuxer = Mp4Demuxer::open(Cursor::new(bytes.as_slice())).expect("open mp4");
+
+    let mut prev: Option<u64> = None;
+    let mut saw_packet = false;
+
+    // Read a bounded number of packets; the fixture is small, but keep the test deterministic.
+    for _ in 0..1024 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if let Some(prev) = prev {
+        assert!(
+          pkt.dts_ns >= prev,
+          "expected globally nondecreasing DTS ({} < {})",
+          pkt.dts_ns,
+          prev
+        );
+      }
+      prev = Some(pkt.dts_ns);
+      saw_packet = true;
+    }
+
+    assert!(saw_packet, "expected at least one packet from fixture");
+  }
+
+  #[test]
   fn track_state_normalizes_negative_pts_ticks() {
     // PTS ticks derived from `dts + ctts`:
     // dts: 0, 1, 2, 3
