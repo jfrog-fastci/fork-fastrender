@@ -190,7 +190,9 @@ pub mod yuv;
 pub use audio::{AudioStreamError, AudioStreamHandle};
 pub use audio_clock::InterpolatedAudioClock;
 pub use av_sync::AvSyncConfig;
-pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, PlaybackClock, RealAudioDeviceClock};
+pub use clock::{
+  AudioDeviceClock, AudioStreamClock, MediaClock, PlaybackClock, PlaybackState, RealAudioDeviceClock,
+};
 pub use frame_provider::SizeHintMediaFrameProvider;
 pub use error::MediaClockError;
 pub use master_clock::{ClockSource, MasterClock};

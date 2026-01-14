@@ -243,6 +243,7 @@ fn apply_paint_interaction_state_to_fragment_tree(
   }
 
   if let Some(existing) = fragment_tree.appearance_none_form_controls.as_ref() {
+    let existing = existing.as_ref();
     if !existing.is_empty() {
       let mut updated: HashMap<usize, Arc<crate::tree::box_tree::FormControl>> =
         HashMap::with_capacity(existing.len());
