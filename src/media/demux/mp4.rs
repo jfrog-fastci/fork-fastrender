@@ -102,8 +102,11 @@ impl TrackState {
   fn seek(&mut self, time_ns: u64) {
     let idx = match &self.pts_index {
       PtsIndex::Monotonic => self.samples.partition_point(|s| s.pts_ns < time_ns),
-      PtsIndex::Sorted { sample_indices_by_pts } => {
-        let pos = sample_indices_by_pts.partition_point(|&i| self.samples[i as usize].pts_ns < time_ns);
+      PtsIndex::Sorted {
+        sample_indices_by_pts,
+      } => {
+        let pos =
+          sample_indices_by_pts.partition_point(|&i| self.samples[i as usize].pts_ns < time_ns);
         sample_indices_by_pts
           .get(pos)
           .map(|&i| i as usize)
@@ -134,14 +137,15 @@ impl Mp4Demuxer {
   pub fn from_bytes(bytes: Vec<u8>) -> MediaResult<Self> {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
-    let moov =
-      find_top_level_box(&bytes, fourcc(b"moov")).map_err(map_parse_error)?.ok_or_else(|| {
-        MediaError::Demux(Mp4ParseError::MissingBox("moov").to_string())
-      })?;
+    let moov = find_top_level_box(&bytes, fourcc(b"moov"))
+      .map_err(map_parse_error)?
+      .ok_or_else(|| MediaError::Demux(Mp4ParseError::MissingBox("moov").to_string()))?;
 
     let tracks_boxes = parse_moov(&bytes, moov).map_err(map_parse_error)?;
     if tracks_boxes.is_empty() {
-      return Err(MediaError::Demux(Mp4ParseError::MissingBox("trak").to_string()));
+      return Err(MediaError::Demux(
+        Mp4ParseError::MissingBox("trak").to_string(),
+      ));
     }
 
     let mut tracks = Vec::new();
@@ -150,8 +154,12 @@ impl Mp4Demuxer {
     let mut deadline_counter = 0usize;
 
     for t in tracks_boxes.into_iter() {
-      check_root_periodic(&mut deadline_counter, MP4_DEMUX_DEADLINE_STRIDE, RenderStage::Paint)
-        .map_err(MediaError::from)?;
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4_DEMUX_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )
+      .map_err(MediaError::from)?;
 
       let Some(handler) = t.handler_type else {
         continue;
@@ -167,10 +175,15 @@ impl Mp4Demuxer {
         .map(u64::from)
         .unwrap_or_else(|| (track_states.len() as u64) + 1);
 
-      let stsd = t.stsd.clone().ok_or_else(|| MediaError::Demux(Mp4ParseError::MissingBox("stsd").to_string()))?;
+      let stsd = t
+        .stsd
+        .clone()
+        .ok_or_else(|| MediaError::Demux(Mp4ParseError::MissingBox("stsd").to_string()))?;
 
       let codec = match (track_type, stsd.codec_fourcc) {
-        (MediaTrackType::Video, c) if c == fourcc(b"avc1") || c == fourcc(b"avc3") => MediaCodec::H264,
+        (MediaTrackType::Video, c) if c == fourcc(b"avc1") || c == fourcc(b"avc3") => {
+          MediaCodec::H264
+        }
         (MediaTrackType::Audio, c) if c == fourcc(b"mp4a") => MediaCodec::Aac,
         (_, other) => MediaCodec::Unknown(fourcc_to_string(other)),
       };
@@ -266,7 +279,9 @@ impl Mp4Demuxer {
         .checked_add(sample.size as usize)
         .ok_or_else(|| MediaError::Demux("MP4 sample size overflow".to_string()))?;
       if end > self.bytes.len() {
-        return Err(MediaError::Demux("MP4 sample data out of bounds".to_string()));
+        return Err(MediaError::Demux(
+          "MP4 sample data out of bounds".to_string(),
+        ));
       }
 
       let mut pts_ns = sample.pts_ns;
@@ -661,7 +676,10 @@ fn parse_stsd(bytes: &[u8], stsd: Range<usize>) -> ParseResult<SampleDescription
   })
 }
 
-fn parse_avc_sample_entry(bytes: &[u8], entry: Range<usize>) -> ParseResult<(MediaVideoInfo, Vec<u8>)> {
+fn parse_avc_sample_entry(
+  bytes: &[u8],
+  entry: Range<usize>,
+) -> ParseResult<(MediaVideoInfo, Vec<u8>)> {
   let mut cur = Cursor::new(bytes, entry.start);
   cur.skip(entry.end, 6)?; // reserved
   cur.skip(entry.end, 2)?; // data_reference_index
@@ -685,13 +703,13 @@ fn parse_avc_sample_entry(bytes: &[u8], entry: Range<usize>) -> ParseResult<(Med
     return Err(Mp4ParseError::MissingBox("avcC"));
   }
 
-  Ok((
-    MediaVideoInfo { width, height },
-    avcc,
-  ))
+  Ok((MediaVideoInfo { width, height }, avcc))
 }
 
-fn parse_aac_sample_entry(bytes: &[u8], entry: Range<usize>) -> ParseResult<(MediaAudioInfo, Vec<u8>)> {
+fn parse_aac_sample_entry(
+  bytes: &[u8],
+  entry: Range<usize>,
+) -> ParseResult<(MediaAudioInfo, Vec<u8>)> {
   let mut cur = Cursor::new(bytes, entry.start);
   cur.skip(entry.end, 6)?; // reserved
   cur.skip(entry.end, 2)?; // data_reference_index
@@ -710,7 +728,11 @@ fn parse_aac_sample_entry(bytes: &[u8], entry: Range<usize>) -> ParseResult<(Med
     0 => {}
     1 => cur.skip(entry.end, 16)?,
     2 => cur.skip(entry.end, 36)?,
-    _ => return Err(Mp4ParseError::Invalid("unsupported mp4a sample entry version")),
+    _ => {
+      return Err(Mp4ParseError::Invalid(
+        "unsupported mp4a sample entry version",
+      ))
+    }
   }
 
   let mut asc = Vec::new();
@@ -763,7 +785,9 @@ fn parse_esds_for_asc(bytes: &[u8], esds: Range<usize>) -> ParseResult<Vec<u8>> 
     return Err(Mp4ParseError::Invalid("esds missing ES_Descriptor"));
   }
   let es_len = read_descriptor_len(data, &mut pos)? as usize;
-  let es_end = pos.checked_add(es_len).ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
+  let es_end = pos
+    .checked_add(es_len)
+    .ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
   if es_end > data.len() {
     return Err(Mp4ParseError::UnexpectedEof);
   }
@@ -804,7 +828,9 @@ fn parse_esds_for_asc(bytes: &[u8], esds: Range<usize>) -> ParseResult<Vec<u8>> 
     ));
   }
   let cfg_len = read_descriptor_len(data, &mut pos)? as usize;
-  let cfg_end = pos.checked_add(cfg_len).ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
+  let cfg_end = pos
+    .checked_add(cfg_len)
+    .ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
   if cfg_end > es_end {
     return Err(Mp4ParseError::UnexpectedEof);
   }
@@ -827,7 +853,9 @@ fn parse_esds_for_asc(bytes: &[u8], esds: Range<usize>) -> ParseResult<Vec<u8>> 
     ));
   }
   let asc_len = read_descriptor_len(data, &mut pos)? as usize;
-  let asc_end = pos.checked_add(asc_len).ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
+  let asc_end = pos
+    .checked_add(asc_len)
+    .ok_or(Mp4ParseError::Invalid("esds length overflow"))?;
   if asc_end > cfg_end {
     return Err(Mp4ParseError::UnexpectedEof);
   }
@@ -1069,7 +1097,9 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   let stts = t.stts.ok_or(Mp4ParseError::MissingBox("stts"))?;
   let stsc = t.stsc.ok_or(Mp4ParseError::MissingBox("stsc"))?;
   let stsz = t.stsz.ok_or(Mp4ParseError::MissingBox("stsz"))?;
-  let chunk_offsets = t.chunk_offsets.ok_or(Mp4ParseError::MissingBox("stco/co64"))?;
+  let chunk_offsets = t
+    .chunk_offsets
+    .ok_or(Mp4ParseError::MissingBox("stco/co64"))?;
   let ctts = t.ctts.unwrap_or_default();
 
   let sample_count = stsz.sample_count as usize;
@@ -1158,6 +1188,31 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
   let mut stts_iter = TableRunIter::new_stts(&stts);
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
 
+  // Compute the minimum PTS tick value so we can normalize away negative PTS ticks (CTTS v1).
+  let mut dts_ticks: i64 = 0;
+  let mut min_pts_ticks: i64 = i64::MAX;
+  for sample in &mut samples {
+    let dur_ticks = stts_iter
+      .next_u32()
+      .ok_or(Mp4ParseError::Invalid("stts shorter than sample_count"))?;
+    let ctts_off = ctts_iter.next_i64().unwrap_or(0);
+
+    let pts_ticks = dts_ticks.saturating_add(ctts_off);
+    min_pts_ticks = min_pts_ticks.min(pts_ticks);
+    sample.duration_ns = ticks_to_ns(i64::from(dur_ticks), timescale);
+
+    dts_ticks = dts_ticks.saturating_add(i64::from(dur_ticks));
+  }
+
+  let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
+    -(min_pts_ticks as i128)
+  } else {
+    0
+  };
+
+  // Second pass: fill PTS ns values, applying the normalization offset.
+  let mut stts_iter = TableRunIter::new_stts(&stts);
+  let mut ctts_iter = TableRunIter::new_ctts(&ctts);
   let mut dts_ticks: i64 = 0;
   for sample in &mut samples {
     let dur_ticks = stts_iter
@@ -1167,8 +1222,15 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
 
     sample.dts_ns = ticks_to_ns(dts_ticks, timescale);
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
-    sample.pts_ns = ticks_to_ns(pts_ticks, timescale);
-    sample.duration_ns = ticks_to_ns(i64::from(dur_ticks), timescale);
+    let shifted = (pts_ticks as i128).saturating_add(pts_offset_ticks);
+    let shifted = if shifted > i64::MAX as i128 {
+      i64::MAX
+    } else if shifted <= 0 {
+      0
+    } else {
+      shifted as i64
+    };
+    sample.pts_ns = ticks_to_ns(shifted, timescale);
 
     dts_ticks = dts_ticks.saturating_add(i64::from(dur_ticks));
   }
@@ -1202,7 +1264,9 @@ fn build_pts_index(samples: &[Sample]) -> PtsIndex {
   }
   sample_indices_by_pts.sort_unstable_by_key(|&i| (samples[i as usize].pts_ns, i));
 
-  PtsIndex::Sorted { sample_indices_by_pts }
+  PtsIndex::Sorted {
+    sample_indices_by_pts,
+  }
 }
 
 fn ticks_to_ns(ticks: i64, timescale: u32) -> u64 {
@@ -1340,5 +1404,59 @@ mod tests {
     }
     assert!(post_seek_video, "expected H264 packet after seek");
     assert!(post_seek_audio, "expected AAC packet after seek");
+  }
+
+  #[test]
+  fn track_state_normalizes_negative_pts_ticks() {
+    // PTS ticks derived from `dts + ctts`:
+    // dts: 0, 1, 2, 3
+    // ctts: -3, -1, 0, 1
+    // pts: -3, 0, 2, 4  => normalize by +3 => 0, 3, 5, 7
+    let state = build_track_state(
+      TrackBoxes {
+        timescale: Some(1),
+        stts: Some(vec![SttsEntry {
+          sample_count: 4,
+          sample_delta: 1,
+        }]),
+        ctts: Some(vec![
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: -3,
+          },
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: -1,
+          },
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: 0,
+          },
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: 1,
+          },
+        ]),
+        stsc: Some(vec![StscEntry {
+          first_chunk: 1,
+          samples_per_chunk: 4,
+          _sample_desc_index: 1,
+        }]),
+        stsz: Some(StszBox {
+          sample_size: 1,
+          sample_sizes: Vec::new(),
+          sample_count: 4,
+        }),
+        chunk_offsets: Some(vec![0]),
+        ..Default::default()
+      },
+      1,
+    )
+    .expect("track state");
+
+    assert_eq!(
+      state.samples.iter().map(|s| s.pts_ns).collect::<Vec<_>>(),
+      vec![0, 3_000_000_000, 5_000_000_000, 7_000_000_000]
+    );
   }
 }

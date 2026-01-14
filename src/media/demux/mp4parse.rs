@@ -268,8 +268,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
           best_track_id = t.id;
         }
         Some(_) => {
-          if sample.dts_ns < best_dts_ns || (sample.dts_ns == best_dts_ns && t.id < best_track_id)
-          {
+          if sample.dts_ns < best_dts_ns || (sample.dts_ns == best_dts_ns && t.id < best_track_id) {
             best_track_idx = Some(idx);
             best_dts_ns = sample.dts_ns;
             best_track_id = t.id;
@@ -310,9 +309,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
 }
 
 fn read_mp4_context<R: Read + Seek>(reader: &mut R) -> MediaResult<mp4parse::MediaContext> {
-  reader
-    .seek(SeekFrom::Start(0))
-    .map_err(MediaError::Io)?;
+  reader.seek(SeekFrom::Start(0)).map_err(MediaError::Io)?;
 
   mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse failed: {e}")))
 }
@@ -437,6 +434,29 @@ fn build_sample_list(track: &mp4parse::Track) -> MediaResult<Vec<Mp4SampleInfo>>
     return Ok(Vec::new());
   };
 
+  build_sample_list_from_table(&table, timescale)
+}
+
+fn build_sample_list_from_table(
+  table: &[mp4parse::unstable::Indice],
+  timescale: u64,
+) -> MediaResult<Vec<Mp4SampleInfo>> {
+  // MP4 `ctts` offsets can be negative (version 1), producing negative composition times (PTS).
+  // `MediaPacket` stores timestamps as `u64` nanoseconds, so preserve distinct negative timestamps
+  // by shifting the entire track so the minimum PTS becomes 0.
+  let mut min_pts_ticks: i64 = i64::MAX;
+  for s in table.iter() {
+    min_pts_ticks = min_pts_ticks.min(s.start_composition.0);
+  }
+  if min_pts_ticks == i64::MAX {
+    min_pts_ticks = 0;
+  }
+  let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
+    -(min_pts_ticks as i128)
+  } else {
+    0
+  };
+
   let mut samples = Vec::with_capacity(table.len());
   for s in table.iter() {
     let offset = s.start_offset.0;
@@ -445,7 +465,7 @@ fn build_sample_list(track: &mp4parse::Track) -> MediaResult<Vec<Mp4SampleInfo>>
       u32::try_from(size_u64).map_err(|_| MediaError::Demux("sample too large".to_string()))?;
 
     let dts_ticks = non_negative_i64_to_u64(s.start_decode.0);
-    let pts_ticks = non_negative_i64_to_u64(s.start_composition.0);
+    let pts_ticks = shift_ticks_to_non_negative_u64(s.start_composition.0, pts_offset_ticks);
     let duration_ticks_i64 = s.end_composition.0.saturating_sub(s.start_composition.0);
     let duration_ticks = non_negative_i64_to_u64(duration_ticks_i64);
 
@@ -467,6 +487,17 @@ fn non_negative_i64_to_u64(v: i64) -> u64 {
     0
   } else {
     v as u64
+  }
+}
+
+fn shift_ticks_to_non_negative_u64(v: i64, offset: i128) -> u64 {
+  let shifted = (v as i128).saturating_add(offset);
+  if shifted <= 0 {
+    0
+  } else if shifted > u64::MAX as i128 {
+    u64::MAX
+  } else {
+    shifted as u64
   }
 }
 
@@ -545,5 +576,36 @@ mod tests {
 
     let (_, audio) = select_primary_track_ids(&tracks, policy);
     assert_eq!(audio, Some(10));
+  }
+
+  #[test]
+  fn mp4parse_build_sample_list_normalizes_negative_composition_ticks() {
+    use mp4parse::unstable::CheckedInteger;
+
+    let table = vec![
+      mp4parse::unstable::Indice {
+        start_offset: CheckedInteger(0u64),
+        end_offset: CheckedInteger(1u64),
+        start_decode: CheckedInteger(0i64),
+        start_composition: CheckedInteger(-1i64),
+        end_composition: CheckedInteger(0i64),
+        sync: true,
+        ..Default::default()
+      },
+      mp4parse::unstable::Indice {
+        start_offset: CheckedInteger(1u64),
+        end_offset: CheckedInteger(2u64),
+        start_decode: CheckedInteger(1i64),
+        start_composition: CheckedInteger(0i64),
+        end_composition: CheckedInteger(1i64),
+        sync: true,
+        ..Default::default()
+      },
+    ];
+
+    let samples = build_sample_list_from_table(&table, 1).expect("sample list");
+    assert_eq!(samples.len(), 2);
+    assert_eq!(samples[0].pts_ns, 0);
+    assert_eq!(samples[1].pts_ns, 1_000_000_000);
   }
 }
