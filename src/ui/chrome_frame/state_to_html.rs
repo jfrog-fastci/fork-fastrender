@@ -164,14 +164,15 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("<body>\n");
 
   // Tab strip.
-  out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\" role=\"tablist\" aria-label=\"Tabs\">\n");
+  out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\">\n");
+  out.push_str("    <div class=\"tab-strip-tabs\" role=\"tablist\" aria-label=\"Tabs\">\n");
   for tab in &app.tabs {
     let tab_id = escape_html(&tab.id.0.to_string());
     let title = escape_html(&tab.display_title());
     let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
     let is_active = active_tab_id == Some(tab.id);
     let aria_selected = if is_active { "true" } else { "false" };
-    out.push_str("    <div class=\"tab");
+    out.push_str("      <div class=\"tab");
     if is_active {
       out.push_str(" active");
     }
@@ -182,7 +183,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("\">\n");
 
     // "Activate tab" link.
-    out.push_str("      <a class=\"tab-activate\" role=\"tab\" aria-selected=\"");
+    out.push_str("        <a class=\"tab-activate\" role=\"tab\" aria-selected=\"");
     out.push_str(aria_selected);
     out.push_str("\" href=\"chrome-action:activate-tab?tab=");
     out.push_str(&tab_id);
@@ -196,14 +197,18 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("</a>\n");
 
     // Close button.
-    out.push_str("      <a class=\"tab-close\" aria-label=\"Close tab: ");
+    out.push_str("        <a class=\"tab-close\" role=\"button\" aria-label=\"Close tab: ");
     out.push_str(&title);
     out.push_str("\" href=\"chrome-action:close-tab?tab=");
     out.push_str(&tab_id);
     out.push_str("\">×</a>\n");
 
-    out.push_str("    </div>\n");
+    out.push_str("      </div>\n");
   }
+  out.push_str("    </div>\n");
+  out.push_str(
+    "    <a id=\"new-tab\" class=\"tab tab-new\" role=\"button\" aria-label=\"New tab\" href=\"chrome-action:new-tab\">+</a>\n",
+  );
   out.push_str("  </div>\n");
 
   // Toolbar.
@@ -402,12 +407,19 @@ mod tests {
 
     // Tab strip uses ARIA tab roles so the FastRender accessibility tree can expose tab semantics
     // (useful when chrome is rendered by FastRender itself).
-    assert!(html.contains("id=\"tab-strip\" role=\"tablist\""));
+    assert!(html.contains("id=\"tab-strip\""));
+    assert!(html.contains("class=\"tab-strip-tabs\" role=\"tablist\" aria-label=\"Tabs\""));
     assert_eq!(html.matches("role=\"tab\"").count(), 3);
     assert_eq!(html.matches("role=\"tab\" aria-selected=\"true\"").count(), 1);
 
     // Close buttons should include the tab title so the label is unique and meaningful.
     assert!(html.contains("aria-label=\"Close tab: Rust &amp; &lt;Friends&gt;\""));
+    assert!(html.contains("role=\"button\" aria-label=\"Close tab: Rust &amp; &lt;Friends&gt;\""));
+
+    // New-tab button should be present and wired to chrome-action:new-tab.
+    assert!(html.contains("id=\"new-tab\""));
+    assert!(html.contains("aria-label=\"New tab\""));
+    assert!(html.contains("href=\"chrome-action:new-tab\""));
 
     // Toolbar buttons should have meaningful accessible labels; the visual glyphs are not good
     // spoken names ("←" etc).

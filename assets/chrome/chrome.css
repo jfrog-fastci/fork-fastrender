@@ -52,6 +52,13 @@ body {
   border-bottom: 1px solid #c7cbd1;
 }
 
+.tab-strip-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .tab {
   display: flex;
   align-items: center;
@@ -95,6 +102,19 @@ body {
   background: #ffffff;
   border-color: #c7cbd1;
   border-bottom-color: #ffffff;
+}
+
+.tab-new {
+  width: 34px;
+  justify-content: center;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+  line-height: 1;
+}
+
+.tab-new:hover {
+  background: #c3c9d2;
 }
 
 .toolbar {
