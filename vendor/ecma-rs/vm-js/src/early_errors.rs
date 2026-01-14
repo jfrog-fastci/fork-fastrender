@@ -48,6 +48,13 @@ pub(crate) struct EarlyErrorOptions {
   pub(crate) is_module: bool,
   pub(crate) allow_super_call: bool,
   pub(crate) allow_super_property: bool,
+  /// Whether `arguments` identifier references are permitted at the top-level of the validated
+  /// statement list.
+  ///
+  /// Most callers should leave this `true` (the default for scripts/modules). vm-js uses `false` for
+  /// `eval` parsing when the eval call occurs in a class field initializer (see
+  /// `sec-performeval-rules-in-initializer`).
+  pub(crate) arguments_allowed: bool,
 }
 
 impl EarlyErrorOptions {
@@ -58,6 +65,7 @@ impl EarlyErrorOptions {
       is_module: false,
       allow_super_call: false,
       allow_super_property: false,
+      arguments_allowed: true,
     }
   }
 
@@ -68,6 +76,7 @@ impl EarlyErrorOptions {
       is_module: false,
       allow_super_call: false,
       allow_super_property: false,
+      arguments_allowed: true,
     }
   }
 
@@ -82,6 +91,7 @@ impl EarlyErrorOptions {
       is_module: false,
       allow_super_call,
       allow_super_property,
+      arguments_allowed: true,
     }
   }
 
@@ -92,7 +102,13 @@ impl EarlyErrorOptions {
       is_module: true,
       allow_super_call: false,
       allow_super_property: false,
+      arguments_allowed: true,
     }
+  }
+
+  pub(crate) fn with_arguments_allowed(mut self, arguments_allowed: bool) -> Self {
+    self.arguments_allowed = arguments_allowed;
+    self
   }
 }
 
@@ -164,7 +180,7 @@ where
     yield_is_reserved: false,
     super_call_allowed: opts.allow_super_call,
     super_property_allowed: opts.allow_super_property,
-    arguments_allowed: true,
+    arguments_allowed: opts.arguments_allowed,
     return_allowed: false,
     using_allowed: opts.is_module,
     loop_depth: 0,

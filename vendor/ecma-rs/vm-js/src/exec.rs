@@ -748,13 +748,15 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     };
 
     let mut tick = || vm.tick();
+    let early_error_opts = crate::early_errors::EarlyErrorOptions::script_with_super_call(
+      strict,
+      meta_property_context.allow_super_call(),
+      meta_property_context.allow_super_property(),
+    )
+    .with_arguments_allowed(!meta_property_context.disallow_eval_arguments());
     match crate::early_errors::validate_top_level_with_enclosing_private_names(
       &top.stx.body,
-      crate::early_errors::EarlyErrorOptions::script_with_super_call(
-        strict,
-        meta_property_context.allow_super_call(),
-        meta_property_context.allow_super_property(),
-      ),
+      early_error_opts,
       Some(source.text.as_ref()),
       enclosing_private_names,
       &mut tick,
@@ -3643,6 +3645,7 @@ impl JsRuntime {
                 is_module: false,
                 allow_super_call: false,
                 allow_super_property: false,
+                arguments_allowed: true,
               },
               Some(source.text.as_ref()),
               &mut tick,
@@ -4267,6 +4270,7 @@ impl JsRuntime {
             is_module: false,
             allow_super_call: false,
             allow_super_property: false,
+            arguments_allowed: true,
           },
           Some(source.text.as_ref()),
           &mut tick,
@@ -10798,7 +10802,10 @@ impl<'a> Evaluator<'a> {
                 )?;
                 member_scope
                   .heap_mut()
-                  .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
+                  .set_function_meta_property_context(
+                    init_func_obj,
+                    MetaPropertyContext::CLASS_FIELD_INITIALIZER,
+                  )?;
 
                 let intr = self
                   .vm
@@ -26058,7 +26065,7 @@ fn async_define_class_member(
            )?;
            member_scope.heap_mut().set_function_meta_property_context(
              init_func_obj,
-             MetaPropertyContext::METHOD,
+             MetaPropertyContext::CLASS_FIELD_INITIALIZER,
            )?;
 
            let intr = evaluator
@@ -45204,7 +45211,10 @@ fn gen_eval_class_members_from(
             )?;
             member_scope
               .heap_mut()
-              .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
+              .set_function_meta_property_context(
+                init_func_obj,
+                MetaPropertyContext::CLASS_FIELD_INITIALIZER,
+              )?;
 
             let intr = evaluator
               .vm

@@ -3654,9 +3654,8 @@ impl<'vm> HirEvaluator<'vm> {
     } else {
       match kind {
         EcmaFunctionKind::Decl | EcmaFunctionKind::Expr => MetaPropertyContext::FUNCTION,
-        EcmaFunctionKind::ClassFieldInitializer
-        | EcmaFunctionKind::ObjectMember
-        | EcmaFunctionKind::ClassMember => MetaPropertyContext::METHOD,
+        EcmaFunctionKind::ClassFieldInitializer => MetaPropertyContext::CLASS_FIELD_INITIALIZER,
+        EcmaFunctionKind::ObjectMember | EcmaFunctionKind::ClassMember => MetaPropertyContext::METHOD,
       }
     };
     scope
@@ -13515,7 +13514,7 @@ impl<'vm> HirEvaluator<'vm> {
     // meta-property context.
     init_scope
       .heap_mut()
-      .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+      .set_function_meta_property_context(func_obj, MetaPropertyContext::CLASS_FIELD_INITIALIZER)?;
 
     // Best-effort `[[Prototype]]` / `[[Realm]]` metadata.
     if let Some(intr) = self.vm.intrinsics() {

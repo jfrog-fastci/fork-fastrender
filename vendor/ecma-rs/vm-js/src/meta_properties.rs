@@ -6,10 +6,20 @@ impl MetaPropertyContext {
   const ALLOW_NEW_TARGET: u8 = 1 << 0;
   const ALLOW_SUPER_PROPERTY: u8 = 1 << 1;
   const ALLOW_SUPER_CALL: u8 = 1 << 2;
+  /// `sec-performeval-rules-in-initializer` additional early errors: direct eval in class field
+  /// initializers must reject `arguments` in the eval source.
+  const DISALLOW_EVAL_ARGUMENTS: u8 = 1 << 3;
 
   pub(crate) const SCRIPT: Self = Self(0);
   pub(crate) const FUNCTION: Self = Self(Self::ALLOW_NEW_TARGET);
   pub(crate) const METHOD: Self = Self(Self::ALLOW_NEW_TARGET | Self::ALLOW_SUPER_PROPERTY);
+  /// Meta-property context for class field initializer functions.
+  ///
+  /// Field initializers run in a method-like environment (they have a `[[HomeObject]]` for
+  /// `super.prop`) but direct `eval` within initializers applies additional early-error rules (notably
+  /// `ContainsArguments`).
+  pub(crate) const CLASS_FIELD_INITIALIZER: Self =
+    Self(Self::ALLOW_NEW_TARGET | Self::ALLOW_SUPER_PROPERTY | Self::DISALLOW_EVAL_ARGUMENTS);
   pub(crate) const DERIVED_CONSTRUCTOR: Self =
     Self(Self::ALLOW_NEW_TARGET | Self::ALLOW_SUPER_PROPERTY | Self::ALLOW_SUPER_CALL);
 
@@ -28,6 +38,10 @@ impl MetaPropertyContext {
 
   pub(crate) const fn allow_super_call(self) -> bool {
     self.0 & Self::ALLOW_SUPER_CALL != 0
+  }
+
+  pub(crate) const fn disallow_eval_arguments(self) -> bool {
+    self.0 & Self::DISALLOW_EVAL_ARGUMENTS != 0
   }
 
   /// Meta-property context for an arrow function created in `enclosing`.
