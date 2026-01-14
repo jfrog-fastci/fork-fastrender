@@ -45065,6 +45065,39 @@ mod tests {
     assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_nested_arrow_created_before_super_observes_initialized_this(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          // Calling the outer arrow before `super()` must not throw: creating an arrow function does
+          // not access `this`, even if the arrow closes over it.
+          let make = () => () => this;
+          let inner = make();
+
+          let errName;
+          let errMsg;
+          try { inner(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = inner();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      (d.v instanceof D) &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
