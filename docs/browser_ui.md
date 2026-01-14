@@ -242,7 +242,7 @@ CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` bina
 Note: startup/session restore:
 
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
-  (windows + tabs + per-tab zoom + best-effort scroll restoration).
+  (windows + tabs + per-tab zoom + best-effort scroll restoration + recently closed tabs).
   - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the
     active window shows a crash-recovery infobar/toast (including **Keep** (dismiss) and
     **Start new session** (discard restored tabs across all windows and close extra restored windows,
