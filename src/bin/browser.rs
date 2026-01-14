@@ -1670,6 +1670,24 @@ mod profile_autosave_toast_tests {
       "Failed to start profile autosave\nBookmarks/history changes may not be saved."
     );
   }
+
+  #[test]
+  fn profile_autosave_toast_whitespace_error_is_generic() {
+    let toast = format_profile_autosave_spawn_failure_toast("  \n\t  ");
+    assert_eq!(
+      toast,
+      "Failed to start profile autosave\nBookmarks/history changes may not be saved."
+    );
+  }
+
+  #[test]
+  fn profile_autosave_toast_control_only_error_is_generic() {
+    let toast = format_profile_autosave_spawn_failure_toast("\u{0000}\u{0007}\n");
+    assert_eq!(
+      toast,
+      "Failed to start profile autosave\nBookmarks/history changes may not be saved."
+    );
+  }
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
