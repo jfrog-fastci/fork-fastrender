@@ -199,6 +199,9 @@ pub static UNRESERVED_KEYWORDS: Lazy<HashSet<TT>> = Lazy::new(|| {
   set.insert(TT::KeywordUsing);
   // TypeScript contextual keywords
   set.insert(TT::KeywordAbstract);
+  // `accessor` is a contextual keyword (auto-accessors) and must remain usable as a binding
+  // identifier in plain ECMAScript code (e.g. `var accessor = ...`).
+  set.insert(TT::KeywordAccessor);
   set.insert(TT::KeywordAny);
   set.insert(TT::KeywordAsserts);
   set.insert(TT::KeywordBigIntType);
