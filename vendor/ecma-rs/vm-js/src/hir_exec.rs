@@ -11248,6 +11248,670 @@ impl ForAwaitOfState {
 }
 
 #[derive(Debug)]
+enum ForTripleAwaitStage {
+  Init,
+  /// Awaiting a direct `await <expr>` in the init position.
+  AwaitInitExpr,
+  /// Awaiting `x = await <expr>` in the init position.
+  AwaitInitAssign,
+  Test,
+  AwaitTest,
+  Body,
+  Update,
+  /// Awaiting a direct `await <expr>` in the update position.
+  AwaitUpdateExpr,
+  /// Awaiting `x = await <expr>` in the update position.
+  AwaitUpdateAssign,
+}
+
+#[derive(Debug)]
+struct PendingAssignment {
+  reference: AssignmentReference,
+  base_root: Option<RootId>,
+  key_root: Option<RootId>,
+}
+
+impl PendingAssignment {
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    if let Some(id) = self.base_root.take() {
+      if heap.get_root(id).is_some() {
+        heap.remove_root(id);
+      }
+    }
+    if let Some(id) = self.key_root.take() {
+      if heap.get_root(id).is_some() {
+        heap.remove_root(id);
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+struct ForTripleAwaitState {
+  init: Option<hir_js::ForInit>,
+  test: Option<hir_js::ExprId>,
+  update: Option<hir_js::ExprId>,
+  body_stmt: hir_js::StmtId,
+  label_set: Box<[hir_js::NameId]>,
+
+  outer_lex: Option<GcEnv>,
+  iter_env: Option<GcEnv>,
+  v_root: Option<RootId>,
+  pending_assign: Option<PendingAssignment>,
+  stage: ForTripleAwaitStage,
+}
+
+#[derive(Debug)]
+enum ForTripleAwaitPoll {
+  Complete(Flow),
+  Await {
+    kind: crate::exec::AsyncSuspendKind,
+    await_value: Value,
+  },
+}
+
+impl ForTripleAwaitState {
+  fn new(
+    init: Option<hir_js::ForInit>,
+    test: Option<hir_js::ExprId>,
+    update: Option<hir_js::ExprId>,
+    body_stmt: hir_js::StmtId,
+    label_set: &[hir_js::NameId],
+  ) -> Result<Self, VmError> {
+    let mut labels: Vec<hir_js::NameId> = Vec::new();
+    labels
+      .try_reserve_exact(label_set.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    labels.extend_from_slice(label_set);
+    Ok(Self {
+      init,
+      test,
+      update,
+      body_stmt,
+      label_set: labels.into_boxed_slice(),
+      outer_lex: None,
+      iter_env: None,
+      v_root: None,
+      pending_assign: None,
+      stage: ForTripleAwaitStage::Init,
+    })
+  }
+
+  fn cleanup_roots(&mut self, heap: &mut crate::Heap) {
+    if let Some(id) = self.v_root.take() {
+      if heap.get_root(id).is_some() {
+        heap.remove_root(id);
+      }
+    }
+    if let Some(pending) = self.pending_assign.as_mut() {
+      pending.teardown(heap);
+    }
+    self.pending_assign = None;
+  }
+
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    self.cleanup_roots(heap);
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<ForTripleAwaitPoll, VmError> {
+    let result: Result<ForTripleAwaitPoll, VmError> = (|| {
+      loop {
+        match self.stage {
+          ForTripleAwaitStage::Init => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "for-triple init received resume value",
+            ));
+          }
+
+            // Match the synchronous evaluator's "one tick per statement evaluation" budget.
+            evaluator.vm.tick()?;
+
+          if self.outer_lex.is_none() {
+            self.outer_lex = Some(evaluator.env.lexical_env());
+          }
+          let outer_lex = self
+            .outer_lex
+            .ok_or(VmError::InvariantViolation("missing for-triple outer lex env"))?;
+
+            if self.v_root.is_none() {
+              // Root the loop completion value across suspensions.
+              let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+              self.v_root = Some(v_root);
+            }
+
+          // Lexically-declared `for` loops require per-iteration environments so closures capture
+          // the correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
+          let lexical_init = match self.init.as_ref() {
+            Some(hir_js::ForInit::Var(decl))
+              if matches!(
+                decl.kind,
+                hir_js::VarDeclKind::Let
+                  | hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing
+              ) =>
+            {
+              Some(decl)
+            }
+            _ => None,
+          };
+
+            if let Some(init_decl) = lexical_init {
+            // Create a loop-scoped declarative environment for the lexical declaration and evaluate
+            // the initializer with TDZ semantics.
+            let loop_env = scope.env_create(Some(outer_lex))?;
+            evaluator.env.set_lexical_env(scope.heap_mut(), loop_env);
+
+            // Bind names in TDZ before evaluating initializers.
+            for declarator in &init_decl.declarators {
+              evaluator.vm.tick()?;
+              let mut names: Vec<hir_js::NameId> = Vec::new();
+              evaluator.collect_pat_idents(body, declarator.pat, &mut names)?;
+              for name_id in names {
+                let name = evaluator.resolve_name(name_id)?;
+                if scope.heap().env_has_binding(loop_env, name.as_str())? {
+                  continue;
+                }
+                match init_decl.kind {
+                  hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(loop_env, name.as_str())?,
+                  hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(loop_env, name.as_str())?,
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "unexpected VarDeclKind in lexical for-loop initialization (hir async)",
+                    ));
+                  }
+                }
+              }
+            }
+
+            // Evaluate initializer(s) and initialize the bindings.
+            evaluator.eval_var_decl(scope, body, init_decl)?;
+
+            // Enter the first per-iteration environment.
+            let iter_env = evaluator.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
+            evaluator.env.set_lexical_env(scope.heap_mut(), iter_env);
+            self.iter_env = Some(iter_env);
+
+              self.stage = ForTripleAwaitStage::Test;
+              continue;
+            }
+
+          // Non-lexical init.
+          if let Some(init) = &self.init {
+            match init {
+              hir_js::ForInit::Expr(expr_id) => {
+                let expr = evaluator.get_expr(body, *expr_id)?;
+                match &expr.kind {
+                  hir_js::ExprKind::Await { expr: awaited_expr } => {
+                    // Budget once for the await expression itself.
+                    evaluator.vm.tick()?;
+                    let await_value = evaluator.eval_expr(scope, body, *awaited_expr)?;
+                    self.stage = ForTripleAwaitStage::AwaitInitExpr;
+                    return Ok(ForTripleAwaitPoll::Await {
+                      kind: crate::exec::AsyncSuspendKind::Await,
+                      await_value,
+                    });
+                  }
+                  hir_js::ExprKind::Assignment {
+                    op: hir_js::AssignOp::Assign,
+                    target,
+                    value,
+                  } => {
+                    let rhs = evaluator.get_expr(body, *value)?;
+                    if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+                      // Budget once for the init expression and once for the await expression node.
+                      evaluator.vm.tick()?;
+                      evaluator.vm.tick()?;
+
+                      let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
+
+                      let mut await_scope = scope.reborrow();
+                      evaluator.root_assignment_reference(&mut await_scope, &reference)?;
+                      let await_value = evaluator.eval_expr(&mut await_scope, body, *awaited_expr)?;
+                      await_scope.push_root(await_value)?;
+
+                      let mut base_root = None;
+                      let mut key_root = None;
+                      match &reference {
+                        AssignmentReference::Binding(_) => {}
+                        AssignmentReference::Property { base, key } => {
+                          let key_value = match key {
+                            PropertyKey::String(s) => Value::String(*s),
+                            PropertyKey::Symbol(s) => Value::Symbol(*s),
+                          };
+                          // Root base+key across root registration.
+                          await_scope.push_roots(&[*base, key_value])?;
+                          base_root = Some(await_scope.heap_mut().add_root(*base)?);
+                          key_root = Some(await_scope.heap_mut().add_root(key_value)?);
+                        }
+                        AssignmentReference::SuperProperty { super_base, key, .. } => {
+                          let key_value = match key {
+                            PropertyKey::String(s) => Value::String(*s),
+                            PropertyKey::Symbol(s) => Value::Symbol(*s),
+                          };
+                          let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+                          await_scope.push_roots(&[base_value, key_value])?;
+                          base_root = Some(await_scope.heap_mut().add_root(base_value)?);
+                          key_root = Some(await_scope.heap_mut().add_root(key_value)?);
+                        }
+                      }
+
+                      self.pending_assign = Some(PendingAssignment {
+                        reference,
+                        base_root,
+                        key_root,
+                      });
+                      self.stage = ForTripleAwaitStage::AwaitInitAssign;
+                      return Ok(ForTripleAwaitPoll::Await {
+                        kind: crate::exec::AsyncSuspendKind::Await,
+                        await_value,
+                      });
+                    }
+                    // No await in RHS; fall through to synchronous eval below.
+                    let _ = evaluator.eval_expr(scope, body, *expr_id)?;
+                  }
+                  _ => {
+                    let _ = evaluator.eval_expr(scope, body, *expr_id)?;
+                  }
+                }
+              }
+              hir_js::ForInit::Var(decl) => {
+                evaluator.eval_var_decl(scope, body, decl)?;
+              }
+            }
+          }
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+          }
+
+        ForTripleAwaitStage::AwaitInitExpr => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "for-triple init await missing resume value",
+            ));
+          };
+          match resume {
+            Ok(_) => {}
+            Err(err) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Err(err);
+            }
+          }
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+        }
+
+        ForTripleAwaitStage::AwaitInitAssign => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "for-triple init assignment await missing resume value",
+            ));
+          };
+
+          let resumed_value = match resume {
+            Ok(v) => v,
+            Err(err) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Err(err);
+            }
+          };
+
+          let mut assign_scope = scope.reborrow();
+          let mut pending = self
+            .pending_assign
+            .take()
+            .ok_or(VmError::InvariantViolation("missing pending init assignment"))?;
+          evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
+          assign_scope.push_root(resumed_value)?;
+          evaluator.maybe_set_anonymous_function_name_for_assignment(
+            &mut assign_scope,
+            &pending.reference,
+            resumed_value,
+          )?;
+          evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, resumed_value)?;
+          pending.teardown(assign_scope.heap_mut());
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+        }
+
+        ForTripleAwaitStage::Test => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "for-triple test received unexpected resume value",
+            ));
+          }
+
+          // Tick once per iteration so `for (...) {}` is budgeted even when body is empty.
+          evaluator.vm.tick()?;
+
+          if let Some(test_id) = self.test {
+            let test_expr = evaluator.get_expr(body, test_id)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &test_expr.kind {
+              // Budget once for the await expression node (the awaited subexpression is budgeted by
+              // `eval_expr`).
+              evaluator.vm.tick()?;
+              let await_value = evaluator.eval_expr(scope, body, *awaited_expr)?;
+              self.stage = ForTripleAwaitStage::AwaitTest;
+              return Ok(ForTripleAwaitPoll::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+              });
+            }
+
+            let test_value = evaluator.eval_expr(scope, body, test_id)?;
+            if !scope.heap().to_boolean(test_value)? {
+              let v = self.get_loop_value(scope.heap())?;
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Ok(ForTripleAwaitPoll::Complete(Flow::Normal(Some(v))));
+            }
+          }
+
+            self.stage = ForTripleAwaitStage::Body;
+            continue;
+        }
+
+        ForTripleAwaitStage::AwaitTest => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "for-triple test await missing resume value",
+            ));
+          };
+
+          let test_value = match resume {
+            Ok(v) => v,
+            Err(err) => {
+              let v = self.get_loop_value(scope.heap())?;
+              let _ = v;
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Err(err);
+            }
+          };
+
+          if !scope.heap().to_boolean(test_value)? {
+            let v = self.get_loop_value(scope.heap())?;
+            self.restore_outer_lex(evaluator, scope);
+            self.cleanup_roots(scope.heap_mut());
+            return Ok(ForTripleAwaitPoll::Complete(Flow::Normal(Some(v))));
+          }
+
+            self.stage = ForTripleAwaitStage::Body;
+            continue;
+        }
+
+        ForTripleAwaitStage::Body => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "for-triple body received unexpected resume value",
+            ));
+          }
+
+          let flow = evaluator.eval_stmt(scope, body, self.body_stmt)?;
+          let v_root = self
+            .v_root
+            .ok_or(VmError::InvariantViolation("missing for-triple loop value root"))?;
+          let v = scope
+            .heap()
+            .get_root(v_root)
+            .ok_or(VmError::InvariantViolation("missing for-triple loop value root"))?;
+
+            match flow {
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) if self.label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+            Flow::Continue(Some(label), value) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Ok(ForTripleAwaitPoll::Complete(
+                Flow::Continue(Some(label), value).update_empty(Some(v)),
+              ));
+            }
+            Flow::Break(None, break_value) => {
+              let out = break_value.unwrap_or(v);
+              scope.heap_mut().set_root(v_root, out);
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Ok(ForTripleAwaitPoll::Complete(Flow::Normal(Some(out))));
+            }
+            Flow::Break(Some(label), break_value) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Ok(ForTripleAwaitPoll::Complete(
+                Flow::Break(Some(label), break_value).update_empty(Some(v)),
+              ));
+            }
+            Flow::Return(v) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Ok(ForTripleAwaitPoll::Complete(Flow::Return(v)));
+            }
+          }
+
+            self.stage = ForTripleAwaitStage::Update;
+            continue;
+        }
+
+        ForTripleAwaitStage::Update => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "for-triple update received unexpected resume value",
+            ));
+          }
+
+          // Create the next per-iteration environment *before* evaluating the update expression for
+          // lexically-declared loops, matching the synchronous evaluator.
+          if let Some(iter_env) = self.iter_env {
+            let outer_lex = self
+              .outer_lex
+              .ok_or(VmError::InvariantViolation("missing for-triple outer lex env"))?;
+            let next_env = evaluator.create_for_triple_per_iteration_env(scope, outer_lex, iter_env)?;
+            evaluator.env.set_lexical_env(scope.heap_mut(), next_env);
+            self.iter_env = Some(next_env);
+          }
+
+          if let Some(update_id) = self.update {
+            let update_expr = evaluator.get_expr(body, update_id)?;
+            match &update_expr.kind {
+              hir_js::ExprKind::Await { expr: awaited_expr } => {
+                evaluator.vm.tick()?;
+                let await_value = evaluator.eval_expr(scope, body, *awaited_expr)?;
+                self.stage = ForTripleAwaitStage::AwaitUpdateExpr;
+                return Ok(ForTripleAwaitPoll::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
+                  await_value,
+                });
+              }
+              hir_js::ExprKind::Assignment {
+                op: hir_js::AssignOp::Assign,
+                target,
+                value,
+              } => {
+                let rhs = evaluator.get_expr(body, *value)?;
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+                  // Budget once for the update expression and once for the await expression node.
+                  evaluator.vm.tick()?;
+                  evaluator.vm.tick()?;
+
+                  let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
+
+                  let mut await_scope = scope.reborrow();
+                  evaluator.root_assignment_reference(&mut await_scope, &reference)?;
+                  let await_value = evaluator.eval_expr(&mut await_scope, body, *awaited_expr)?;
+                  await_scope.push_root(await_value)?;
+
+                  let mut base_root = None;
+                  let mut key_root = None;
+                  match &reference {
+                    AssignmentReference::Binding(_) => {}
+                    AssignmentReference::Property { base, key } => {
+                      let key_value = match key {
+                        PropertyKey::String(s) => Value::String(*s),
+                        PropertyKey::Symbol(s) => Value::Symbol(*s),
+                      };
+                      await_scope.push_roots(&[*base, key_value])?;
+                      base_root = Some(await_scope.heap_mut().add_root(*base)?);
+                      key_root = Some(await_scope.heap_mut().add_root(key_value)?);
+                    }
+                    AssignmentReference::SuperProperty { super_base, key, .. } => {
+                      let key_value = match key {
+                        PropertyKey::String(s) => Value::String(*s),
+                        PropertyKey::Symbol(s) => Value::Symbol(*s),
+                      };
+                      let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+                      await_scope.push_roots(&[base_value, key_value])?;
+                      base_root = Some(await_scope.heap_mut().add_root(base_value)?);
+                      key_root = Some(await_scope.heap_mut().add_root(key_value)?);
+                    }
+                  }
+
+                  self.pending_assign = Some(PendingAssignment {
+                    reference,
+                    base_root,
+                    key_root,
+                  });
+                  self.stage = ForTripleAwaitStage::AwaitUpdateAssign;
+                  return Ok(ForTripleAwaitPoll::Await {
+                    kind: crate::exec::AsyncSuspendKind::Await,
+                    await_value,
+                  });
+                }
+                // No await in RHS; fall through to synchronous eval below.
+                let _ = evaluator.eval_expr(scope, body, update_id)?;
+              }
+              _ => {
+                let _ = evaluator.eval_expr(scope, body, update_id)?;
+              }
+            }
+          }
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+        }
+
+        ForTripleAwaitStage::AwaitUpdateExpr => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "for-triple update await missing resume value",
+            ));
+          };
+          match resume {
+            Ok(_) => {}
+            Err(err) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Err(err);
+            }
+          }
+          self.stage = ForTripleAwaitStage::Test;
+          continue;
+        }
+
+        ForTripleAwaitStage::AwaitUpdateAssign => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "for-triple update assignment await missing resume value",
+            ));
+          };
+
+          let resumed_value = match resume {
+            Ok(v) => v,
+            Err(err) => {
+              self.restore_outer_lex(evaluator, scope);
+              self.cleanup_roots(scope.heap_mut());
+              return Err(err);
+            }
+          };
+
+          let mut assign_scope = scope.reborrow();
+          let mut pending = self
+            .pending_assign
+            .take()
+            .ok_or(VmError::InvariantViolation("missing pending update assignment"))?;
+          evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
+          assign_scope.push_root(resumed_value)?;
+          evaluator.maybe_set_anonymous_function_name_for_assignment(
+            &mut assign_scope,
+            &pending.reference,
+            resumed_value,
+          )?;
+          evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, resumed_value)?;
+          pending.teardown(assign_scope.heap_mut());
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+        }
+      }
+      }
+    })();
+
+    match result {
+      Ok(v) => Ok(v),
+      Err(err) => {
+        // Ensure loop-scoped envs/roots do not leak when unwinding on an error. The caller will
+        // clear `self.active` before returning the completion.
+        self.restore_outer_lex(evaluator, scope);
+        self.cleanup_roots(scope.heap_mut());
+        Err(err)
+      }
+    }
+  }
+
+  fn restore_outer_lex(&self, evaluator: &mut HirEvaluator<'_>, scope: &mut Scope<'_>) {
+    let is_lexical = matches!(
+      self.init.as_ref(),
+      Some(hir_js::ForInit::Var(decl))
+        if matches!(
+          decl.kind,
+          hir_js::VarDeclKind::Let
+            | hir_js::VarDeclKind::Const
+            | hir_js::VarDeclKind::Using
+            | hir_js::VarDeclKind::AwaitUsing
+        )
+    );
+    if is_lexical {
+      if let Some(outer) = self.outer_lex {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      }
+    }
+  }
+
+  fn get_loop_value(&self, heap: &crate::Heap) -> Result<Value, VmError> {
+    let v_root = self
+      .v_root
+      .ok_or(VmError::InvariantViolation("missing for-triple loop value root"))?;
+    heap
+      .get_root(v_root)
+      .ok_or(VmError::InvariantViolation("missing for-triple loop value root"))
+  }
+}
+
+#[derive(Debug)]
 enum HirAsyncBodyKind {
   Block { stmts: Box<[hir_js::StmtId]> },
   Expr { expr: hir_js::ExprId },
@@ -11256,6 +11920,7 @@ enum HirAsyncBodyKind {
 #[derive(Debug)]
 enum HirAsyncActive {
   ForAwaitOf(ForAwaitOfState),
+  ForTriple(ForTripleAwaitState),
   /// Suspended at a direct `await <expr>;` expression statement.
   AwaitExprStmt { next_stmt_index: usize },
   /// Suspended at a `return await <expr>;`.
@@ -11273,6 +11938,7 @@ impl HirAsyncActive {
   fn teardown(&mut self, heap: &mut crate::Heap) {
     match self {
       HirAsyncActive::ForAwaitOf(state) => state.teardown(heap),
+      HirAsyncActive::ForTriple(state) => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
       | HirAsyncActive::AwaitReturn
       | HirAsyncActive::AwaitThrow
@@ -11486,6 +12152,54 @@ impl HirAsyncState {
               }
             }
           }
+          HirAsyncActive::ForTriple(state) => {
+            let poll = state.poll(evaluator, scope, body, resume_value.take());
+            match poll {
+              Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+                return Ok(HirAsyncResult::Await { kind, await_value });
+              }
+              Ok(ForTripleAwaitPoll::Complete(flow)) => {
+                self.active = None;
+                match flow {
+                  Flow::Normal(_) => {
+                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                    continue;
+                  }
+                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Break(..) | Flow::Continue(..) => {
+                    return Err(VmError::InvariantViolation(
+                      "async compiled function body produced break/continue completion",
+                    ))
+                  }
+                }
+              }
+              Err(err) => {
+                self.active = None;
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
           HirAsyncActive::AwaitExprStmt { next_stmt_index } => {
             let next_stmt_index = *next_stmt_index;
             let Some(resume) = resume_value.take() else {
@@ -11875,6 +12589,84 @@ impl HirAsyncState {
           &[],
         )?));
         continue;
+      }
+      if let hir_js::StmtKind::For {
+        init,
+        test,
+        update,
+        body: inner,
+      } = &stmt.kind
+      {
+        let mut has_await = false;
+        if let Some(init) = init {
+          match init {
+            hir_js::ForInit::Expr(expr_id) => {
+              let expr = evaluator.get_expr(body, *expr_id)?;
+              match &expr.kind {
+                hir_js::ExprKind::Await { .. } => has_await = true,
+                hir_js::ExprKind::Assignment {
+                  op: hir_js::AssignOp::Assign,
+                  value,
+                  ..
+                } => {
+                  let rhs = evaluator.get_expr(body, *value)?;
+                  if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                    has_await = true;
+                  }
+                }
+                _ => {}
+              }
+            }
+            hir_js::ForInit::Var(decl) => {
+              for declarator in &decl.declarators {
+                if let Some(init) = declarator.init {
+                  let init_expr = evaluator.get_expr(body, init)?;
+                  if matches!(init_expr.kind, hir_js::ExprKind::Await { .. }) {
+                    has_await = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if !has_await {
+          if let Some(test) = test {
+            let test_expr = evaluator.get_expr(body, *test)?;
+            if matches!(test_expr.kind, hir_js::ExprKind::Await { .. }) {
+              has_await = true;
+            }
+          }
+        }
+        if !has_await {
+          if let Some(update) = update {
+            let update_expr = evaluator.get_expr(body, *update)?;
+            match &update_expr.kind {
+              hir_js::ExprKind::Await { .. } => has_await = true,
+              hir_js::ExprKind::Assignment {
+                op: hir_js::AssignOp::Assign,
+                value,
+                ..
+              } => {
+                let rhs = evaluator.get_expr(body, *value)?;
+                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await = true;
+                }
+              }
+              _ => {}
+            }
+          }
+        }
+        if has_await {
+          self.active = Some(HirAsyncActive::ForTriple(ForTripleAwaitState::new(
+            init.clone(),
+            *test,
+            *update,
+            *inner,
+            &[],
+          )?));
+          continue;
+        }
       }
 
       // Fast-path direct `await` statement forms without touching the synchronous evaluator (which
