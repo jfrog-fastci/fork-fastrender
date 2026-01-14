@@ -14,19 +14,20 @@
     "layout": 122.0474700801964,
     "paint": 103.04007719885436
   },
-  "notes": "",
+  "notes": "Fixed flexbox static-position computation for absolutely positioned flex children in wrapping containers: allow negative cross-axis offsets when the abspos item overflows and `align-items/align-self:center` is used (AP header/leaderboard ad placeholder alignment). Remaining diffs vs Chrome are largely text rasterization/hinting and small alpha/color rounding differences; overall layout/structure looks correct.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 94174,
-    "diff_percent": 9.8098,
-    "perceptual": 0.1353,
+    "diff_pixels": 103411,
+    "diff_percent": 10.772,
+    "perceptual": 0.1881,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 40,
-      "y": 1,
+      "y": 0,
       "baseline_rgba": [
-        218,
-        218,
-        218,
+        0,
+        0,
+        0,
         255
       ],
       "rendered_rgba": [
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "7f0de99f5592c239faf39227dbc1c5ede86d8121"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

@@ -451,9 +451,14 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     if !args.debug {
       build_cmd.arg("--release");
     }
-    // Many real-world fixtures ship AVIF images. Build renderer binaries with AVIF support so diffs
-    // reflect renderer/layout differences rather than missing image decoders.
-    build_cmd.args(["--features", "avif"]);
+    // Offline fixtures are expected to be fully self-contained. When building renderer binaries for
+    // fixture diffs, avoid linking the in-process network stacks enabled by the `fastrender`
+    // crate's default feature set (reqwest/ureq/tungstenite). This keeps builds lean and makes the
+    // "offline invariant" easier to enforce.
+    //
+    // Use the curated `renderer_minimal` feature set (includes AVIF decoding) rather than enabling
+    // `avif` on top of the default feature set.
+    build_cmd.args(["--no-default-features", "--features", "renderer_minimal"]);
     if !args.no_fastrender {
       build_cmd.args(["--bin", "render_fixtures"]);
     }

@@ -13462,6 +13462,59 @@ impl FlexFormattingContext {
     let container_width = fragment.bounds.width().max(0.0);
     let container_height = fragment.bounds.height().max(0.0);
     let container_style = box_node.style.as_ref();
+    // Percentage padding/border widths resolve against the containing block width. Here we are
+    // operating on a post-layout fragment, so the best available stable base is the resolved border
+    // box width.
+    let percentage_base = container_width;
+    // `padding`/`border-width` cannot be negative (even when authored via `calc()`), but we may see
+    // negative intermediate results while resolving `calc()` trees. Clamp to avoid inflating the
+    // content box in our static-position probe, which would in turn suppress negative offsets for
+    // overflowing abspos children in wrapping flex containers.
+    let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let border_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_left_width(),
+      percentage_base,
+      container_style,
+    ));
+    let border_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_right_width(),
+      percentage_base,
+      container_style,
+    ));
+    let border_top = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_top_width(),
+      percentage_base,
+      container_style,
+    ));
+    let border_bottom = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_bottom_width(),
+      percentage_base,
+      container_style,
+    ));
+    let padding_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_left,
+      percentage_base,
+      container_style,
+    ));
+    let padding_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_right,
+      percentage_base,
+      container_style,
+    ));
+    let padding_top = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_top,
+      percentage_base,
+      container_style,
+    ));
+    let padding_bottom = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_bottom,
+      percentage_base,
+      container_style,
+    ));
+    let content_width = (container_width - border_left - border_right - padding_left - padding_right)
+      .max(0.0);
+    let content_height = (container_height - border_top - border_bottom - padding_top - padding_bottom)
+      .max(0.0);
 
     let mut root_style =
       self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
@@ -13654,6 +13707,7 @@ impl FlexFormattingContext {
       style.flex_grow = 0.0;
       style.flex_shrink = 0.0;
       style.flex_basis = Dimension::auto();
+      let child_align_self = style.align_self;
       let zero_auto_margin = |value: &mut LengthPercentageAuto| {
         if value.is_auto() {
           *value = LengthPercentageAuto::length(0.0);
@@ -13695,10 +13749,88 @@ impl FlexFormattingContext {
         let margin_edge_x = layout.location.x - layout.margin.left;
         let margin_edge_y = layout.location.y - layout.margin.top;
         let cb_origin = candidate.cb.origin();
-        positions.insert(
-          candidate.child_id,
-          Point::new(margin_edge_x - cb_origin.x, margin_edge_y - cb_origin.y),
+        let mut pos = Point::new(margin_edge_x - cb_origin.x, margin_edge_y - cb_origin.y);
+
+        // CSS Flexbox §abspos-items defines the static-position rectangle cross-axis edges as the
+        // flex container’s *content edges*. Taffy's line cross-size logic depends on whether the
+        // container is `wrap`/`wrap-reverse`: in a wrapping container, the line cross size is based
+        // on the item’s max-content size and therefore never yields negative free space for
+        // `align-items/align-self:center` when the item overflows the container (a common pattern
+        // for absolutely positioned overlays/pseudo-elements).
+        //
+        // When the abspos child’s margin box is larger than the container’s content box, compute
+        // the cross-axis static position directly against the container’s content box size so the
+        // item can be centered with a negative offset, matching browser behaviour.
+        let container_is_wrapping = matches!(
+          root_style.flex_wrap,
+          taffy::style::FlexWrap::Wrap | taffy::style::FlexWrap::WrapReverse
         );
+        if container_is_wrapping {
+          let main_axis_is_horizontal = matches!(
+            root_style.flex_direction,
+            taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
+          );
+          let is_wrap_reverse = matches!(root_style.flex_wrap, taffy::style::FlexWrap::WrapReverse);
+          let effective_align_self = child_align_self
+            .or(root_style.align_items)
+            .unwrap_or(taffy::style::AlignSelf::Stretch);
+
+          let (container_cross_size, padding_cross_start, child_outer_cross) = if main_axis_is_horizontal
+          {
+            (
+              content_height,
+              padding_top,
+              probe_size.height + layout.margin.top + layout.margin.bottom,
+            )
+          } else {
+            (
+              content_width,
+              padding_left,
+              probe_size.width + layout.margin.left + layout.margin.right,
+            )
+          };
+
+          let free_space = container_cross_size - child_outer_cross;
+          if free_space < 0.0 && free_space.is_finite() {
+            let cross_offset = match effective_align_self {
+              taffy::style::AlignSelf::Start => 0.0,
+              taffy::style::AlignSelf::End => free_space,
+              taffy::style::AlignSelf::FlexStart => {
+                if is_wrap_reverse {
+                  free_space
+                } else {
+                  0.0
+                }
+              }
+              taffy::style::AlignSelf::FlexEnd => {
+                if is_wrap_reverse {
+                  0.0
+                } else {
+                  free_space
+                }
+              }
+              taffy::style::AlignSelf::Center => free_space / 2.0,
+              // Baseline alignment for abspos static positions is handled by the probe layout. When
+              // the item overflows the container cross size, fall back to the cross-start edge.
+              taffy::style::AlignSelf::Baseline => 0.0,
+              taffy::style::AlignSelf::Stretch => {
+                if is_wrap_reverse {
+                  free_space
+                } else {
+                  0.0
+                }
+              }
+            };
+            let corrected_cross = padding_cross_start + cross_offset;
+            if main_axis_is_horizontal {
+              pos.y = corrected_cross;
+            } else {
+              pos.x = corrected_cross;
+            }
+          }
+        }
+
+        positions.insert(candidate.child_id, pos);
       }
     }
 
