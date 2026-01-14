@@ -10,6 +10,11 @@ use crate::sys::{DefaultCheapStr, Vec};
 use core::cmp::{max, min};
 use core::fmt::Debug;
 
+#[inline]
+fn add_i32_clamped(line: OriginZeroLine, delta: i32) -> OriginZeroLine {
+  OriginZeroLine((line.0 as i32 + delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+}
+
 /// Defines a grid area
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -676,7 +681,7 @@ impl Line<OriginZeroGridPlacement> {
         if line1 == line2 {
           Line {
             start: line1,
-            end: line1 + 1,
+            end: add_i32_clamped(line1, 1),
           }
         } else {
           Line {
@@ -687,18 +692,18 @@ impl Line<OriginZeroGridPlacement> {
       }
       (GP::Line(line), GP::Span(span)) => Line {
         start: line,
-        end: line + span,
+        end: add_i32_clamped(line, span as i32),
       },
       (GP::Line(line), GP::Auto) => Line {
         start: line,
-        end: line + 1,
+        end: add_i32_clamped(line, 1),
       },
       (GP::Span(span), GP::Line(line)) => Line {
-        start: line - span,
+        start: add_i32_clamped(line, -(span as i32)),
         end: line,
       },
       (GP::Auto, GP::Line(line)) => Line {
-        start: line - 1,
+        start: add_i32_clamped(line, -1),
         end: line,
       },
       _ => panic!("resolve_definite_grid_tracks should only be called on definite grid tracks"),
@@ -721,7 +726,7 @@ impl Line<OriginZeroGridPlacement> {
         if track1 == track2 {
           Line {
             start: Some(track1),
-            end: Some(track1 + 1),
+            end: Some(add_i32_clamped(track1, 1)),
           }
         } else {
           Line {
@@ -732,14 +737,14 @@ impl Line<OriginZeroGridPlacement> {
       }
       (GP::Line(track), GP::Span(span)) => Line {
         start: Some(track),
-        end: Some(track + span),
+        end: Some(add_i32_clamped(track, span as i32)),
       },
       (GP::Line(track), GP::Auto) => Line {
         start: Some(track),
         end: None,
       },
       (GP::Span(span), GP::Line(track)) => Line {
-        start: Some(track - span),
+        start: Some(add_i32_clamped(track, -(span as i32))),
         end: Some(track),
       },
       (GP::Auto, GP::Line(track)) => Line {
@@ -760,22 +765,63 @@ impl Line<OriginZeroGridPlacement> {
     match (self.start, self.end) {
       (GP::Auto, GP::Auto) => Line {
         start,
-        end: start + 1,
+        end: add_i32_clamped(start, 1),
       },
       (GP::Span(span), GP::Auto) => Line {
         start,
-        end: start + span,
+        end: add_i32_clamped(start, span as i32),
       },
       (GP::Auto, GP::Span(span)) => Line {
         start,
-        end: start + span,
+        end: add_i32_clamped(start, span as i32),
       },
       (GP::Span(span), GP::Span(_)) => Line {
         start,
-        end: start + span,
+        end: add_i32_clamped(start, span as i32),
       },
       _ => panic!("resolve_indefinite_grid_tracks should only be called on indefinite grid tracks"),
     }
+  }
+}
+
+#[cfg(test)]
+mod origin_zero_grid_placement_tests {
+  use super::*;
+
+  #[test]
+  fn resolve_absolutely_positioned_grid_tracks_does_not_panic_at_i16_limits() {
+    // Regression: `OriginZeroLine + 1` uses a debug_assert that panics when the value is clamped.
+    // Ensure we use i32 math instead so hostile inputs can't panic debug builds.
+    let placement = Line {
+      start: OriginZeroGridPlacement::Line(OriginZeroLine(i16::MAX)),
+      end: OriginZeroGridPlacement::Line(OriginZeroLine(i16::MAX)),
+    };
+
+    let resolved = placement.resolve_absolutely_positioned_grid_tracks();
+    assert_eq!(resolved.start, Some(OriginZeroLine(i16::MAX)));
+    assert_eq!(resolved.end, Some(OriginZeroLine(i16::MAX)));
+  }
+
+  #[test]
+  fn resolve_definite_grid_lines_does_not_panic_at_i16_limits() {
+    let placement = Line {
+      start: OriginZeroGridPlacement::Line(OriginZeroLine(i16::MAX)),
+      end: OriginZeroGridPlacement::Auto,
+    };
+    let resolved = placement.resolve_definite_grid_lines();
+    assert_eq!(resolved.start, OriginZeroLine(i16::MAX));
+    assert_eq!(resolved.end, OriginZeroLine(i16::MAX));
+  }
+
+  #[test]
+  fn resolve_indefinite_grid_tracks_does_not_panic_at_i16_limits() {
+    let placement = Line {
+      start: OriginZeroGridPlacement::Auto,
+      end: OriginZeroGridPlacement::Auto,
+    };
+    let resolved = placement.resolve_indefinite_grid_tracks(OriginZeroLine(i16::MAX));
+    assert_eq!(resolved.start, OriginZeroLine(i16::MAX));
+    assert_eq!(resolved.end, OriginZeroLine(i16::MAX));
   }
 }
 
