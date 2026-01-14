@@ -4607,6 +4607,37 @@ mod tests {
   }
 
   #[test]
+  fn get_module_namespace_returns_out_of_memory_on_alloc_failure() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut graph = ModuleGraph::new();
+    let module = graph.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
+
+    // Link successfully first so `get_module_namespace` runs purely as a namespace creation path.
+    graph.link(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      module,
+    )?;
+
+    let mut scope = heap.scope();
+    let _guard = FailAllocsGuard::new();
+    let err = graph
+      .get_module_namespace(module, &mut vm, &mut scope)
+      .expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn teardown_clears_script_and_realm_loaded_modules_caches() -> Result<(), VmError> {
     struct Host {
       microtasks: MicrotaskQueue,
