@@ -720,6 +720,7 @@ mod tests {
     assert_eq!(samples.len(), 2);
     assert_eq!(samples[0].pts_ns, 0);
     assert_eq!(samples[1].pts_ns, 1_000_000_000);
+  }
 
   #[test]
   fn rejects_sample_entry_with_protection_info_and_scheme() {
