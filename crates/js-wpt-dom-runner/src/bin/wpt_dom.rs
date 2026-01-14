@@ -68,7 +68,7 @@ impl SuitePreset {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
+#[clap(rename_all = "kebab-case")]
 enum Backend {
   /// Let the runner pick (prefer vm-js when available).
   Auto,
@@ -76,6 +76,8 @@ enum Backend {
   Quickjs,
   /// Force the vm-js backend.
   Vmjs,
+  /// Force the vm-js backend executed against a renderer-backed document (layout/geometry).
+  VmjsRendered,
 }
 
 impl Backend {
@@ -84,6 +86,7 @@ impl Backend {
       Backend::Auto => "auto",
       Backend::Quickjs => "quickjs",
       Backend::Vmjs => "vmjs",
+      Backend::VmjsRendered => "vmjs-rendered",
     }
   }
 }
