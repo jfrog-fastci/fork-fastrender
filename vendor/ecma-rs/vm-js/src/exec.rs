@@ -8394,8 +8394,36 @@ impl<'a> Evaluator<'a> {
                   .loc
                   .end_u32()
                   .saturating_sub(self.env.prefix_len());
-                let span_start = self.env.base_offset().saturating_add(rel_start);
+                let mut span_start = self.env.base_offset().saturating_add(rel_start);
                 let span_end = self.env.base_offset().saturating_add(rel_end);
+
+                // `parse-js` stores parentheses via the `ParenthesizedExpr` assoc marker, and (as of
+                // v0.24.1) does not include the parentheses themselves in `Loc` spans.
+                //
+                // For IIFE-style initializers like `(() => expr)()` / `(function(){})()`, this means
+                // the call expression span can start *after* the opening `(` while still including
+                // the closing `)`, producing an invalid snippet when we later lazily reparse the
+                // initializer from its source span.
+                //
+                // If the call callee is parenthesized, extend the snippet span to include the
+                // opening `(` (skipping any ASCII whitespace) so the sliced source is valid.
+                if let Expr::Call(call) = &*expr_node.stx {
+                  if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
+                    let source = self.env.source();
+                    let bytes = source.text.as_bytes();
+                    let mut idx = span_start as usize;
+                    while idx > 0 {
+                      match bytes[idx.saturating_sub(1)] {
+                        b' ' | b'\t' | b'\n' | b'\r' => idx = idx.saturating_sub(1),
+                        b'(' => {
+                          span_start = u32::try_from(idx.saturating_sub(1)).unwrap_or(span_start);
+                          break;
+                        }
+                        _ => break,
+                      }
+                    }
+                  }
+                }
 
                 let code = self.vm.register_ecma_function(
                   self.env.source(),
