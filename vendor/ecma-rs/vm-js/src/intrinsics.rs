@@ -1210,8 +1210,6 @@ impl Intrinsics {
       vm.register_native_call(builtins::number_prototype_to_locale_string)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
-    let boolean_prototype_to_primitive =
-      vm.register_native_call(builtins::boolean_prototype_to_primitive)?;
     let number_is_nan = vm.register_native_call(builtins::number_is_nan)?;
     let number_is_finite = vm.register_native_call(builtins::number_is_finite)?;
     let number_is_integer = vm.register_native_call(builtins::number_is_integer)?;
@@ -4821,24 +4819,6 @@ impl Intrinsics {
         boolean_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
-
-    // Boolean.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(boolean_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        boolean_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `Boolean.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
@@ -9645,25 +9625,9 @@ mod json_stringify_number_object_tests {
     let mut rt = new_runtime();
     let v = rt.exec_script(
       r#"
-        (function () {
-          if (typeof Number.prototype[Symbol.toPrimitive] !== "function") return false;
-          if (typeof Boolean.prototype[Symbol.toPrimitive] !== "function") return false;
-          if (typeof String.prototype[Symbol.toPrimitive] !== "function") return false;
-
-          var numberDesc = Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive);
-          var booleanDesc = Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive);
-          var stringDesc = Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive);
-
-          // Per ECMA-262, `Number/String.prototype[@@toPrimitive]` are own, non-enumerable properties.
-          if (!numberDesc || numberDesc.enumerable !== false) return false;
-          if (!stringDesc || stringDesc.enumerable !== false) return false;
-
-          // Boolean may define its own @@toPrimitive or inherit it; if it defines it, it must be
-          // non-enumerable.
-          if (booleanDesc && booleanDesc.enumerable !== false) return false;
-
-          return true;
-        })()
+        Number.prototype[Symbol.toPrimitive] === undefined &&
+        Boolean.prototype[Symbol.toPrimitive] === undefined &&
+        String.prototype[Symbol.toPrimitive] === undefined
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
@@ -9676,36 +9640,35 @@ mod json_stringify_number_object_tests {
     let v = rt.exec_script(
       r#"
         (function () {
-          // Replacer array items: wrapper objects with [[NumberData]] are converted with ToString.
-          // With `Number.prototype[@@toPrimitive]` present, this conversion uses the internal
-          // number value and must not consult overridable `toString`/`valueOf` methods.
+          // Replacer array items: wrapper objects with [[NumberData]] are converted with ToString,
+          // which should consult the overridable `toString`/`valueOf` methods.
           var num = new Number(10);
-          num.toString = function () { throw new Error("toString should not be called"); };
+          num.toString = function () { return "toString"; };
           num.valueOf = function () { throw new Error("valueOf should not be called"); };
 
           var value = { 10: 1, toString: 2, valueOf: 3 };
-          if (JSON.stringify(value, [num]) !== '{"10":1}') return false;
+          if (JSON.stringify(value, [num]) !== '{"toString":2}') return false;
 
-          // `space`: wrapper objects with [[NumberData]] are coerced with ToNumber (which also uses
-          // @@toPrimitive).
+          // `space`: wrapper objects with [[NumberData]] are coerced with ToNumber, which should
+          // consult `valueOf` before `toString`.
           var obj = { a: [1, 2], b: { c: 3 } };
           var space = new Number(1);
           space.toString = function () { throw new Error("toString should not be called"); };
-          space.valueOf = function () { throw new Error("valueOf should not be called"); };
-          if (JSON.stringify(obj, null, space) !== JSON.stringify(obj, null, 1)) return false;
+          space.valueOf = function () { return 3; };
+          if (JSON.stringify(obj, null, space) !== JSON.stringify(obj, null, 3)) return false;
 
           // Values returned by replacer functions: wrapper objects with [[NumberData]] are coerced
-          // with ToNumber.
+          // with ToNumber, which should consult `valueOf`.
           function replacer(_k, v) {
             if (v === "str") {
               var n = new Number(42);
               n.toString = function () { throw new Error("toString should not be called"); };
-              n.valueOf = function () { throw new Error("valueOf should not be called"); };
+              n.valueOf = function () { return 2; };
               return n;
             }
             return v;
           }
-          if (JSON.stringify(["str"], replacer) !== "[42]") return false;
+          if (JSON.stringify(["str"], replacer) !== "[2]") return false;
 
           return true;
         })()
