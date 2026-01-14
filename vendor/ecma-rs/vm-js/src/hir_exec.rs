@@ -17024,8 +17024,7 @@ fn run_compiled_async_function(
             .map_err(|err| crate::vm::coerce_error_to_throw(&*vm, &mut root_scope, err))
         }
         crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
-        crate::exec::AsyncSuspendKind::Yield
-        | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+        crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in compiled async function",
         )),
         crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -17898,8 +17897,7 @@ pub(crate) fn start_compiled_module_tla_evaluation(
                 })
               }
               crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
-              crate::exec::AsyncSuspendKind::Yield
-              | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+              crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
                 "unexpected async generator yield suspension in compiled module TLA",
               )),
               crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -21408,8 +21406,7 @@ fn run_compiled_script_async(
           );
           Ok(await_value)
         }
-        crate::exec::AsyncSuspendKind::Yield
-        | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+        crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in compiled async script",
         )),
         crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -22542,8 +22539,7 @@ pub(crate) fn hir_async_resume_continuation(
             );
             Ok(await_value)
           }
-          crate::exec::AsyncSuspendKind::Yield
-          | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in compiled async script",
           )),
           crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
