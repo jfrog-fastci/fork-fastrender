@@ -242,6 +242,58 @@ pub fn handle_accesskit_action_request(
         .interaction
         .set_text_control_value(ctx.dom, target_node_id, &value);
 
+      if changed {
+        // Mirror the sanitized dom1 value into the JS-backed dom2 document and dispatch a trusted
+        // bubbling `input` event so scripts observe the update (matching user input semantics).
+        let next_value = crate::dom::find_node_mut_by_preorder_id(ctx.dom, target_node_id)
+          .and_then(|node| {
+            let tag = node.tag_name()?;
+            if tag.eq_ignore_ascii_case("textarea") {
+              Some(crate::dom::textarea_current_value(node))
+            } else if tag.eq_ignore_ascii_case("input") {
+              Some(node.get_attribute_ref("value").unwrap_or("").to_string())
+            } else {
+              None
+            }
+          })
+          .unwrap_or_else(|| value.to_string());
+
+        if let Some(js_tab) = ctx.js_tab.as_mut() {
+          let element_id = ctx.interaction.focused_element_id().map(|id| id.to_string());
+
+          let dom2_node_id = {
+            // Prefer mapping renderer preorder ids back into stable dom2 NodeIds. Renderer preorder
+            // ids can shift under DOM mutations, and `dom2::NodeId` allocation order does not match
+            // traversal order, so indexing into the dom2 node list is unsafe.
+            if let Some(mapped) = js_tab.dom2_node_for_renderer_preorder(target_node_id) {
+              // If the caller also supplies an element id, treat it as a stability check: preorder ids can
+              // become stale across dom2 DOM mutations, but the element's `id=` attribute remains stable.
+              // If the mapped node does not match the expected id, fall back to a fresh `getElementById`
+              // lookup.
+              if let Some(id) = element_id.as_deref() {
+                let dom = js_tab.dom();
+                let mapped_id = dom.get_attribute(mapped, "id").ok().flatten();
+                if mapped_id != Some(id) {
+                  dom.get_element_by_id(id)
+                } else {
+                  Some(mapped)
+                }
+              } else {
+                Some(mapped)
+              }
+            } else {
+              element_id
+                .as_deref()
+                .and_then(|id| js_tab.dom().get_element_by_id(id))
+            }
+          };
+
+          if let Some(dom2_node_id) = dom2_node_id {
+            let _ = js_tab.dispatch_set_value_action(dom2_node_id, &next_value);
+          }
+        }
+      }
+
       if focus_changed || changed {
         ctx.mark_redraw();
       }
@@ -780,6 +832,75 @@ mod tests {
       dom2.get_attribute(body, "data-blur-bubbled").unwrap(),
       None,
       "expected non-bubbling blur event to not reach <body>"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn accesskit_set_value_dispatches_input_event_into_js() -> crate::Result<()> {
+    let tab_id = TEST_TAB_ID;
+    let _lock = crate::testing::global_test_lock();
+
+    let html = r#"<!doctype html>
+<input id="y" value="old">
+<script>
+  var y = document.getElementById("y");
+  y.addEventListener("input", function (ev) {
+    y.setAttribute("data-seen", ev.target.value);
+  });
+</script>
+"#;
+
+    let executor = VmJsBrowserTabExecutor::new();
+    let mut tab =
+      BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+    let mut dom = crate::dom::parse_html(html)?;
+    let input_id = find_node_id_by_id_attr(&mut dom, "y");
+
+    let mut engine = InteractionEngine::new();
+    let mut needs_redraw = false;
+
+    {
+      let mut ctx = ChromeDocumentContext {
+        dom: &mut dom,
+        interaction: &mut engine,
+        js_tab: Some(&mut tab),
+        box_tree: None,
+        fragment_tree: None,
+        scroll_state: None,
+        document_url: "about:blank",
+        base_url: "about:blank",
+        needs_redraw: &mut needs_redraw,
+        emitted_actions: None,
+      };
+
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        tab_id,
+        TEST_DOCUMENT_GENERATION,
+        accesskit::ActionRequest {
+          action: accesskit::Action::SetValue,
+          target: page_node_id(input_id),
+          data: Some(accesskit::ActionData::Value("new".into())),
+        },
+      ));
+    }
+
+    assert_eq!(engine.focused_node_id(), Some(input_id));
+    assert_eq!(input_value(&mut dom, input_id), "new");
+    assert!(needs_redraw);
+
+    let dom2 = tab.dom();
+    let input = dom2
+      .get_element_by_id("y")
+      .expect("expected <input id=y> in dom2");
+    assert_eq!(dom2.input_value(input).unwrap(), "new");
+    assert_eq!(
+      dom2.get_attribute(input, "data-seen").unwrap(),
+      Some("new"),
+      "expected JS input event handler to observe updated value"
     );
 
     Ok(())
