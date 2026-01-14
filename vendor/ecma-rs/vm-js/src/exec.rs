@@ -21006,6 +21006,11 @@ pub(crate) fn async_generator_resume_next(
       return Ok(());
     };
 
+    // `AsyncGeneratorResumeNext` can process arbitrarily many queued requests (e.g. `next()` calls
+    // on an already-completed generator) in one synchronous turn. Tick once per processed request
+    // so budgets (fuel/deadline/interrupt) can bound this loop.
+    vm.tick()?;
+
     match state {
       AsyncGeneratorState::Completed => match req.kind {
         crate::heap::AsyncGeneratorRequestKind::Next(_) => {
