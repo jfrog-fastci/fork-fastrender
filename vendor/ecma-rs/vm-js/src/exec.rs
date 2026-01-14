@@ -10360,11 +10360,11 @@ impl<'a> Evaluator<'a> {
         ));
       }
       // Private-name super property access is an early error (`super.#x`).
-      if expr.right.starts_with('#') {
-        return Err(VmError::InvariantViolation(
-          "super private-name member access should be rejected by early errors",
-        ));
-      }
+       if expr.right.starts_with('#') {
+         return Err(VmError::InvariantViolation(
+           "super private-name member access should be rejected by early errors",
+         ));
+       }
 
       // `GetThisBinding` must run before any further evaluation (including allocating the property
       // key string) so derived constructors throw before `super()` as required by ECMA-262.
@@ -10605,7 +10605,7 @@ impl<'a> Evaluator<'a> {
           let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();
-          key_scope.push_root(receiver)?;
+          key_scope.push_roots(&[self.this, receiver])?;
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
@@ -10656,7 +10656,7 @@ impl<'a> Evaluator<'a> {
           let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();
-          key_scope.push_root(receiver)?;
+          key_scope.push_roots(&[self.this, receiver])?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -13368,7 +13368,7 @@ impl<'a> Evaluator<'a> {
 
           let mut key_scope = scope.reborrow();
           // Root receiver + key across `GetSuperBase()` and any proxy traps.
-          key_scope.push_root(receiver)?;
+          key_scope.push_roots(&[self.this, receiver])?;
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
@@ -13427,9 +13427,8 @@ impl<'a> Evaluator<'a> {
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
           let receiver = self.get_this_binding(scope)?;
 
-          // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
           let mut key_scope = scope.reborrow();
-          key_scope.push_root(receiver)?;
+          key_scope.push_roots(&[self.this, receiver])?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -23612,13 +23611,9 @@ fn async_eval_expr_chain(
         // Evaluating a super property reference requires an initialized `this` binding. In derived
         // constructors before `super()`, this check happens before evaluating the computed key
         // expression.
-        if evaluator.derived_constructor && !evaluator.this_initialized {
-          return Err(throw_reference_error(
-            evaluator.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
-        }
+        let _ = evaluator
+          .get_this_binding(scope)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
 
         match async_eval_expr(evaluator, scope, &member.stx.member)? {
           AsyncEval::Complete(member_value) => {
@@ -27033,18 +27028,21 @@ fn async_super_get(
   scope: &mut Scope<'_>,
   key: PropertyKey,
 ) -> Result<Value, VmError> {
+  let receiver = evaluator
+    .get_this_binding(scope)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+
   let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
     "super property reference is missing [[HomeObject]]",
   ))?;
 
   let mut super_scope = scope.reborrow();
-  let this_value = evaluator.this;
   let key_value = match key {
     PropertyKey::String(s) => Value::String(s),
     PropertyKey::Symbol(sym) => Value::Symbol(sym),
   };
   // Root everything used across `GetPrototypeOf` (Proxy traps can allocate + trigger GC).
-  super_scope.push_roots(&[Value::Object(home_object), this_value, key_value])?;
+  super_scope.push_roots(&[Value::Object(home_object), receiver, evaluator.this, key_value])?;
 
   // Super property references resolve against `[[HomeObject]].[[Prototype]]` and use the current
   // `this` value as the receiver.
@@ -27073,7 +27071,7 @@ fn async_super_get(
       &mut *evaluator.hooks,
       super_base,
       key,
-      this_value,
+      receiver,
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))
 }
@@ -27545,7 +27543,6 @@ fn async_eval_call(
           .get_value_from_reference(&mut key_scope, &reference)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
       };
-
       async_call_begin(evaluator, scope, expr, callee_value, receiver)
     }
     // `super[expr](...args)`.
@@ -29522,7 +29519,19 @@ fn async_resume_from_frames(
                   Err(err) => return Err(err),
                 };
 
-              match async_call_begin(evaluator, scope, expr, callee_value, evaluator.this) {
+              let receiver = match evaluator
+                .get_this_binding(scope)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+              {
+                Ok(v) => v,
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err));
+                  continue;
+                }
+                Err(err) => return Err(err),
+              };
+
+              match async_call_begin(evaluator, scope, expr, callee_value, receiver) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   vecdeque_try_append(&mut suspend.frames, &mut frames)?;
