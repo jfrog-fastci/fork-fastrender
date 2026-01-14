@@ -1,5 +1,7 @@
-use crate::function::CallHandler;
-use crate::{CompiledScript, GcObject, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+use crate::function::{CallHandler, FunctionData};
+use crate::{
+  CompiledScript, GcObject, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions,
+};
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -26,10 +28,14 @@ fn assert_compiled_hir_async_function(rt: &mut JsRuntime, func_obj: GcObject) ->
     matches!(call_handler, CallHandler::User(_)),
     "expected async function to be allocated as a compiled user function, got {call_handler:?}"
   );
-  // Async function bodies may still execute via the AST interpreter at call-time
-  // (`FunctionData::AsyncEcmaFallback`). Once compiled async/await execution is enabled, this test will
-  // automatically exercise the compiled async evaluator instead.
-  let _func_data = rt.heap.get_function_data(func_obj)?;
+  let func_data = rt.heap.get_function_data(func_obj)?;
+  assert!(
+    !matches!(
+      func_data,
+      FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+    ),
+    "expected async function body to execute via compiled async evaluator, got {func_data:?}"
+  );
   Ok(())
 }
 
@@ -63,7 +69,7 @@ fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Valu
 }
 
 #[test]
-fn hir_async_class_static_block_can_await() -> Result<(), VmError> {
+fn hir_async_class_static_block_runs_after_class_level_await() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let func_obj = match compile_and_get_function(
@@ -71,7 +77,10 @@ fn hir_async_class_static_block_can_await() -> Result<(), VmError> {
     r#"
       async function f(){
         var out = 0;
-        class C { static { out = 1; await Promise.resolve(0); out = 2; } }
+        class B {}
+        class C extends (await Promise.resolve(B)) {
+          static { out = this === C ? 1 : 0; }
+        }
         return out;
       }
       f
@@ -93,7 +102,7 @@ fn hir_async_class_static_block_can_await() -> Result<(), VmError> {
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let result = call_and_await_promise(&mut rt, func_obj)?;
-  assert_eq!(result, Value::Number(2.0));
+  assert_eq!(result, Value::Number(1.0));
   Ok(())
 }
 

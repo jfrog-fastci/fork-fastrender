@@ -2038,6 +2038,133 @@ impl<'vm> HirEvaluator<'vm> {
                 }
               }
             }
+            hir_js::StmtKind::Decl(def_id) => {
+              // Async class declarations may suspend while evaluating:
+              // - `extends` expressions, and/or
+              // - computed member keys.
+              //
+              // Support a narrow subset where the suspension point is a *direct* await:
+              // - `class C extends (await <expr>) {}`
+              // - `class C { [await <expr>]() {} }`
+              //
+              // Note: `await` is not allowed in class static blocks in this engine (VMJS0004).
+              let def = script
+                .hir
+                .def(*def_id)
+                .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+              let Some(decl_body_id) = def.body else {
+                continue;
+              };
+              let decl_body = script
+                .hir
+                .body(decl_body_id)
+                .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+              if decl_body.kind != hir_js::BodyKind::Class {
+                continue;
+              }
+              let class_meta = decl_body
+                .class
+                .as_ref()
+                .ok_or(VmError::InvariantViolation("class body missing class metadata"))?;
+
+              // Class-level root statements represent evaluation that occurs when defining the
+              // class (e.g. decorators). These are not yet supported by the compiled async executor
+              // if they contain `await`.
+              for stmt_id in decl_body.root_stmts.as_slice() {
+                if self.hir_stmt_contains_await_for_async_analysis(script, decl_body, *stmt_id, &mut steps)? {
+                  return Ok(false);
+                }
+              }
+
+              let mut has_await_in_class_eval: bool = false;
+              let mut has_fields: bool = false;
+
+              // `extends`
+              if let Some(extends_expr_id) = class_meta.extends {
+                let expr = self.get_expr(decl_body, extends_expr_id)?;
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                  has_await_in_class_eval = true;
+                  if self.hir_expr_contains_await_for_async_analysis(
+                    script,
+                    decl_body,
+                    awaited_expr,
+                    &mut steps,
+                  )? {
+                    return Ok(false);
+                  }
+                } else if self.hir_expr_contains_await_for_async_analysis(
+                  script,
+                  decl_body,
+                  extends_expr_id,
+                  &mut steps,
+                )? {
+                  return Ok(false);
+                }
+              }
+
+              // Members.
+              for member in class_meta.members.iter() {
+                self.async_analysis_tick(&mut steps)?;
+                match &member.kind {
+                  hir_js::ClassMemberKind::Constructor { .. } => {}
+                  hir_js::ClassMemberKind::Method { key, .. } => {
+                    if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+                      let expr = self.get_expr(decl_body, *expr_id)?;
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                        has_await_in_class_eval = true;
+                        if self.hir_expr_contains_await_for_async_analysis(
+                          script,
+                          decl_body,
+                          awaited_expr,
+                          &mut steps,
+                        )? {
+                          return Ok(false);
+                        }
+                      } else if self.hir_expr_contains_await_for_async_analysis(
+                        script,
+                        decl_body,
+                        *expr_id,
+                        &mut steps,
+                      )? {
+                        return Ok(false);
+                      }
+                    }
+                  }
+                  hir_js::ClassMemberKind::Field {
+                    key,
+                    initializer,
+                    ..
+                  } => {
+                    has_fields = true;
+                    if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+                      if self.hir_expr_contains_await_for_async_analysis(
+                        script,
+                        decl_body,
+                        *expr_id,
+                        &mut steps,
+                      )? {
+                        return Ok(false);
+                      }
+                    }
+                    if let Some(init_body) = initializer {
+                      if self.hir_body_contains_await_for_async_analysis(script, *init_body, &mut steps)? {
+                        return Ok(false);
+                      }
+                    }
+                  }
+                  hir_js::ClassMemberKind::StaticBlock { body: static_body, .. } => {
+                    if self.hir_body_contains_await_for_async_analysis(script, *static_body, &mut steps)? {
+                      return Ok(false);
+                    }
+                  }
+                }
+              }
+
+              // Fields are not yet supported by the compiled async class evaluator.
+              if has_await_in_class_eval && has_fields {
+                return Ok(false);
+              }
+            }
             // Any other statement containing await is not supported by the compiled async executor
             // yet.
             _ => {
@@ -16942,6 +17069,1084 @@ impl TryState {
 }
 
 #[derive(Debug)]
+enum AsyncClassStaticBlockStage {
+  Init,
+  Running { next_stmt_index: usize },
+  AwaitExprStmt { next_stmt_index: usize, await_offset: u32 },
+}
+
+#[derive(Debug)]
+struct AsyncClassStaticBlockState {
+  receiver: GcObject,
+  body_id: hir_js::BodyId,
+  stage: AsyncClassStaticBlockStage,
+  saved_this: Value,
+  saved_this_initialized: bool,
+  saved_new_target: Value,
+  saved_home_object: Option<GcObject>,
+  saved_lex: Option<GcEnv>,
+  saved_var_env: VarEnv,
+  saved_meta_property_context: MetaPropertyContext,
+}
+
+#[derive(Debug)]
+enum AsyncClassStaticBlockPoll {
+  Complete,
+  Await { await_value: Value, await_offset: u32 },
+}
+
+impl AsyncClassStaticBlockState {
+  fn new(receiver: GcObject, body_id: hir_js::BodyId) -> Self {
+    Self {
+      receiver,
+      body_id,
+      stage: AsyncClassStaticBlockStage::Init,
+      saved_this: Value::Undefined,
+      saved_this_initialized: true,
+      saved_new_target: Value::Undefined,
+      saved_home_object: None,
+      saved_lex: None,
+      saved_var_env: VarEnv::GlobalObject,
+      saved_meta_property_context: MetaPropertyContext::SCRIPT,
+    }
+  }
+
+  fn teardown(&mut self, _heap: &mut crate::Heap) {
+    // No persistent roots.
+  }
+
+  fn restore(&mut self, evaluator: &mut HirEvaluator<'_>, heap: &mut crate::Heap) {
+    if let Some(saved_lex) = self.saved_lex {
+      evaluator.env.set_lexical_env(heap, saved_lex);
+    }
+    evaluator.env.set_var_env(self.saved_var_env);
+    evaluator
+      .env
+      .set_meta_property_context(self.saved_meta_property_context);
+    evaluator.this = self.saved_this;
+    evaluator.this_initialized = self.saved_this_initialized;
+    evaluator.new_target = self.saved_new_target;
+    evaluator.home_object = self.saved_home_object;
+  }
+
+  fn apply_running_context(&self, evaluator: &mut HirEvaluator<'_>) {
+    // When suspended, `HirAsyncState::resume` constructs a fresh `HirEvaluator` with the outer
+    // async function's `this`/`new.target`/`[[HomeObject]]`. Static blocks must execute with
+    // `this = classConstructor`, `new.target = undefined`, and `[[HomeObject]] = classConstructor`,
+    // so restore those fields on each poll/resume.
+    evaluator.this = Value::Object(self.receiver);
+    evaluator.this_initialized = true;
+    evaluator.new_target = Value::Undefined;
+    evaluator.home_object = Some(self.receiver);
+    evaluator
+      .env
+      .set_meta_property_context(MetaPropertyContext::METHOD);
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<AsyncClassStaticBlockPoll, VmError> {
+    // Avoid borrowing the HIR through `evaluator` across calls that mutably borrow it.
+    let hir = evaluator.script.hir.clone();
+    let block_body = hir
+      .body(self.body_id)
+      .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+
+    // Re-apply the static block execution context after resumption.
+    if !matches!(self.stage, AsyncClassStaticBlockStage::Init) {
+      self.apply_running_context(evaluator);
+    }
+
+    loop {
+      match &mut self.stage {
+        AsyncClassStaticBlockStage::Init => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "async class static block init received resume value",
+            ));
+          }
+
+          // Mirror `HirEvaluator::eval_class_static_block_hir`, but allow suspension on direct
+          // `await` expression statements.
+          let mut block_scope = scope.reborrow();
+          block_scope.push_root(Value::Object(self.receiver))?;
+
+          self.saved_this = evaluator.this;
+          self.saved_this_initialized = evaluator.this_initialized;
+          self.saved_new_target = evaluator.new_target;
+          self.saved_home_object = evaluator.home_object;
+          self.saved_lex = Some(evaluator.env.lexical_env());
+          self.saved_var_env = evaluator.env.var_env();
+          self.saved_meta_property_context = evaluator.env.meta_property_context();
+
+          self.apply_running_context(evaluator);
+
+          let saved_lex = self.saved_lex.ok_or(VmError::InvariantViolation(
+            "missing async class static block saved env",
+          ))?;
+          let var_env = block_scope.env_create(Some(saved_lex))?;
+          let body_lex = block_scope.env_create(Some(var_env))?;
+          evaluator.env.set_var_env(VarEnv::Env(var_env));
+          evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+
+          // Match `eval_class_static_block_hir`'s instantiation phase.
+          evaluator.early_error_missing_initializers_in_stmt_list(
+            block_body,
+            block_body.root_stmts.as_slice(),
+          )?;
+          evaluator.instantiate_var_decls(
+            &mut block_scope,
+            block_body,
+            block_body.root_stmts.as_slice(),
+          )?;
+          evaluator.instantiate_function_decls(
+            &mut block_scope,
+            block_body,
+            block_body.root_stmts.as_slice(),
+            /* annex_b */ false,
+          )?;
+          evaluator.instantiate_lexical_decls(
+            &mut block_scope,
+            block_body,
+            block_body.root_stmts.as_slice(),
+            evaluator.env.lexical_env(),
+          )?;
+
+          self.stage = AsyncClassStaticBlockStage::Running { next_stmt_index: 0 };
+          continue;
+        }
+
+        AsyncClassStaticBlockStage::AwaitExprStmt {
+          next_stmt_index,
+          await_offset,
+        } => {
+          let await_offset = *await_offset;
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "async class static block await missing resume value",
+            ));
+          };
+          match resume {
+            Ok(_) => {
+              self.stage = AsyncClassStaticBlockStage::Running {
+                next_stmt_index: *next_stmt_index,
+              };
+              continue;
+            }
+            Err(err) => {
+              // Promise rejection becomes a throw at the await site.
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                await_offset,
+                err,
+              );
+              self.restore(evaluator, scope.heap_mut());
+              return Err(err);
+            }
+          }
+        }
+
+        AsyncClassStaticBlockStage::Running { next_stmt_index } => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "async class static block running received unexpected resume value",
+            ));
+          }
+
+          if *next_stmt_index >= block_body.root_stmts.len() {
+            self.restore(evaluator, scope.heap_mut());
+            return Ok(AsyncClassStaticBlockPoll::Complete);
+          }
+
+          let stmt_id = block_body.root_stmts[*next_stmt_index];
+          let stmt = evaluator.get_stmt(block_body, stmt_id)?;
+
+          // Support `await <expr>;` in static blocks.
+          if let hir_js::StmtKind::Expr(expr_id) = &stmt.kind {
+            let expr = evaluator.get_expr(block_body, *expr_id)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+              // Budget once for the statement and once for the await expression itself.
+              evaluator.vm.tick()?;
+              evaluator.vm.tick()?;
+              let await_value = evaluator.eval_expr(scope, block_body, awaited_expr)?;
+              self.stage = AsyncClassStaticBlockStage::AwaitExprStmt {
+                next_stmt_index: next_stmt_index.saturating_add(1),
+                await_offset: expr.span.start,
+              };
+              return Ok(AsyncClassStaticBlockPoll::Await {
+                await_value,
+                await_offset: expr.span.start,
+              });
+            }
+          }
+
+          let flow = evaluator.eval_root_stmt(scope, block_body, stmt_id)?;
+          match flow {
+            Flow::Normal(_) => {
+              *next_stmt_index = next_stmt_index.saturating_add(1);
+              continue;
+            }
+            Flow::Return(_) => {
+              self.restore(evaluator, scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "class static block produced Return flow (early errors should prevent this)",
+              ));
+            }
+            Flow::Break(..) => {
+              self.restore(evaluator, scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "class static block produced Break flow (early errors should prevent this)",
+              ));
+            }
+            Flow::Continue(..) => {
+              self.restore(evaluator, scope.heap_mut());
+              return Err(VmError::InvariantViolation(
+                "class static block produced Continue flow (early errors should prevent this)",
+              ));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+enum AsyncClassDeclStage {
+  Init,
+  AwaitExtends { await_offset: u32 },
+  DefineMembers { member_index: usize },
+  AwaitMemberKey { member_index: usize, await_offset: u32 },
+  StaticInits { static_index: usize },
+  StaticBlock {
+    static_index: usize,
+    state: AsyncClassStaticBlockState,
+  },
+}
+
+#[derive(Debug)]
+enum AsyncClassDeclPoll {
+  Complete,
+  Await { await_value: Value, await_offset: u32 },
+}
+
+#[derive(Debug)]
+struct AsyncClassDeclState {
+  def_id: hir_js::DefId,
+  body_id: hir_js::BodyId,
+  stage: AsyncClassDeclStage,
+  saved_strict: Option<bool>,
+  outer_lex: Option<GcEnv>,
+  class_env: Option<GcEnv>,
+  binding_name: Option<String>,
+  func_name: Option<String>,
+  inner_binding: Option<String>,
+  class_ctor_root: Option<RootId>,
+  prototype_obj: Option<GcObject>,
+  static_blocks: Vec<hir_js::BodyId>,
+}
+
+impl AsyncClassDeclState {
+  fn new(def_id: hir_js::DefId, body_id: hir_js::BodyId) -> Self {
+    Self {
+      def_id,
+      body_id,
+      stage: AsyncClassDeclStage::Init,
+      saved_strict: None,
+      outer_lex: None,
+      class_env: None,
+      binding_name: None,
+      func_name: None,
+      inner_binding: None,
+      class_ctor_root: None,
+      prototype_obj: None,
+      static_blocks: Vec::new(),
+    }
+  }
+
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    if let AsyncClassDeclStage::StaticBlock { state, .. } = &mut self.stage {
+      state.teardown(heap);
+    }
+    if let Some(root) = self.class_ctor_root.take() {
+      heap.remove_root(root);
+    }
+  }
+
+  fn class_ctor(&self, heap: &crate::Heap) -> Result<GcObject, VmError> {
+    let root = self
+      .class_ctor_root
+      .ok_or(VmError::InvariantViolation("missing async class constructor root"))?;
+    let v = heap
+      .get_root(root)
+      .ok_or(VmError::InvariantViolation("missing async class constructor root value"))?;
+    let Value::Object(obj) = v else {
+      return Err(VmError::InvariantViolation(
+        "async class constructor root is not an object",
+      ));
+    };
+    Ok(obj)
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<AsyncClassDeclPoll, VmError> {
+    // If we are mid-class evaluation, force strict mode again after resumption.
+    if self.saved_strict.is_some() {
+      evaluator.strict = true;
+    }
+
+    // Avoid borrowing the HIR through `evaluator` across calls that mutably borrow it.
+    let hir = evaluator.script.hir.clone();
+    let class_body = hir
+      .body(self.body_id)
+      .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+    if class_body.kind != hir_js::BodyKind::Class {
+      return Err(VmError::InvariantViolation("async class decl body is not a class"));
+    }
+    let Some(class_meta) = class_body.class.as_ref() else {
+      return Err(VmError::InvariantViolation("class body missing class metadata"));
+    };
+
+    loop {
+      let stage = std::mem::replace(&mut self.stage, AsyncClassDeclStage::Init);
+      match stage {
+        AsyncClassDeclStage::Init => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "async class decl init received resume value",
+            ));
+          }
+
+          // Class definitions are always strict mode code.
+          if self.saved_strict.is_none() {
+            self.saved_strict = Some(evaluator.strict);
+            evaluator.strict = true;
+          }
+
+          let def = evaluator
+            .hir()
+            .def(self.def_id)
+            .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+          let is_default_anon = evaluator.is_default_export_anonymous_class_decl(self.def_id);
+          let (binding_name, func_name, inner_binding): (String, String, Option<String>) =
+            if is_default_anon {
+              ("*default*".to_owned(), "default".to_owned(), None)
+            } else {
+              let name = evaluator.resolve_name(def.name)?;
+              (name.clone(), name.clone(), Some(name))
+            };
+          self.binding_name = Some(binding_name);
+          self.func_name = Some(func_name);
+          self.inner_binding = inner_binding;
+
+          let outer = evaluator.env.lexical_env();
+          self.outer_lex = Some(outer);
+
+          // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
+          // outer is the surrounding lexical environment.
+          let class_env = scope.env_create(Some(outer))?;
+          evaluator.env.set_lexical_env(scope.heap_mut(), class_env);
+          self.class_env = Some(class_env);
+
+          // Ensure the requested inner binding exists (but is uninitialized) before evaluating
+          // `extends`, so `class C extends C {}` observes TDZ semantics.
+          if let Some(name) = self.inner_binding.as_deref() {
+            if scope.heap().env_has_binding(class_env, name)? {
+              return Err(VmError::InvariantViolation(
+                "class binding already exists in class environment",
+              ));
+            }
+            scope.env_create_immutable_binding(class_env, name)?;
+          }
+
+          // Evaluate `extends` (class heritage), if present.
+          let super_value = match class_meta.extends {
+            None => Value::Undefined,
+            Some(extends_expr_id) => {
+              let expr = evaluator.get_expr(class_body, extends_expr_id)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                // Budget once for the await expression itself.
+                evaluator.vm.tick()?;
+                let await_value = evaluator.eval_expr(scope, class_body, awaited_expr)?;
+                self.stage = AsyncClassDeclStage::AwaitExtends {
+                  await_offset: expr.span.start,
+                };
+                return Ok(AsyncClassDeclPoll::Await {
+                  await_value,
+                  await_offset: expr.span.start,
+                });
+              }
+              let extends_value = evaluator.eval_expr(scope, class_body, extends_expr_id)?;
+              self.validate_extends_value(evaluator, scope, extends_value)?
+            }
+          };
+
+          self.build_class(evaluator, scope, class_meta, super_value)?;
+          self.stage = AsyncClassDeclStage::DefineMembers { member_index: 0 };
+          continue;
+        }
+
+        AsyncClassDeclStage::AwaitExtends { await_offset } => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "async class extends await missing resume value",
+            ));
+          };
+          let extends_value = match resume {
+            Ok(v) => v,
+            Err(err) => {
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                await_offset,
+                err,
+              );
+              self.finish_with_error(evaluator, scope.heap_mut());
+              return Err(err);
+            }
+          };
+          let super_value = self.validate_extends_value(evaluator, scope, extends_value)?;
+          self.build_class(evaluator, scope, class_meta, super_value)?;
+          self.stage = AsyncClassDeclStage::DefineMembers { member_index: 0 };
+          continue;
+        }
+
+        AsyncClassDeclStage::AwaitMemberKey {
+          member_index,
+          await_offset,
+        } => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "async class member key await missing resume value",
+            ));
+          };
+          let key_value = match resume {
+            Ok(v) => v,
+            Err(err) => {
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                await_offset,
+                err,
+              );
+              self.finish_with_error(evaluator, scope.heap_mut());
+              return Err(err);
+            }
+          };
+
+          let key = {
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(key_value)?;
+            key_scope.to_property_key(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              key_value,
+            )?
+          };
+
+          self.define_member_at_index(
+            evaluator,
+            scope,
+            class_body,
+            class_meta,
+            member_index,
+            Some(key),
+          )?;
+          self.stage = AsyncClassDeclStage::DefineMembers {
+            member_index: member_index.saturating_add(1),
+          };
+          continue;
+        }
+
+        AsyncClassDeclStage::DefineMembers { mut member_index } => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "async class member definition received unexpected resume value",
+            ));
+          }
+
+          while member_index < class_meta.members.len() {
+            let idx = member_index;
+            evaluator.vm.tick()?;
+            let member = &class_meta.members[idx];
+            match &member.kind {
+              hir_js::ClassMemberKind::Constructor { .. } => {
+                member_index = member_index.saturating_add(1);
+                continue;
+              }
+              hir_js::ClassMemberKind::StaticBlock { body, .. } => {
+                self.static_blocks
+                  .try_reserve(1)
+                  .map_err(|_| VmError::OutOfMemory)?;
+                self.static_blocks.push(*body);
+                member_index = member_index.saturating_add(1);
+                continue;
+              }
+              hir_js::ClassMemberKind::Method { key, .. } => {
+                if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+                  let expr = evaluator.get_expr(class_body, *expr_id)?;
+                  if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                    evaluator.vm.tick()?;
+                    let await_value = evaluator.eval_expr(scope, class_body, awaited_expr)?;
+                    self.stage = AsyncClassDeclStage::AwaitMemberKey {
+                      member_index: idx,
+                      await_offset: expr.span.start,
+                    };
+                    return Ok(AsyncClassDeclPoll::Await {
+                      await_value,
+                      await_offset: expr.span.start,
+                    });
+                  }
+                }
+                self.define_member_at_index(evaluator, scope, class_body, class_meta, idx, None)?;
+                member_index = member_index.saturating_add(1);
+                continue;
+              }
+              hir_js::ClassMemberKind::Field { .. } => {
+                return Err(VmError::Unimplemented(
+                  "class fields in async class evaluation (hir-js compiled path)",
+                ));
+              }
+            }
+          }
+
+          self.stage = AsyncClassDeclStage::StaticInits { static_index: 0 };
+          continue;
+        }
+
+        AsyncClassDeclStage::StaticBlock {
+          static_index,
+          mut state,
+        } => {
+          let poll = state.poll(evaluator, scope, resume_value.take());
+          match poll {
+            Ok(AsyncClassStaticBlockPoll::Await {
+              await_value,
+              await_offset,
+            }) => {
+              self.stage = AsyncClassDeclStage::StaticBlock { static_index, state };
+              return Ok(AsyncClassDeclPoll::Await {
+                await_value,
+                await_offset,
+              });
+            }
+            Ok(AsyncClassStaticBlockPoll::Complete) => {
+              state.teardown(scope.heap_mut());
+              self.stage = AsyncClassDeclStage::StaticInits {
+                static_index: static_index.saturating_add(1),
+              };
+              continue;
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              self.finish_with_error(evaluator, scope.heap_mut());
+              return Err(err);
+            }
+          }
+        }
+
+        AsyncClassDeclStage::StaticInits { static_index } => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation(
+              "async class static init received unexpected resume value",
+            ));
+          }
+
+          if static_index >= self.static_blocks.len() {
+            self.finish_and_initialize_outer_binding(evaluator, scope)?;
+            return Ok(AsyncClassDeclPoll::Complete);
+          }
+
+          let body_id = self.static_blocks[static_index];
+          let receiver = self.class_ctor(scope.heap())?;
+          let mut state = AsyncClassStaticBlockState::new(receiver, body_id);
+          match state.poll(evaluator, scope, None) {
+            Ok(AsyncClassStaticBlockPoll::Complete) => {
+              state.teardown(scope.heap_mut());
+              self.stage = AsyncClassDeclStage::StaticInits {
+                static_index: static_index.saturating_add(1),
+              };
+              continue;
+            }
+            Ok(AsyncClassStaticBlockPoll::Await {
+              await_value,
+              await_offset,
+            }) => {
+              self.stage = AsyncClassDeclStage::StaticBlock { static_index, state };
+              return Ok(AsyncClassDeclPoll::Await {
+                await_value,
+                await_offset,
+              });
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              self.finish_with_error(evaluator, scope.heap_mut());
+              return Err(err);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  fn validate_extends_value(
+    &self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    v: Value,
+  ) -> Result<Value, VmError> {
+    Ok(match v {
+      Value::Null => Value::Null,
+      Value::Object(_) => {
+        if !scope.heap().is_constructor(v)? {
+          return Err(throw_type_error(
+            evaluator.vm,
+            scope,
+            "Class extends value is not a constructor",
+          )?);
+        }
+        v
+      }
+      _ => {
+        return Err(throw_type_error(
+          evaluator.vm,
+          scope,
+          "Class extends value is not a constructor",
+        )?)
+      }
+    })
+  }
+
+  fn build_class(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    class_meta: &hir_js::ClassBody,
+    super_value: Value,
+  ) -> Result<(), VmError> {
+    let class_env = self
+      .class_env
+      .ok_or(VmError::InvariantViolation("missing async class env"))?;
+    let func_name = self
+      .func_name
+      .as_deref()
+      .ok_or(VmError::InvariantViolation("missing async class func name"))?;
+
+    // Reject fields: this async path does not currently support them.
+    for member in class_meta.members.iter() {
+      if matches!(member.kind, hir_js::ClassMemberKind::Field { .. }) {
+        return Err(VmError::Unimplemented(
+          "class fields in async class evaluation (hir-js compiled path)",
+        ));
+      }
+    }
+
+    // Find an explicit constructor, if present.
+    let mut ctor_member: Option<&hir_js::ClassMember> = None;
+    for member in class_meta.members.iter() {
+      evaluator.vm.tick()?;
+      if member.static_ {
+        continue;
+      }
+      if let hir_js::ClassMemberKind::Constructor { .. } = &member.kind {
+        if ctor_member.is_some() {
+          return Err(VmError::TypeError("A class may only have one constructor"));
+        }
+        ctor_member = Some(member);
+      }
+    }
+
+    // Allocate the optional hidden constructable constructor body.
+    let mut ctor_length: u32 = 0;
+    let mut ctor_body_inner_func: Option<GcObject> = None;
+    let ctor_body_func = if let Some(member) = ctor_member {
+      let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
+        return Err(VmError::InvariantViolation(
+          "expected constructor member kind for class constructor",
+        ));
+      };
+      if let Some(body_id) = *body {
+        let body_func = evaluator.alloc_user_function_object(
+          scope,
+          body_id,
+          "constructor",
+          /* is_arrow */ false,
+          /* is_constructable */ true,
+          /* name_binding */ None,
+          EcmaFunctionKind::ClassMember,
+        )?;
+        let meta_property_context = if matches!(super_value, Value::Undefined) {
+          MetaPropertyContext::METHOD
+        } else {
+          MetaPropertyContext::DERIVED_CONSTRUCTOR
+        };
+        scope
+          .heap_mut()
+          .set_function_meta_property_context(body_func, meta_property_context)?;
+        ctor_body_inner_func = Some(body_func);
+        ctor_length = scope.heap().get_function(body_func)?.length;
+
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+        let mut wrapper_scope = scope.reborrow();
+        wrapper_scope.push_root(Value::Object(body_func))?;
+        let wrapper_name = wrapper_scope.alloc_string("constructor")?;
+        wrapper_scope.push_root(Value::String(wrapper_name))?;
+
+        let construct_id =
+          evaluator.vm.register_native_construct(compiled_constructor_body_construct)?;
+        let wrapper = wrapper_scope.alloc_native_function_with_slots(
+          intr.class_constructor_call(),
+          Some(construct_id),
+          wrapper_name,
+          ctor_length,
+          &[Value::Object(body_func)],
+        )?;
+
+        wrapper_scope.push_root(Value::Object(wrapper))?;
+        wrapper_scope
+          .heap_mut()
+          .object_set_prototype(wrapper, Some(intr.function_prototype()))?;
+        wrapper_scope
+          .heap_mut()
+          .set_function_realm(wrapper, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          wrapper_scope.heap_mut().set_function_job_realm(wrapper, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          wrapper_scope
+            .heap_mut()
+            .set_function_script_or_module_token(wrapper, Some(token))?;
+        }
+        Some(wrapper)
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    let func_obj = evaluator.create_class_constructor_object(
+      scope,
+      func_name,
+      ctor_length,
+      ctor_body_func,
+      super_value,
+      /* instance_field_count */ 0,
+    )?;
+
+    if let Some(body_func) = ctor_body_inner_func {
+      scope.heap_mut().set_function_data(
+        body_func,
+        FunctionData::ClassConstructorBody {
+          class_constructor: func_obj,
+        },
+      )?;
+    }
+    if let Some(body_func) = ctor_body_func {
+      scope.heap_mut().set_function_data(
+        body_func,
+        FunctionData::ClassConstructorBody {
+          class_constructor: func_obj,
+        },
+      )?;
+    }
+
+    // Initialize the inner immutable binding now that the constructor exists.
+    if let Some(name) = self.inner_binding.as_deref() {
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(func_obj))?;
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(class_env, name, Value::Object(func_obj))?;
+    }
+
+    // Extract the prototype object created by `make_constructor`.
+    let mut class_scope = scope.reborrow();
+    class_scope.push_root(Value::Object(func_obj))?;
+    let prototype_key_s = class_scope.alloc_string("prototype")?;
+    class_scope.push_root(Value::String(prototype_key_s))?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
+    };
+    let crate::property::PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(prototype_obj) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+
+    if let Some(body_func) = ctor_body_inner_func {
+      class_scope
+        .heap_mut()
+        .set_function_home_object(body_func, Some(prototype_obj))?;
+    }
+
+    class_scope.define_property_or_throw(
+      func_obj,
+      prototype_key,
+      PropertyDescriptorPatch {
+        writable: Some(false),
+        ..Default::default()
+      },
+    )?;
+
+    let intr = evaluator
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    match super_value {
+      Value::Undefined => {
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, Some(intr.object_prototype()))?;
+      }
+      Value::Null => {
+        class_scope.heap_mut().object_set_prototype(prototype_obj, None)?;
+      }
+      Value::Object(super_ctor) => {
+        let proto_parent = {
+          let mut proto_scope = class_scope.reborrow();
+          proto_scope.push_root(Value::Object(super_ctor))?;
+          let proto_key_s = proto_scope.alloc_string("prototype")?;
+          proto_scope.push_root(Value::String(proto_key_s))?;
+          let proto_key = PropertyKey::from_string(proto_key_s);
+          let proto_value = proto_scope.ordinary_get_with_host_and_hooks(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            super_ctor,
+            proto_key,
+            Value::Object(super_ctor),
+          )?;
+          match proto_value {
+            Value::Object(o) => Some(o),
+            Value::Null => None,
+            _ => {
+              return Err(throw_type_error(
+                evaluator.vm,
+                &mut proto_scope,
+                "Class extends value does not have a valid prototype property",
+              )?)
+            }
+          }
+        };
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, proto_parent)?;
+      }
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "class constructor super value is not undefined, null, or object",
+        ))
+      }
+    }
+
+    // Persist the class constructor across awaits during member/static-block evaluation.
+    drop(class_scope);
+    let ctor_root = {
+      let mut root_scope = scope.reborrow();
+      root_scope.push_root(Value::Object(func_obj))?;
+      root_scope.heap_mut().add_root(Value::Object(func_obj))?
+    };
+    self.class_ctor_root = Some(ctor_root);
+    self.prototype_obj = Some(prototype_obj);
+    Ok(())
+  }
+
+  fn define_member_at_index(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    class_body: &hir_js::Body,
+    class_meta: &hir_js::ClassBody,
+    member_index: usize,
+    awaited_key: Option<PropertyKey>,
+  ) -> Result<(), VmError> {
+    let func_obj = self.class_ctor(scope.heap())?;
+    let prototype_obj = self
+      .prototype_obj
+      .ok_or(VmError::InvariantViolation("missing async class prototype"))?;
+
+    let member = class_meta
+      .members
+      .get(member_index)
+      .ok_or(VmError::InvariantViolation(
+        "async class member index out of bounds",
+      ))?;
+    let hir_js::ClassMemberKind::Method {
+      body,
+      key,
+      kind,
+      ..
+    } = &member.kind
+    else {
+      return Err(VmError::InvariantViolation(
+        "async class member definition invoked for non-method",
+      ));
+    };
+
+    let target_obj = if member.static_ { func_obj } else { prototype_obj };
+
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(Value::Object(target_obj))?;
+
+    let key = match awaited_key {
+      Some(k) => k,
+      None => evaluator.eval_class_member_key(&mut member_scope, class_body, key)?,
+    };
+    root_property_key(&mut member_scope, key)?;
+
+    let Some(body_id) = body else {
+      return Err(VmError::Unimplemented(
+        "class methods without bodies (hir-js compiled path)",
+      ));
+    };
+
+    let func_obj_member = evaluator.alloc_user_function_object(
+      &mut member_scope,
+      *body_id,
+      /* name */ "",
+      /* is_arrow */ false,
+      /* is_constructable */ false,
+      /* name_binding */ None,
+      EcmaFunctionKind::ClassMember,
+    )?;
+    member_scope
+      .heap_mut()
+      .set_function_home_object(func_obj_member, Some(target_obj))?;
+
+    match kind {
+      hir_js::ClassMethodKind::Method => {
+        crate::function_properties::set_function_name(&mut member_scope, func_obj_member, key, None)?;
+        member_scope.define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            value: Some(Value::Object(func_obj_member)),
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+      }
+      hir_js::ClassMethodKind::Getter => {
+        crate::function_properties::set_function_name(
+          &mut member_scope,
+          func_obj_member,
+          key,
+          Some("get"),
+        )?;
+        member_scope.define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            get: Some(Value::Object(func_obj_member)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+      }
+      hir_js::ClassMethodKind::Setter => {
+        crate::function_properties::set_function_name(
+          &mut member_scope,
+          func_obj_member,
+          key,
+          Some("set"),
+        )?;
+        member_scope.define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            set: Some(Value::Object(func_obj_member)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  fn finish_with_error(&mut self, evaluator: &mut HirEvaluator<'_>, heap: &mut crate::Heap) {
+    if let Some(saved_strict) = self.saved_strict.take() {
+      evaluator.strict = saved_strict;
+    }
+    if let Some(outer) = self.outer_lex.take() {
+      evaluator.env.set_lexical_env(heap, outer);
+    }
+  }
+
+  fn finish_and_initialize_outer_binding(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+  ) -> Result<(), VmError> {
+    let outer = self
+      .outer_lex
+      .ok_or(VmError::InvariantViolation("missing async class outer lex env"))?;
+    let binding_name = self
+      .binding_name
+      .as_deref()
+      .ok_or(VmError::InvariantViolation("missing async class binding name"))?;
+    let func_obj = self.class_ctor(scope.heap())?;
+
+    // Restore the surrounding lexical environment before initializing the outer binding.
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+    // Restore strictness after leaving class evaluation.
+    if let Some(saved_strict) = self.saved_strict.take() {
+      evaluator.strict = saved_strict;
+    }
+
+    // Initialize the outer class binding in the surrounding environment.
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(func_obj))?;
+    if !init_scope.heap().env_has_binding(outer, binding_name)? {
+      if binding_name == "*default*" {
+        init_scope.env_create_immutable_binding(outer, binding_name)?;
+      } else {
+        init_scope.env_create_mutable_binding(outer, binding_name)?;
+      }
+    }
+    init_scope.heap_mut().env_initialize_binding(
+      outer,
+      binding_name,
+      Value::Object(func_obj),
+    )?;
+
+    self.outer_lex = None;
+    Ok(())
+  }
+}
+
+#[derive(Debug)]
 enum HirAsyncActive {
   TryForAwaitOfCatch(TryForAwaitOfCatchState),
   ForAwaitOf(ForAwaitOfState),
@@ -16952,6 +18157,9 @@ enum HirAsyncActive {
   /// Suspended while evaluating a destructuring assignment pattern that contains an `await`
   /// expression in a computed key or default value.
   DestructuringAssign(AsyncDestructuringAssignState),
+  /// Suspended while evaluating a class declaration whose evaluation contains a supported direct
+  /// `await` (in `extends` or computed member keys).
+  ClassDecl(AsyncClassDeclState),
   /// Suspended at a direct `await <expr>;` expression statement.
   AwaitExprStmt { next_stmt_index: usize },
   /// Suspended at an `export default await <expr>;` statement.
@@ -16989,6 +18197,7 @@ impl HirAsyncActive {
       HirAsyncActive::Try(state) => state.teardown(heap),
       HirAsyncActive::TryStmt(state) => state.teardown(heap),
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
+      HirAsyncActive::ClassDecl(state) => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
       | HirAsyncActive::AwaitExportDefaultExpr { .. }
       | HirAsyncActive::AwaitAssignmentStmt { pending_assign: None, .. }
@@ -17789,6 +18998,53 @@ impl HirAsyncState {
                   HirAsyncBodyKind::Expr { .. } => 0,
                 };
                 self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
+                return Ok(HirAsyncResult::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
+                  await_value,
+                });
+              }
+              Err(err) => {
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::ClassDecl(state) => {
+            let poll = state.poll(evaluator, scope, resume_value.take());
+            match poll {
+              Ok(AsyncClassDeclPoll::Complete) => {
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                continue;
+              }
+              Ok(AsyncClassDeclPoll::Await {
+                await_value,
+                await_offset,
+              }) => {
+                self.await_stmt_offset = await_offset;
                 return Ok(HirAsyncResult::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
@@ -18927,6 +20183,60 @@ impl HirAsyncState {
                 }
               };
               self.active = Some(HirAsyncActive::DestructuringAssign(state));
+              continue;
+            }
+          }
+        }
+      }
+
+      // Class declarations can contain supported direct `await` expressions in their evaluation
+      // (heritage and computed keys). Those awaits occur *inside* the class statement, so they must
+      // be driven by a dedicated state machine rather than the synchronous evaluator.
+      if let hir_js::StmtKind::Decl(def_id) = &stmt.kind {
+        let def = evaluator
+          .hir()
+          .def(*def_id)
+          .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+        if let Some(decl_body_id) = def.body {
+          let decl_body = evaluator.get_body(decl_body_id)?;
+          if decl_body.kind == hir_js::BodyKind::Class {
+            let class_meta = decl_body
+              .class
+              .as_ref()
+              .ok_or(VmError::InvariantViolation("class body missing class metadata"))?;
+
+            let mut needs_async_eval: bool = false;
+            if let Some(extends_expr_id) = class_meta.extends {
+              let expr = evaluator.get_expr(decl_body, extends_expr_id)?;
+              if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                needs_async_eval = true;
+              }
+            }
+
+            if !needs_async_eval {
+              for member in class_meta.members.iter() {
+                if let hir_js::ClassMemberKind::Method { key, .. } = &member.kind {
+                  if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+                    let expr = evaluator.get_expr(decl_body, *expr_id)?;
+                    if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                      needs_async_eval = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+
+            if needs_async_eval {
+              for _ in 0..label_tick_count {
+                evaluator.vm.tick()?;
+              }
+              // Budget once for the statement entry (matching `eval_stmt_labelled`).
+              evaluator.vm.tick()?;
+              self.active = Some(HirAsyncActive::ClassDecl(AsyncClassDeclState::new(
+                *def_id,
+                decl_body_id,
+              )));
               continue;
             }
           }
