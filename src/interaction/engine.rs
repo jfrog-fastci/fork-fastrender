@@ -1840,6 +1840,33 @@ mod tests {
   }
 
   #[test]
+  fn bidi_text_input_blocked_by_maxlength_preserves_split_caret_affinity() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input dir=\"ltr\" maxlength=\"7\" value=\"ABC אבג\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place the caret at the split-caret boundary (char_idx=4) on the downstream (RTL) side.
+    engine.set_text_selection_caret(input_id, 4);
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Downstream);
+
+    // No-op due to maxlength: should not mutate the DOM value or caret affinity.
+    assert!(!engine.text_input(&mut dom, "X"));
+    assert_eq!(input_value(&mut dom, input_id), "ABC אבג");
+
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.selection(), None);
+    assert_eq!(edit.caret, 4);
+    assert_eq!(edit.caret_affinity, CaretAffinity::Downstream);
+  }
+
+  #[test]
   fn bidi_clipboard_paste_preserves_split_caret_affinity_after_insert() {
     let mut dom =
       crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
@@ -11046,7 +11073,11 @@ impl InteractionEngine {
       // After inserting text, keep the caret attached to the inserted content. This matters at
       // split-caret bidi boundaries where the same logical caret position maps to multiple visual
       // x positions.
-      caret_affinity: CaretAffinity::Upstream,
+      caret_affinity: if insert_text.is_empty() && replace_start == replace_end {
+        edit.caret_affinity
+      } else {
+        CaretAffinity::Upstream
+      },
       selection_anchor: None,
       preferred_x: None,
     });
