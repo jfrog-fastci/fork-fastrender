@@ -123,7 +123,12 @@ impl DomIdLookupExt for DomIndex<'_> {
   }
 }
 
-impl DomIdLookupExt for super::dom_index::DomIndex {}
+impl DomIdLookupExt for super::dom_index::DomIndex {
+  #[inline]
+  fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    super::dom_index::DomIndex::id_for_ptr(self, ptr)
+  }
+}
 
 pub(crate) struct BoxIndex<'a> {
   id_to_ptr: Vec<*const BoxNode>,

@@ -1,4 +1,5 @@
 use crate::dom::DomNode;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::ptr;
 
@@ -20,6 +21,11 @@ pub struct DomIndex {
   ///
   /// This is primarily intended for future `<label for=...>` association and other ID based lookups.
   pub id_by_element_id: HashMap<String, usize>,
+  /// Mapping from node pointer back to its 1-based pre-order id.
+  ///
+  /// This is used by hit-testing features such as `<img usemap>` that need to resolve a returned
+  /// `<area>` pointer back to the DOM id used by the renderer/interaction engine.
+  ptr_to_id: FxHashMap<*const DomNode, usize>,
 }
 
 impl DomIndex {
@@ -29,6 +35,7 @@ impl DomIndex {
     let mut parent: Vec<usize> = vec![0];
     let mut id_to_ptr: Vec<*mut DomNode> = vec![ptr::null_mut()];
     let mut id_by_element_id: HashMap<String, usize> = HashMap::new();
+    let mut ptr_to_id: FxHashMap<*const DomNode, usize> = FxHashMap::default();
 
     // Track whether a node is inside an inert `<template>` subtree. `enumerate_dom_ids` includes
     // template contents in the stable node id scheme, but template contents should not participate
@@ -38,6 +45,8 @@ impl DomIndex {
       let id = id_to_ptr.len();
       id_to_ptr.push(ptr);
       parent.push(parent_id);
+      debug_assert!(!ptr.is_null());
+      ptr_to_id.insert(ptr as *const DomNode, id);
 
       // Safety: `root` is mutably borrowed for the duration of `build`, and we only traverse the
       // existing structure without mutating any `children` vectors, so raw pointers are stable for
@@ -61,6 +70,7 @@ impl DomIndex {
       parent,
       id_to_ptr,
       id_by_element_id,
+      ptr_to_id,
     }
   }
 
@@ -97,5 +107,14 @@ impl DomIndex {
     // Safety: the index guarantees `ptr` is a node pointer in the tree as built, and this method
     // hides the raw pointer dereference from callers.
     Some(f(unsafe { &mut *ptr }))
+  }
+
+  /// Resolve a raw pointer back to its 1-based DOM pre-order id.
+  #[inline]
+  pub fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    if ptr.is_null() {
+      return None;
+    }
+    self.ptr_to_id.get(&ptr).copied()
   }
 }

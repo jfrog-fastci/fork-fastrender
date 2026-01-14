@@ -21,7 +21,7 @@ use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::tree::fragment_tree::{FragmentContent, HitTestRoot};
 use crate::ui::messages::{CursorKind, MediaElementKind, PointerButton, PointerModifiers};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -492,6 +492,7 @@ impl TextDragDropState {
 struct DomIndexMut {
   id_to_node: Vec<*mut DomNode>,
   parent: Vec<usize>,
+  ptr_to_id: Option<FxHashMap<*const DomNode, usize>>,
 }
 
 impl DomIndexMut {
@@ -499,6 +500,7 @@ impl DomIndexMut {
     // Node ids are pre-order traversal indices, matching `crate::dom::enumerate_dom_ids`.
     let mut id_to_node: Vec<*mut DomNode> = vec![std::ptr::null_mut()];
     let mut parent: Vec<usize> = vec![0];
+    let mut ptr_to_id: Option<FxHashMap<*const DomNode, usize>> = None;
 
     // (node_ptr, parent_id)
     let mut stack: Vec<(*mut DomNode, usize)> = vec![(root as *mut DomNode, 0)];
@@ -511,14 +513,44 @@ impl DomIndexMut {
       id_to_node.push(node_ptr);
       parent.push(parent_id);
 
+      if let Some(map) = ptr_to_id.as_mut() {
+        map.insert(node_ptr as *const DomNode, id);
+      }
+
       // SAFETY: We never mutate `children` while this traversal runs, so raw pointers remain valid.
       let node = unsafe { &mut *node_ptr };
+
+      // Image maps (`<img usemap>`) require mapping a returned `<area>` pointer back to the cascade
+      // pre-order id. Build a pointer->id map lazily when we observe the first `usemap` image so
+      // typical pages without image maps don't pay the hash-map overhead.
+      if ptr_to_id.is_none() {
+        let enable_ptr_map = node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+          && node
+            .get_attribute_ref("usemap")
+            .is_some_and(|v| !v.is_empty());
+        if enable_ptr_map {
+          let mut map: FxHashMap<*const DomNode, usize> = FxHashMap::default();
+          map.reserve(id_to_node.len());
+          for (existing_id, &existing_ptr) in id_to_node.iter().enumerate().skip(1) {
+            debug_assert!(!existing_ptr.is_null());
+            map.insert(existing_ptr as *const DomNode, existing_id);
+          }
+          ptr_to_id = Some(map);
+        }
+      }
+
       for child in node.children.iter_mut().rev() {
         stack.push((child as *mut DomNode, id));
       }
     }
 
-    Self { id_to_node, parent }
+    Self {
+      id_to_node,
+      parent,
+      ptr_to_id,
+    }
   }
 
   fn node(&self, node_id: usize) -> Option<&DomNode> {
@@ -557,7 +589,24 @@ impl super::effective_disabled::DomIdLookup for DomIndexMut {
 // Allow `hit_test_dom_with_indices` to reuse this prebuilt DOM index without requiring a separate
 // wrapper type. Pointer->id lookups currently fall back to a linear scan; only the hit-test module's
 // internal `DomIndex` maintains an O(1) pointer map.
-impl super::hit_test::DomIdLookupExt for DomIndexMut {}
+impl super::hit_test::DomIdLookupExt for DomIndexMut {
+  fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    if ptr.is_null() {
+      return None;
+    }
+    if let Some(map) = &self.ptr_to_id {
+      return map.get(&ptr).copied();
+    }
+    // Fallback: linear scan (should be uncommon; typically `ptr_to_id` is built when image maps are
+    // present).
+    for (id, &candidate) in self.id_to_node.iter().enumerate().skip(1) {
+      if (candidate as *const DomNode) == ptr {
+        return Some(id);
+      }
+    }
+    None
+  }
+}
 
 fn element_id_for_node(index: &DomIndexMut, node_id: usize) -> Option<String> {
   index
