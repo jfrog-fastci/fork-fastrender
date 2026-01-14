@@ -40,6 +40,44 @@ pub enum InputKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BrowserPerfLogEventV2 {
+  /// Emitted once at startup so a perf log is self-describing.
+  RunStart {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
+    pid: Option<u32>,
+    #[serde(default)]
+    start_unix_ms: Option<u64>,
+    /// Nested build metadata (shape is defined by `fastrender::perf_log::BuildInfo`).
+    #[serde(default)]
+    build: Option<serde_json::Value>,
+    /// Nested config snapshot (shape is defined by `fastrender::perf_log::RunConfig`).
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+  },
+  /// Emitted once on graceful shutdown (best-effort).
+  RunEnd {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
+    frames_presented: Option<u64>,
+    #[serde(default)]
+    idle_frames: Option<u64>,
+    #[serde(default)]
+    input_events: Option<u64>,
+    #[serde(default)]
+    dropped_frames: Option<u64>,
+    #[serde(default)]
+    elapsed_ms: Option<u64>,
+    #[serde(default)]
+    cpu_time_ms: Option<u64>,
+    #[serde(default)]
+    rss_bytes: Option<u64>,
+  },
   Frame {
     #[serde(default)]
     t_ms: Option<u64>,
@@ -282,6 +320,54 @@ mod tests {
     match event {
       BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::IdleSample { idle_fps, .. }) => {
         assert_eq!(idle_fps, Some(12.5));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_run_start_v2() {
+    let json = r#"{
+      "event":"run_start",
+      "schema_version":2,
+      "t_ms":0,
+      "pid":123,
+      "start_unix_ms":1700000000000,
+      "build":{"crate_version":"0.1.0","debug":true,"target":"x86_64-linux"},
+      "config":{"hud_enabled":true,"perf_log_enabled":true}
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::RunStart { pid, .. }) => {
+        assert_eq!(pid, Some(123));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_run_end_v2() {
+    let json = r#"{
+      "event":"run_end",
+      "schema_version":2,
+      "t_ms":1000,
+      "frames_presented":10,
+      "idle_frames":3,
+      "input_events":5,
+      "dropped_frames":2,
+      "elapsed_ms":1000
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::RunEnd {
+        frames_presented,
+        dropped_frames,
+        ..
+      }) => {
+        assert_eq!(frames_presented, Some(10));
+        assert_eq!(dropped_frames, Some(2));
       }
       other => panic!("unexpected event parsed: {other:?}"),
     }
