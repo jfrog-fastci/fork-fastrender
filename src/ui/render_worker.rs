@@ -1098,22 +1098,6 @@ impl TabState {
   ) -> Option<Arc<crate::FragmentTree>> {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
-
-  fn desired_next_tick(&mut self) -> Option<Duration> {
-    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
-    let css_tick = self
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
-    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
-
-    match (css_tick, js_tick) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
-  }
 }
 
 fn hit_test_fragment_tree_for_scroll_cached(
@@ -7226,7 +7210,7 @@ impl BrowserRuntime {
             dom,
             box_tree,
             fragment_tree,
-            &scroll,
+            scroll,
             viewport_point,
             button,
             modifiers,
@@ -7242,10 +7226,7 @@ impl BrowserRuntime {
           None => (None, None),
         };
 
-        (
-          changed,
-          (changed, target_id, target_element_id),
-        )
+        (changed, (changed, target_id, target_element_id))
       }) {
         Ok(result) => result,
         Err(_) => return,
