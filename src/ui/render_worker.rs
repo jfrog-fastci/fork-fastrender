@@ -7528,6 +7528,7 @@ impl BrowserRuntime {
       mouseup_target_element_id,
       click_target,
       click_target_element_id,
+      visited_candidate,
       form_submitter,
       form_submitter_element_id,
     ) = {
@@ -7549,6 +7550,7 @@ impl BrowserRuntime {
         mouseup_target_element_id,
         click_target,
         click_target_element_id,
+        visited_candidate,
         form_submitter,
         form_submitter_element_id,
       ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -7577,6 +7579,8 @@ impl BrowserRuntime {
           } else {
             engine_click_target_element_id
           };
+
+        let visited_candidate = engine.take_last_visited_candidate();
 
         let (form_submitter, engine_form_submitter_element_id) =
           engine.take_last_form_submitter_with_element_id();
@@ -7653,6 +7657,7 @@ impl BrowserRuntime {
           mouseup_target_element_id,
           click_target,
           click_target_element_id,
+          visited_candidate,
           form_submitter,
           form_submitter_element_id,
         );
@@ -7685,6 +7690,7 @@ impl BrowserRuntime {
         mouseup_target_element_id,
         click_target,
         click_target_element_id,
+        visited_candidate,
         form_submitter,
         form_submitter_element_id,
       )
@@ -7975,6 +7981,23 @@ impl BrowserRuntime {
       }
     }
 
+    // Mark visited state only once we know the default action is allowed (i.e. the cancelable click
+    // / auxclick event was not prevented).
+    let mut visited_changed = false;
+    if default_allowed
+      && matches!(
+        &action,
+        InteractionAction::Navigate { .. }
+          | InteractionAction::OpenInNewTab { .. }
+          | InteractionAction::OpenInNewWindow { .. }
+          | InteractionAction::Download { .. }
+      )
+    {
+      if let Some(node_id) = visited_candidate {
+        visited_changed = tab.interaction.mark_link_visited(node_id);
+      }
+    }
+
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
     let mut open_in_new_tab: Option<String> = None;
@@ -7986,6 +8009,9 @@ impl BrowserRuntime {
       InteractionAction::Navigate { href } => {
         if default_allowed {
           navigate_to = Some(href);
+          if visited_changed {
+            tab.needs_repaint = true;
+          }
         } else if dom_changed || scroll_changed {
           tab.request_non_scroll_repaint();
         }
@@ -7994,7 +8020,7 @@ impl BrowserRuntime {
         if default_allowed {
           open_in_new_tab = Some(href);
         }
-        if dom_changed || scroll_changed {
+        if dom_changed || scroll_changed || visited_changed {
           tab.request_non_scroll_repaint();
         }
       }
@@ -8002,7 +8028,7 @@ impl BrowserRuntime {
         if default_allowed {
           open_in_new_window = Some(href);
         }
-        if dom_changed || scroll_changed {
+        if dom_changed || scroll_changed || visited_changed {
           tab.request_non_scroll_repaint();
         }
       }
@@ -8020,7 +8046,7 @@ impl BrowserRuntime {
         }
         // Downloads do not navigate away from the current page; repaint so visited-link styles and
         // other DOM mutations become visible.
-        if dom_changed || scroll_changed {
+        if dom_changed || scroll_changed || visited_changed {
           tab.request_non_scroll_repaint();
         }
       }
@@ -10084,6 +10110,7 @@ impl BrowserRuntime {
           document_url,
           base_url,
         );
+        let visited_candidate = engine.take_last_visited_candidate();
         let (submitter, submitter_element_id) =
           engine.take_last_form_submitter_with_element_id();
         let focused = engine.focused_node_id();
@@ -10139,6 +10166,7 @@ impl BrowserRuntime {
             action,
             focus_scroll,
             caret_scroll,
+            visited_candidate,
             submitter,
             submitter_element_id,
             focused,
@@ -10158,6 +10186,7 @@ impl BrowserRuntime {
         action,
         focus_scroll,
         caret_scroll,
+        visited_candidate,
         form_submitter,
         form_submitter_element_id,
         focused,
@@ -10173,6 +10202,7 @@ impl BrowserRuntime {
         Ok(result) => result,
         Err(_) => {
           let mut action = InteractionAction::None;
+          let mut visited_candidate: Option<usize> = None;
           let mut submitter: Option<usize> = None;
           let mut submitter_element_id: Option<String> = None;
           let mut focused: Option<usize> = None;
@@ -10189,6 +10219,7 @@ impl BrowserRuntime {
             let (dom_changed, next_action) =
               engine.key_activate(dom, key, &document_url, &base_url);
             action = next_action;
+            visited_candidate = engine.take_last_visited_candidate();
             (submitter, submitter_element_id) = engine.take_last_form_submitter_with_element_id();
             focused = engine.focused_node_id();
             let (
@@ -10232,6 +10263,7 @@ impl BrowserRuntime {
             action,
             None,
             None,
+            visited_candidate,
             submitter,
             submitter_element_id,
             focused,
@@ -10303,7 +10335,7 @@ impl BrowserRuntime {
       let mut click_target_id: Option<usize> = None;
       let mut click_target_element_id: Option<&str> = None;
       if matches!(
-        action,
+        &action,
         InteractionAction::Navigate { .. }
           | InteractionAction::OpenInNewTab { .. }
           | InteractionAction::OpenInNewWindow { .. }
@@ -10333,7 +10365,7 @@ impl BrowserRuntime {
       } else if focused_is_text_input
         && matches!(key, crate::interaction::KeyAction::Enter)
         && matches!(
-          action,
+          &action,
           InteractionAction::Navigate { .. }
             | InteractionAction::OpenInNewTab { .. }
             | InteractionAction::NavigateRequest { .. }
@@ -10492,11 +10524,32 @@ impl BrowserRuntime {
           }
         }
       }
-      let action_is_none = matches!(action, InteractionAction::None);
+      // Mark visited state only once we know the default action is allowed (i.e. the cancelable
+      // click event was not prevented).
+      let mut visited_changed = false;
+      if default_allowed
+        && matches!(
+          &action,
+          InteractionAction::Navigate { .. }
+            | InteractionAction::OpenInNewTab { .. }
+            | InteractionAction::OpenInNewWindow { .. }
+            | InteractionAction::Download { .. }
+        )
+      {
+        if let Some(node_id) = visited_candidate {
+          visited_changed = tab.interaction.mark_link_visited(node_id);
+        }
+      }
+
+      let action_is_none = matches!(&action, InteractionAction::None);
       match action {
         InteractionAction::Navigate { href } => {
           if default_allowed {
             navigate_to = Some(href);
+            if visited_changed {
+              tab.cancel.bump_paint();
+              tab.needs_repaint = true;
+            }
           } else if changed || scroll_changed {
             tab.cancel.bump_paint();
             tab.request_non_scroll_repaint();
@@ -10511,7 +10564,7 @@ impl BrowserRuntime {
                 url: href,
               }));
           }
-          if changed || scroll_changed {
+          if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
             tab.request_non_scroll_repaint();
           }
@@ -10525,7 +10578,7 @@ impl BrowserRuntime {
                 url: href,
               }));
           }
-          if changed || scroll_changed {
+          if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
             tab.request_non_scroll_repaint();
           }
@@ -10545,7 +10598,7 @@ impl BrowserRuntime {
           if default_allowed {
             download_to_start = Some((href, file_name));
           }
-          if changed || scroll_changed {
+          if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
             tab.request_non_scroll_repaint();
           }

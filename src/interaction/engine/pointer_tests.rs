@@ -667,6 +667,8 @@ fn link_click_emits_navigation_with_resolved_url() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
   assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
@@ -728,6 +730,8 @@ fn link_middle_click_opens_in_new_tab() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
   assert_eq!(
     engine.interaction_state().focused,
@@ -804,6 +808,8 @@ fn link_command_click_opens_in_new_tab() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
 }
 
@@ -868,6 +874,8 @@ fn link_target_blank_opens_in_new_tab() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
 }
 
@@ -1019,6 +1027,8 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
       href: "https://example.com/base/foo".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(area_dom_id));
+  assert!(engine.mark_link_visited(area_dom_id));
   assert!(engine.interaction_state().is_visited_link(area_dom_id));
   assert!(!has_attr(&dom, "area", "data-fastr-visited"));
 }
@@ -1087,6 +1097,8 @@ fn anchor_activation_appends_ismap_coordinates() {
       href: "https://example.com/base/foo?15,35".to_string()
     }
   );
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
   assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
@@ -1153,6 +1165,8 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     .unwrap()
     .to_string();
   assert_eq!(action, InteractionAction::Navigate { href: expected });
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
   assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
@@ -1216,6 +1230,8 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     .unwrap()
     .to_string();
   assert_eq!(action, InteractionAction::Navigate { href: expected });
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_dom_id));
+  assert!(engine.mark_link_visited(link_dom_id));
   assert!(engine.interaction_state().is_visited_link(link_dom_id));
   assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
@@ -5616,6 +5632,8 @@ fn focused_link_enter_activates_navigation_and_marks_visited() {
     }
   );
   assert_eq!(engine.interaction_state().focused, Some(link_id));
+  assert_eq!(engine.take_last_visited_candidate(), Some(link_id));
+  assert!(engine.mark_link_visited(link_id));
   assert!(
     engine.interaction_state().is_visited_link(link_id),
     "Enter on a focused link should mark it visited"

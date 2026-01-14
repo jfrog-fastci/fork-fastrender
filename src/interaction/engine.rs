@@ -219,6 +219,7 @@ pub struct InteractionEngine {
   modality: InputModality,
   last_click_target: Option<usize>,
   last_click_target_element_id: Option<String>,
+  last_visited_candidate: Option<usize>,
   last_form_submitter: Option<usize>,
   last_form_submitter_element_id: Option<String>,
 }
@@ -6654,6 +6655,7 @@ impl InteractionEngine {
       modality: InputModality::Pointer,
       last_click_target: None,
       last_click_target_element_id: None,
+      last_visited_candidate: None,
       last_form_submitter: None,
       last_form_submitter_element_id: None,
     }
@@ -6859,6 +6861,9 @@ impl InteractionEngine {
     }
     if let Some(id) = self.last_click_target {
       check_node_id("last_click_target", id);
+    }
+    if let Some(id) = self.last_visited_candidate {
+      check_node_id("last_visited_candidate", id);
     }
     if let Some(id) = self.last_form_submitter {
       check_node_id("last_form_submitter", id);
@@ -7710,6 +7715,26 @@ impl InteractionEngine {
       self.last_click_target.take(),
       self.last_click_target_element_id.take(),
     )
+  }
+
+  /// Returns the most recent link node id whose visited state should be updated if its default
+  /// activation action is committed.
+  ///
+  /// Link activations (navigate/open-in-new-tab/download) are resolved by the interaction engine,
+  /// but higher-level layers (e.g. the browser UI worker) may need to dispatch cancelable DOM events
+  /// (`click`/`auxclick`) before committing the default action. Those layers should call
+  /// [`InteractionEngine::mark_link_visited`] only when the activation is allowed (i.e. the
+  /// cancelable event was not prevented).
+  pub fn take_last_visited_candidate(&mut self) -> Option<usize> {
+    self.last_visited_candidate.take()
+  }
+  /// Mark the provided link node id as visited.
+  ///
+  /// Returns `true` when the visited set changed (caller should repaint to surface `:visited`
+  /// styling changes).
+  pub fn mark_link_visited(&mut self, node_id: usize) -> bool {
+    debug_assert!(node_id != 0);
+    self.state.visited_links.insert(node_id)
   }
   /// Returns the most recent form submitter (pre-order DOM node id) that produced a submission
   /// navigation request during user activation.
@@ -9409,6 +9434,7 @@ impl InteractionEngine {
       .mutate_active_chain(|ids| remap_vec(ids, old_index, new_ids));
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
+    remap_opt(&mut self.last_visited_candidate, old_index, new_ids);
     remap_opt(&mut self.last_form_submitter, old_index, new_ids);
     if self.last_click_target.is_none() {
       self.last_click_target_element_id = None;
@@ -9646,6 +9672,7 @@ impl InteractionEngine {
   ) -> (bool, InteractionAction, Option<HitTestResult>) {
     self.last_click_target = None;
     self.last_click_target_element_id = None;
+    self.last_visited_candidate = None;
     self.last_form_submitter = None;
     self.last_form_submitter_element_id = None;
 
@@ -10210,7 +10237,7 @@ impl InteractionEngine {
               }
 
               if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
-                dom_changed |= self.state.insert_visited_link(target_id);
+                self.last_visited_candidate = Some(target_id);
 
                 let download_attr = index
                   .node(target_id)
@@ -12966,6 +12993,7 @@ impl InteractionEngine {
   ) -> (bool, InteractionAction) {
     self.last_form_submitter = None;
     self.last_form_submitter_element_id = None;
+    self.last_visited_candidate = None;
     let prev_focus = self.state.focused;
 
     self.modality = InputModality::Keyboard;
@@ -13117,7 +13145,7 @@ impl InteractionEngine {
           .and_then(|node| node.get_attribute_ref("href"))
         {
           if let Some(resolved) = resolve_url(base_url, href) {
-            changed |= self.state.insert_visited_link(focused);
+            self.last_visited_candidate = Some(focused);
             let download_attr = index.node(focused).and_then(|node| node.get_attribute_ref("download"));
             let is_download = download_attr.is_some();
             let download_name = download_attr
@@ -13457,6 +13485,7 @@ impl InteractionEngine {
   ) -> (bool, InteractionAction) {
     self.last_form_submitter = None;
     self.last_form_submitter_element_id = None;
+    self.last_visited_candidate = None;
     let prev_focus = self.state.focused;
 
     self.modality = InputModality::Keyboard;
@@ -13608,7 +13637,7 @@ impl InteractionEngine {
           .and_then(|node| node.get_attribute_ref("href"))
         {
           if let Some(resolved) = resolve_url(base_url, href) {
-            changed |= self.state.insert_visited_link(focused);
+            self.last_visited_candidate = Some(focused);
             let target_blank = index
               .node(focused)
               .and_then(|node| node.get_attribute_ref("target"))

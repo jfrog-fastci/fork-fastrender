@@ -177,6 +177,7 @@ mod ui_worker_cancellation;
 mod ui_worker_chrome_subresource_blocked;
 mod ui_worker_auxclick;
 mod ui_worker_click_prevent_default;
+mod ui_worker_visited_prevent_default;
 mod ui_worker_mousemove_handler_property;
 mod ui_worker_color_picker_choose;
 mod ui_worker_crash_hook;

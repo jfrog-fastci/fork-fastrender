@@ -1132,6 +1132,21 @@ impl BrowserTabController {
       }
     }
 
+    let visited_candidate = self.interaction.take_last_visited_candidate();
+    let mut visited_changed = false;
+    if matches!(
+      &action,
+      InteractionAction::Navigate { .. }
+        | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::OpenInNewWindow { .. }
+        | InteractionAction::Download { .. }
+    ) {
+      if let Some(node_id) = visited_candidate {
+        visited_changed = self.interaction.mark_link_visited(node_id);
+      }
+    }
+    let changed = changed || visited_changed;
+
     match action {
       InteractionAction::Navigate { href } => {
         // Link click navigation.
@@ -2026,6 +2041,21 @@ impl BrowserTabController {
         };
       }
     }
+
+    let visited_candidate = self.interaction.take_last_visited_candidate();
+    let mut visited_changed = false;
+    if matches!(
+      &action,
+      InteractionAction::Navigate { .. }
+        | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::OpenInNewWindow { .. }
+        | InteractionAction::Download { .. }
+    ) {
+      if let Some(node_id) = visited_candidate {
+        visited_changed = self.interaction.mark_link_visited(node_id);
+      }
+    }
+    let changed = changed || visited_changed;
 
     let mut out = Vec::new();
     match action {
