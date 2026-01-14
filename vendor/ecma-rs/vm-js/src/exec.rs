@@ -41410,7 +41410,7 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{HeapLimits, VmOptions};
+  use crate::{CompiledScript, HeapLimits, VmOptions};
 
   #[test]
   fn async_script_retained_ast_is_charged_and_released() -> Result<(), VmError> {
@@ -42896,6 +42896,69 @@ mod tests {
     assert_eq!(eval("dv.byteLength")?, Value::Number(16.0));
     assert_eq!(eval("dv.buffer.byteLength")?, Value::Number(16.0));
 
+    Ok(())
+  }
+
+  fn eval_script_interpreter(source: &str) -> Result<Value, VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    rt.exec_script(source)
+  }
+
+  fn eval_script_compiled(source: &str) -> Result<Value, VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback && !script.contains_top_level_await,
+      "expected test script to run in compiled (HIR) executor"
+    );
+    rt.exec_compiled_script(script)
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_created_before_super_sees_initialized_this() -> Result<(), VmError> {
+    let source = r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          super();
+          this.v = f();
+        }
+      }
+      (new D().v instanceof D)
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_called_before_super_throws_reference_error() -> Result<(), VmError> {
+    let source = r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+          super();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
 }
