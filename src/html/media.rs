@@ -10,8 +10,10 @@
 //! elements. For box generation we intentionally implement a small subset:
 //!
 //! - Prefer `<source>` children over the element `src` attribute when present.
-//! - Scan `<source>` children in DOM order and select the first candidate whose `type` (or inferred
-//!   type from `src`) is supported by [`can_play_type`].
+//! - Prefer `<source>` candidates whose `type` yields `Probably` from [`can_play_type`] (typically
+//!   meaning the element declared an explicit supported codecs list). If no `Probably` candidates
+//!   exist, fall back to the first `Maybe` candidate in DOM order (including those where the type
+//!   is inferred from the source URL).
 //! - If no `<source>` candidates are playable, fall back to the element `src` attribute (when
 //!   present and not "unusable").
 //!
@@ -223,8 +225,11 @@ pub fn parse_type_attribute(value: &str) -> Option<ParsedMediaType> {
 /// - When `codecs` is present, all codecs must be compatible with the container; otherwise `No`.
 /// - When `codecs` is present and all codecs are permitted, we return `Probably`.
 ///
-/// Note: This does not attempt to validate codec profile/level details. We treat known codec name
-/// prefixes (e.g. `avc1.*`, `mp4a.*`) as supported.
+/// Note: This is best-effort and intentionally coarse (it does not validate codec profile/level
+/// details), but it *does* reflect FastRender's compiled media capability:
+/// - container demux support is feature gated (e.g. `media_mp4`, `media_webm`)
+/// - codec support is feature gated (e.g. `codec_h264_openh264`, `codec_vp9_libvpx`, `codec_aac`,
+///   `codec_opus`)
 pub fn can_play_type(type_: &str) -> CanPlayType {
   let Some(parsed) = parse_type_attribute(type_) else {
     return CanPlayType::No;
@@ -251,18 +256,66 @@ pub fn can_play_type(type_: &str) -> CanPlayType {
     "video/ogg" => Container::VideoOgg,
 
     // Common real-world aliases.
+    //
+    // We treat MP3 as `Maybe` here to keep `canPlayType()` and source selection broadly aligned
+    // with mainstream browsers, even though MP3 decode may be provided by optional backends.
     "audio/mpeg" | "audio/mp3" => return CanPlayType::Maybe,
 
     _ => return CanPlayType::No,
   };
 
-  if parsed.codecs.is_empty() {
-    // Supported container, but no explicit codecs list.
-    return CanPlayType::Maybe;
+  // Feature-gated container support.
+  let mp4_container_supported = cfg!(feature = "media_mp4");
+  let webm_container_supported = cfg!(feature = "media_webm");
+  let container_supported = match container {
+    Container::AudioMp4 | Container::VideoMp4 => mp4_container_supported,
+    Container::AudioWebm | Container::VideoWebm => webm_container_supported,
+    // Ogg is intentionally unsupported for now: no container demuxer/decoder stack is wired up.
+    Container::AudioOgg | Container::VideoOgg => false,
+  };
+  if !container_supported {
+    return CanPlayType::No;
   }
 
-  fn is_mp4_audio_codec(codec: &str) -> bool {
-    codec == "mp4a" || codec.starts_with("mp4a.")
+  // Feature-gated codec support.
+  let mp4_h264_supported = cfg!(feature = "codec_h264_openh264");
+  let mp4_aac_supported = cfg!(feature = "codec_aac");
+  let webm_vp9_supported = cfg!(feature = "codec_vp9_libvpx");
+  let webm_opus_supported = cfg!(feature = "codec_opus");
+
+  if parsed.codecs.is_empty() {
+    // Supported container, but no explicit codecs list.
+    //
+    // Only report `Maybe` when we have at least one codec that could plausibly play something in
+    // that container.
+    let any_codec_supported = match container {
+      Container::AudioMp4 => mp4_aac_supported,
+      Container::VideoMp4 => mp4_aac_supported || mp4_h264_supported,
+      Container::AudioWebm => webm_opus_supported,
+      Container::VideoWebm => webm_opus_supported || webm_vp9_supported,
+      Container::AudioOgg | Container::VideoOgg => false,
+    };
+    return if any_codec_supported {
+      CanPlayType::Maybe
+    } else {
+      CanPlayType::No
+    };
+  }
+
+  fn is_mp4_aac_codec(codec: &str) -> bool {
+    // RFC 6381: `mp4a.40.*` describes MPEG-4 Audio (AAC); object type indication is hex.
+    if codec == "mp4a" {
+      // No OTI specified; treat it as "some mp4 audio", best effort.
+      return true;
+    }
+    let Some(rest) = codec.strip_prefix("mp4a.") else {
+      return false;
+    };
+    let oti = rest.split('.').next().unwrap_or("");
+    if oti.is_empty() {
+      return true;
+    }
+    u8::from_str_radix(oti, 16).is_ok_and(|v| v == 0x40)
   }
 
   fn is_mp4_video_codec(codec: &str) -> bool {
@@ -270,41 +323,30 @@ pub fn can_play_type(type_: &str) -> CanPlayType {
       || codec.starts_with("avc1.")
       || codec == "avc3"
       || codec.starts_with("avc3.")
-      || codec == "hev1"
-      || codec.starts_with("hev1.")
-      || codec == "hvc1"
-      || codec.starts_with("hvc1.")
   }
 
   fn is_webm_audio_codec(codec: &str) -> bool {
-    codec == "opus" || codec == "vorbis"
+    codec == "opus"
   }
 
   fn is_webm_video_codec(codec: &str) -> bool {
-    codec == "vp8"
-      || codec.starts_with("vp8.")
-      || codec == "vp9"
-      || codec.starts_with("vp9.")
-      || codec.starts_with("vp09")
-      || codec.starts_with("av01")
-  }
-
-  fn is_ogg_audio_codec(codec: &str) -> bool {
-    matches!(codec, "opus" | "vorbis" | "flac" | "speex")
-  }
-
-  fn is_ogg_video_codec(codec: &str) -> bool {
-    matches!(codec, "theora" | "dirac")
+    codec == "vp9" || codec.starts_with("vp9.") || codec.starts_with("vp09")
   }
 
   for codec in &parsed.codecs {
     let allowed = match container {
-      Container::AudioMp4 => is_mp4_audio_codec(codec),
-      Container::VideoMp4 => is_mp4_audio_codec(codec) || is_mp4_video_codec(codec),
-      Container::AudioWebm => is_webm_audio_codec(codec),
-      Container::VideoWebm => is_webm_audio_codec(codec) || is_webm_video_codec(codec),
-      Container::AudioOgg => is_ogg_audio_codec(codec),
-      Container::VideoOgg => is_ogg_audio_codec(codec) || is_ogg_video_codec(codec),
+      Container::AudioMp4 => mp4_aac_supported && is_mp4_aac_codec(codec),
+      Container::VideoMp4 => {
+        (mp4_aac_supported && is_mp4_aac_codec(codec))
+          || (mp4_h264_supported && is_mp4_video_codec(codec))
+      }
+      Container::AudioWebm => webm_opus_supported && is_webm_audio_codec(codec),
+      Container::VideoWebm => {
+        (webm_opus_supported && is_webm_audio_codec(codec))
+          || (webm_vp9_supported && is_webm_video_codec(codec))
+      }
+      // Ogg is not currently supported.
+      Container::AudioOgg | Container::VideoOgg => false,
     };
 
     if !allowed {
@@ -436,6 +478,12 @@ pub fn select_media_source<'a>(
     .map(trim_ascii_whitespace)
     .filter(|src| !media_src_is_unusable(src));
 
+  // Track the first `maybe` candidate in DOM order, but keep scanning for any `probably` candidate.
+  //
+  // This models typical browser behavior: sources that explicitly declare supported codecs tend to
+  // be more reliable than those without a codec hint.
+  let mut first_maybe: Option<SelectedMediaSource<'a>> = None;
+
   for candidate in sources {
     let src_trimmed = trim_ascii_whitespace(candidate.src);
     if media_src_is_unusable(src_trimmed) {
@@ -467,13 +515,26 @@ pub fn select_media_source<'a>(
       .as_deref()
       .is_some_and(|mime| mime_matches_kind(kind, mime) && playability.is_playable())
     {
-      return SelectedMediaSource {
+      let selected = SelectedMediaSource {
         url: src_trimmed,
         mime,
         codecs,
         from_source: true,
       };
+      match playability {
+        CanPlayType::Probably => return selected,
+        CanPlayType::Maybe => {
+          if first_maybe.is_none() {
+            first_maybe = Some(selected);
+          }
+        }
+        CanPlayType::No => {}
+      }
     }
+  }
+
+  if let Some(selected) = first_maybe {
+    return selected;
   }
 
   // No playable `<source>` candidate matched; fall back to the `src` attribute.
@@ -565,19 +626,47 @@ mod tests {
   fn video_webm_accepts_audio_only_codec() {
     // Browsers accept audio-only WebM in a `<video>` element; the container indicates WebM support,
     // and the codec is compatible with WebM.
-    assert_eq!(can_play_type("video/webm; codecs=opus"), CanPlayType::Probably);
+    let expected = if cfg!(feature = "media_webm") && cfg!(feature = "codec_opus") {
+      CanPlayType::Probably
+    } else {
+      CanPlayType::No
+    };
+    assert_eq!(can_play_type("video/webm; codecs=opus"), expected);
   }
 
   #[test]
   fn video_mp4_accepts_audio_only_codec() {
     // We return `Probably` here to align with mainstream browsers: `video/mp4` indicates the ISO
     // BMFF container, which can carry audio-only tracks, and `mp4a.*` is a valid MP4 audio codec.
-    assert_eq!(can_play_type("video/mp4; codecs=mp4a.40.2"), CanPlayType::Probably);
+    let expected = if cfg!(feature = "media_mp4") && cfg!(feature = "codec_aac") {
+      CanPlayType::Probably
+    } else {
+      CanPlayType::No
+    };
+    assert_eq!(can_play_type("video/mp4; codecs=mp4a.40.2"), expected);
   }
 
   #[test]
   fn rejects_bogus_codecs() {
     assert_eq!(can_play_type("video/webm; codecs=bogus"), CanPlayType::No);
+  }
+
+  #[test]
+  fn webm_rejects_vp8_codec() {
+    // FastRender currently supports VP9 (optionally), but not VP8.
+    assert_eq!(can_play_type("video/webm; codecs=vp8"), CanPlayType::No);
+  }
+
+  #[test]
+  fn webm_rejects_vorbis_codec() {
+    // FastRender currently supports Opus (optionally), but not Vorbis.
+    assert_eq!(can_play_type("audio/webm; codecs=vorbis"), CanPlayType::No);
+  }
+
+  #[test]
+  fn mp4_rejects_hevc_codecs() {
+    // HEVC/H.265 (`hvc1`/`hev1`) is not currently supported by FastRender's native codecs.
+    assert_eq!(can_play_type("video/mp4; codecs=hvc1.1.6.L93.B0"), CanPlayType::No);
   }
 
   #[test]
@@ -593,8 +682,13 @@ mod tests {
       MediaSelectionContext { media_context: None },
     );
 
-    assert_eq!(selected.url, "child.mp4");
-    assert!(selected.from_source);
+    if can_play_type("video/mp4").is_playable() {
+      assert_eq!(selected.url, "child.mp4");
+      assert!(selected.from_source);
+    } else {
+      assert_eq!(selected.url, "parent.mp4");
+      assert!(!selected.from_source);
+    }
   }
 
   #[test]
@@ -620,8 +714,13 @@ mod tests {
       },
     );
 
-    assert_eq!(selected.url, "large.mp4");
-    assert!(selected.from_source);
+    if can_play_type("video/mp4").is_playable() {
+      assert_eq!(selected.url, "large.mp4");
+      assert!(selected.from_source);
+    } else {
+      assert_eq!(selected.url, "");
+      assert!(!selected.from_source);
+    }
   }
 
   #[test]
@@ -644,7 +743,12 @@ mod tests {
       MediaSelectionContext { media_context: None },
     );
 
-    assert_eq!(selected.url, "good.mp4");
-    assert!(selected.from_source);
+    if can_play_type("video/mp4; codecs=avc1.42E01E").is_playable() {
+      assert_eq!(selected.url, "good.mp4");
+      assert!(selected.from_source);
+    } else {
+      assert_eq!(selected.url, "");
+      assert!(!selected.from_source);
+    }
   }
 }

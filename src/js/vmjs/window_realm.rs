@@ -62577,7 +62577,13 @@ mod tests {
         return a + '|' + b + '|' + c;
       })()"#,
     )?;
-    assert_eq!(get_string(realm.heap(), result), "maybe|probably|");
+    let expected = format!(
+      "{}|{}|{}",
+      crate::html::media::can_play_type("video/mp4").as_str(),
+      crate::html::media::can_play_type("video/mp4; codecs=avc1.42E01E").as_str(),
+      crate::html::media::can_play_type("video/mp4; codecs=bogus").as_str(),
+    );
+    assert_eq!(get_string(realm.heap(), result), expected);
     Ok(())
   }
 
@@ -62632,10 +62638,17 @@ mod tests {
     )?;
 
     let out = get_string(realm.heap(), out);
-    assert!(
-      !out.is_empty(),
-      "expected HTMLMediaElement.canPlayType() to return a non-empty string for vp9+opus webm"
-    );
+    let expected = crate::html::media::can_play_type(r#"video/webm; codecs="vp9,opus""#).as_str();
+    assert_eq!(out, expected);
+    if cfg!(feature = "media_webm")
+      && cfg!(feature = "codec_vp9_libvpx")
+      && cfg!(feature = "codec_opus")
+    {
+      assert!(
+        !out.is_empty(),
+        "expected HTMLMediaElement.canPlayType() to return a non-empty string for vp9+opus webm when WebM+VP9+Opus support is enabled"
+      );
+    }
     Ok(())
   }
 
