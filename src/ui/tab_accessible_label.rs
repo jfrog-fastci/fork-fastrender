@@ -149,7 +149,7 @@ pub(crate) fn format_title_prefixed_accessible_label(prefix: &str, title: &str) 
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct TitlePrefixedLabelCache {
+pub struct TitlePrefixedLabelCache {
   entry: Option<TitlePrefixedLabelCacheEntry>,
 }
 

@@ -227,4 +227,5 @@ mod stacking_context_no_translate_clone;
 mod ipc_transport_allocation_failure_test;
 mod omnibox_bookmarks_provider_dedupe_allocation_free_test;
 mod tab_accessible_label_cache_test;
+mod title_prefixed_label_cache_test;
 mod window_title_sync_test;

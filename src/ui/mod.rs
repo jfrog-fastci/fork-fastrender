@@ -100,6 +100,7 @@ pub mod startup_notifications;
 pub mod scroll_autosave;
 mod tab_accessible_label;
 pub use tab_accessible_label::TabAccessibleLabelCache;
+pub use tab_accessible_label::TitlePrefixedLabelCache;
 
 pub mod a11y_labels;
 
