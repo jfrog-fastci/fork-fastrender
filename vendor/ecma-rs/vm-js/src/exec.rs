@@ -2563,6 +2563,8 @@ impl JsRuntime {
               &top.stx.body,
               crate::early_errors::EarlyErrorOptions {
                 strict,
+                // `vm-js` supports async classic scripts when `await` appears anywhere in the
+                // evaluated statement list (including inside class static blocks).
                 allow_top_level_await: has_await,
                 is_module: false,
                 allow_super_call: false,
