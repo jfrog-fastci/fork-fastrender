@@ -635,6 +635,9 @@ impl std::fmt::Display for ChromeActionUrl {
   }
 }
 
+/// Backwards-compatible alias for the `chrome-action` scheme name.
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
+
 /// Parse a `chrome-action:` href value into a typed [`ChromeActionUrl`].
 ///
 /// This is intentionally strict (unknown actions fail closed) and only accepts the opaque
