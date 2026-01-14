@@ -209,9 +209,6 @@ mod tests {
     let len = encoder
       .encode_float(&pcm, &mut out)
       .expect("encode silence packet");
-    let len: usize = len
-      .try_into()
-      .unwrap_or_else(|_| panic!("encode returned invalid length: {len:?}"));
     out.truncate(len);
     out
   }
