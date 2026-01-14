@@ -55,6 +55,31 @@ fn generator_yield_in_object_destructuring_default_not_evaluated_when_present() 
 }
 
 #[test]
+fn generator_yield_without_operand_in_object_destructuring_default_is_true_undefined() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          var undefined = 1;
+          var a;
+          ({a = yield} = {});
+          return a;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== undefined) return false;
+        var r2 = it.next(5);
+        return r2.done === true && r2.value === 5;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_array_destructuring_default_preserves_assignment_result() {
   let mut rt = new_runtime();
   let value = rt
@@ -145,6 +170,31 @@ fn generator_yield_in_object_destructuring_default_not_evaluated_when_present_fo
         if (r1.done !== false || r1.value !== 1) return false;
         var r2 = it.next("x");
         return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_without_operand_in_object_destructuring_computed_key_is_true_undefined() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          var undefined = 1;
+          var a;
+          ({[(yield)]: a} = {x: 5});
+          return a;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== undefined) return false;
+        var r2 = it.next("x");
+        return r2.done === true && r2.value === 5;
       })()
     "#,
     )
