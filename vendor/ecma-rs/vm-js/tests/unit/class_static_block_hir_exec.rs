@@ -32,6 +32,10 @@ fn compiled_hir_class_static_block_hoists_function_decls_and_does_not_leak() -> 
       inBlock === "function" && inAsync === "function" && outBlock === "undefined" && outAsync === "undefined";
     "#,
   )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
 
   let result = rt.exec_compiled_script(script)?;
   assert!(matches!(result, Value::Bool(true)), "unexpected result: {result:?}");

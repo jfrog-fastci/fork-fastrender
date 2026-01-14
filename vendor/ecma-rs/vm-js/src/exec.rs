@@ -18956,10 +18956,10 @@ fn async_generator_handle_execution_result(
         frames,
       } => {
         state.frames = frames;
+        state.awaited_promise_root = None;
 
-        // The `PromiseResolve` step for `Await` was already performed by an internal algorithm (e.g.
-        // `AsyncIteratorClose`). Do not call `PromiseResolve` again or we'd observe
-        // `promise.constructor` twice.
+        // The awaited value is already the Promise produced by `PromiseResolve(%Promise%, value)`.
+        // Do not `PromiseResolve` it again: that would observe `promise.constructor` twice.
         let is_promise =
           matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj));
         debug_assert!(

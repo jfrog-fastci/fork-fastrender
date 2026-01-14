@@ -131,6 +131,10 @@ fn direct_eval_new_target_in_arrow_nested_in_function_is_allowed_compiled() {
     ok_plain && ok_ctor
   "#;
   let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source).unwrap();
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   let value = rt.exec_compiled_script(script).unwrap();
   assert_eq!(value, Value::Bool(true));
 }
@@ -184,6 +188,10 @@ fn direct_eval_super_property_in_arrow_nested_in_object_method_is_allowed_compil
     f() === 262
   "#;
   let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source).unwrap();
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   let value = rt.exec_compiled_script(script).unwrap();
   assert_eq!(value, Value::Bool(true));
 }

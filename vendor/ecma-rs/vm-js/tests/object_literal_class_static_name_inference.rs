@@ -8,6 +8,10 @@ fn new_runtime() -> JsRuntime {
 
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<inline>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   rt.exec_compiled_script(script)
 }
 
@@ -46,4 +50,3 @@ fn object_literal_anonymous_class_static_name_not_overwritten_compiled() -> Resu
   assert_value_is_utf8(&rt, value, r#"["function","name"]"#);
   Ok(())
 }
-

@@ -73,6 +73,10 @@ fn assert_script_returns_true_in_interpreter_and_compiled(source: &str) -> Resul
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
     let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "test script should execute via compiled (HIR) script executor"
+    );
     let result = rt.exec_compiled_script(script)?;
     assert!(
       matches!(result, Value::Bool(true)),
@@ -361,6 +365,10 @@ fn compiled_hir_object_literal_methods_and_accessors_set_home_object() -> Result
     "<inline>",
     r#"({ m() {}, get x() {}, set x(v) {} })"#,
   )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
 
   let result = rt.exec_compiled_script(script)?;
   let Value::Object(obj) = result else {
@@ -384,6 +392,10 @@ fn compiled_hir_arrow_functions_capture_home_object_from_method() -> Result<(), 
     "<inline>",
     r#"({ m() { return () => 1; } })"#,
   )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   let result = rt.exec_compiled_script(script)?;
   let Value::Object(obj) = result else {
     panic!("expected object, got: {result:?}");

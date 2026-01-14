@@ -186,6 +186,10 @@ fn class_elements_set_function_home_object_hir() -> Result<(), VmError> {
       var blockNested2 = A.blockNested();
     "#,
   )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   rt.exec_compiled_script(script)?;
 
   let ctor = assert_is_function(rt.exec_script("A")?);
