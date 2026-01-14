@@ -47,13 +47,13 @@ fn super_prop_in_instance_field_initializers() -> Result<(), VmError> {
       class D extends B {
         x = super.m();
         y = (() => super.m())();
+        z = ((() => super.m()))();
+        w = (/*a*/(() => super.m())/*b*/)();
       }
-      (new D()).x === 1 && (new D()).y === 1
+      (new D()).x === 1 && (new D()).y === 1 && (new D()).z === 1 && (new D()).w === 1
     "#,
   ) {
     Ok(v) => v,
-    // `super.prop` in field initializers is not supported on all execution modes yet.
-    Err(VmError::Syntax(_)) => return Ok(()),
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
@@ -72,12 +72,13 @@ fn super_prop_in_static_field_initializers() -> Result<(), VmError> {
       class D extends B {
         static y = super.x;
         static z = (() => super.x)();
+        static w = ((() => super.x))();
+        static u = (/*a*/(() => super.x)/*b*/)();
       }
-      D.y === 1 && D.z === 1
+      D.y === 1 && D.z === 1 && D.w === 1 && D.u === 1
     "#,
   ) {
     Ok(v) => v,
-    Err(VmError::Syntax(_)) => return Ok(()),
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
@@ -103,7 +104,6 @@ fn super_prop_in_private_static_field_initializers() -> Result<(), VmError> {
     "#,
   ) {
     Ok(v) => v,
-    Err(VmError::Syntax(_)) => return Ok(()),
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };

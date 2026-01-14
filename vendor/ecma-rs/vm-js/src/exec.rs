@@ -8601,21 +8601,149 @@ impl<'a> Evaluator<'a> {
                 // initializer from its source span.
                 //
                 // If the call callee is parenthesized, extend the snippet span to include the
-                // opening `(` (skipping any ASCII whitespace) so the sliced source is valid.
+                // opening `(` so the sliced source is valid.
                 if let Expr::Call(call) = &*expr_node.stx {
                   if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
                     let source = self.env.source();
                     let bytes = source.text.as_bytes();
-                    let mut idx = span_start as usize;
-                    while idx > 0 {
-                      match bytes[idx.saturating_sub(1)] {
-                        b' ' | b'\t' | b'\n' | b'\r' => idx = idx.saturating_sub(1),
-                        b'(' => {
-                          span_start = u32::try_from(idx.saturating_sub(1)).unwrap_or(span_start);
+
+                    // We need to include the parentheses that wrap the call's callee expression.
+                    //
+                    // In `parse-js`, parenthesized expressions are preserved via the
+                    // `ParenthesizedExpr` marker, but their parentheses are excluded from `Loc`
+                    // spans. That means slicing a call expression span can produce an invalid
+                    // snippet like `() => super.x)()` (missing `(` but including `)`).
+                    //
+                    // To recover a valid snippet, we:
+                    // 1. Find the call's argument list opening `(`.
+                    // 2. Count how many `)` close the parenthesized callee between:
+                    //      callee.loc.end .. args_open
+                    // 3. Scan left from the call start to include that many matching `(`.
+                    //
+                    // Note: we must count based on *callee end*, not just "how many `)` precede the
+                    // call arguments", because the callee expression itself may end with `)` (e.g.
+                    // `(foo())()`), and only the parentheses after callee end correspond to the
+                    // excluded `(`.
+                    let skip_trivia_back = |mut idx: usize| -> usize {
+                      idx = idx.min(bytes.len());
+                      'outer: loop {
+                        let mut saw_newline = false;
+                        // Skip ASCII whitespace.
+                        while idx > 0 {
+                          match bytes[idx - 1] {
+                            b' ' | b'\t' => idx -= 1,
+                            b'\n' | b'\r' => {
+                              idx -= 1;
+                              saw_newline = true;
+                            }
+                            _ => break,
+                          }
+                        }
+
+                        // Skip block comment `/* ... */`.
+                        if idx >= 2 && bytes[idx - 2] == b'*' && bytes[idx - 1] == b'/' {
+                          idx = idx.saturating_sub(2);
+                          while idx >= 2 {
+                            if bytes[idx - 2] == b'/' && bytes[idx - 1] == b'*' {
+                              idx = idx.saturating_sub(2);
+                              continue 'outer;
+                            }
+                            idx -= 1;
+                          }
+                          continue 'outer;
+                        }
+
+                        // Skip line comment `// ... \n`.
+                        if saw_newline {
+                          let mut line_start = idx;
+                          while line_start > 0 {
+                            let b = bytes[line_start - 1];
+                            if b == b'\n' || b == b'\r' {
+                              break;
+                            }
+                            line_start -= 1;
+                          }
+                          let mut i = line_start;
+                          while i + 1 < idx {
+                            if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                              idx = i;
+                              continue 'outer;
+                            }
+                            i += 1;
+                          }
+                        }
+
+                        return idx;
+                      }
+                    };
+
+                    // Find the `(` that opens the call's argument list.
+                    let args_open: Option<usize> = if let Some(arg0) = call.stx.arguments.first() {
+                      let rel_arg_start = arg0
+                        .loc
+                        .start_u32()
+                        .saturating_sub(self.env.prefix_len());
+                      let arg_start = self.env.base_offset().saturating_add(rel_arg_start) as usize;
+                      let idx = skip_trivia_back(arg_start);
+                      if idx > 0 && bytes.get(idx - 1) == Some(&b'(') {
+                        Some(idx - 1)
+                      } else {
+                        None
+                      }
+                    } else {
+                      // No arguments: find the `(` by scanning back from the closing `)`.
+                      let end_idx = skip_trivia_back(span_end as usize);
+                      if end_idx == 0 || bytes.get(end_idx - 1) != Some(&b')') {
+                        None
+                      } else {
+                        let close_idx = end_idx - 1;
+                        let idx = skip_trivia_back(close_idx);
+                        if idx > 0 && bytes.get(idx - 1) == Some(&b'(') {
+                          Some(idx - 1)
+                        } else {
+                          None
+                        }
+                      }
+                    };
+
+                    if let Some(args_open) = args_open {
+                      // Find callee end in absolute source coordinates.
+                      let rel_callee_end = call
+                        .stx
+                        .callee
+                        .loc
+                        .end_u32()
+                        .saturating_sub(self.env.prefix_len());
+                      let callee_end =
+                        self.env.base_offset().saturating_add(rel_callee_end) as usize;
+                      let callee_end = callee_end.min(bytes.len());
+
+                      // Count how many `)` appear between callee_end and the call args `(`.
+                      let mut close_scan = args_open;
+                      let mut close_count: usize = 0;
+                      while close_scan > callee_end {
+                        close_scan = skip_trivia_back(close_scan);
+                        if close_scan <= callee_end {
                           break;
                         }
-                        _ => break,
+                        if bytes.get(close_scan - 1) == Some(&b')') {
+                          close_count = close_count.saturating_add(1);
+                          close_scan -= 1;
+                          continue;
+                        }
+                        break;
                       }
+
+                      // Include the corresponding `(` before the callee start.
+                      let mut start_scan = span_start as usize;
+                      for _ in 0..close_count {
+                        start_scan = skip_trivia_back(start_scan);
+                        if start_scan == 0 || bytes.get(start_scan - 1) != Some(&b'(') {
+                          break;
+                        }
+                        start_scan -= 1;
+                      }
+                      span_start = u32::try_from(start_scan).unwrap_or(span_start);
                     }
                   }
                 }
