@@ -38,16 +38,16 @@ impl<'a> Parser<'a> {
     if introduces_new_target {
       self.new_target_allowed += 1;
     }
-    let res = (|| {
-      self.require(TT::ParenthesisOpen)?;
+    fn parse_params_inner(p: &mut Parser<'_>, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
+      p.require(TT::ParenthesisOpen)?;
       let mut parameters = Vec::new();
       let mut is_first = true;
-      if self.consume_if(TT::ParenthesisClose).is_match() {
+      if p.consume_if(TT::ParenthesisClose).is_match() {
         return Ok(parameters);
       }
 
       loop {
-        let param = self.with_loc(|p| {
+        let param = p.with_loc(|p| {
           // TypeScript: check for `this` parameter (can only be first parameter)
           // Syntax: `this: Type`
           if is_first && !p.is_strict_ecmascript() && p.peek().typ == TT::KeywordThis {
@@ -184,24 +184,24 @@ impl<'a> Parser<'a> {
 
         if is_rest {
           // Rest parameters must be last and cannot have a trailing comma.
-          if self.peek().typ != TT::ParenthesisClose {
+          if p.peek().typ != TT::ParenthesisClose {
             return Err(
-              self
+              p
                 .peek()
                 .error(SyntaxErrorType::ExpectedSyntax("`)`")),
             );
           }
-          self.require(TT::ParenthesisClose)?;
+          p.require(TT::ParenthesisClose)?;
           break;
         }
 
-        if self.consume_if(TT::Comma).is_match() {
-          if self.peek().typ == TT::ParenthesisClose {
-            self.consume();
+        if p.consume_if(TT::Comma).is_match() {
+          if p.peek().typ == TT::ParenthesisClose {
+            p.consume();
             break;
           }
         } else {
-          self.require(TT::ParenthesisClose)?;
+          p.require(TT::ParenthesisClose)?;
           break;
         }
 
@@ -209,7 +209,16 @@ impl<'a> Parser<'a> {
       }
 
       Ok(parameters)
-    })();
+    }
+
+    // Class field initializers / static blocks disallow `arguments` (early error
+    // `ContainsArguments`), but nested non-arrow functions introduce their own `arguments`
+    // binding and therefore lift that restriction for their parameters.
+    let res = if introduces_new_target {
+      self.with_arguments_bound_in_class_init(|p| parse_params_inner(p, ctx))
+    } else {
+      parse_params_inner(self, ctx)
+    };
     self.new_target_allowed = prev_new_target_allowed;
     res
   }
