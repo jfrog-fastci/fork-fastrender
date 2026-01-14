@@ -279,11 +279,11 @@ fn tla_compiled_module_throw_await_executes_via_hir_without_ast_fallback() -> Re
   let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let source = std::sync::Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       &mut heap,
       "m.js",
       "throw await Promise.resolve('boom');",
-    )?);
+    )?;
     let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
     // Simulate an embedding that discards the `parse-js` AST after compilation.
     record.ast = None;
@@ -365,7 +365,7 @@ fn tla_compiled_module_for_triple_head_await_executes_via_hir_without_ast_fallba
   let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let source = std::sync::Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       &mut heap,
       "m.js",
       r#"
@@ -373,7 +373,7 @@ fn tla_compiled_module_for_triple_head_await_executes_via_hir_without_ast_fallba
         for (await Promise.resolve(); globalThis.counter < 3; globalThis.counter++) {}
         export const out = globalThis.counter;
       "#,
-    )?);
+    )?;
     let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
     // Simulate an embedding that discards the `parse-js` AST after compilation.
     record.ast = None;
