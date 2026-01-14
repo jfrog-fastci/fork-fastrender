@@ -43860,7 +43860,7 @@ fn element_get_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -43879,12 +43879,11 @@ fn element_get_attribute_native(
   )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let name_value = scope.heap_mut().to_string(name_value)?;
-  let name = scope
-    .heap()
-    .get_string(name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let name_value = match name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let name = scope.heap().get_string(name_value)?.to_utf8_lossy();
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.getAttribute requires a DOM-backed document",
@@ -43903,7 +43902,7 @@ fn element_get_attribute_node_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -43923,12 +43922,11 @@ fn element_get_attribute_node_native(
   )?;
 
   let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let query_value = scope.heap_mut().to_string(query_value)?;
-  let query = scope
-    .heap()
-    .get_string(query_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let query_value = match query_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let query = scope.heap().get_string(query_value)?.to_utf8_lossy();
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.getAttributeNode requires a DOM-backed document",
@@ -45288,20 +45286,18 @@ fn element_set_attribute_native(
   )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let name_value = scope.heap_mut().to_string(name_value)?;
-  let name = scope
-    .heap()
-    .get_string(name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let name_value = match name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let name = scope.heap().get_string(name_value)?.to_utf8_lossy();
 
   let value_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let value_value = scope.heap_mut().to_string(value_value)?;
-  let value = scope
-    .heap()
-    .get_string(value_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let value_value = match value_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let value = scope.heap().get_string(value_value)?.to_utf8_lossy();
 
   if let Err(err) = dom2::validate_attribute_qualified_name(name.as_ref()) {
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
@@ -45414,12 +45410,11 @@ fn element_remove_attribute_native(
   )?;
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let name_value = scope.heap_mut().to_string(name_value)?;
-  let name = scope
-    .heap()
-    .get_string(name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let name_value = match name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let name = scope.heap().get_string(name_value)?.to_utf8_lossy();
 
   if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
@@ -60578,6 +60573,30 @@ mod tests {
           const el = document.createElement("div");
           el.textContent = { toString() { return "x"; } };
           return el.textContent === "x";
+        })()
+      "#,
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_attribute_apis_stringify_objects_via_ecmascript_to_string() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"
+        (() => {
+          const el = document.createElement("div");
+          el.setAttribute({ toString() { return "id"; } }, { toString() { return "x"; } });
+          if (el.getAttribute({ toString() { return "id"; } }) !== "x") return false;
+          const attr = el.getAttributeNode({ toString() { return "id"; } });
+          if (!attr || attr.value !== "x") return false;
+          el.removeAttribute({ toString() { return "id"; } });
+          return el.getAttribute("id") === null;
         })()
       "#,
     )?;
