@@ -4800,9 +4800,9 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
     .expect("absolute fragment present");
 
   assert_approx(
-    abs_fragment.bounds.x(),
+    abs_fragment.bounds.y(),
     30.0,
-    "named line placement resolves to the second inherited column track on the physical X axis",
+    "named line placement resolves to the second inherited column track on the physical Y axis",
   );
 }
 
