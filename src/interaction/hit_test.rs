@@ -5,6 +5,7 @@ use crate::style::types::{CursorKeyword, PointerEvents};
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType};
 use crate::tree::fragment_tree::{FragmentContent, FragmentTree};
 use crate::ui::messages::CursorKind;
+use rustc_hash::FxHashMap;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::marker::PhantomData;
@@ -172,6 +173,11 @@ impl<'a> BoxIndex<'a> {
 struct DomIndex<'a> {
   id_to_ptr: Vec<*const DomNode>,
   parent: Vec<usize>,
+  // `id_to_ptr` is efficient for id -> pointer lookups, but image map hit-testing frequently needs
+  // pointer -> id to resolve `<area>` elements back to cascade pre-order ids.
+  //
+  // Keep this optional to leave room for future memory/perf tuning, but construct it by default.
+  ptr_to_id: Option<FxHashMap<*const DomNode, usize>>,
   _marker: PhantomData<&'a DomNode>,
 }
 
@@ -179,14 +185,18 @@ impl<'a> DomIndex<'a> {
   fn new(dom: &'a DomNode) -> Self {
     let mut id_to_ptr: Vec<*const DomNode> = vec![ptr::null()];
     let mut parent: Vec<usize> = vec![0];
+    let mut ptr_to_id: FxHashMap<*const DomNode, usize> = FxHashMap::default();
 
     // Pre-order traversal, matching `dom::enumerate_dom_ids` / cascade node ids.
     // (node, parent_dom_id)
     let mut stack: Vec<(&DomNode, usize)> = vec![(dom, 0)];
     while let Some((node, parent_id)) = stack.pop() {
       let id = id_to_ptr.len();
-      id_to_ptr.push(node as *const DomNode);
+      let node_ptr = node as *const DomNode;
+      debug_assert!(!node_ptr.is_null());
+      id_to_ptr.push(node_ptr);
       parent.push(parent_id);
+      ptr_to_id.insert(node_ptr, id);
       for child in node.children.iter().rev() {
         stack.push((child, id));
       }
@@ -195,6 +205,7 @@ impl<'a> DomIndex<'a> {
     Self {
       id_to_ptr,
       parent,
+      ptr_to_id: Some(ptr_to_id),
       _marker: PhantomData,
     }
   }
@@ -220,10 +231,10 @@ impl<'a> DomIndex<'a> {
     if ptr.is_null() {
       return None;
     }
-    self
-      .id_to_ptr
-      .iter()
-      .position(|&candidate| candidate == ptr)
+    if let Some(map) = &self.ptr_to_id {
+      return map.get(&ptr).copied();
+    }
+    self.id_to_ptr.iter().position(|&candidate| candidate == ptr)
   }
 
   fn is_ancestor(&self, ancestor: usize, mut node_id: usize) -> bool {
@@ -1013,6 +1024,35 @@ mod dom_hit_testing_tests {
     let box_index = HitTestBoxIndex::new(box_tree);
     let dom_index = MutableDomIndex::build(dom);
     hit_test_dom_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
+  }
+
+  #[test]
+  fn dom_index_id_for_ptr_maps_pointers_to_preorder_ids() {
+    let dom = doc(vec![elem(
+      "div",
+      vec![("id", "root")],
+      vec![elem("span", vec![], vec![]), text("hi")],
+    )]);
+
+    // DOM ids (pre-order):
+    // 1 document
+    // 2 div#root
+    // 3 span
+    // 4 text("hi")
+    let index = DomIndex::new(&dom);
+    assert_eq!(index.id_for_ptr(&dom as *const DomNode), Some(1));
+    assert_eq!(
+      index.id_for_ptr(&dom.children[0] as *const DomNode),
+      Some(2)
+    );
+    assert_eq!(
+      index.id_for_ptr(&dom.children[0].children[0] as *const DomNode),
+      Some(3)
+    );
+    assert_eq!(
+      index.id_for_ptr(&dom.children[0].children[1] as *const DomNode),
+      Some(4)
+    );
   }
 
   #[test]
