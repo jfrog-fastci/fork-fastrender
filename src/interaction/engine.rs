@@ -10325,19 +10325,6 @@ impl InteractionEngine {
               }
             }
           }
-<<<<<<< HEAD
-=======
-        } else if is_primary_button {
-          if let Some(kind) = index.node(target_id).and_then(media_controls_kind) {
-            if is_focusable_interactive_element(&index, target_id) {
-              dom_changed |= self.set_focus(&mut index, Some(target_id), false);
-            }
-            action = InteractionAction::OpenMediaControls {
-              media_node_id: target_id,
-              kind,
-            };
-          }
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         } else {
           // `<video controls>` / `<audio controls>`: request native media controls overlay.
           //

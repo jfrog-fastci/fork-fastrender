@@ -293,13 +293,7 @@ impl Error {
 impl From<MediaError> for Error {
   fn from(err: MediaError) -> Self {
     match err {
-<<<<<<< HEAD
       MediaError::LoadFailed { url, reason } => Error::Resource(ResourceError::new(url, reason)),
-=======
-      MediaError::LoadFailed { url, reason } => {
-        Error::Other(format!("[media] failed to load media from '{url}': {reason}"))
-      }
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       MediaError::Render(render_err) => Error::Render(render_err),
       MediaError::Io(io_err) => Error::Io(io_err),
       MediaError::Unsupported(message) => Error::Other(format!("[media] unsupported: {message}")),
