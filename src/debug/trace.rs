@@ -1,10 +1,9 @@
 use serde::Serialize;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -43,19 +42,16 @@ fn max_trace_events_from_env() -> Option<usize> {
   usize::try_from(parsed).ok()
 }
 
-fn current_thread_numeric_id() -> u64 {
-  static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-  static IDS: OnceLock<Mutex<HashMap<std::thread::ThreadId, u64>>> = OnceLock::new();
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
-  let thread_id = std::thread::current().id();
-  let ids = IDS.get_or_init(|| Mutex::new(HashMap::new()));
-  let mut ids = match ids.lock() {
-    Ok(guard) => guard,
-    Err(err) => err.into_inner(),
-  };
-  *ids
-    .entry(thread_id)
-    .or_insert_with(|| NEXT_ID.fetch_add(1, Ordering::Relaxed))
+thread_local! {
+  // Assign a stable numeric ID per thread without a global map/mutex, so tracing from
+  // real-time-ish contexts (e.g. audio callbacks) avoids additional lock contention.
+  static TRACE_THREAD_ID: u64 = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+}
+
+fn current_thread_numeric_id() -> u64 {
+  TRACE_THREAD_ID.with(|id| *id)
 }
 
 #[derive(Clone, Default)]
@@ -142,11 +138,18 @@ struct TraceState {
 
 impl TraceState {
   fn new(max_events: usize) -> Self {
+    // Pre-allocate the event buffer up-front so recording spans in hot paths (including audio
+    // callbacks) doesn't trigger vector growth allocations.
+    //
+    // Use `try_reserve_exact` so absurd `max_events` values (or memory pressure) don't abort the
+    // process while merely enabling tracing.
+    let mut events = Vec::new();
+    let _ = events.try_reserve_exact(max_events);
     Self {
       start: Instant::now(),
       max_events,
       dropped_events: AtomicU64::new(0),
-      events: Mutex::new(Vec::new()),
+      events: Mutex::new(events),
     }
   }
 
