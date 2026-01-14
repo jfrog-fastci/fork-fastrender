@@ -301,6 +301,10 @@ impl SessionAutosave {
   /// This is intended for startup crash marking: callers can restore/build a session snapshot in
   /// memory first (including any window state) and have the autosave worker persist that exact
   /// snapshot as soon as it starts.
+  ///
+  /// If the on-disk session file exists but cannot be read/parsed (e.g. JSON corruption), the
+  /// autosave worker will *not* overwrite it on startup. The file is preserved until the first
+  /// explicit [`Self::request_save`] call.
   pub fn new_with_initial_session(path: PathBuf, initial_session: BrowserSession) -> Self {
     Self::new_with_debounce_and_initial(path, DEFAULT_DEBOUNCE, Some(initial_session))
   }
@@ -499,10 +503,12 @@ fn session_writer_thread(
       // When an initial in-memory snapshot is supplied, it does not contain the previous-run crash
       // marker. Best-effort read the on-disk marker to determine whether the previous run exited
       // cleanly.
-      let (prev_clean, prev_streak) = match load_session(&path) {
-        Ok(Some(prev)) => (prev.did_exit_cleanly, prev.unclean_exit_streak),
-        Ok(None) => (true, 0),
-        Err(_) => (true, 0),
+      let (prev_clean, prev_streak, can_overwrite_on_startup) = match load_session(&path) {
+        Ok(Some(prev)) => (prev.did_exit_cleanly, prev.unclean_exit_streak, true),
+        Ok(None) => (true, 0, true),
+        // If the session file exists but can't be read/parsed (e.g. JSON corruption), preserve it
+        // until the UI makes an explicit save request.
+        Err(_) => (true, 0, false),
       };
       session.unclean_exit_streak = if prev_clean {
         1
@@ -511,12 +517,18 @@ fn session_writer_thread(
       };
 
       session.did_exit_cleanly = false;
-      let result = save_fn(path.as_path(), &session);
-      status.record_attempt(&result, Instant::now());
-      if result.is_ok() {
-        write_count.fetch_add(1, Ordering::Relaxed);
+      if !can_overwrite_on_startup {
+        // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
+        // our fallback session.
+        (session, Ok(()))
+      } else {
+        let result = save_fn(path.as_path(), &session);
+        status.record_attempt(&result, Instant::now());
+        if result.is_ok() {
+          write_count.fetch_add(1, Ordering::Relaxed);
+        }
+        (session, result)
       }
-      (session, result)
     }
     None => match load_session(&path) {
       Ok(Some(mut session)) => {
@@ -684,6 +696,32 @@ mod tests {
   }
 
   #[test]
+  fn startup_increments_unclean_exit_streak_with_initial_snapshot_when_previous_exit_was_unclean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let mut prev = BrowserSession::single("about:blank".to_string());
+    prev.did_exit_cleanly = false;
+    prev.unclean_exit_streak = 2;
+    save_session_atomic(&path, &prev).unwrap();
+
+    let initial = BrowserSession::single("about:error".to_string());
+    let autosave = SessionAutosave::new_with_debounce_and_initial(
+      path.clone(),
+      Duration::from_millis(10),
+      Some(initial.clone()),
+    );
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let mut expected = initial.sanitized();
+    expected.did_exit_cleanly = false;
+    expected.unclean_exit_streak = 3;
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session, expected);
+  }
+
+  #[test]
   fn startup_creates_minimal_session_when_missing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
@@ -824,6 +862,28 @@ mod tests {
     std::fs::write(&path, corrupted).unwrap();
 
     let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    // Allow the writer thread to run its startup logic; `flush()` should be a no-op in this case.
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    // The corrupted file should be preserved until a real Save request is made.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, corrupted);
+  }
+
+  #[test]
+  fn startup_does_not_overwrite_invalid_json_session_file_with_initial_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let corrupted = "this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let initial = BrowserSession::single("about:blank".to_string());
+    let autosave = SessionAutosave::new_with_debounce_and_initial(
+      path.clone(),
+      Duration::from_millis(10),
+      Some(initial),
+    );
     // Allow the writer thread to run its startup logic; `flush()` should be a no-op in this case.
     autosave.flush(Duration::from_secs(2)).unwrap();
 
