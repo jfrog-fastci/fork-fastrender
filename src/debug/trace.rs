@@ -190,6 +190,7 @@ impl TraceHandle {
 
 struct TraceState {
   start: Instant,
+  pid: u32,
   max_events: usize,
   dropped_events: AtomicU64,
   events: Mutex<Vec<TraceEvent>>,
@@ -206,6 +207,7 @@ impl TraceState {
     let _ = events.try_reserve_exact(max_events);
     Self {
       start: Instant::now(),
+      pid: std::process::id(),
       max_events,
       dropped_events: AtomicU64::new(0),
       events: Mutex::new(events),
@@ -247,7 +249,7 @@ impl TraceState {
       ph: "X",
       ts,
       dur,
-      pid: std::process::id(),
+      pid: self.pid,
       tid,
       args,
     });
