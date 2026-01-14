@@ -1738,6 +1738,8 @@ where
   let trace_sample_n = audio_trace_sample_n_from_env();
   // Avoid division/modulo in the RT callback by using a countdown for trace sampling.
   let mut trace_sample_countdown: u64 = 0;
+  // Keep a timestamp cursor so we can report callback scheduling jitter in traces.
+  let mut last_callback_timestamp = None;
   let mut last_dropped_samples_total: u64 = 0;
 
   let err_cb = {
@@ -1837,7 +1839,21 @@ where
           }
 
           let ts = info.timestamp();
-          let latency = ts.playback.duration_since(&ts.callback);
+          let callback_timestamp = ts.callback;
+          let playback_timestamp = ts.playback;
+          let latency = playback_timestamp.duration_since(&callback_timestamp);
+
+          if let Some(span) = callback_span.as_mut() {
+            if let Some(prev) = last_callback_timestamp.as_ref() {
+              if let Some(period) = callback_timestamp.duration_since(prev) {
+                span.arg_u64("callback_period_nanos", duration_to_nanos_u64(period));
+              }
+            }
+          }
+
+          // Always advance the cursor so `callback_period_nanos` reflects the interval between
+          // callbacks, not between traced callbacks (when sampling is enabled).
+          last_callback_timestamp = Some(callback_timestamp);
           if let (Some(span), Some(latency)) = (callback_span.as_mut(), latency) {
             span.arg_u64("latency_nanos", duration_to_nanos_u64(latency));
           }
@@ -1886,7 +1902,7 @@ where
             // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
             // pure frame counter when unavailable.
             let device_time_at_end = {
-              let playback = ts.playback;
+              let playback = playback_timestamp;
               let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
               let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
