@@ -88,6 +88,12 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
   --input target/browser_perf.jsonl
 
+# Timeline profiling (Perfetto/Chrome trace) for the windowed browser UI event loop.
+# Close the browser window to finish recording (the trace is written on exit).
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release \
+  --trace-out target/browser_trace.json \
+  about:test-layout-stress
+
 # Debug invalidation fast paths for hover/focus/caret interactions (stderr one-line logs):
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_LOG_INTERACTION_INVALIDATION=1 \
