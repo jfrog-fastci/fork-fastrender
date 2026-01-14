@@ -18749,12 +18749,12 @@ fn async_generator_handle_execution_result(
         state.frames = frames;
 
         // `AwaitResolved` means the internal `PromiseResolve` step of `Await` has already happened
-        // (e.g. `AsyncIteratorClose`), so we must not call `PromiseResolve` again.
+        // (e.g. `AsyncIteratorClose` during `for await..of`), so we must not call `PromiseResolve`
+        // again.
         debug_assert!(
           matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj)),
           "AwaitResolved suspension must carry a Promise object"
         );
-
         cont.env.teardown(scope.heap_mut());
         scope
           .heap_mut()
