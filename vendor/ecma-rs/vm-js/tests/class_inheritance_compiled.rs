@@ -473,3 +473,68 @@ fn derived_ctor_param_arrow_super_method_call_before_and_after_super_compiled() 
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_super_call_argument_eval_does_not_initialize_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var base_called = false;
+      var ok = false;
+      class B { constructor(arg) { base_called = true; this.arg = arg; } }
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          super(f());
+        }
+      }
+      try { new D(); } catch (e) { ok = e instanceof ReferenceError; }
+      ok && base_called === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_param_super_call_can_initialize_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor(x = super()) {
+          ok = x instanceof D && this instanceof D;
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_param_super_call_allows_later_default_param_to_use_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor(a = super(), b = this) {
+          ok = a instanceof D && b instanceof D && this instanceof D;
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
