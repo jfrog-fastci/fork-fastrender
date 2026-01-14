@@ -298,7 +298,6 @@ reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/br
 id = "dom/nodeiterator_pre_remove.window.js"
 backend = "quickjs"
 status = "xfail"
-<<<<<<< HEAD
 reason = "QuickJS backend uses minimal DOM shims and does not implement NodeIterator/TreeWalker yet."
 
 [[expectations]]
@@ -306,9 +305,6 @@ id = "dom/shadow_dom_traversal_iterators.window.js"
 backend = "quickjs"
 status = "xfail"
 reason = "QuickJS backend does not implement shadow DOM traversal with NodeIterator/TreeWalker yet."
-=======
-reason = "QuickJS backend uses minimal DOM shims; NodeIterator live-update behavior is not implemented."
->>>>>>> 8a49ca20 (feat(dom): complete TreeWalker + NodeIterator traversal APIs)
 
 [[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
