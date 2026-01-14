@@ -679,11 +679,6 @@ pub struct InteractionState {
   /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
   user_validity: FxHashSet<usize>,
 
-  /// Currently fullscreen element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
-  ///
-  /// This drives the `:fullscreen` pseudo-class (and vendor aliases like `:-webkit-full-screen`).
-  fullscreen_element: Option<usize>,
-
   /// Cached hash of interaction state that can affect CSS selector matching.
   ///
   /// This is derived from fields such as focus/hover/active state, visited links, and user validity.
@@ -765,19 +760,6 @@ impl InteractionState {
   #[inline]
   pub fn active_chain(&self) -> &[usize] {
     &self.active_chain
-  }
-
-  #[inline]
-  pub fn is_fullscreen(&self, node_id: usize) -> bool {
-    self.fullscreen_element == Some(node_id)
-  }
-
-  pub fn set_fullscreen_element(&mut self, node_id: Option<usize>) {
-    if self.fullscreen_element == node_id {
-      return;
-    }
-    self.fullscreen_element = node_id;
-    self.mark_css_hash_dirty();
   }
 
   pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
@@ -1245,7 +1227,6 @@ impl Default for InteractionState {
       form_state: FormState::default(),
       document_selection: None,
       user_validity: FxHashSet::default(),
-      fullscreen_element: None,
       cached_css_hash: AtomicU64::new(0),
       cached_paint_hash: AtomicU64::new(0),
       css_hash_dirty: AtomicBool::new(true),
@@ -1272,7 +1253,6 @@ impl Clone for InteractionState {
       form_state: self.form_state.clone(),
       document_selection: self.document_selection.clone(),
       user_validity: self.user_validity.clone(),
-      fullscreen_element: self.fullscreen_element,
       cached_css_hash: AtomicU64::new(self.cached_css_hash.load(AtomicOrdering::Relaxed)),
       cached_paint_hash: AtomicU64::new(self.cached_paint_hash.load(AtomicOrdering::Relaxed)),
       // `InteractionState` is frequently cloned for "build a slightly modified state" patterns in
@@ -1551,8 +1531,6 @@ pub struct InteractionStateDom2 {
   pub document_selection: Option<DocumentSelectionStateDom2>,
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   pub user_validity: FxHashSet<NodeId>,
-  /// Currently fullscreen element `NodeId` (drives `:fullscreen` pseudo-class matching).
-  pub fullscreen_element: Option<NodeId>,
 }
 
 impl InteractionStateDom2 {
