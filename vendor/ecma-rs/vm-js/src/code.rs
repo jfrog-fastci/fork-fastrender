@@ -1200,6 +1200,22 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     has_await
   }
 
+  fn for_await_of_stmt_supported(for_of: &Node<ForOfStmt>) -> bool {
+    if !for_of.stx.await_ {
+      return false;
+    }
+    if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+      return false;
+    }
+    let rhs = &for_of.stx.rhs;
+    let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
+      !expr_contains_await(arg)
+    } else {
+      !expr_contains_await(rhs)
+    };
+    rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+  }
+
   fn expr_is_object_destructuring_assignment_with_supported_await(expr: &Node<Expr>) -> bool {
     // Supported shape:
     //   `({ <object-pattern> } = <rhs>);`
@@ -1351,17 +1367,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // itself, but does not yet support additional nested `await` within the head or body. The
       // RHS may be a direct `await <expr>`, as long as `<expr>` contains no nested `await`.
       Stmt::ForOf(for_of) if for_of.stx.await_ => {
-        if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
-          false
-        } else {
-          let rhs = &for_of.stx.rhs;
-          let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
-            !expr_contains_await(arg)
-          } else {
-            !expr_contains_await(rhs)
-          };
-          rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
-        }
+        for_await_of_stmt_supported(for_of)
       }
 
       // `for (const { x = await p } of xs) { ... }` at top-level.
@@ -1372,6 +1378,53 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       //   with no nested `await`,
       // - the RHS and loop body contain no `await`.
       Stmt::ForOf(for_of) => for_of_stmt_supported_with_async_head(for_of),
+
+      // Support `try { for await (...) { ... } } catch/finally` at top-level.
+      //
+      // This is intentionally narrow: within the try block, the only supported `await` forms are
+      // top-level `for await..of` loops (including label chains around them). The catch parameter,
+      // catch body, and finally block must not contain any `await`.
+      Stmt::Try(try_stmt) => {
+        // Catch + finally must be synchronous.
+        let catch_supported = try_stmt.stx.catch.as_ref().is_none_or(|c| {
+          c.stx
+            .parameter
+            .as_ref()
+            .is_none_or(|p| !pat_contains_await(&p.stx.pat.stx))
+            && !c.stx.body.iter().any(stmt_contains_await)
+        });
+        if !catch_supported {
+          false
+        } else if try_stmt
+          .stx
+          .finally
+          .as_ref()
+          .is_some_and(|f| f.stx.body.iter().any(stmt_contains_await))
+        {
+          false
+        } else {
+          // Try block: any statement containing `await` must be a supported top-level `for await..of`.
+          try_stmt.stx.wrapped.stx.body.iter().all(|s| {
+            if !stmt_contains_await(s) {
+              return true;
+            }
+            match &*s.stx {
+              Stmt::ForOf(for_of) => for_await_of_stmt_supported(for_of),
+              Stmt::Label(label) => {
+                let mut inner = &label.stx.statement;
+                while let Stmt::Label(label) = &*inner.stx {
+                  inner = &label.stx.statement;
+                }
+                match &*inner.stx {
+                  Stmt::ForOf(for_of) => for_await_of_stmt_supported(for_of),
+                  _ => false,
+                }
+              }
+              _ => false,
+            }
+          })
+        }
+      }
 
       // Support `label: for await (...) { ... }` (including nested label chains like
       // `a: b: for await (...) { ... }`) as long as the labelled statement ultimately labels a
@@ -1414,19 +1467,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
           }),
           Stmt::ForTriple(for_stmt) => for_triple_stmt_supported(for_stmt),
           Stmt::ForOf(for_of) if !for_of.stx.await_ => for_of_stmt_supported_with_async_head(for_of),
-          Stmt::ForOf(for_of) if for_of.stx.await_ => {
-            if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
-              false
-            } else {
-              let rhs = &for_of.stx.rhs;
-              let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
-                !expr_contains_await(arg)
-              } else {
-                !expr_contains_await(rhs)
-              };
-              rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
-            }
-          }
+          Stmt::ForOf(for_of) if for_of.stx.await_ => for_await_of_stmt_supported(for_of),
           _ => false,
         }
       }
