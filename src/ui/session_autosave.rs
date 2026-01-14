@@ -911,20 +911,33 @@ fn quarantine_corrupt_session_file(path: &Path) -> Result<Option<PathBuf>, Strin
     ));
   };
 
-  let timestamp_ms = SystemTime::now()
+  // Use a high-resolution timestamp to minimize collisions across rapid restart loops. We still
+  // perform an existence check to avoid clobbering older quarantines on platforms where
+  // `std::fs::rename` overwrites existing destinations (Unix).
+  let timestamp_ns = SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .unwrap_or_default()
-    .as_millis();
+    .as_nanos();
 
   for attempt in 0..100usize {
     let mut quarantined_name = file_name.to_os_string();
     quarantined_name.push(".corrupt.");
-    quarantined_name.push(format!("{timestamp_ms}"));
+    quarantined_name.push(format!("{timestamp_ns}"));
     if attempt > 0 {
       quarantined_name.push(format!(".{attempt}"));
     }
 
     let quarantined_path = parent_dir.join(&quarantined_name);
+    match quarantined_path.try_exists() {
+      Ok(true) => continue,
+      Ok(false) => {}
+      Err(err) => {
+        return Err(format!(
+          "failed to check whether quarantine destination {} exists: {err}",
+          quarantined_path.display()
+        ))
+      }
+    }
     match std::fs::rename(path, &quarantined_path) {
       Ok(()) => return Ok(Some(quarantined_path)),
       Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
