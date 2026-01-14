@@ -10,7 +10,8 @@
 
 use crate::dom2;
 use crate::js::dom_platform::{DocumentId, DomNodeKey, DomPlatform};
-use crate::media::clock::{MediaClock, PlaybackClock, PlaybackState};
+use crate::media::clock::{MediaClock, PlaybackState};
+use crate::media::MediaPlaybackControl;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +35,7 @@ pub(crate) const HAVE_ENOUGH_DATA: u16 = 4;
 /// remain cheap to keep on the host side.
 #[derive(Debug)]
 pub(crate) struct MediaElementState {
-  clock: PlaybackClock,
+  playback: Arc<MediaPlaybackControl>,
   muted: bool,
   volume: f64,
   /// The last resolved media URL for this element's current `src` attribute.
@@ -54,11 +55,9 @@ pub(crate) struct MediaElementState {
 
 impl MediaElementState {
   pub(crate) fn new(master_clock: Arc<dyn MediaClock>) -> Self {
-    let clock = PlaybackClock::new(master_clock, Duration::ZERO);
-    // HTMLMediaElement starts out paused.
-    clock.pause();
+    let playback = Arc::new(MediaPlaybackControl::new(master_clock));
     Self {
-      clock,
+      playback,
       muted: false,
       volume: 1.0,
       src_url: None,
@@ -72,31 +71,36 @@ impl MediaElementState {
   }
 
   pub(crate) fn paused(&self) -> bool {
-    matches!(self.clock.state(), PlaybackState::Paused)
+    matches!(self.playback.state(), PlaybackState::Paused)
   }
 
   pub(crate) fn current_time_seconds(&self) -> f64 {
-    self.clock.now().as_secs_f64()
+    self.playback.now().as_secs_f64()
   }
 
   pub(crate) fn seek(&self, time: Duration) {
-    self.clock.seek(time);
+    self.playback.seek(time);
   }
 
   pub(crate) fn play(&self) {
-    self.clock.play();
+    self.playback.play();
   }
 
   pub(crate) fn pause(&self) {
-    self.clock.pause();
+    self.playback.pause();
   }
 
   pub(crate) fn playback_rate(&self) -> f64 {
-    self.clock.rate()
+    self.playback.rate()
   }
 
   pub(crate) fn set_playback_rate(&self, rate: f64) {
-    self.clock.set_rate(rate);
+    self.playback.set_rate(rate);
+  }
+
+  #[must_use]
+  pub(crate) fn playback_control(&self) -> Arc<MediaPlaybackControl> {
+    Arc::clone(&self.playback)
   }
 
   pub(crate) fn muted(&self) -> bool {

@@ -23,6 +23,7 @@ pub mod audio_clock;
 pub mod audio_engine;
 pub mod backends;
 pub mod clock;
+pub mod playback_control;
 pub mod codecs;
 pub mod decoder;
 pub mod demux;
@@ -200,6 +201,7 @@ pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
 pub use packet::{MediaData, MediaPacket};
 pub use pipeline::MediaDecodePipeline;
+pub use playback_control::MediaPlaybackControl;
 pub use timestamp::MediaTimestamp;
 pub use timebase::{
   duration_to_ticks,

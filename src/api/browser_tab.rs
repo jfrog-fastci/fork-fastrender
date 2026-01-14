@@ -35,6 +35,9 @@ use crate::ui::{PointerButton, PointerModifiers};
 
 use encoding_rs::{Encoding, UTF_8};
 
+#[cfg(any(feature = "media_mp4", feature = "media_webm"))]
+use crate::ImageData;
+
 #[cfg(feature = "a11y_accesskit")]
 use accesskit::{
   Action as AccessKitAction, ActionData as AccessKitActionData,
@@ -510,6 +513,29 @@ struct ImageLoadState {
   request_id: u64,
 }
 
+struct MediaPlaybackWorker {
+  url: String,
+  src_key: String,
+  box_id: Option<usize>,
+  stop: Arc<std::sync::atomic::AtomicBool>,
+  join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MediaPlaybackWorker {
+  fn stop(&mut self) {
+    self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(handle) = self.join.take() {
+      let _ = handle.join();
+    }
+  }
+}
+
+impl Drop for MediaPlaybackWorker {
+  fn drop(&mut self) {
+    self.stop();
+  }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ActiveDataTransfer {
   obj: vm_js::GcObject,
@@ -680,6 +706,8 @@ pub struct BrowserTabHost {
   pending_asap_script_executions: HashSet<HtmlScriptId>,
   pending_image_load_blockers: HashSet<(NodeId, u64)>,
   image_load_state: HashMap<NodeId, ImageLoadState>,
+  media_provider: Option<Arc<crate::media::SizeHintMediaFrameProvider>>,
+  media_workers: HashMap<NodeId, MediaPlaybackWorker>,
   next_image_load_request_id: u64,
   /// The currently in-flight ordered-asap module script (dynamic `type=module` with
   /// `async=false`/`force_async=false`).
@@ -794,6 +822,8 @@ impl BrowserTabHost {
       pending_asap_script_executions: HashSet::new(),
       pending_image_load_blockers: HashSet::new(),
       image_load_state: HashMap::new(),
+      media_provider: None,
+      media_workers: HashMap::new(),
       next_image_load_request_id: 1,
       in_flight_ordered_asap_module: None,
       queued_ordered_asap_scripts: VecDeque::new(),
@@ -1270,6 +1300,11 @@ impl BrowserTabHost {
     self.pending_asap_script_executions.clear();
     self.pending_image_load_blockers.clear();
     self.image_load_state.clear();
+    for (_, mut worker) in self.media_workers.drain() {
+      worker.stop();
+    }
+    self.media_provider = None;
+    self.document.set_media_provider(None);
     self.next_image_load_request_id = 1;
     self.in_flight_ordered_asap_module = None;
     self.queued_ordered_asap_scripts.clear();
@@ -2782,6 +2817,59 @@ impl BrowserTabHost {
     Ok(())
   }
 
+  fn effective_media_src_for_dom2_node(
+    &self,
+    dom: &Document,
+    node_id: NodeId,
+    kind: crate::html::media::MediaKind,
+  ) -> Option<String> {
+    use crate::html::media::{select_media_source, MediaSelectionContext, MediaSourceCandidate};
+
+    let element_src = dom.get_attribute(node_id, "src").ok().flatten();
+    let sources: Vec<MediaSourceCandidate<'_>> = dom
+      .children(node_id)
+      .ok()
+      .into_iter()
+      .flatten()
+      .filter_map(|&child| {
+        let node = dom.node(child);
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        else {
+          return None;
+        };
+        if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+          return None;
+        }
+        if !tag_name.eq_ignore_ascii_case("source") {
+          return None;
+        }
+        let src = dom.get_attribute(child, "src").ok().flatten()?;
+        Some(MediaSourceCandidate {
+          src,
+          type_attr: dom.get_attribute(child, "type").ok().flatten(),
+          media_attr: dom.get_attribute(child, "media").ok().flatten(),
+        })
+      })
+      .collect();
+
+    let selected = select_media_source(
+      kind,
+      element_src,
+      sources,
+      MediaSelectionContext {
+        media_context: Some(&self.stylesheet_media_context),
+      },
+    );
+    if selected.url.is_empty() {
+      return None;
+    }
+    Some(selected.url.to_string())
+  }
+
   fn discover_and_start_media_loads(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
     // Media loads/autoplay should behave asynchronously relative to parsing (matching browser
     // behavior). Trigger discovery only once DOMContentLoaded has fired so inline scripts have had a
@@ -2804,7 +2892,14 @@ impl BrowserTabHost {
     }
 
     let base_url = self.base_url.clone();
-    let discovered: Vec<(NodeId, String)> = {
+    let discovered: Vec<(
+      NodeId,
+      crate::html::media::MediaKind,
+      String,
+      String,
+      Option<crate::resource::CorsMode>,
+      ReferrerPolicy,
+    )> = {
       let dom = self.document.dom();
       let mut out = Vec::new();
       for node_id in dom.dom_connected_preorder() {
@@ -2820,28 +2915,69 @@ impl BrowserTabHost {
         if !is_html_namespace(namespace) {
           continue;
         }
-        if !tag_name.eq_ignore_ascii_case("video") && !tag_name.eq_ignore_ascii_case("audio") {
-          continue;
-        }
-
-        let Some(src) = dom.get_attribute(node_id, "src").ok().flatten() else {
-          continue;
-        };
-        let src = super::trim_ascii_whitespace(src);
-        if src.is_empty() {
-          continue;
-        };
-        let Some(url) = resolve_href_with_base(base_url.as_deref(), src) else {
+        let kind = if tag_name.eq_ignore_ascii_case("video") {
+          crate::html::media::MediaKind::Video
+        } else if tag_name.eq_ignore_ascii_case("audio") {
+          crate::html::media::MediaKind::Audio
+        } else {
           continue;
         };
 
-        out.push((node_id, url));
+        let Some(src_key) = self.effective_media_src_for_dom2_node(dom, node_id, kind) else {
+          continue;
+        };
+        let Some(url) = resolve_href_with_base(base_url.as_deref(), &src_key) else {
+          continue;
+        };
+
+        let cors_mode = dom
+          .get_attribute(node_id, "crossorigin")
+          .ok()
+          .flatten()
+          .map(|value| {
+            let value = super::trim_ascii_whitespace(value);
+            if value.eq_ignore_ascii_case("use-credentials") {
+              crate::resource::CorsMode::UseCredentials
+            } else {
+              // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+              crate::resource::CorsMode::Anonymous
+            }
+          });
+
+        let effective_referrer_policy = dom
+          .get_attribute(node_id, "referrerpolicy")
+          .ok()
+          .flatten()
+          .and_then(ReferrerPolicy::from_attribute)
+          .unwrap_or(self.document_referrer_policy);
+
+        out.push((
+          node_id,
+          kind,
+          src_key,
+          url,
+          cors_mode,
+          effective_referrer_policy,
+        ));
       }
       out
     };
 
-    for (node_id, url) in discovered {
-      self.start_media_load(node_id, url, event_loop)?;
+    // Stop media workers for elements that are no longer present/connected or no longer have a
+    // selectable source.
+    let live_nodes: HashSet<NodeId> = discovered.iter().map(|(id, ..)| *id).collect();
+    let mut to_stop = Vec::new();
+    for (&node_id, _worker) in &self.media_workers {
+      if !live_nodes.contains(&node_id) {
+        to_stop.push(node_id);
+      }
+    }
+    for node_id in to_stop {
+      self.media_workers.remove(&node_id);
+    }
+
+    for (node_id, kind, src_key, url, cors_mode, referrer_policy) in discovered {
+      self.start_media_load(node_id, kind, src_key, url, cors_mode, referrer_policy, event_loop)?;
     }
 
     Ok(())
@@ -2850,7 +2986,11 @@ impl BrowserTabHost {
   fn start_media_load(
     &mut self,
     node_id: NodeId,
+    kind: crate::html::media::MediaKind,
+    src_key: String,
     url: String,
+    cors_mode: Option<crate::resource::CorsMode>,
+    referrer_policy: ReferrerPolicy,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     use crate::js::dom_platform::DomNodeKey;
@@ -2868,26 +3008,45 @@ impl BrowserTabHost {
         if !dom.is_connected_for_scripting(node_id) {
           return Ok(());
         }
-        let Some(src) = dom.get_attribute(node_id, "src").ok().flatten() else {
+        let node = dom.node(node_id);
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        else {
           return Ok(());
         };
-        let src = super::trim_ascii_whitespace(src);
-        if src.is_empty() {
+        if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
           return Ok(());
         }
-        let Some(resolved) = resolve_href_with_base(host.base_url.as_deref(), src) else {
+        let kind_now = if tag_name.eq_ignore_ascii_case("video") {
+          crate::html::media::MediaKind::Video
+        } else if tag_name.eq_ignore_ascii_case("audio") {
+          crate::html::media::MediaKind::Audio
+        } else {
+          return Ok(());
+        };
+        if kind_now != kind {
+          return Ok(());
+        }
+
+        let Some(current_src_key) = host.effective_media_src_for_dom2_node(dom, node_id, kind) else {
+          return Ok(());
+        };
+        let Some(resolved) = resolve_href_with_base(host.base_url.as_deref(), &current_src_key) else {
           return Ok(());
         };
         let autoplay = dom.has_attribute(node_id, "autoplay").unwrap_or(false);
         let muted = dom.has_attribute(node_id, "muted").unwrap_or(false);
-        (autoplay, muted, resolved == url)
+        (autoplay, muted, current_src_key == src_key && resolved == url)
       };
       if !still_current {
         return Ok(());
       }
 
       // Compute the DomPlatform document id (WeakGcObject identity encoding).
-      let (document_id, should_load, should_autoplay) = {
+      let (document_id, should_load, should_autoplay, playback) = {
         // Media element state lives on the vm-js host side (`WindowRealmUserData`).
         let Some(realm) = host.executor.window_realm_mut() else {
           return Ok(());
@@ -2904,9 +3063,11 @@ impl BrowserTabHost {
         let key = DomNodeKey::new(document_id, node_id);
         let state = data.media_element_state_mut(key);
 
-        let src_changed = state.src_url.as_deref() != Some(url.as_str());
+        let src_changed = state
+          .src_url
+          .as_deref()
+          .is_some_and(|prev| prev != url.as_str());
         if src_changed {
-          state.src_url = Some(url.clone());
           state.network_state = NETWORK_EMPTY;
           state.ready_state = HAVE_NOTHING;
           state.seeking = false;
@@ -2917,7 +3078,8 @@ impl BrowserTabHost {
           state.seek(Duration::ZERO);
           // Re-attempt autoplay for new `src`.
           state.autoplay_attempted = false;
-        } else if state.src_url.is_none() {
+        }
+        if state.src_url.is_none() || src_changed {
           state.src_url = Some(url.clone());
         }
 
@@ -2926,14 +3088,26 @@ impl BrowserTabHost {
         if autoplay && !state.autoplay_attempted {
           state.autoplay_attempted = true;
         }
-        (document_id, should_load, should_autoplay)
+        let playback = state.playback_control();
+        (document_id, should_load, should_autoplay, playback)
       };
 
       let key = DomNodeKey::new(document_id, node_id);
 
+      host.ensure_media_playback_worker(
+        node_id,
+        kind,
+        &src_key,
+        &url,
+        cors_mode,
+        referrer_policy,
+        playback,
+        event_loop,
+      )?;
+
       let mut dispatch = |host: &mut BrowserTabHost,
-                          event_loop: &mut EventLoop<BrowserTabHost>,
-                          type_: &'static str|
+                           event_loop: &mut EventLoop<BrowserTabHost>,
+                           type_: &'static str|
        -> Result<()> {
         let mut event = Event::new(
           type_,
@@ -3042,6 +3216,391 @@ impl BrowserTabHost {
       // Best-effort: failing to queue media tasks should not abort the document.
       return Ok(());
     }
+    Ok(())
+  }
+
+  #[cfg(any(feature = "media_mp4", feature = "media_webm"))]
+  fn ensure_media_playback_worker(
+    &mut self,
+    node_id: NodeId,
+    kind: crate::html::media::MediaKind,
+    src_key: &str,
+    url: &str,
+    cors_mode: Option<crate::resource::CorsMode>,
+    referrer_policy: ReferrerPolicy,
+    playback: Arc<crate::media::MediaPlaybackControl>,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    use crate::media::clock::PlaybackState;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // TODO: audio output is not wired up yet; only start decode workers for `<video>`.
+    if kind != crate::html::media::MediaKind::Video {
+      return Ok(());
+    }
+
+    if self
+      .media_workers
+      .get(&node_id)
+      .is_some_and(|worker| worker.url == url && worker.src_key == src_key)
+    {
+      return Ok(());
+    }
+
+    if let Some(mut worker) = self.media_workers.remove(&node_id) {
+      worker.stop();
+    }
+
+    let provider = match self.media_provider.as_ref() {
+      Some(existing) => Arc::clone(existing),
+      None => {
+        let provider = Arc::new(crate::media::SizeHintMediaFrameProvider::new());
+        let provider_dyn: Arc<dyn crate::media::MediaFrameProvider> = provider.clone();
+        self.document.set_media_provider(Some(provider_dyn));
+        self.media_provider = Some(Arc::clone(&provider));
+        provider
+      }
+    };
+
+    let box_id = match self.document.principal_box_id_for_node(node_id) {
+      Ok(box_id) => box_id,
+      Err(err) => {
+        // Best-effort: box id resolution should not abort the document.
+        if matches!(err, Error::Render(_)) {
+          return Err(err);
+        }
+        None
+      }
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let provider_for_thread = Arc::clone(&provider);
+    let playback_for_thread = Arc::clone(&playback);
+    let src_key_owned = src_key.to_string();
+    let url_owned = url.to_string();
+    let fetcher = self.document.fetcher();
+    let document_url = self.document_url.clone();
+    let document_origin = self.document_origin.clone();
+    let external = event_loop.external_task_queue_handle();
+
+    let join = std::thread::spawn(move || {
+      let av_sync = crate::media::AvSyncConfig::from_env();
+      let invalidate_pending = Arc::new(AtomicBool::new(false));
+
+      fn duration_to_nanos_u64(duration: Duration) -> u64 {
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+      }
+
+      let schedule_invalidate = |external: &crate::js::ExternalTaskQueueHandle<BrowserTabHost>,
+                                 invalidate_pending: &Arc<AtomicBool>| {
+        if invalidate_pending
+          .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+          .is_err()
+        {
+          return;
+        }
+        let invalidate_pending = Arc::clone(invalidate_pending);
+        let _ = external.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.document.invalidate_paint();
+          invalidate_pending.store(false, Ordering::Relaxed);
+          Ok(())
+        });
+      };
+
+      let schedule_simple_event =
+        |external: &crate::js::ExternalTaskQueueHandle<BrowserTabHost>, type_: &'static str| {
+          let _ = external.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+            let mut event = Event::new(
+              type_,
+              EventInit {
+                bubbles: false,
+                cancelable: false,
+                composed: false,
+              },
+            );
+            event.is_trusted = true;
+            let _ = host.dispatch_dom_event_in_event_loop(
+              EventTargetId::Node(node_id).normalize(),
+              event,
+              event_loop,
+            );
+            Ok(())
+          });
+        };
+
+      let schedule_error = |code: u16| {
+        let _ = external.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+          if let Some(realm) = host.executor.window_realm_mut() {
+            let vm = realm.vm_mut();
+            if let Some(data) = vm.user_data_mut::<crate::js::window_realm::WindowRealmUserData>() {
+              if let Some(document_obj) = data.document_obj() {
+                let document_id =
+                  (document_obj.index() as u64) | ((document_obj.generation() as u64) << 32);
+                let key = crate::js::dom_platform::DomNodeKey::new(document_id, node_id);
+                let state = data.media_element_state_mut(key);
+                state.error_code = Some(code);
+                state.network_state = crate::js::window_media::NETWORK_NO_SOURCE;
+                state.ready_state = crate::js::window_media::HAVE_NOTHING;
+              }
+            }
+          }
+
+          let mut event = Event::new(
+            "error",
+            EventInit {
+              bubbles: false,
+              cancelable: false,
+              composed: false,
+            },
+          );
+          event.is_trusted = true;
+          let _ = host.dispatch_dom_event_in_event_loop(
+            EventTargetId::Node(node_id).normalize(),
+            event,
+            event_loop,
+          );
+          Ok(())
+        });
+      };
+
+      // Fetch the media bytes.
+      if stop_for_thread.load(Ordering::Relaxed) {
+        return;
+      }
+
+      let destination = if cors_mode.is_some() {
+        FetchDestination::VideoCors
+      } else {
+        FetchDestination::Video
+      };
+      let mut req = FetchRequest::new(&url_owned, destination);
+      if let Some(referrer) = document_url.as_deref() {
+        req = req.with_referrer_url(referrer);
+      }
+      if let Some(origin) = document_origin.as_ref() {
+        req = req.with_client_origin(origin);
+      }
+      req = req.with_referrer_policy(referrer_policy);
+      if let Some(cors_mode) = cors_mode {
+        req = req.with_credentials_mode(cors_mode.credentials_mode());
+      }
+
+      let fetched = match fetcher.fetch_with_request(req) {
+        Ok(res) => res,
+        Err(_) => {
+          // MEDIA_ERR_NETWORK (2)
+          schedule_error(2);
+          return;
+        }
+      };
+
+      if stop_for_thread.load(Ordering::Relaxed) {
+        return;
+      }
+
+      if crate::resource::ensure_http_success(&fetched, &url_owned).is_err() {
+        schedule_error(2);
+        return;
+      }
+
+      if let Some(cors_mode) = cors_mode {
+        if crate::resource::cors_enforcement_enabled()
+          && crate::resource::ensure_cors_allows_origin(document_origin.as_ref(), &fetched, &url_owned, cors_mode)
+            .is_err()
+        {
+          schedule_error(2);
+          return;
+        }
+      }
+
+      if crate::media::loader::ensure_media_mime_sane(&url_owned, fetched.content_type.as_deref()).is_err() {
+        schedule_error(4); // MEDIA_ERR_SRC_NOT_SUPPORTED
+        return;
+      }
+
+      let bytes: Arc<[u8]> = Arc::from(fetched.bytes);
+      let backend = crate::media::backends::native::NativeBackend::new();
+      let mut session = match crate::media::MediaBackend::open(&backend, bytes) {
+        Ok(session) => session,
+        Err(_) => {
+          schedule_error(4); // MEDIA_ERR_SRC_NOT_SUPPORTED
+          return;
+        }
+      };
+
+      // Decode + presentation loop.
+      const MAX_DECODE_ITEMS_PER_TICK: usize = 256;
+      const MAX_VIDEO_QUEUE: usize = 8;
+      let mut queue: VecDeque<(Duration, Arc<ImageData>)> = VecDeque::new();
+      let mut reached_eof = false;
+      let mut last_seek_seq = playback_for_thread.seek_seq();
+      let mut last_timeupdate: Option<Duration> = None;
+      let mut have_presented_since_seek = false;
+
+      loop {
+        if stop_for_thread.load(Ordering::Relaxed) {
+          break;
+        }
+
+        // Observe seeks from JS/host.
+        let seek_seq = playback_for_thread.seek_seq();
+        if seek_seq != last_seek_seq {
+          last_seek_seq = seek_seq;
+          have_presented_since_seek = false;
+          reached_eof = false;
+          queue.clear();
+          let target = playback_for_thread.seek_target();
+          let target_ns = duration_to_nanos_u64(target);
+          if session.seek(target_ns).is_err() {
+            schedule_error(3); // MEDIA_ERR_DECODE
+            break;
+          }
+        }
+
+        // Decode ahead when we need frames.
+        while queue.len() < MAX_VIDEO_QUEUE && !reached_eof {
+          if stop_for_thread.load(Ordering::Relaxed) {
+            break;
+          }
+          let mut decoded_any = false;
+          for _ in 0..MAX_DECODE_ITEMS_PER_TICK {
+            if stop_for_thread.load(Ordering::Relaxed) {
+              break;
+            }
+            match session.next_decoded() {
+              Ok(Some(crate::media::DecodedItem::Video(frame))) => {
+                decoded_any = true;
+                let pts = Duration::from_nanos(frame.pts_ns);
+                let image = Arc::new(ImageData::new_premultiplied(
+                  frame.width,
+                  frame.height,
+                  frame.width as f32,
+                  frame.height as f32,
+                  frame.rgba,
+                ));
+                queue.push_back((pts, image));
+                if queue.len() >= MAX_VIDEO_QUEUE {
+                  break;
+                }
+              }
+              Ok(Some(crate::media::DecodedItem::Audio(_))) => {
+                decoded_any = true;
+              }
+              Ok(None) => {
+                reached_eof = true;
+                break;
+              }
+              Err(_) => {
+                schedule_error(3); // MEDIA_ERR_DECODE
+                return;
+              }
+            }
+          }
+
+          if !decoded_any {
+            // Avoid a tight loop when the pipeline is producing no output for some reason.
+            break;
+          }
+
+          if reached_eof {
+            break;
+          }
+        }
+
+        let playing = matches!(playback_for_thread.state(), PlaybackState::Playing);
+
+        // Present a frame when appropriate.
+        if let Some((pts, image)) = queue.front().cloned() {
+          if playing {
+            let timeline_now = playback_for_thread.now();
+            match crate::media::av_sync::decide(timeline_now, pts, &av_sync) {
+              crate::media::av_sync::VideoSyncAction::PresentNow => {
+                let _ = queue.pop_front();
+                provider_for_thread.update_video_frame(box_id, &src_key_owned, image);
+                schedule_invalidate(&external, &invalidate_pending);
+                have_presented_since_seek = true;
+
+                let should_timeupdate = last_timeupdate
+                  .is_none_or(|last| timeline_now.saturating_sub(last) >= Duration::from_millis(250));
+                if should_timeupdate {
+                  last_timeupdate = Some(timeline_now);
+                  schedule_simple_event(&external, "timeupdate");
+                }
+
+                continue;
+              }
+              crate::media::av_sync::VideoSyncAction::Drop => {
+                let _ = queue.pop_front();
+                continue;
+              }
+              crate::media::av_sync::VideoSyncAction::WaitUntil(_) => {
+                if let Some(wake) = crate::media::av_sync::suggest_wake_after(timeline_now, Some(pts), &av_sync) {
+                  if !wake.is_zero() {
+                    std::thread::sleep(wake);
+                  } else {
+                    std::thread::yield_now();
+                  }
+                } else {
+                  std::thread::yield_now();
+                }
+                continue;
+              }
+            }
+          }
+
+          // Paused: present at least one frame after load/seek so the poster slot updates.
+          if !have_presented_since_seek {
+            let _ = queue.pop_front();
+            provider_for_thread.update_video_frame(box_id, &src_key_owned, image);
+            schedule_invalidate(&external, &invalidate_pending);
+            have_presented_since_seek = true;
+            continue;
+          }
+
+          // Paused but already have a displayed frame: sleep a bit.
+          std::thread::sleep(Duration::from_millis(50));
+          continue;
+        }
+
+        // No queued frames.
+        if reached_eof {
+          // Keep running so seeks can restart decode.
+          std::thread::sleep(Duration::from_millis(100));
+        } else {
+          // Back off a bit to avoid a tight decode loop when we're buffering.
+          std::thread::sleep(Duration::from_millis(10));
+        }
+      }
+    });
+
+    self.media_workers.insert(
+      node_id,
+      MediaPlaybackWorker {
+        url: url.to_string(),
+        src_key: src_key.to_string(),
+        box_id,
+        stop,
+        join: Some(join),
+      },
+    );
+
+    Ok(())
+  }
+
+  #[cfg(not(any(feature = "media_mp4", feature = "media_webm")))]
+  fn ensure_media_playback_worker(
+    &mut self,
+    _node_id: NodeId,
+    _kind: crate::html::media::MediaKind,
+    _src_key: &str,
+    _url: &str,
+    _cors_mode: Option<crate::resource::CorsMode>,
+    _referrer_policy: ReferrerPolicy,
+    _playback: Arc<crate::media::MediaPlaybackControl>,
+    _event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
     Ok(())
   }
 
