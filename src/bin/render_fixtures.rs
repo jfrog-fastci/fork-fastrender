@@ -2728,6 +2728,8 @@ mod tests {
       allow_dark_mode: false,
       force_light_mode: false,
       keep_going: false,
+      js: false,
+      js_max_frames: 50,
     };
 
     write_nondeterminism_outputs(out_dir, stem, &mut state, &cli).expect("write variants");

@@ -86,7 +86,7 @@ fn max_scroll_y(prepared: &PreparedDocument) -> f32 {
   let viewport = Size::new(VIEWPORT_W as f32, VIEWPORT_H as f32);
   build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
     .first()
-    .map(|state| state.bounds.max_y())
+    .map(|state| state.bounds.max_y)
     .filter(|v| v.is_finite() && *v > 0.0)
     .unwrap_or(0.0)
 }
