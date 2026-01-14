@@ -230,21 +230,32 @@ enum StreamCommand {
 #[derive(Clone)]
 struct CpalStreamControlBackend {
   command_tx: std::sync::mpsc::Sender<StreamCommand>,
+  trace: TraceHandle,
 }
 
 impl IdleBackend for CpalStreamControlBackend {
   fn start_stream(&mut self) -> Result<(), AudioError> {
+    let mut span = self.trace.span("audio.stream.start", "audio");
     let (tx, rx) = std::sync::mpsc::channel();
-    self
+    let send_result = self
       .command_tx
       .send(StreamCommand::Start { reply: tx })
-      .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" })?;
-    rx.recv()
-      .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" })?
+      .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" });
+
+    let result = match send_result {
+      Ok(()) => rx
+        .recv()
+        .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" })?,
+      Err(err) => Err(err),
+    };
+    span.arg_bool("ok", result.is_ok());
+    result
   }
 
   fn stop_stream(&mut self) {
-    let _ = self.command_tx.send(StreamCommand::Stop);
+    let mut span = self.trace.span("audio.stream.stop", "audio");
+    let ok = self.command_tx.send(StreamCommand::Stop).is_ok();
+    span.arg_bool("ok", ok);
   }
 }
 pub struct CpalAudioBackend {
@@ -333,6 +344,7 @@ impl CpalAudioBackend {
     let diagnostics_thread = diagnostics.clone();
     let thread_fell_back_to_null = fell_back_to_null.clone();
     let thread_fallback_start = fallback_start.clone();
+    let trace_for_control = trace.clone();
     let thread = std::thread::spawn(move || {
       let selector = selector;
       let init = (|| -> Result<(ReadyState, Arc<StreamErrorState>), AudioError> {
@@ -577,6 +589,7 @@ impl CpalAudioBackend {
 
     let idle_backend = CpalStreamControlBackend {
       command_tx: command_tx.clone(),
+      trace: trace_for_control,
     };
     let idle_engine = IdleEngine::with_idle_timeout(idle_backend, DEFAULT_IDLE_TIMEOUT);
     // Ensure the stream is suspended after the debounce window even when the embedder doesn't have a
