@@ -37,7 +37,8 @@ Implementation map (keep these modules aligned with this doc):
 Audio backends that require platform/system libraries are intentionally **opt-in** so CI/minimal
 hosts don't need system audio development packages.
 
-- Default: `NullAudioBackend` (silence; always available).
+- When `audio_cpal` is not enabled (typical default/CI builds): `NullAudioBackend` (silence; always
+  available).
 - `audio_cpal`: real-time audio output via [`cpal`](https://crates.io/crates/cpal).
   - Linux note: typically requires system packages (e.g. ALSA headers).
 - `audio_wav`: pure-Rust WAV debug backend (writes PCM samples into a `.wav` file).

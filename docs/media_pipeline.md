@@ -35,7 +35,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | Media backends (`MediaBackend`) | ✅ | Native: [`src/media/backends/native.rs`](../src/media/backends/native.rs); optional CLI fallback: [`src/media/backends/ffmpeg_cli.rs`](../src/media/backends/ffmpeg_cli.rs) behind `media_ffmpeg_cli` |
 | `<video>` paint hook + frame caching | ⚠️ | Paint can query a `MediaFrameProvider` (`src/paint/display_list_builder.rs`); `SizeHintMediaFrameProvider` exists ([`src/media/frame_provider.rs`](../src/media/frame_provider.rs)), but decoded-frame production is not yet wired into the DOM’s `HTMLMediaElement` implementation |
 | A/V sync helper | ✅ | [`src/media/av_sync.rs`](../src/media/av_sync.rs) (+ env overrides) |
-| Audio output plumbing | ✅ (not wired to HTMLMediaElement yet) | [`src/media/audio/`](../src/media/audio/) (real output via `audio_cpal`; deterministic file output via `audio_wav`; null backend is default) |
+| Audio output plumbing | ✅ (not wired to HTMLMediaElement yet) | [`src/media/audio/`](../src/media/audio/) (real output via `audio_cpal`; deterministic file output via `audio_wav`; null backend is the always-available fallback) |
 
 ## Design goals / constraints (current)
 
