@@ -58,7 +58,6 @@ use crate::style::types::BorderImageWidth;
 use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
 use crate::style::types::FontSmoothing;
-use crate::style::types::TextRendering;
 use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
@@ -67,6 +66,7 @@ use crate::style::types::MaskOrigin;
 use crate::style::types::ResolvedTextDecoration;
 use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextEmphasisStyle;
+use crate::style::types::TextRendering;
 use crate::style::types::TransformStyle;
 use crate::style::PhysicalSide;
 use crate::text::font_db::LoadedFont;
@@ -3244,6 +3244,45 @@ impl fmt::Display for DisplayList {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  // ========================================================================
+  // DisplayList metadata tests
+  // ========================================================================
+
+  #[test]
+  fn display_list_from_items_with_metadata_preserves_flags_and_recomputes_bounds() {
+    let template_bounds = Rect::from_xywh(100.0, 100.0, 10.0, 10.0);
+    let mut template = DisplayList::from_items(vec![DisplayItem::FillRect(FillRectItem {
+      rect: template_bounds,
+      color: Rgba::RED,
+    })]);
+    template.mark_has_scroll_linked_animations();
+    template.set_has_gif_images(true);
+    template.set_has_animation_time_dependent_images(true);
+
+    let derived_bounds = Rect::from_xywh(0.0, 0.0, 15.0, 15.0);
+    let derived_items = vec![
+      DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+        color: Rgba::GREEN,
+      }),
+      DisplayItem::FillRect(FillRectItem {
+        rect: Rect::from_xywh(5.0, 5.0, 10.0, 10.0),
+        color: Rgba::BLUE,
+      }),
+    ];
+
+    let mut derived = DisplayList::from_items_with_metadata(derived_items, &template);
+
+    assert!(derived.has_scroll_linked_animations());
+    assert!(derived.has_gif_images());
+    assert!(derived.has_animation_time_dependent_images());
+
+    // Ensure we computed bounds for the new items and didn't reuse the template's cached bounds.
+    assert!(derived.bounds.is_some());
+    assert_ne!(derived.bounds.unwrap(), template_bounds);
+    assert_eq!(derived.bounds(), derived_bounds);
+  }
 
   // ========================================================================
   // BorderRadii Tests
