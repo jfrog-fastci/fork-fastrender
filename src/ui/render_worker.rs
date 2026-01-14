@@ -2895,6 +2895,7 @@ fn collect_select_rows(
   rows
 }
 
+#[derive(Debug)]
 enum Job {
   Navigate {
     tab_id: TabId,
