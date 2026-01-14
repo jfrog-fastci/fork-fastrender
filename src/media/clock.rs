@@ -71,6 +71,14 @@ impl MediaClock for ClockMediaClock {
   }
 }
 
+impl std::fmt::Debug for ClockMediaClock {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ClockMediaClock")
+      .field("clock", &"<dyn Clock>")
+      .finish()
+  }
+}
+
 /// Shared clock representing the output device's timebase (e.g. audio hardware clock).
 ///
 /// The audio mixer can share a single instance across all audio streams.

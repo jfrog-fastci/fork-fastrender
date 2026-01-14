@@ -1669,7 +1669,7 @@ impl TextItem {
     let run_count = runs.len();
     let mut cluster_count = 0usize;
     let mut last_offset: Option<usize> = None;
-    let mut check_run =
+    let check_run =
       |run_idx: usize, cluster_count: &mut usize, last_offset: &mut Option<usize>| -> bool {
       let run_len = runs[run_idx].glyphs.len();
       if run_len == 0 {
@@ -1720,14 +1720,14 @@ impl TextItem {
 
     let mut needs_sort = false;
     if run_starts_increasing {
-      for run_idx in 0..runs.len() {
+      for run_idx in 0..run_count {
         if check_run(run_idx, &mut cluster_count, &mut last_offset) {
           needs_sort = true;
           break;
         }
       }
     } else if run_starts_decreasing {
-      for run_idx in (0..runs.len()).rev() {
+      for run_idx in (0..run_count).rev() {
         if check_run(run_idx, &mut cluster_count, &mut last_offset) {
           needs_sort = true;
           break;
@@ -1741,6 +1741,9 @@ impl TextItem {
         }
       }
     }
+
+    // `check_run` holds borrows into `runs`; drop it before we potentially mutate glyph advances.
+    drop(check_run);
 
     if !needs_sort {
       #[cfg(test)]
