@@ -16497,6 +16497,17 @@ pub(crate) enum AsyncFrame {
     arg_roots: Vec<RootId>,
     arg_index: usize,
   },
+  /// Continue a derived-constructor `super(...args)` call while evaluating arguments.
+  ///
+  /// This is used when the argument list contains `await`, requiring suspension and resumption.
+  SuperCallArgs {
+    expr: *const CallExpr,
+    super_ctor_root: RootId,
+    state_root: RootId,
+    class_ctor_root: RootId,
+    arg_roots: Vec<RootId>,
+    arg_index: usize,
+  },
 
   /// Continue an array literal after evaluating an element expression.
   LitArrAfterSingle {
@@ -17760,6 +17771,20 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     } => {
       heap.remove_root(*callee_root);
       heap.remove_root(*this_root);
+      for id in arg_roots.drain(..) {
+        heap.remove_root(id);
+      }
+    }
+    AsyncFrame::SuperCallArgs {
+      super_ctor_root,
+      state_root,
+      class_ctor_root,
+      arg_roots,
+      ..
+    } => {
+      heap.remove_root(*super_ctor_root);
+      heap.remove_root(*state_root);
+      heap.remove_root(*class_ctor_root);
       for id in arg_roots.drain(..) {
         heap.remove_root(id);
       }
@@ -30583,6 +30608,58 @@ fn async_eval_call(
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
+    // `super(...args)` in derived class constructors.
+    Expr::Super(_) => {
+      if expr.optional_chaining {
+        return Err(VmError::Unimplemented("optional chaining super call"));
+      }
+
+      // Derived constructor `super()` semantics must be visible to nested arrow functions and eval
+      // code. Those contexts capture the enclosing constructor's `this` as a shared heap object.
+      if let Value::Object(state_obj) = evaluator.this {
+        if scope.heap().is_derived_constructor_state(state_obj) {
+          let (class_ctor, already_initialized) = {
+            let state = scope.heap().get_derived_constructor_state(state_obj)?;
+            (state.class_constructor, state.this_value.is_some())
+          };
+          if already_initialized {
+            return Err(throw_reference_error(
+              evaluator.vm,
+              scope,
+              "super() can only be called once in a derived constructor",
+            )?);
+          }
+
+          // Resolve the superclass constructor from the class constructor's hidden `extends` slot.
+          let super_value =
+            crate::class_fields::class_constructor_super_value(scope, class_ctor)?;
+          let super_ctor = match super_value {
+            Value::Object(o) => o,
+            Value::Null => {
+              return Err(throw_type_error(
+                evaluator.vm,
+                scope,
+                "Class extends value is not a constructor",
+              )?)
+            }
+            Value::Undefined => {
+              return Err(VmError::InvariantViolation(
+                "derived constructor attempted super() call with undefined superclass",
+              ))
+            }
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "class constructor super slot is not undefined, null, or object",
+              ))
+            }
+          };
+
+          return async_super_call_begin(evaluator, scope, expr, super_ctor, state_obj, class_ctor);
+        }
+      }
+
+      Err(VmError::Unimplemented("super call outside of derived constructor"))
+    }
     // `super.prop(...args)`.
     Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
       if member.stx.optional_chaining {
@@ -31228,6 +31305,255 @@ fn async_call_continue_args(
   async_call_cleanup(scope, callee_root, this_root, &mut arg_roots);
 
   match res {
+    Ok(v) => Ok(AsyncEval::Complete(v)),
+    Err(err) => Err(err),
+  }
+}
+
+fn async_super_call_begin(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  super_ctor: GcObject,
+  state_obj: GcObject,
+  class_ctor: GcObject,
+) -> Result<AsyncEval<Value>, VmError> {
+  // Fast-path: `super()` with no arguments cannot suspend once the superclass constructor is known.
+  if call.arguments.is_empty() {
+    let mut call_scope = scope.reborrow();
+    call_scope.push_roots(&[
+      Value::Object(super_ctor),
+      evaluator.new_target,
+      Value::Object(state_obj),
+      Value::Object(class_ctor),
+    ])?;
+    let this_value = evaluator
+      .vm
+      .construct_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut call_scope,
+        &mut *evaluator.hooks,
+        Value::Object(super_ctor),
+        &[],
+        evaluator.new_target,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
+
+    let Value::Object(this_obj) = this_value else {
+      return Err(VmError::InvariantViolation(
+        "super constructor returned non-object from Construct",
+      ));
+    };
+
+    // Initialize the enclosing derived constructor's `this` binding exactly once.
+    call_scope
+      .heap_mut()
+      .get_derived_constructor_state_mut(state_obj)?
+      .this_value = Some(this_obj);
+
+    // Initialize derived instance fields immediately after `super()` returns.
+    crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+      evaluator.vm,
+      &mut call_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      this_obj,
+      class_ctor,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
+
+    return Ok(AsyncEval::Complete(this_value));
+  }
+
+  // Create persistent roots for the superclass constructor and derived-constructor state so they
+  // survive across argument-evaluation `await` suspensions.
+  let (super_ctor_root, state_root, class_ctor_root) = {
+    let super_value = Value::Object(super_ctor);
+    let state_value = Value::Object(state_obj);
+    let class_value = Value::Object(class_ctor);
+    let mut root_scope = scope.reborrow();
+    root_scope.push_roots(&[super_value, state_value, class_value])?;
+    let super_ctor_root = root_scope.heap_mut().add_root(super_value)?;
+    let state_root = root_scope.heap_mut().add_root(state_value)?;
+    let class_ctor_root = root_scope.heap_mut().add_root(class_value)?;
+    (super_ctor_root, state_root, class_ctor_root)
+  };
+
+  async_super_call_continue_args(
+    evaluator,
+    scope,
+    call,
+    super_ctor_root,
+    state_root,
+    class_ctor_root,
+    Vec::new(),
+    0,
+  )
+}
+
+fn async_super_call_cleanup(
+  scope: &mut Scope<'_>,
+  super_ctor_root: RootId,
+  state_root: RootId,
+  class_ctor_root: RootId,
+  arg_roots: &mut Vec<RootId>,
+) {
+  scope.heap_mut().remove_root(super_ctor_root);
+  scope.heap_mut().remove_root(state_root);
+  scope.heap_mut().remove_root(class_ctor_root);
+  for id in arg_roots.drain(..) {
+    scope.heap_mut().remove_root(id);
+  }
+}
+
+fn async_super_call_continue_args(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  super_ctor_root: RootId,
+  state_root: RootId,
+  class_ctor_root: RootId,
+  mut arg_roots: Vec<RootId>,
+  start_index: usize,
+) -> Result<AsyncEval<Value>, VmError> {
+  // Evaluate each remaining argument in order.
+  for (idx, arg) in call.arguments.iter().enumerate().skip(start_index) {
+    match async_eval_expr(evaluator, scope, &arg.stx.value) {
+      Ok(AsyncEval::Complete(v)) => {
+        if let Err(err) =
+          async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)
+        {
+          async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+          return Err(err);
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::SuperCallArgs {
+            expr: call as *const CallExpr,
+            super_ctor_root,
+            state_root,
+            class_ctor_root,
+            arg_roots,
+            arg_index: idx,
+          },
+        )?;
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+      Err(err) => {
+        async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+        return Err(err);
+      }
+    }
+  }
+
+  let super_value = scope.heap().get_root(super_ctor_root).ok_or_else(|| {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    VmError::InvariantViolation("missing super() callee root")
+  })?;
+  let state_value = scope.heap().get_root(state_root).ok_or_else(|| {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    VmError::InvariantViolation("missing super() state root")
+  })?;
+  let class_value = scope.heap().get_root(class_ctor_root).ok_or_else(|| {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    VmError::InvariantViolation("missing super() class constructor root")
+  })?;
+
+  let Value::Object(state_obj) = state_value else {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    return Err(VmError::InvariantViolation(
+      "super() state root should reference an object",
+    ));
+  };
+  let Value::Object(class_ctor) = class_value else {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    return Err(VmError::InvariantViolation(
+      "super() class constructor root should reference an object",
+    ));
+  };
+
+  // Collect the evaluated argument list from the persistent roots.
+  let mut args: Vec<Value> = Vec::new();
+  if args.try_reserve_exact(arg_roots.len()).is_err() {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    return Err(VmError::OutOfMemory);
+  }
+  for id in arg_roots.iter().copied() {
+    let Some(v) = scope.heap().get_root(id) else {
+      async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+      return Err(VmError::InvariantViolation("missing super() argument root"));
+    };
+    args.push(v);
+  }
+
+  // The derived constructor state can be shared across async suspensions; re-check that `super()` has
+  // not been called while we were awaiting argument values.
+  let already_initialized = scope
+    .heap()
+    .get_derived_constructor_state(state_obj)?
+    .this_value
+    .is_some();
+  if already_initialized {
+    async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+    return Err(throw_reference_error(
+      evaluator.vm,
+      scope,
+      "super() can only be called once in a derived constructor",
+    )?);
+  }
+
+  let construct_out = (|| -> Result<Value, VmError> {
+    let mut call_scope = scope.reborrow();
+    call_scope.push_roots(&[
+      super_value,
+      evaluator.new_target,
+      state_value,
+      class_value,
+    ])?;
+
+    let this_value = evaluator
+      .vm
+      .construct_with_host_and_hooks(
+        &mut *evaluator.host,
+        &mut call_scope,
+        &mut *evaluator.hooks,
+        super_value,
+        &args,
+        evaluator.new_target,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
+
+    let Value::Object(this_obj) = this_value else {
+      return Err(VmError::InvariantViolation(
+        "super constructor returned non-object from Construct",
+      ));
+    };
+
+    // Initialize the enclosing derived constructor's `this` binding exactly once.
+    call_scope
+      .heap_mut()
+      .get_derived_constructor_state_mut(state_obj)?
+      .this_value = Some(this_obj);
+
+    // Initialize derived instance fields immediately after `super()` returns.
+    crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+      evaluator.vm,
+      &mut call_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      this_obj,
+      class_ctor,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err))?;
+
+    Ok(this_value)
+  })();
+
+  async_super_call_cleanup(scope, super_ctor_root, state_root, class_ctor_root, &mut arg_roots);
+
+  match construct_out {
     Ok(v) => Ok(AsyncEval::Complete(v)),
     Err(err) => Err(err),
   }
@@ -32586,6 +32912,90 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "call args frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::SuperCallArgs {
+        expr,
+        super_ctor_root,
+        state_root,
+        class_ctor_root,
+        mut arg_roots,
+        arg_index,
+      } => match state {
+        AsyncState::Expr(arg_res) => {
+          let expr = unsafe { &*expr };
+          let Some(arg) = expr.arguments.get(arg_index) else {
+            async_super_call_cleanup(
+              scope,
+              super_ctor_root,
+              state_root,
+              class_ctor_root,
+              &mut arg_roots,
+            );
+            return Err(VmError::InvariantViolation(
+              "async super() call args continuation out of bounds",
+            ));
+          };
+
+          match arg_res {
+            Ok(v) => {
+              if let Err(err) =
+                async_call_store_arg_value(evaluator, scope, arg.stx.spread, v, &mut arg_roots)
+              {
+                async_super_call_cleanup(
+                  scope,
+                  super_ctor_root,
+                  state_root,
+                  class_ctor_root,
+                  &mut arg_roots,
+                );
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+
+              match async_super_call_continue_args(
+                evaluator,
+                scope,
+                expr,
+                super_ctor_root,
+                state_root,
+                class_ctor_root,
+                arg_roots,
+                arg_index.saturating_add(1),
+              ) {
+                Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                  return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  // `async_super_call_continue_args` cleans up roots when returning Err.
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
+            }
+            Err(err) => {
+              async_super_call_cleanup(
+                scope,
+                super_ctor_root,
+                state_root,
+                class_ctor_root,
+                &mut arg_roots,
+              );
+              state = AsyncState::Expr(Err(err));
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "super() call args frame received completion state",
           ))
         }
       },

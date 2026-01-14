@@ -273,6 +273,35 @@ fn derived_constructor_async_arrow_super_calls_use_initialized_this() -> Result<
 }
 
 #[test]
+fn derived_constructor_async_arrow_super_call_with_await_initializes_this() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      class B {
+        constructor(x) { this.x = x; }
+      }
+      class C extends B {
+        constructor() {
+          // Return an async arrow that captures the derived constructor `this` binding state.
+          return async () => {
+            // `super(await ...)` exercises async `super()` call argument evaluation + resumption.
+            super(await Promise.resolve(1));
+            return String(this.x) + ':' + String(this instanceof C);
+          };
+        }
+      }
+      async function run() {
+        let f = new C();
+        return await f();
+      }
+      run().then(v => out = String(v));
+    "#,
+    "1:true",
+  )?;
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_async_arrow_super_proxy_receiver_is_instance_across_await() -> Result<(), VmError> {
   assert_async_out_in_ast_and_compiled(
     r#"
