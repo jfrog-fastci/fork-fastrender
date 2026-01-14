@@ -16,7 +16,6 @@ use crate::style::{
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 pub mod anchoring;
 pub use anchoring::{
-  apply_scroll_anchoring, capture_scroll_anchors, ScrollAnchor, ScrollAnchorSnapshot,
   apply_scroll_anchoring, apply_scroll_anchoring_between_trees, capture_scroll_anchors, ScrollAnchor,
   ScrollAnchorSnapshot,
 };
