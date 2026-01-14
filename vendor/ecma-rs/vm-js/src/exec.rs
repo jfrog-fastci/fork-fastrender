@@ -1623,9 +1623,9 @@ impl RuntimeEnv {
           // `var_scope_lex` is usually the function-body lexical environment record, which is
           // distinct from the variable environment (and contains only lexical declarations).
           //
-          // However, in some contexts (notably modules, and during early function setup) the engine
-          // can temporarily represent the variable environment and the current lexical environment
-          // as the same declarative env record.
+          // However, in some contexts (notably strict eval, modules, and during early function
+          // setup) the engine can temporarily represent the variable environment and the current
+          // lexical environment as the same declarative env record.
           //
           // In that case, a plain `env_has_binding` check would treat an existing **var** binding as
           // a lexical collision and incorrectly throw `SyntaxError("Identifier has already been declared")`.
