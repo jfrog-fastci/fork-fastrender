@@ -323,6 +323,45 @@ fn direct_eval_allows_super_in_static_field_initializer_compiled() {
 }
 
 #[test]
+fn direct_eval_allows_super_computed_member_key_side_effects_in_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        class B { static get x() { return this.marker; } }
+        class A extends B {
+          static marker = 444;
+          static y = eval("super[key()]");
+        }
+        A.y === 444 && side === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_allows_super_computed_member_key_side_effects_in_static_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function key() { side++; return "x"; }
+      class B { static get x() { return this.marker; } }
+      class A extends B {
+        static marker = 444;
+        static y = eval("super[key()]");
+      }
+      A.y === 444 && side === 1
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn direct_eval_allows_super_in_arrow_within_static_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -410,6 +449,100 @@ fn direct_eval_allows_super_in_private_static_field_initializer() {
     )
     .unwrap();
   assert_eq!(value, Value::Number(999.0));
+}
+
+#[test]
+fn indirect_eval_rejects_super_in_static_field_initializer_without_side_effects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function sideEffect() { side++; return "k"; }
+        var e = eval;
+        class B { static get x() { return 1; } }
+        try {
+          class A extends B {
+            static y = e("({ [sideEffect()]: super.x })");
+          }
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && side === 0
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_in_static_field_initializer_without_side_effects_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function sideEffect() { side++; return "k"; }
+      var e = eval;
+      class B { static get x() { return 1; } }
+      try {
+        class A extends B {
+          static y = e("({ [sideEffect()]: super.x })");
+        }
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && side === 0
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_in_static_field_initializer_without_running_key_side_effects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        var e = eval;
+        class B { static get x() { return 1; } }
+        try {
+          class A extends B {
+            static y = e("super[key()]");
+          }
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && side === 0
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_in_static_field_initializer_without_running_key_side_effects_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function key() { side++; return "x"; }
+      var e = eval;
+      class B { static get x() { return 1; } }
+      try {
+        class A extends B {
+          static y = e("super[key()]");
+        }
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && side === 0
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
