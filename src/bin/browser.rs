@@ -4443,14 +4443,12 @@ fn resolve_download_directory(cli_path: Option<&std::path::PathBuf>) -> std::pat
   let env_legacy = std::env::var_os(fastrender::ui::downloads::ENV_LEGACY_DOWNLOAD_DIR);
   let os_downloads_dir: Option<std::path::PathBuf> = directories::UserDirs::new()
     .and_then(|user_dirs| user_dirs.download_dir().map(std::path::Path::to_path_buf));
-  let cwd_fallback = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
   fastrender::ui::downloads::resolve_download_directory(
     cli_path.map(std::path::PathBuf::as_path),
     env_browser.as_deref(),
     env_legacy.as_deref(),
     os_downloads_dir.as_deref(),
-    &cwd_fallback,
   )
 }
 

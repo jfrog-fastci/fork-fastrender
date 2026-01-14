@@ -35,11 +35,28 @@ fn download_dir_from_env_value(raw: &OsStr) -> Option<PathBuf> {
 /// 2. `FASTR_BROWSER_DOWNLOAD_DIR`
 /// 3. legacy alias `FASTR_DOWNLOAD_DIR`
 /// 4. OS downloads directory (e.g. via `directories::UserDirs`)
-/// 5. Fallback (typically the current working directory)
+/// 5. The current working directory (`std::env::current_dir()`, falling back to `.` on error)
 ///
-/// This is a pure helper: callers supply the OS downloads directory and fallback path, so it can be
-/// unit-tested without touching global state.
+/// Note: for testability, the core selection logic lives in
+/// `resolve_download_directory_with_fallback`, which allows callers to provide an explicit cwd
+/// fallback.
 pub fn resolve_download_directory(
+  cli_override: Option<&Path>,
+  env_browser_download_dir: Option<&OsStr>,
+  env_legacy_download_dir: Option<&OsStr>,
+  os_downloads_dir: Option<&Path>,
+) -> PathBuf {
+  let cwd_fallback = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+  resolve_download_directory_with_fallback(
+    cli_override,
+    env_browser_download_dir,
+    env_legacy_download_dir,
+    os_downloads_dir,
+    &cwd_fallback,
+  )
+}
+
+fn resolve_download_directory_with_fallback(
   cli_override: Option<&Path>,
   env_browser_download_dir: Option<&OsStr>,
   env_legacy_download_dir: Option<&OsStr>,
@@ -233,8 +250,7 @@ pub fn default_download_dir() -> PathBuf {
     }
   };
 
-  let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-  resolve_download_directory(None, browser_env, legacy_env, user_downloads.as_deref(), &cwd)
+  resolve_download_directory(None, browser_env, legacy_env, user_downloads.as_deref())
 }
 
 /// Returns an error toast message when `path` does not exist.
@@ -307,7 +323,7 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(
+      resolve_download_directory_with_fallback(
         Some(&cli),
         Some(OsStr::new("env")),
         Some(OsStr::new("legacy")),
@@ -323,7 +339,7 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(
+      resolve_download_directory_with_fallback(
         None,
         Some(OsStr::new("env")),
         Some(OsStr::new("legacy")),
@@ -339,7 +355,13 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(None, None, Some(OsStr::new("legacy")), Some(&os), &cwd),
+      resolve_download_directory_with_fallback(
+        None,
+        None,
+        Some(OsStr::new("legacy")),
+        Some(&os),
+        &cwd
+      ),
       PathBuf::from("legacy")
     );
   }
@@ -348,13 +370,16 @@ mod tests {
   fn resolve_download_directory_os_downloads_wins_when_no_overrides() {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
-    assert_eq!(resolve_download_directory(None, None, None, Some(&os), &cwd), os);
+    assert_eq!(
+      resolve_download_directory_with_fallback(None, None, None, Some(&os), &cwd),
+      os
+    );
   }
 
   #[test]
   fn resolve_download_directory_falls_back_to_current_dir() {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    assert_eq!(resolve_download_directory(None, None, None, None, &cwd), cwd);
+    let expected = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    assert_eq!(resolve_download_directory(None, None, None, None), expected);
   }
 
   #[test]
@@ -363,7 +388,7 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(
+      resolve_download_directory_with_fallback(
         Some(&empty_cli),
         Some(OsStr::new("")),
         Some(OsStr::new("")),
@@ -379,7 +404,7 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(
+      resolve_download_directory_with_fallback(
         None,
         Some(OsStr::new("   ")),
         Some(OsStr::new("\t\n")),
