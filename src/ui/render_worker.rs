@@ -7692,7 +7692,7 @@ impl BrowserRuntime {
         );
         (dom_changed, out)
       }) {
-        Ok(result) => result,
+        Ok(out) => out,
         Err(_) => return,
       };
 
@@ -10383,6 +10383,7 @@ impl BrowserRuntime {
       // - text editing key actions (backspace/delete/range stepping/etc) where no DOM event is
       //   dispatched but dom2 still needs to observe the updated state.
       if changed {
+        let mut mirrored_mutation_generation: Option<u64> = None;
         if let Some(js_tab) = tab.js_tab.as_mut() {
           let dom_snapshot = doc.dom();
           let mapping = tab.js_dom_mapping.as_ref();
@@ -10424,7 +10425,10 @@ impl BrowserRuntime {
           // mirroring UI-driven form control state (dom1 → dom2). This prevents the paint pipeline
           // from treating these internal sync writes as "external" JS mutations that require a full
           // dom2 → dom1 resnapshot.
-          tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+          mirrored_mutation_generation = Some(js_tab.dom().mutation_generation());
+        }
+        if let Some(gen) = mirrored_mutation_generation {
+          tab.js_dom_mutation_generation = gen;
         }
       }
       let js_mutation_generation_before_dispatch =
