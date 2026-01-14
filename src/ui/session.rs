@@ -1722,6 +1722,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -2406,6 +2407,49 @@ mod tests {
     assert_eq!(state.y, Some(200));
     assert_eq!(state.width, Some(FALLBACK_WINDOW_WIDTH_PX));
     assert_eq!(state.height, Some(FALLBACK_WINDOW_HEIGHT_PX));
+    assert!(!state.maximized);
+  }
+
+  #[test]
+  fn session_preserves_window_size_when_position_is_missing() {
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        }],
+        downloads: Vec::new(),
+        tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
+        active_tab_index: 0,
+        bookmarks_bar_visible: false,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: Some(BrowserWindowState {
+          x: None,
+          y: None,
+          width: Some(800),
+          height: Some(600),
+          maximized: false,
+        }),
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      unclean_exit_streak: 0,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    let state = session.windows[0].window_state.as_ref().unwrap();
+    assert_eq!(state.x, None);
+    assert_eq!(state.y, None);
+    assert_eq!(state.width, Some(800));
+    assert_eq!(state.height, Some(600));
     assert!(!state.maximized);
   }
 
