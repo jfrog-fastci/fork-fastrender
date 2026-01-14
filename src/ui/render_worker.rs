@@ -7265,49 +7265,49 @@ impl BrowserRuntime {
         if cancel_callback() {
           // Soft-stop: skip dispatch if this paint generation has already been pre-empted.
         } else {
-        let target = js_dom_node_for_preorder_id_with_log(
-          &self.ui_tx,
-          tab_id,
-          js_tab,
-          target_id,
-          target_element_id.as_deref(),
-          &mut tab.js_dom_mapping_generation,
-          &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_log_last,
-          "mousedown",
-        );
-        if let Some(node_id) = target {
-          dispatched_dom_event = true;
-          let mouse = web_events::MouseEvent {
-            client_x: mouse_client_coord(pos_css.0),
-            client_y: mouse_client_coord(pos_css.1),
-            button: mouse_event_button(button),
-            buttons: pointer_buttons,
-            detail: click_count as i32,
-            ctrl_key: modifiers.ctrl(),
-            shift_key: modifiers.shift(),
-            alt_key: modifiers.alt(),
-            meta_key: modifiers.meta(),
-            related_target: None,
-          };
-          if let Err(err) = js_tab.dispatch_mouse_event(
-            node_id,
+          let target = js_dom_node_for_preorder_id_with_log(
+            &self.ui_tx,
+            tab_id,
+            js_tab,
+            target_id,
+            target_element_id.as_deref(),
+            &mut tab.js_dom_mapping_generation,
+            &mut tab.js_dom_mapping,
+            &mut tab.js_dom_mapping_miss_log_last,
             "mousedown",
-            web_events::EventInit {
-              bubbles: true,
-              cancelable: true,
-              composed: true,
-            },
-            mouse,
-          ) {
-            if self.debug_log_enabled && !cancel_callback() {
-              let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js mousedown event dispatch failed: {err}"),
-              }));
+          );
+          if let Some(node_id) = target {
+            dispatched_dom_event = true;
+            let mouse = web_events::MouseEvent {
+              client_x: mouse_client_coord(pos_css.0),
+              client_y: mouse_client_coord(pos_css.1),
+              button: mouse_event_button(button),
+              buttons: pointer_buttons,
+              detail: click_count as i32,
+              ctrl_key: modifiers.ctrl(),
+              shift_key: modifiers.shift(),
+              alt_key: modifiers.alt(),
+              meta_key: modifiers.meta(),
+              related_target: None,
+            };
+            if let Err(err) = js_tab.dispatch_mouse_event(
+              node_id,
+              "mousedown",
+              web_events::EventInit {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+              },
+              mouse,
+            ) {
+              if self.debug_log_enabled && !cancel_callback() {
+                let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js mousedown event dispatch failed: {err}"),
+                }));
+              }
             }
           }
-        }
         }
       }
       if dispatched_dom_event {
