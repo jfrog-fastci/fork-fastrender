@@ -244,7 +244,7 @@ To capture machine-readable browser responsiveness metrics:
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
-# Wrapper-friendly helper (sets env vars for you):
+# Wrapper-friendly helper (runs under repo guardrails and forwards browser CLI flags):
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud \
   --perf-log --perf-log-out target/browser_perf.jsonl \
   about:test-layout-stress
