@@ -1920,21 +1920,21 @@ fn using_declaration_in_for_in_head_is_syntax_error() {
 }
 
 #[test]
-fn using_declaration_in_switch_case_clause_is_allowed() {
+fn using_declaration_in_switch_case_clause_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script("switch (true) { case true: using x = null; }")
-    .unwrap();
-  assert_eq!(value, Value::Undefined);
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn using_declaration_in_switch_default_clause_is_allowed() {
+fn using_declaration_in_switch_default_clause_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script("switch (true) { default: using x = null; }")
-    .unwrap();
-  assert_eq!(value, Value::Undefined);
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -2067,12 +2067,12 @@ fn await_using_declaration_in_for_in_head_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_switch_clause_is_allowed() {
+fn await_using_declaration_in_switch_clause_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script("async function f(){ switch (true) { default: await using x = null; } }")
-    .unwrap();
-  assert_eq!(value, Value::Undefined);
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -2085,21 +2085,21 @@ fn await_using_declaration_in_for_in_head_singleton_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_switch_case_clause_is_allowed() {
+fn await_using_declaration_in_switch_case_clause_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script("async function f(){ switch (true) { case true: await using x = null; } }")
-    .unwrap();
-  assert_eq!(value, Value::Undefined);
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn await_using_declaration_in_switch_default_clause_is_allowed() {
+fn await_using_declaration_in_switch_default_clause_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script("async function f(){ switch (true) { default: await using x = null; } }")
-    .unwrap();
-  assert_eq!(value, Value::Undefined);
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
