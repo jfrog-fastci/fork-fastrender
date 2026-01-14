@@ -159,7 +159,7 @@ const LEGACY_DOM_EXCEPTION_CODES: &[LegacyDomExceptionCode] = &[
 ///
 /// Kept as a stable helper for legacy call sites that still construct plain `{ name, message }`
 /// objects instead of proper DOMException instances.
-pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
+pub(crate) fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
   LEGACY_DOM_EXCEPTION_CODES
     .iter()
     .find_map(|entry| {
