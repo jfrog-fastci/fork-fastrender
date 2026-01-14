@@ -115,6 +115,7 @@ mod marker_underline_order;
 mod mask_border;
 mod mask_border_basic;
 mod mask_clip_text_test;
+mod writing_mode_baseline_mapping;
 mod mask_image_svg_url;
 mod mask_multiple_layers_composite;
 mod mask_parallel_translation_golden;

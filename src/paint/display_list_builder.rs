@@ -6970,19 +6970,46 @@ impl DisplayListBuilder {
           })
           .unwrap_or(current);
         let shadows = Self::text_shadows_from_style(style_opt, self.viewport);
-        let inline_vertical = style_opt.is_some_and(|s| {
-          matches!(
-            s.writing_mode,
-            crate::style::types::WritingMode::VerticalRl
-              | crate::style::types::WritingMode::VerticalLr
-              | crate::style::types::WritingMode::SidewaysRl
-              | crate::style::types::WritingMode::SidewaysLr
-          )
-        });
-        let (baseline_block, baseline_inline) = if inline_vertical {
-          (rect.origin.x + baseline_offset, rect.origin.y)
-        } else {
-          (rect.origin.y + baseline_offset, rect.origin.x)
+
+        // `baseline_offset` is measured from the fragment's logical block-start edge (layout
+        // operates in logical coordinates). When converting to physical coordinates we must account
+        // for reversed block progression (e.g. vertical-rl/sideways-rl) and for reversed inline
+        // progression (e.g. sideways-lr with the default `direction: ltr`).
+        let (writing_mode, direction) = style_opt
+          .map(|s| (s.writing_mode, s.direction))
+          .unwrap_or((
+            crate::style::types::WritingMode::HorizontalTb,
+            crate::style::types::Direction::Ltr,
+          ));
+        let inline_vertical = !crate::style::inline_axis_is_horizontal(writing_mode);
+        let inline_positive = crate::style::inline_axis_positive(writing_mode, direction);
+        let block_positive = crate::style::block_axis_positive(writing_mode);
+        let (baseline_block, baseline_inline) = {
+          let baseline_block = if crate::style::block_axis_is_horizontal(writing_mode) {
+            if block_positive {
+              rect.x() + baseline_offset
+            } else {
+              rect.x() + rect.width() - baseline_offset
+            }
+          } else if block_positive {
+            rect.y() + baseline_offset
+          } else {
+            rect.y() + rect.height() - baseline_offset
+          };
+
+          let baseline_inline = if crate::style::inline_axis_is_horizontal(writing_mode) {
+            if inline_positive {
+              rect.x()
+            } else {
+              rect.x() + rect.width()
+            }
+          } else if inline_positive {
+            rect.y()
+          } else {
+            rect.y() + rect.height()
+          };
+
+          (baseline_block, baseline_inline)
         };
 
         let mut shaped_storage: Option<Vec<ShapedRun>> = None;
