@@ -2862,9 +2862,9 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.label(egui::RichText::new("History").strong());
             let history_a11y_label = if app.chrome.history_panel_open {
-              "Hide history"
+              "Hide history panel"
             } else {
-              "Show history"
+              "Show history panel"
             };
             let mut show_history_panel = app.chrome.history_panel_open;
             let history = ui.checkbox(&mut show_history_panel, "History panel");
@@ -10053,12 +10053,12 @@ frame={idx} repaint_after={:?}\n",
     assert!(
       nodes
         .iter()
-        .any(|n| n.role == "CheckBox" && n.name == "Show history"),
-      "expected \"Show history\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+        .any(|n| n.role == "CheckBox" && n.name == "Show history panel"),
+      "expected \"Show history panel\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
     assert!(
-      !nodes.iter().any(|n| n.name == "Hide history"),
-      "expected \"Hide history\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
+      !nodes.iter().any(|n| n.name == "Hide history panel"),
+      "expected \"Hide history panel\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
   }
 
@@ -10082,12 +10082,12 @@ frame={idx} repaint_after={:?}\n",
     assert!(
       nodes
         .iter()
-        .any(|n| n.role == "CheckBox" && n.name == "Hide history"),
-      "expected \"Hide history\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+        .any(|n| n.role == "CheckBox" && n.name == "Hide history panel"),
+      "expected \"Hide history panel\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
     assert!(
-      !nodes.iter().any(|n| n.name == "Show history"),
-      "expected \"Show history\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
+      !nodes.iter().any(|n| n.name == "Show history panel"),
+      "expected \"Show history panel\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
   }
 
