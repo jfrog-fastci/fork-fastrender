@@ -211,8 +211,10 @@ fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { static { arguments; } }").unwrap_err());
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
-    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002" || d.code.as_str() == "PS0017"
+    }),
+    "expected VMJS0004 (vm-js) or PS0002/PS0017 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -225,8 +227,10 @@ fn arguments_label_in_class_static_block_is_syntax_error() {
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
-    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002" || d.code.as_str() == "PS0017"
+    }),
+    "expected VMJS0004 (vm-js) or PS0002/PS0017 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -239,8 +243,10 @@ fn arguments_identifier_reference_in_arrow_in_class_static_block_is_syntax_error
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
-    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002" || d.code.as_str() == "PS0017"
+    }),
+    "expected VMJS0004 (vm-js) or PS0002/PS0017 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -249,8 +255,10 @@ fn arguments_identifier_reference_in_class_field_initializer_is_syntax_error() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { x = arguments; }").unwrap_err());
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
-    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002" || d.code.as_str() == "PS0017"
+    }),
+    "expected VMJS0004 (vm-js) or PS0002/PS0017 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -263,8 +271,10 @@ fn arguments_identifier_reference_in_arrow_in_class_field_initializer_is_syntax_
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
-    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002" || d.code.as_str() == "PS0017"
+    }),
+    "expected VMJS0004 (vm-js) or PS0002/PS0017 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -609,6 +619,13 @@ fn super_property_access_outside_method_is_syntax_error() {
 }
 
 #[test]
+fn super_computed_property_access_outside_method_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("super['x'];").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn new_target_outside_function_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("new.target;").unwrap_err();
@@ -828,6 +845,101 @@ fn super_property_in_class_static_block_is_ok() {
       var ok = true;
       try {
         eval("class A {} class B extends A { static { super.x; } }");
+      } catch (e) {
+        ok = false;
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_computed_property_in_plain_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("function f(){ super['x']; }");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_computed_property_in_object_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("({ f: function(){ super['x']; } })");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_computed_property_at_script_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("super['x']");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_computed_property_in_class_method_is_ok() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = true;
+      try {
+        eval("class A { m(){ super['x']; } }");
+      } catch (e) {
+        ok = false;
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_computed_property_in_class_static_block_is_ok() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = true;
+      try {
+        eval("class A {} class B extends A { static { super['x']; } }");
       } catch (e) {
         ok = false;
       }
