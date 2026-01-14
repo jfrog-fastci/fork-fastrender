@@ -1516,6 +1516,10 @@ impl FragmentNode {
   /// assert_eq!(hits.len(), 2);
   /// ```
   pub fn fragments_at_point(&self, point: Point) -> Vec<&FragmentNode> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+      return Vec::new();
+    }
+
     #[derive(Clone, Copy)]
     enum VisitState {
       Enter,
@@ -1922,6 +1926,9 @@ impl FragmentTree {
 
   /// Finds all fragments at the given point
   pub fn hit_test(&self, point: Point) -> Vec<&FragmentNode> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+      return Vec::new();
+    }
     let mut hits = self.root.fragments_at_point(point);
     for root in &self.additional_fragments {
       hits.extend(root.fragments_at_point(point));
@@ -2551,6 +2558,25 @@ mod tests {
     let hits = parent.fragments_at_point(Point::new(120.0, 20.0));
     assert_eq!(hits.len(), 1);
     assert!(std::ptr::eq(hits[0], &parent.children[0]));
+  }
+
+  #[test]
+  fn test_fragment_tree_hit_test_non_finite_returns_empty() {
+    let child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![child]);
+    let tree = FragmentTree::new(root);
+
+    let hits = tree.hit_test(Point::new(f32::NAN, 0.0));
+    assert!(hits.is_empty());
+  }
+
+  #[test]
+  fn test_fragments_at_point_non_finite_returns_empty() {
+    let child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![]);
+    let parent = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![child]);
+
+    let hits = parent.fragments_at_point(Point::new(f32::INFINITY, 0.0));
+    assert!(hits.is_empty());
   }
 
   #[test]
