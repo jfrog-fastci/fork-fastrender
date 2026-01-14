@@ -2174,6 +2174,8 @@ mod tests {
     assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
   }
 
+  }
+
   #[test]
   fn parse_stsz_rejects_excessive_sample_count_without_reading_entries() {
     // stsz (fullbox) content:
