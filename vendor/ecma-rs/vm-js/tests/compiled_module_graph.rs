@@ -981,6 +981,12 @@ fn compiled_module_class_field_initializer_direct_eval_allows_super() -> Result<
         export default class extends Base {
           x = eval("super.m()");
           static y = eval("super.sm()");
+          // Field initializer functions are parsed/evaluated as methods, so `super.prop` is allowed.
+          // `super()` is still prohibited (only derived constructors can call `super()`), so direct
+          // eval must throw a SyntaxError here.
+          call = (() => {
+            try { eval("super()"); return "no"; } catch (e) { return e.name; }
+          })();
         }
       "#,
     )?;
@@ -1000,8 +1006,10 @@ fn compiled_module_class_field_initializer_direct_eval_allows_super() -> Result<
         &mut heap,
         r#"
           import C from "a";
-          export const inst = new C().x;
+          const c = new C();
+          export const inst = c.x;
           export const stat = C.y;
+          export const call = c.call;
         "#,
       )?,
     )?;
@@ -1057,6 +1065,11 @@ fn compiled_module_class_field_initializer_direct_eval_allows_super() -> Result<
       ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "stat")?,
       Value::Number(2.0)
     );
+    let Value::String(call) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "call")?
+    else {
+      panic!("expected b.call to be a string");
+    };
+    assert_eq!(scope.heap().get_string(call)?.to_utf8_lossy(), "SyntaxError");
 
     drop(scope);
     Ok(())
