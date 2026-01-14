@@ -1209,7 +1209,25 @@ fn lower_var_body(
   span_map: &mut SpanMap,
   ctx: &mut LoweringContext,
 ) -> Option<Body> {
-  let span = ctx.to_range(decl.pattern.loc);
+  // `BodyKind::Initializer` bodies are used for variable declarators (`const x = init;`).
+  //
+  // The span must cover the initializer expression so `SpanMap::body_at_offset` can attribute
+  // offsets inside `init` to this body (see `span_map_body_at_offset_prefers_initializer_body`).
+  //
+  // `parse-js`'s `PatDecl` span intentionally covers only the pattern, so extend it to include the
+  // initializer/type annotation when present.
+  let span = {
+    let mut span = ctx.to_range(decl.pattern.loc);
+    if let Some(init) = &decl.initializer {
+      let init_span = ctx.to_range(init.loc);
+      span = TextRange::new(span.start.min(init_span.start), span.end.max(init_span.end));
+    }
+    if let Some(ann) = &decl.type_annotation {
+      let ann_span = ctx.to_range(ann.loc);
+      span = TextRange::new(span.start.min(ann_span.start), span.end.max(ann_span.end));
+    }
+    span
+  };
   let mut builder = BodyBuilder::new(
     owner,
     span,
