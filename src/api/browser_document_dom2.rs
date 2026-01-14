@@ -2356,9 +2356,11 @@ impl BrowserDocumentDom2 {
         .and_then(|state| state.document_selection.as_ref())
     });
 
+    let document_selection_index = prepared.document_selection_index.as_ref();
+    let fragment_tree = &mut prepared.fragment_tree;
     crate::interaction::document_selection::apply_document_selection_to_fragment_tree_with_index(
-      &mut prepared.fragment_tree,
-      prepared.document_selection_index.as_ref(),
+      fragment_tree,
+      document_selection_index,
       selection_preorder,
     );
   }
