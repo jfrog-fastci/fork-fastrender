@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use super::clock::MediaClock;
+use crate::media::clock::MediaClock;
 use super::DecodedAudioChunk;
 use crate::debug::trace::TraceHandle;
 use crate::media::audio_clock::InterpolatedAudioClock;
