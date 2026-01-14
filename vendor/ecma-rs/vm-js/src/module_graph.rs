@@ -2306,19 +2306,34 @@ impl ModuleGraph {
     on_stack
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    on_stack.resize(module_count, false);
+    for i in 0..module_count {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
+      on_stack.push(false);
+    }
 
     let mut indices: Vec<Option<usize>> = Vec::new();
     indices
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    indices.resize(module_count, None);
+    for i in 0..module_count {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
+      indices.push(None);
+    }
 
     let mut lowlink: Vec<usize> = Vec::new();
     lowlink
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    lowlink.resize(module_count, 0);
+    for i in 0..module_count {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
+      lowlink.push(0);
+    }
     let mut sccs: Vec<Vec<usize>> = Vec::new();
     sccs
       .try_reserve_exact(module_count)
@@ -3284,6 +3299,10 @@ impl ModuleGraph {
       return Ok(());
     }
 
+    // Ensure this preflight check observes VM budgets even when the graph is large and modules have
+    // no executable statements (so evaluation would otherwise not tick until much later).
+    vm.tick()?;
+
     let mut stack: Vec<ModuleId> = Vec::new();
     stack
       .try_reserve_exact(module_count)
@@ -3292,7 +3311,12 @@ impl ModuleGraph {
     visited
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    visited.resize(module_count, false);
+    for i in 0..module_count {
+      if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
+        vm.tick()?;
+      }
+      visited.push(false);
+    }
 
     const MODULE_TICK_EVERY: usize = 32;
     const EDGE_TICK_EVERY: usize = 32;

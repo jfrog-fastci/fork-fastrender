@@ -266,21 +266,17 @@ fn await_expression_in_class_static_block_in_non_async_function_is_syntax_error(
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_async_function_is_syntax_error() {
+fn await_expression_in_class_static_block_in_async_function_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
+  rt
     .exec_script("async function f(){ class C { static { await 0; } } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+    .unwrap();
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_module_is_syntax_error() {
+fn await_expression_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_module("main.js", "class C { static { await 0; } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  SourceTextModuleRecord::parse(&mut rt.heap, "class C { static { await 0; } } export {};").unwrap();
 }
 
 #[test]
@@ -293,24 +289,21 @@ fn for_await_of_in_class_static_block_in_non_async_function_is_syntax_error() {
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_async_function_is_syntax_error() {
+fn for_await_of_in_class_static_block_in_async_function_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
+  rt
     .exec_script("async function f(){ class C { static { for await (const x of []) {} } } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+    .unwrap();
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_module_is_syntax_error() {
+fn for_await_of_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
-    .exec_module(
-      "main.js",
-      "class C { static { for await (const x of []) {} } }",
-    )
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  SourceTextModuleRecord::parse(
+    &mut rt.heap,
+    "class C { static { for await (const x of []) {} } } export {};",
+  )
+  .unwrap();
 }
 
 #[test]
