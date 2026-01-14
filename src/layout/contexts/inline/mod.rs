@@ -7000,9 +7000,9 @@ impl InlineFormattingContext {
     if !self.font_context.is_effectively_empty() {
       if let Ok(runs) = self
         .pipeline
-        .shape(STRUT_SAMPLE_TEXT, style, &self.font_context)
+        .shape_arc(STRUT_SAMPLE_TEXT, style, &self.font_context)
       {
-        for run in &runs {
+        for run in runs.iter() {
           if let Some(metrics) = self.font_context.get_scaled_metrics_with_variations(
             run.font.as_ref(),
             run.font_size,

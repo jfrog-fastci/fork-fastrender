@@ -16092,20 +16092,20 @@ impl Painter {
           // regardless of the element's authored `text-orientation`.
           mark_style.text_orientation = crate::style::types::TextOrientation::Upright;
         }
-        let Ok(mark_runs) = self.shaper.shape(mark_str, &mark_style, &self.font_ctx) else {
+        let Ok(mark_runs) = self.shaper.shape_arc(mark_str, &mark_style, &self.font_ctx) else {
           return;
         };
         let mark_width: f32 = mark_runs.iter().map(|r| r.advance * self.scale).sum();
         let mark_metrics =
           crate::layout::contexts::inline::line_builder::TextItem::metrics_from_runs(
             &self.font_ctx,
-            &mark_runs,
+            mark_runs.as_ref(),
             mark_style.font_size,
             mark_style.font_size,
           );
         let mut paths = Vec::new();
         let mut run_pen_inline = 0.0;
-        for run in &mark_runs {
+        for run in mark_runs.iter() {
           let advance = run.advance * self.scale;
           let run_origin = run_pen_inline;
           let Some(instance) = FontInstance::new(&run.font, &run.variations) else {

@@ -12446,7 +12446,7 @@ impl DisplayListBuilder {
           mark_style.text_orientation = crate::style::types::TextOrientation::Upright;
         }
         let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-        let shaped = self.shaper.shape(mark_str, &mark_style, &self.font_ctx);
+        let shaped = self.shaper.shape_arc(mark_str, &mark_style, &self.font_ctx);
         if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
           breakdown.record_text_shape(start.elapsed());
         }
@@ -12456,7 +12456,7 @@ impl DisplayListBuilder {
             let mut width = 0.0_f32;
             let mut ascent: f32 = 0.0;
             let mut descent: f32 = 0.0;
-            for r in &mark_runs {
+            for r in mark_runs.iter() {
               if let Some(scaled) = self.font_ctx.get_scaled_metrics_with_variations(
                 r.font.as_ref(),
                 r.font_size,
@@ -12475,7 +12475,7 @@ impl DisplayListBuilder {
               ascent = fallback * 0.8;
               descent = fallback * 0.2;
             }
-            for r in &mark_runs {
+            for r in mark_runs.iter() {
               let run_advance = r.advance;
               let glyphs = r
                 .glyphs
