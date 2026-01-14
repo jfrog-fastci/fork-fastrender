@@ -3742,10 +3742,22 @@ impl<'a> Checker<'a> {
       }
       AstExpr::This(_) => {
         let prim = self.store.primitive_ids();
-        if self.current_this_ty != prim.unknown {
-          self.store.intern_type(TypeKind::This)
+        let base_this = if self.current_this_ty != prim.unknown {
+          self.current_this_ty
         } else {
+          self.this_super_context.this_ty.unwrap_or(prim.unknown)
+        };
+        if base_this == prim.unknown {
           prim.unknown
+        } else {
+          // Model TypeScript's polymorphic `this` as an intersection between the
+          // containing `this` type (class instance, explicit `this` parameter,
+          // etc) and the `this` marker type. This preserves fluent `this` return
+          // types while still allowing the receiver to satisfy signatures that
+          // expect the concrete containing type.
+          self
+            .store
+            .intersection(vec![base_this, self.store.intern_type(TypeKind::This)])
         }
       }
       AstExpr::Super(_) => self

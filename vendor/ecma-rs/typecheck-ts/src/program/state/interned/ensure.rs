@@ -916,6 +916,17 @@ impl ProgramState {
     self.merge_namespace_value_types()?;
     self.merge_interface_symbol_types_all()?;
     self.refresh_import_def_types()?;
+    // The merge passes above can materially change `interned_def_types` after
+    // earlier checks (e.g. overload merging) have already populated shared ref
+    // expansion caches. Those cached expansions are keyed only by `(def, args)`
+    // and do not automatically observe later mutations to the underlying
+    // definition tables, so we must invalidate them to avoid reusing expansions
+    // computed from partial/pre-merge tables (notably for `Promise`).
+    self.checker_caches.invalidate_shared();
+    // `BodyCheckContext` snapshots `interned_*` tables. If a context was built
+    // while the interned tables were still in flux, drop it so subsequent body
+    // checks observe the fully merged tables.
+    self.cached_body_context = None;
     self.rebuild_interned_named_def_types();
     self.recompute_global_bindings();
     if self.compiler_options.strict_native {
