@@ -31997,7 +31997,7 @@ fn async_resume_from_frames(
                 scope.heap_mut().remove_root(next_method_root);
                 return Err(VmError::OutOfMemory);
               }
-              out_frames.append(&mut frames);
+              async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: AsyncSuspendKind::Await,
                 await_value: awaited,
@@ -32018,7 +32018,7 @@ fn async_resume_from_frames(
                 scope.heap_mut().remove_root(next_method_root);
                 return Err(VmError::OutOfMemory);
               }
-              out_frames.append(&mut frames);
+              async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: AsyncSuspendKind::YieldIteratorResult,
                 await_value: iter_result,
