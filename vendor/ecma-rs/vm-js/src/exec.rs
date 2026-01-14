@@ -16054,6 +16054,23 @@ pub(crate) enum GenFrame {
     v: Value,
   },
 
+  /// Continue a `switch` statement after evaluating its discriminant expression.
+  SwitchAfterDiscriminant { stmt: *const SwitchStmt },
+  /// Continue switch case scanning after evaluating a case selector expression.
+  SwitchAfterCaseExpr {
+    stmt: *const SwitchStmt,
+    discriminant: Value,
+    v: Value,
+    default_index: Option<usize>,
+    branch_index: usize,
+  },
+  /// Continue switch clause evaluation after evaluating a clause body statement list.
+  SwitchAfterBody {
+    stmt: *const SwitchStmt,
+    v: Value,
+    next_branch_index: usize,
+  },
+
   /// Continue a `try` statement after evaluating the wrapped block.
   TryAfterWrapped { stmt: *const TryStmt },
   /// Continue a `try` statement after evaluating the catch block.
@@ -16294,6 +16311,13 @@ impl Trace for GenFrame {
         tracer.trace_value(iterator_record.next_method);
         tracer.trace_value(*v);
       }
+      GenFrame::SwitchAfterCaseExpr {
+        discriminant, v, ..
+      } => {
+        tracer.trace_value(*discriminant);
+        tracer.trace_value(*v);
+      }
+      GenFrame::SwitchAfterBody { v, .. } => tracer.trace_value(*v),
       GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
       GenFrame::ComputedMemberAfterMember { base, .. }
       | GenFrame::DeleteComputedMemberAfterMember { base, .. }
@@ -17707,6 +17731,13 @@ fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
       for_in_of_lhs_contains_yield(&for_of.stx.lhs)
         || expr_contains_yield(&for_of.stx.rhs)
         || for_of.stx.body.stx.body.iter().any(stmt_contains_yield)
+    }
+    Stmt::Switch(switch_stmt) => {
+      expr_contains_yield(&switch_stmt.stx.test)
+        || switch_stmt.stx.branches.iter().any(|branch| {
+          branch.stx.case.as_ref().is_some_and(expr_contains_yield)
+            || branch.stx.body.iter().any(stmt_contains_yield)
+        })
     }
     Stmt::Label(label) => stmt_contains_yield(&label.stx.statement),
     // Conservatively assume unsupported statement kinds do not contain yield so we preserve the
@@ -34783,6 +34814,238 @@ fn gen_eval_label(
   }
 }
 
+fn gen_eval_switch(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_expr(evaluator, scope, &stmt.test)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_switch_after_discriminant(
+        evaluator,
+        scope,
+        stmt,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::SwitchAfterDiscriminant {
+          stmt: stmt as *const SwitchStmt,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_switch_after_discriminant(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  // Root the discriminant across selector evaluation and case-body execution, which may allocate
+  // and trigger GC. Use stack roots so they do not survive across yields.
+  let mut switch_scope = scope.reborrow();
+  switch_scope.push_root(discriminant)?;
+
+  // `switch` creates a new lexical environment for the entire case block.
+  let outer = evaluator.env.lexical_env;
+  let switch_env = match switch_scope.env_create(Some(outer)) {
+    Ok(env) => env,
+    Err(err) => return Err(err),
+  };
+  evaluator
+    .env
+    .set_lexical_env(switch_scope.heap_mut(), switch_env);
+
+  // Instantiate lexical declarations for the shared switch scope.
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate() {
+    if i % BRANCH_TICK_EVERY == 0 {
+      if let Err(err) = evaluator.tick() {
+        evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+        return Err(err);
+      }
+    }
+    if let Err(err) =
+      evaluator.instantiate_block_decls_in_stmt_list(&mut switch_scope, switch_env, &branch.stx.body)
+    {
+      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      return Err(err);
+    }
+  }
+
+  // ECMA-262 `CaseBlockEvaluation`: `V` starts as `undefined` and is never ~empty~ for normal
+  // completion.
+  let v_root_idx = switch_scope.heap().root_stack.len();
+  if let Err(err) = switch_scope.push_root(Value::Undefined) {
+    evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+    return Err(err);
+  }
+  let v = Value::Undefined;
+
+  match gen_switch_scan_and_exec_from(
+    evaluator,
+    &mut switch_scope,
+    stmt,
+    discriminant,
+    v_root_idx,
+    v,
+    0,
+    None,
+  ) {
+    Ok(GenEval::Complete(c)) => {
+      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    Ok(GenEval::Suspend(mut suspend)) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
+fn gen_switch_scan_and_exec_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  discriminant: Value,
+  v_root_idx: usize,
+  v: Value,
+  start_index: usize,
+  mut default_index: Option<usize>,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate().skip(start_index) {
+    if i % BRANCH_TICK_EVERY == 0 {
+      evaluator.tick()?;
+    }
+
+    let Some(case_expr) = &branch.stx.case else {
+      if default_index.is_none() {
+        default_index = Some(i);
+      }
+      continue;
+    };
+
+    match gen_eval_expr(evaluator, scope, case_expr)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(case_val) => {
+          let mut tick = || evaluator.tick();
+          let case_value = case_val.unwrap_or(Value::Undefined);
+          let matches = strict_equal_with_tick(scope.heap(), discriminant, case_value, &mut tick)?;
+          if matches {
+            return gen_switch_exec_from(evaluator, scope, stmt, v_root_idx, v, i);
+          }
+        }
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::SwitchAfterCaseExpr {
+            stmt: stmt as *const SwitchStmt,
+            discriminant,
+            v,
+            default_index,
+            branch_index: i,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  if let Some(default_idx) = default_index {
+    return gen_switch_exec_from(evaluator, scope, stmt, v_root_idx, v, default_idx);
+  }
+
+  Ok(GenEval::Complete(Evaluator::normalise_iteration_break(
+    Completion::normal(v),
+  )))
+}
+
+fn gen_switch_exec_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  v_root_idx: usize,
+  v: Value,
+  start_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  const BRANCH_TICK_EVERY: usize = 32;
+  for (i, branch) in stmt.branches.iter().enumerate().skip(start_index) {
+    if i % BRANCH_TICK_EVERY == 0 {
+      evaluator.tick()?;
+    }
+
+    match gen_eval_stmt_list(evaluator, scope, &branch.stx.body)? {
+      GenEval::Complete(body_completion) => {
+        return gen_switch_after_body_completion(
+          evaluator,
+          scope,
+          stmt,
+          v_root_idx,
+          v,
+          i.saturating_add(1),
+          body_completion,
+        );
+      }
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::SwitchAfterBody {
+            stmt: stmt as *const SwitchStmt,
+            v,
+            next_branch_index: i.saturating_add(1),
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  Ok(GenEval::Complete(Evaluator::normalise_iteration_break(
+    Completion::normal(v),
+  )))
+}
+
+fn gen_switch_after_body_completion(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &SwitchStmt,
+  v_root_idx: usize,
+  mut v: Value,
+  next_branch_index: usize,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  if body_completion.is_abrupt() {
+    let completion = body_completion.update_empty(Some(v));
+    return Ok(GenEval::Complete(Evaluator::normalise_iteration_break(
+      completion,
+    )));
+  }
+
+  gen_switch_exec_from(evaluator, scope, stmt, v_root_idx, v, next_branch_index)
+}
+
 fn gen_eval_for_body(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -35218,6 +35481,7 @@ fn gen_eval_stmt_labelled(
     Stmt::With(with_stmt) => gen_eval_with(evaluator, scope, &with_stmt.stx, label_set),
     Stmt::While(while_stmt) => gen_eval_while(evaluator, scope, &while_stmt.stx, label_set),
     Stmt::DoWhile(do_while) => gen_eval_do_while(evaluator, scope, &do_while.stx, label_set),
+    Stmt::Switch(switch_stmt) => gen_eval_switch(evaluator, scope, &switch_stmt.stx),
     Stmt::ForOf(for_of) => gen_eval_for_of(evaluator, scope, &for_of.stx, label_set),
     // Conservatively punt on other statement forms for now.
     _ => Err(VmError::Unimplemented("yield in statement type")),
@@ -40114,6 +40378,95 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::SwitchAfterDiscriminant { stmt } => match state {
+        Completion::Normal(v) => {
+          let stmt = unsafe { &*stmt };
+          match gen_switch_after_discriminant(evaluator, scope, stmt, v.unwrap_or(Value::Undefined)) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::SwitchAfterCaseExpr {
+        stmt,
+        discriminant,
+        v,
+        default_index,
+        branch_index,
+      } => match state {
+        Completion::Normal(case_value) => {
+          // Root the discriminant and running value across comparison + any continuation
+          // allocations (which may tick and allocate).
+          scope.push_root(discriminant)?;
+          let v_root_idx = scope.heap().root_stack.len();
+          scope.push_root(v)?;
+
+          let stmt = unsafe { &*stmt };
+          let mut tick = || evaluator.tick();
+          let matches = match strict_equal_with_tick(
+            scope.heap(),
+            discriminant,
+            case_value.unwrap_or(Value::Undefined),
+            &mut tick,
+          ) {
+            Ok(m) => m,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let next_eval = if matches {
+            gen_switch_exec_from(evaluator, scope, stmt, v_root_idx, v, branch_index)
+          } else {
+            gen_switch_scan_and_exec_from(
+              evaluator,
+              scope,
+              stmt,
+              discriminant,
+              v_root_idx,
+              v,
+              branch_index.saturating_add(1),
+              default_index,
+            )
+          };
+
+          match next_eval {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::SwitchAfterBody {
+        stmt,
+        v,
+        next_branch_index,
+      } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_switch_after_body_completion(evaluator, scope, stmt, v_root_idx, v, next_branch_index, state) {
+          Ok(GenEval::Complete(c)) => state = c,
+          Ok(GenEval::Suspend(mut suspend)) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+          Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+        }
+      }
+
       GenFrame::WhileAfterTest { stmt, label_set, v } => match state {
         Completion::Normal(test) => {
           // Create a fresh stack root slot for `v` for this resumption.
@@ -40298,6 +40651,12 @@ fn gen_root_values_for_continuation(
       GenFrame::ForOfAfterBody { .. } => {
         needed = needed.saturating_add(3);
       }
+      GenFrame::SwitchAfterCaseExpr { .. } => {
+        needed = needed.saturating_add(2);
+      }
+      GenFrame::SwitchAfterBody { .. } => {
+        needed = needed.saturating_add(1);
+      }
       GenFrame::TryAfterFinally { pending } => {
         needed = needed.saturating_add(usize::from(pending.value().is_some()));
       }
@@ -40391,6 +40750,13 @@ fn gen_root_values_for_continuation(
         values.push(iterator_record.next_method);
         values.push(*v);
       }
+      GenFrame::SwitchAfterCaseExpr {
+        discriminant, v, ..
+      } => {
+        values.push(*discriminant);
+        values.push(*v);
+      }
+      GenFrame::SwitchAfterBody { v, .. } => values.push(*v),
       GenFrame::TryAfterFinally { pending } => {
         if let Some(v) = pending.value() {
           values.push(v);

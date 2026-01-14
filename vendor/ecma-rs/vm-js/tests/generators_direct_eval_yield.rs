@@ -705,3 +705,93 @@ fn generator_direct_eval_with_multiple_yields_is_still_direct_if_eval_is_overwri
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inside_switch_sees_switch_let_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding visible to indirect eval.
+          var x = 2;
+          function* g() {
+            switch (0) {
+              case 0:
+                let x = 1;
+                return eval(yield 0);
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          ok = r.done === true && r.value === 1 && x === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_switch_discriminant_can_yield_before_direct_eval() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g() {
+            let x = 1;
+            switch (yield 0) {
+              case 0:
+                return eval("x");
+              default:
+                return -1;
+            }
+          }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next(0);
+          ok = r1.done === false && r1.value === 0 &&
+               r2.done === true && r2.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_switch_case_selector_can_yield_before_direct_eval() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g() {
+            let x = 1;
+            switch (0) {
+              case (yield 0):
+                return eval("x");
+              default:
+                return -1;
+            }
+          }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next(0);
+          ok = r1.done === false && r1.value === 0 &&
+               r2.done === true && r2.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
