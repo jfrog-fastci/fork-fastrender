@@ -493,6 +493,92 @@ fn generators_yield_in_template_literals() {
 }
 
 #[test]
+fn generators_yield_in_tagged_templates() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // yield in tag expression + yield in substitutions
+        function join(strings, ...values) { return values.join(","); }
+        function* tag_and_subst() {
+          return (yield join)`a${yield 1}b${yield 2}c`;
+        }
+        const it1 = tag_and_subst();
+        const a1 = it1.next();
+        const a2 = it1.next(join);
+        const a3 = it1.next("X");
+        const a4 = it1.next("Y");
+        const ok1 =
+          a1.value === join && a1.done === false &&
+          a2.value === 1 && a2.done === false &&
+          a3.value === 2 && a3.done === false &&
+          a4.value === "X,Y" && a4.done === true;
+
+        // yield in member base tag + correct this-binding
+        const obj2 = {
+          tag(strings, ...values) { return this === obj2 && values[0] === 42; }
+        };
+        function* member_base() {
+          return (yield obj2).tag`x${yield 1}y`;
+        }
+        const it2 = member_base();
+        const b1 = it2.next();
+        const b2 = it2.next(obj2);
+        const b3 = it2.next(42);
+        const ok2 =
+          b1.value === obj2 && b1.done === false &&
+          b2.value === 1 && b2.done === false &&
+          b3.value === true && b3.done === true;
+
+        // yield in computed member key tag + correct this-binding
+        const obj3 = {
+          tag(strings, ...values) { return this === obj3 && values[0] === 7; }
+        };
+        function* computed_key() {
+          return obj3[(yield "tag")]`x${yield 1}y`;
+        }
+        const it3 = computed_key();
+        const c1 = it3.next();
+        const c2 = it3.next("tag");
+        const c3 = it3.next(7);
+        const ok3 =
+          c1.value === "tag" && c1.done === false &&
+          c2.value === 1 && c2.done === false &&
+          c3.value === true && c3.done === true;
+
+        // Template object caching across generator invocations (same call site, cooked+raw identity).
+        let cachedStrings;
+        let cachedRaw;
+        function capture(strings, ...values) {
+          if (cachedStrings === undefined) {
+            cachedStrings = strings;
+            cachedRaw = strings.raw;
+          }
+          return strings === cachedStrings && strings.raw === cachedRaw;
+        }
+        function* cache_test() {
+          return capture`hello${yield 1}world`;
+        }
+        const it4 = cache_test();
+        const d1 = it4.next();
+        const d2 = it4.next(0);
+        const it5 = cache_test();
+        const d3 = it5.next();
+        const d4 = it5.next(0);
+        const ok4 =
+          d1.value === 1 && d1.done === false &&
+          d2.value === true && d2.done === true &&
+          d3.value === 1 && d3.done === false &&
+          d4.value === true && d4.done === true;
+
+        ok1 && ok2 && ok3 && ok4
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generators_yield_in_array_literals() {
   let mut rt = new_runtime();
   let value = rt
