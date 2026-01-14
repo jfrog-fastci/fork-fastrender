@@ -1314,12 +1314,15 @@ impl<'a> Parser<'a> {
       let body = p.stmt_in_statement_position(ctx.non_top_level(), false);
       p.in_iteration = prev_in_iteration;
       let body = body?;
-      // Consume optional semicolon after body statement (ASI)
-      let _ = p.consume_if(TT::Semicolon);
       p.require(TT::KeywordWhile)?;
       p.require(TT::ParenthesisOpen)?;
       let condition = p.expr(ctx, [TT::ParenthesisClose])?;
       p.require(TT::ParenthesisClose)?;
+      // Consume optional semicolon terminator.
+      //
+      // Note: This must come **after** the `while (...)` clause. A semicolon between the `do`
+      // body and `while` is a syntax error (see test262 `language/asi/S7.9_A9_T8.js`).
+      let _ = p.consume_if(TT::Semicolon);
       Ok(DoWhileStmt { condition, body })
     })
   }

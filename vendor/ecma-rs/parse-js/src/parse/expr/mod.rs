@@ -363,10 +363,21 @@ impl<'a> Parser<'a> {
         false
       };
 
+      // Arrow function parameters are parsed in a restricted grammar context:
+      // - async arrows disallow `await` as an identifier,
+      // - `await`/`yield` expressions are never allowed in parameter initializers.
+      let params_ctx = ctx.with_rules(ParsePatternRules {
+        await_allowed: ctx.rules.await_allowed && !is_async,
+        yield_allowed: ctx.rules.yield_allowed,
+        await_expr_allowed: false,
+        yield_expr_allowed: false,
+      });
+
       // Check if this is a single-unparenthesised-parameter arrow function
       // Works for both sync (x => ...) and async (async x => ...)
       let next_token = p.peek().typ;
-      let is_unparenthesised_single_param = is_valid_pattern_identifier(next_token, ctx.rules) && {
+      let is_unparenthesised_single_param =
+        is_valid_pattern_identifier(next_token, params_ctx.rules) && {
         // Need to peek further to see if there's => coming up
         let peek2 = p.peek_n::<2>()[1].typ;
         // Could be either:
@@ -385,7 +396,7 @@ impl<'a> Parser<'a> {
         // participate in context-dependent reserved-word restrictions.
         if param_tok.typ == TT::Identifier {
           if let Some(keyword_tt) = keyword_from_str(&param_name) {
-            if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+            if !is_valid_pattern_identifier(keyword_tt, params_ctx.rules) {
               return Err(param_tok.error(SyntaxErrorType::ExpectedSyntax("identifier")));
             }
           }
@@ -433,7 +444,7 @@ impl<'a> Parser<'a> {
         } else {
           None
         };
-        let params = p.arrow_func_params(ctx)?;
+        let params = p.arrow_func_params(params_ctx)?;
         // TypeScript: return type annotation (after params, before =>) - may be type predicate.
         let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
           Some(p.type_expr_or_predicate(ctx)?)
@@ -1803,11 +1814,19 @@ impl<'a> Parser<'a> {
           // If the preceding expression cannot be a tag and there is a LineTerminator, allow
           // ASI to split statements (e.g. `a++\n\`x\`` should parse as `a++; \`x\``).
           let is_parenthesized = left.assoc.get::<ParenthesizedExpr>().is_some();
+          let is_optional_chain = match left.stx.as_ref() {
+            Expr::Call(call) => call.stx.optional_chaining,
+            Expr::ComputedMember(member) => member.stx.optional_chaining,
+            Expr::Member(member) => member.stx.optional_chaining,
+            _ => false,
+          };
           let is_valid_tag_expr = is_parenthesized
             || match left.stx.as_ref() {
-              Expr::Call(_)
-              | Expr::Class(_)
-              | Expr::ComputedMember(_)
+              Expr::Call(call) => !call.stx.optional_chaining,
+              Expr::ComputedMember(member) => !member.stx.optional_chaining,
+              Expr::Member(member) => !member.stx.optional_chaining,
+              Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
+              Expr::Class(_)
               | Expr::Func(_)
               | Expr::Id(_)
               | Expr::Import(_)
@@ -1822,7 +1841,6 @@ impl<'a> Parser<'a> {
               | Expr::LitRegex(_)
               | Expr::LitStr(_)
               | Expr::LitTemplate(_)
-              | Expr::Member(_)
               | Expr::NewTarget(_)
               | Expr::NonNullAssertion(_)
               | Expr::Super(_)
@@ -1834,10 +1852,13 @@ impl<'a> Parser<'a> {
               | Expr::JsxName(_)
               | Expr::JsxSpreadAttr(_)
               | Expr::JsxText(_) => true,
-              Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
               _ => false,
             };
           if !is_valid_tag_expr {
+            // Optional chaining cannot be used as a tagged template (even across a LineTerminator).
+            if is_optional_chain {
+              return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
+            }
             if asi_allowed && t.preceded_by_line_terminator {
               self.restore_checkpoint(cp);
               asi.did_end_with_asi = true;
@@ -2227,6 +2248,43 @@ impl<'a> Parser<'a> {
                 self.validate_strict_assignment_target_expr(&left)?;
               };
               let right = self.expr_with_min_prec(ctx, next_min_prec, terminators, asi)?;
+              // ES2020: `??` cannot immediately contain, or be contained within, `&&` / `||`
+              // without parentheses.
+              //
+              // Examples (all SyntaxError):
+              // - `a && b ?? c`
+              // - `a ?? b && c`
+              // - `a || b ?? c`
+              // - `a ?? b || c`
+              if self.is_strict_ecmascript() {
+                let is_unparenthesized_binary = |expr: &Node<Expr>, op: OperatorName| {
+                  expr.assoc.get::<ParenthesizedExpr>().is_none()
+                    && matches!(expr.stx.as_ref(), Expr::Binary(bin) if bin.stx.operator == op)
+                };
+                match operator.name {
+                  OperatorName::NullishCoalescing => {
+                    if is_unparenthesized_binary(&left, OperatorName::LogicalAnd)
+                      || is_unparenthesized_binary(&left, OperatorName::LogicalOr)
+                      || is_unparenthesized_binary(&right, OperatorName::LogicalAnd)
+                      || is_unparenthesized_binary(&right, OperatorName::LogicalOr)
+                    {
+                      return Err(t.error(SyntaxErrorType::ExpectedSyntax(
+                        "parenthesized expression",
+                      )));
+                    }
+                  }
+                  OperatorName::LogicalAnd | OperatorName::LogicalOr => {
+                    if is_unparenthesized_binary(&left, OperatorName::NullishCoalescing)
+                      || is_unparenthesized_binary(&right, OperatorName::NullishCoalescing)
+                    {
+                      return Err(t.error(SyntaxErrorType::ExpectedSyntax(
+                        "parenthesized expression",
+                      )));
+                    }
+                  }
+                  _ => {}
+                }
+              }
               Node::new(
                 left.loc + right.loc,
                 BinaryExpr {

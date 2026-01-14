@@ -3692,6 +3692,7 @@ impl<'a> Parser<'a> {
     self.with_loc(|p| {
       p.require(TT::BraceOpen)?;
       let mut members = Vec::new();
+      let mut seen_proto_data_property = false;
       while p.peek().typ != TT::BraceClose && p.peek().typ != TT::EOF {
         let member_start = p.peek().loc;
         // TypeScript-style recovery: class declarations in object literals are
@@ -3801,6 +3802,14 @@ impl<'a> Parser<'a> {
             false, // Object literals don't have abstract methods
           )?;
           allow_semicolon_separator = matches!(value, ClassOrObjVal::IndexSignature(_));
+          // Private names (`#x`) are only permitted in class elements, not object literals.
+          if p.is_strict_ecmascript() {
+            if let ClassOrObjKey::Direct(direct_key) = &key {
+              if direct_key.stx.tt == TT::PrivateMember {
+                return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("property name")));
+              }
+            }
+          }
           let typ = match value {
             ClassOrObjVal::Prop(None) => {
               // This property had no value, so it's a shorthand property. Therefore, check
@@ -3940,6 +3949,24 @@ impl<'a> Parser<'a> {
               }
             _ => ObjMemberType::Valued { key, val: value },
           };
+
+          // Annex B.3.1: Duplicate `__proto__` data properties in object literals are a SyntaxError.
+          if p.is_strict_ecmascript() {
+            if let ObjMemberType::Valued {
+              key: ClassOrObjKey::Direct(direct_key),
+              val: ClassOrObjVal::Prop(Some(_)),
+            } = &typ
+            {
+              if direct_key.stx.key == "__proto__" {
+                if seen_proto_data_property {
+                  return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax(
+                    "duplicate `__proto__` property",
+                  )));
+                }
+                seen_proto_data_property = true;
+              }
+            }
+          }
           members.push(Node::new(member_start, ObjMember { typ }));
         }
         if p.consume_if(TT::Comma).is_match() {

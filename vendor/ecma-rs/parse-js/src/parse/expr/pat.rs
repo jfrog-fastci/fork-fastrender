@@ -141,6 +141,14 @@ impl<'a> Parser<'a> {
 
         let prop = p.with_loc(|p| {
           let key = p.class_or_obj_key(ctx)?;
+          // Private names (`#x`) are only permitted in class elements, not object patterns.
+          if p.is_strict_ecmascript() {
+            if let ClassOrObjKey::Direct(direct_key) = &key {
+              if direct_key.stx.tt == TT::PrivateMember {
+                return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("property name")));
+              }
+            }
+          }
           let (shorthand, target) = if p.consume_if(TT::Colon).is_match() {
             // There's a colon, so there's a subpattern and it's not a shorthand.
             (false, p.pat(ctx)?)

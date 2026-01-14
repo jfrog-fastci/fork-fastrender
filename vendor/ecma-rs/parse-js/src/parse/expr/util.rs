@@ -232,6 +232,14 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
       Ok(Node::new(loc, ObjPat { properties, rest }).into_wrapped())
     }
     Expr::Id(n) => {
+      // Private identifiers (`#x`) are only valid in:
+      // - `#x in obj` (private-in expression), and
+      // - `obj.#x` (private property access in class bodies).
+      //
+      // They are not valid assignment targets.
+      if !recover && n.stx.name.starts_with('#') {
+        return Err(n.error(SyntaxErrorType::InvalidAssigmentTarget));
+      }
       Ok(
         Node::new(
           loc,
