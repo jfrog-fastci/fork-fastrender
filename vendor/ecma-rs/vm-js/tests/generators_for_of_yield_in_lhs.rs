@@ -31,6 +31,28 @@ fn generator_for_of_yield_in_array_pattern_default() {
 }
 
 #[test]
+fn generator_for_of_yield_in_lexical_array_pattern_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          // `let` for-of creates a per-iteration lexical environment; ensure suspension/resumption
+          // within the binding initialization correctly preserves that environment.
+          for (let [a = yield 1] of [[undefined]]) { return a; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_yield_in_object_pattern_computed_key() {
   let mut rt = new_runtime();
   let value = rt
@@ -45,6 +67,29 @@ fn generator_for_of_yield_in_object_pattern_computed_key() {
         var r2 = it.next("k");
         r1.done === false && r1.value === "k" &&
         r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_multiple_yields_in_single_lhs_pattern() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var a, b;
+          for ([a = yield 1, b = yield 2] of [[undefined, undefined]]) { return a + b; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(10);
+        var r3 = it.next(20);
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 2 &&
+        r3.done === true && r3.value === 30
       "#,
     )
     .unwrap();
