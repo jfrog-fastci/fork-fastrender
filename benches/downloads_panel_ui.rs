@@ -43,12 +43,15 @@ fn synthetic_downloads(count: usize) -> Vec<DownloadEntry> {
     } else {
       Some(idx as u64 + 1)
     };
+    let path = PathBuf::from(format!("/tmp/file-{idx}.bin"));
+    let path_display = path.display().to_string();
     out.push(DownloadEntry {
       download_id: DownloadId(idx as u64 + 1),
       tab_id: TabId(1),
       url: format!("https://example.com/file-{idx}.bin"),
       file_name: format!("file-{idx}.bin"),
-      path: PathBuf::from(format!("/tmp/file-{idx}.bin")),
+      path,
+      path_display,
       status,
       started_at_ms,
       finished_at_ms,

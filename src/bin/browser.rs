@@ -15178,6 +15178,8 @@ impl App {
         path,
         path_display,
         status,
+        started_at_ms: None,
+        finished_at_ms: None,
       });
     }
 
