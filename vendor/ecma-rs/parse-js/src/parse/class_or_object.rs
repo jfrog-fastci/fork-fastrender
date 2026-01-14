@@ -274,7 +274,7 @@ impl<'a> Parser<'a> {
               // Static blocks have their own `Await` / `Yield` context:
               // - `await` is reserved as an identifier (even in scripts),
               // - `await`/`for await` are permitted in the same contexts as the surrounding code
-              //   (async functions and modules with top-level await enabled), and
+              //   (async functions, modules, and scripts with top-level await enabled), and
               // - `yield` expressions are never permitted (ClassStaticBlockStatementList is `~Yield`),
               // - `return` statements are never permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
