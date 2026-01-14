@@ -39557,6 +39557,12 @@ fn gen_resume_from_frames(
             }
           };
 
+          // Pre-reserve space for the `YieldStar` continuation frame. If allocation fails we can
+          // still proceed when the iterator result is `done`, but will return OOM if we need to
+          // suspend.
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          let out_frames_ok = out_frames.try_reserve(1).is_ok();
+
           let done = match iterator::iterator_complete(
             evaluator.vm,
             &mut *evaluator.host,
@@ -39593,14 +39599,14 @@ fn gen_resume_from_frames(
             continue;
           }
 
-          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(
-            &mut out_frames,
-            GenFrame::YieldStar {
-              iterator_record,
-              returning,
-            },
-          )?;
+          if !out_frames_ok {
+            return Err(VmError::OutOfMemory);
+          }
+          // `out_frames` has reserved capacity for this push.
+          out_frames.push_back(GenFrame::YieldStar {
+            iterator_record,
+            returning,
+          });
           vecdeque_try_append(&mut out_frames, &mut frames)?;
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
@@ -39675,6 +39681,12 @@ fn gen_resume_from_frames(
             }
           };
 
+          // Pre-reserve space for the `YieldStar` continuation frame. If allocation fails we can
+          // still proceed when the iterator result is `done`, but will return OOM if we need to
+          // suspend.
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          let out_frames_ok = out_frames.try_reserve(1).is_ok();
+
           let done = match iterator::iterator_complete(
             evaluator.vm,
             &mut *evaluator.host,
@@ -39711,14 +39723,14 @@ fn gen_resume_from_frames(
             continue;
           }
 
-          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(
-            &mut out_frames,
-            GenFrame::YieldStar {
-              iterator_record,
-              returning,
-            },
-          )?;
+          if !out_frames_ok {
+            return Err(VmError::OutOfMemory);
+          }
+          // `out_frames` has reserved capacity for this push.
+          out_frames.push_back(GenFrame::YieldStar {
+            iterator_record,
+            returning,
+          });
           vecdeque_try_append(&mut out_frames, &mut frames)?;
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
@@ -39769,6 +39781,12 @@ fn gen_resume_from_frames(
             }
           };
 
+          // Pre-reserve space for the `YieldStar` continuation frame. If allocation fails we can
+          // still proceed when the iterator result is `done`, but will return OOM if we need to
+          // suspend.
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          let out_frames_ok = out_frames.try_reserve(1).is_ok();
+
           let done = match iterator::iterator_complete(
             evaluator.vm,
             &mut *evaluator.host,
@@ -39802,14 +39820,14 @@ fn gen_resume_from_frames(
           }
 
           returning = true;
-          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(
-            &mut out_frames,
-            GenFrame::YieldStar {
-              iterator_record,
-              returning,
-            },
-          )?;
+          if !out_frames_ok {
+            return Err(VmError::OutOfMemory);
+          }
+          // `out_frames` has reserved capacity for this push.
+          out_frames.push_back(GenFrame::YieldStar {
+            iterator_record,
+            returning,
+          });
           vecdeque_try_append(&mut out_frames, &mut frames)?;
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
@@ -45926,5 +45944,87 @@ mod oom_async_frame_merge_tests {
       "expected OOM merge failure to tear down all frame-owned roots"
     );
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod oom_generator_frame_merge_tests {
+  use super::*;
+  use crate::test_alloc::FailAllocsGuard;
+  use crate::{HeapLimits, VmOptions};
+  use std::cell::RefCell;
+
+  thread_local! {
+    static FAIL_GUARD: RefCell<Option<FailAllocsGuard>> = RefCell::new(None);
+  }
+
+  fn oom_on(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    // Avoid replacing an existing guard after allocating a new one: dropping the old guard would
+    // clear the thread-local fail flag.
+    FAIL_GUARD.with(|slot| {
+      let mut slot = slot.borrow_mut();
+      if slot.is_none() {
+        *slot = Some(FailAllocsGuard::new());
+      }
+    });
+    Ok(Value::Undefined)
+  }
+
+  #[test]
+  fn generator_yield_star_frame_merge_returns_out_of_memory_on_reserve_failure() {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap).expect("JsRuntime::new");
+
+    rt
+      .register_global_native_function("oom_on", oom_on, 0)
+      .expect("register oom_on");
+
+    // Build a large expression context around `yield*` so the continuation frame merge needs to
+    // grow the frame deque.
+    let mut expr = String::from("yield* iterable");
+    for _ in 0..64 {
+      expr = format!("+({expr})");
+    }
+
+    let script = format!(
+      r#"
+let done_calls = 0;
+const iter_result = {{
+  get done() {{
+    if (done_calls === 1) oom_on();
+    done_calls++;
+    return false;
+  }},
+  value: 1,
+}};
+const iterable = {{
+  [Symbol.iterator]() {{ return this; }},
+  next(v) {{ return iter_result; }},
+}};
+function* g() {{
+  {expr};
+}}
+const it = g();
+it.next();
+it.next();
+"#,
+    );
+
+    let result = rt.exec_script(&script);
+
+    // Ensure we always restore allocation before asserting (panic formatting may allocate).
+    FAIL_GUARD.with(|slot| slot.borrow_mut().take());
+
+    let err = result.expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
   }
 }
