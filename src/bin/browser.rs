@@ -8035,11 +8035,67 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut perf_log_closed_dropped_frames: u64 = 0;
 
   if !session_autosave.is_background_thread_running() {
-    if let Some(err) = session_autosave.spawn_error() {
+    use fastrender::ui::ToastKind;
+
+    const SESSION_AUTOSAVE_FALLBACK_ERROR_MAX_BYTES: usize = 180;
+
+    let (toast_kind, toast_text) = if let Some(err) = session_autosave.spawn_error() {
       eprintln!("failed to start session autosave worker: {err}");
+      let detail =
+        sanitize_toast_detail_single_line(err, SESSION_AUTOSAVE_FALLBACK_ERROR_MAX_BYTES);
+      let mut text = "Session autosave is running in synchronous fallback.\nSaving may block the UI."
+        .to_string();
+      if let Some(detail) = detail {
+        if !detail.trim().is_empty() {
+          text.push('\n');
+          text.push_str(&detail);
+        }
+      }
+      (ToastKind::Warning, text)
     } else {
       eprintln!("session autosave worker is not running; falling back to synchronous session saves");
+      (
+        ToastKind::Warning,
+        "Session autosave is running in synchronous fallback.\nSaving may block the UI.".to_string(),
+      )
+    };
+
+    // Do not overwrite any existing startup toast; instead append the autosave fallback message.
+    let target_id = active_window_id
+      .filter(|id| windows.contains_key(id))
+      .or_else(|| window_order.iter().copied().find(|id| windows.contains_key(id)));
+    if let Some(target_id) = target_id {
+      if let Some(win) = windows.get_mut(&target_id) {
+        let now = std::time::Instant::now();
+        win.app.chrome_toast.expire(now);
+        let existing = win
+          .app
+          .chrome_toast
+          .toast()
+          .map(|toast| (toast.kind, toast.text.clone(), toast.expires_at));
+        if let Some((existing_kind, existing_text, expires_at)) = existing {
+          let ttl = expires_at.saturating_duration_since(now);
+          let mut text = existing_text;
+          if !text.trim().is_empty() {
+            text.push_str("\n\n");
+          }
+          text.push_str(&toast_text);
+          win
+            .app
+            .chrome_toast
+            .show(max_toast_kind(existing_kind, toast_kind), text, now, ttl);
+        } else {
+          win.app.chrome_toast.show(
+            toast_kind,
+            toast_text,
+            now,
+            std::time::Duration::from_secs(8),
+          );
+        }
+        win.app.window.request_redraw();
+      }
     }
+
   }
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
