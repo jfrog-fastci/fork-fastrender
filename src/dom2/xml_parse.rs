@@ -22,6 +22,23 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
     iter: roxmltree::Children<'a, 'input>,
   }
 
+  fn push_child(doc: &mut Document, parent: NodeId, kind: NodeKind) -> NodeId {
+    // Create the node detached first so we can run live-range pre-insert steps before mutating the
+    // parent's child list and the node's parent pointer.
+    let id = doc.push_node(kind, None, /* inert_subtree */ false);
+    let idx = doc.nodes[parent.index()].children.len();
+    if !doc.ranges.is_empty() {
+      doc.live_range_pre_insert_steps(
+        parent,
+        doc.tree_child_index_from_raw_index_for_range(parent, idx),
+        doc.inserted_tree_children_count_for_range(parent, &[id]),
+      );
+    }
+    doc.nodes[parent.index()].children.push(id);
+    doc.nodes[id.index()].parent = Some(parent);
+    id
+  }
+
   fn push_from_roxmltree(doc: &mut Document, parent: NodeId, node: roxmltree::Node<'_, '_>) -> Option<NodeId> {
     if node.is_element() {
       let tag = node.tag_name();
@@ -74,11 +91,7 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
             attributes,
           }
         };
-      let id = doc.push_node(
-        kind,
-        Some(parent),
-        /* inert_subtree */ false,
-      );
+      let id = push_child(doc, parent, kind);
       return Some(id);
     }
 
@@ -86,24 +99,24 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       let Some(text) = node.text() else {
         return None;
       };
-      let id = doc.push_node(
+      let id = push_child(
+        doc,
+        parent,
         NodeKind::Text {
           content: text.to_string(),
         },
-        Some(parent),
-        /* inert_subtree */ false,
       );
       return Some(id);
     }
 
     if node.is_comment() {
       let text = node.text().unwrap_or("");
-      let id = doc.push_node(
+      let id = push_child(
+        doc,
+        parent,
         NodeKind::Comment {
           content: text.to_string(),
         },
-        Some(parent),
-        /* inert_subtree */ false,
       );
       return Some(id);
     }
@@ -112,13 +125,13 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       let Some(pi) = node.pi() else {
         return None;
       };
-      let id = doc.push_node(
+      let id = push_child(
+        doc,
+        parent,
         NodeKind::ProcessingInstruction {
           target: pi.target.to_string(),
           data: pi.value.unwrap_or("").to_string(),
         },
-        Some(parent),
-        /* inert_subtree */ false,
       );
       return Some(id);
     }
@@ -171,11 +184,13 @@ fn create_doctype_node(doc: &mut Document, parent: NodeId, doctype: &ExtractedDo
     /* inert_subtree */ false,
   );
   let idx = doc.nodes[parent.index()].children.len();
-  doc.live_range_pre_insert_steps(
-    parent,
-    doc.tree_child_index_from_raw_index_for_range(parent, idx),
-    doc.inserted_tree_children_count_for_range(parent, &[id]),
-  );
+  if !doc.ranges.is_empty() {
+    doc.live_range_pre_insert_steps(
+      parent,
+      doc.tree_child_index_from_raw_index_for_range(parent, idx),
+      doc.inserted_tree_children_count_for_range(parent, &[id]),
+    );
+  }
   doc.nodes[parent.index()].children.push(id);
   doc.nodes[id.index()].parent = Some(parent);
   id
