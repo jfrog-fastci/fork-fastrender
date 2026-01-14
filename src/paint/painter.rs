@@ -121,10 +121,12 @@ use crate::style::types::MaskOrigin;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
 use crate::style::types::Overflow;
+use crate::style::types::TextWrap;
 use crate::style::types::TextDecorationLine;
 use crate::style::types::TextDecorationSkipInk;
 use crate::style::types::TextDecorationStyle;
 use crate::style::types::TextDecorationThickness;
+use crate::style::types::WhiteSpace;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
@@ -10631,8 +10633,8 @@ impl Painter {
         };
         // HTML `<input>` controls paint their value as a single line without wrapping; overflow is
         // handled via clipping/scrolling rather than soft line breaks.
-        text_style.white_space = crate::style::types::WhiteSpace::Nowrap;
-        text_style.text_wrap = crate::style::types::TextWrap::NoWrap;
+        text_style.white_space = WhiteSpace::Nowrap;
+        text_style.text_wrap = TextWrap::NoWrap;
         let mut rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;
         if !matches!(control.appearance, Appearance::None) {
