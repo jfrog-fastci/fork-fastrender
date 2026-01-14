@@ -270,6 +270,73 @@ fn derived_constructor_direct_eval_new_target_in_arrow_is_allowed_pre_super() ->
 }
 
 #[test]
+fn derived_constructor_super_call_in_arrow_param_default_can_escape_constructor() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B { constructor() { this.x = 1; } }
+      class C extends B {
+        constructor() {
+          // Calling `super()` from an arrow *parameter default* must still initialize the derived
+          // constructor `this` binding, and subsequent calls must throw.
+          let f = (ignored = super()) => { this.after = this.x; return this; };
+          return f;
+        }
+      }
+
+      let f = new C();
+      let o = f();
+      let second;
+      try { f(); second = "no"; } catch (e) { second = e.name; }
+      o.after === 1 && o instanceof C && second === "ReferenceError"
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_super_computed_get_in_arrow_param_default_throws_before_evaluating_key(
+) -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B {
+        constructor() { this._x = 1; }
+        get x(){ return this._x; }
+      }
+
+      class C extends B {
+        constructor() {
+          let keyEvaluated = false;
+          let key = () => { keyEvaluated = true; return "x"; };
+
+          // Super property access inside an arrow parameter default must not evaluate the computed
+          // key before `super()`.
+          let f = (v = super[key()]) => v;
+
+          let before;
+          try { f(); before = "no"; } catch (e) { before = e.name; }
+          let keyBefore = keyEvaluated;
+
+          super();
+
+          keyEvaluated = false;
+          let after = f();
+          let keyAfter = keyEvaluated;
+
+          this.ok =
+            before === "ReferenceError" &&
+            keyBefore === false &&
+            after === 1 &&
+            keyAfter === true;
+        }
+      }
+
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> Result<(), VmError> {
   assert_async_out_in_ast_and_compiled(
     r#"
