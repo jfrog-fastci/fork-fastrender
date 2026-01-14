@@ -149,6 +149,8 @@ impl SiteKey {
   /// navigation with no parent inheritance.
   ///
   /// This is intentionally a thin wrapper over [`site_key_for_navigation`].
+  ///
+  /// This is equivalent to `site_key_for_navigation(url.as_str(), None, false)`.
   pub fn from_parsed_url(url: &Url) -> SiteKey {
     site_key_for_navigation(url.as_str(), None, false)
   }
