@@ -10,7 +10,7 @@ use url::Url;
 
 use super::support::{
   create_tab_msg, drain_for, navigate_msg, pointer_down, pointer_move, pointer_up, rgba_at,
-  scroll_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated, TempSite,
+  scroll_msg, viewport_changed_msg, TempSite,
 };
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
@@ -36,6 +36,37 @@ fn wait_for_frame_ready(
       Ok(_) => continue,
       Err(RecvTimeoutError::Timeout) => continue,
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected while waiting for frame"),
+    }
+  }
+}
+
+fn wait_for_frame_ready_scrolled_to(
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  expected_scroll_y: f32,
+  timeout: Duration,
+) -> RenderedFrame {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    assert!(
+      !remaining.is_zero(),
+      "timed out waiting for FrameReady with scroll y≈{expected_scroll_y} for {tab_id:?}"
+    );
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => {
+        if (frame.scroll_state.viewport.y - expected_scroll_y).abs() < 2.0 {
+          return frame;
+        }
+      }
+      Ok(_) => continue,
+      Err(RecvTimeoutError::Timeout) => continue,
+      Err(RecvTimeoutError::Disconnected) => {
+        panic!("worker disconnected while waiting for scrolled frame")
+      }
     }
   }
 }
@@ -171,21 +202,15 @@ fn click_fixed_link_after_scroll_hits_link() {
   // protocol no longer guarantees this. Drain briefly so later waits observe the scroll state
   // produced by the scroll message below (without hanging if no such update is sent).
   let _ = drain_for(&ui_rx, Duration::from_millis(200));
-
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll");
 
-  let (frame_after_scroll, scroll) =
-    wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, TIMEOUT);
-  assert_eq!(
-    frame_after_scroll.scroll_state, scroll,
-    "FrameReady.scroll_state should match ScrollStateUpdated after scroll"
-  );
+  let frame_after_scroll = wait_for_frame_ready_scrolled_to(&ui_rx, tab_id, 500.0, TIMEOUT);
   assert!(
-    (scroll.viewport.y - 500.0).abs() < 2.0,
+    (frame_after_scroll.scroll_state.viewport.y - 500.0).abs() < 2.0,
     "expected viewport scroll y≈500 after scroll, got {}",
-    scroll.viewport.y
+    frame_after_scroll.scroll_state.viewport.y
   );
 
   // Fixed link should stay pinned to the top of the viewport after scrolling.
