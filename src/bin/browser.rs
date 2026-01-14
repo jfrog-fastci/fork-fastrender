@@ -4425,8 +4425,8 @@ struct BrowserCliArgs {
 
   /// Directory to save downloaded files
   ///
-  /// When unset, defaults to `FASTR_BROWSER_DOWNLOAD_DIR`, then to the OS downloads directory, then
-  /// to the current working directory.
+  /// When unset, defaults to `FASTR_BROWSER_DOWNLOAD_DIR` (legacy alias: `FASTR_DOWNLOAD_DIR`), then
+  /// to the OS downloads directory, then to the current working directory.
   #[arg(long = "download-dir", value_name = "PATH")]
   download_dir: Option<std::path::PathBuf>,
 
