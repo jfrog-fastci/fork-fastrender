@@ -282,13 +282,9 @@ impl<'a> Parser<'a> {
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: !is_module,
-                // Allow `await` only when nested within a function's await context (i.e. an enclosing
-                // async function), but not at top-level module/script.
-                //
-                // Note: `static {}` blocks are not function bodies and set `p.in_function = 0` above
-                // to ensure `return` statements are always rejected. Use the saved `prev_in_function`
-                // here to detect whether the block was nested within an enclosing function.
-                await_expr_allowed: ctx.rules.await_expr_allowed && prev_in_function > 0,
+                // Allow `await` expressions when permitted by the surrounding parsing context (e.g.
+                // top-level module code or an enclosing async function).
+                await_expr_allowed: ctx.rules.await_expr_allowed,
                 yield_expr_allowed: false,
               });
               let body =
