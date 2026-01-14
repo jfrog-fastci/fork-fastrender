@@ -23733,7 +23733,8 @@ fn async_eval_expr_chain(
       // `super` is not an ordinary expression and is not evaluated as the computed-member base.
       async_computed_member_after_base(evaluator, scope, &member.stx, Value::Undefined)
     }
-    Expr::ComputedMember(member) => match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+    Expr::ComputedMember(member) => match async_eval_chain_base(evaluator, scope, &member.stx.object)?
+    {
       AsyncEval::Complete(base) => {
         async_computed_member_after_base(evaluator, scope, &member.stx, base)
       }
@@ -25192,9 +25193,8 @@ fn async_eval_assignment_to_computed_member(
     // Evaluating a super property reference requires an initialized `this` binding. In derived
     // constructors before `super()`, this check happens before evaluating the computed key
     // expression.
-    let receiver = async_get_super_receiver(evaluator, scope)?;
-
     // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
+    let receiver = async_get_super_receiver(evaluator, scope)?;
     let mut member_scope = scope.reborrow();
     member_scope.push_root(receiver)?;
     match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
@@ -25956,9 +25956,8 @@ fn async_eval_update_expression(
         // Evaluating a super property reference requires an initialized `this` binding. In derived
         // constructors before `super()`, this check must happen **before** evaluating the computed
         // key expression.
-        let receiver = async_get_super_receiver(evaluator, scope)?;
-
         // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
+        let receiver = async_get_super_receiver(evaluator, scope)?;
         let mut member_scope = scope.reborrow();
         member_scope.push_root(receiver)?;
         match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
