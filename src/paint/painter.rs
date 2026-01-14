@@ -10356,10 +10356,17 @@ impl Painter {
       TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
       runs.iter().map(|run| run.advance).sum()
     };
+    let empty_runs: Arc<Vec<ShapedRun>> = Arc::new(Vec::new());
     let shape_text_runs =
-      |painter: &mut Self, text: &str, style: &ComputedStyle| -> Vec<ShapedRun> {
+      |painter: &mut Self, text: &str, style: &ComputedStyle| -> Arc<Vec<ShapedRun>> {
         if text.is_empty() {
-          return Vec::new();
+          return Arc::clone(&empty_runs);
+        }
+        if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+          return painter
+            .shaper
+            .shape_arc(text, style, &painter.font_ctx)
+            .unwrap_or_else(|_| Arc::clone(&empty_runs));
         }
         painter
           .shaper
@@ -10372,9 +10379,9 @@ impl Painter {
               style.letter_spacing,
               style.word_spacing,
             );
-            runs
+            Arc::new(runs)
           })
-          .unwrap_or_default()
+          .unwrap_or_else(|| Arc::clone(&empty_runs))
       };
 
     match &control.control {
@@ -10692,7 +10699,7 @@ impl Painter {
           let metrics_runs = shape_text_runs(self, sample_text, &text_style);
           let metrics = TextItem::metrics_from_runs(
             &self.font_ctx,
-            &metrics_runs,
+            metrics_runs.as_ref(),
             line_height,
             text_style.font_size,
           );
@@ -10716,7 +10723,7 @@ impl Painter {
           } else {
             0.0
           };
-          let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(display_text, text_runs.as_ref(), total_advance);
 
           if !matches!(kind, TextControlKind::Password) && text_style.color.a > f32::EPSILON {
             if let Some((pre_start, pre_end)) = preedit_range {
@@ -10731,7 +10738,7 @@ impl Painter {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     display_text,
-                    &text_runs,
+                    text_runs.as_ref(),
                     pre_start,
                     pre_end,
                   )
@@ -10766,7 +10773,7 @@ impl Painter {
               } else {
                 crate::text::caret::selection_segments_for_char_range(
                   display_text,
-                  &text_runs,
+                  text_runs.as_ref(),
                   sel_start,
                   sel_end,
                 )
@@ -11022,7 +11029,7 @@ impl Painter {
         let metrics_runs = shape_text_runs(self, metrics_sample, &text_style);
         let metrics = TextItem::metrics_from_runs(
           &self.font_ctx,
-          &metrics_runs,
+          metrics_runs.as_ref(),
           line_height,
           text_style.font_size,
         );
@@ -11105,7 +11112,7 @@ impl Painter {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
-          let caret_stops = caret_stops_for_runs(line_text, &line_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(line_text, line_runs.as_ref(), total_advance);
 
           let baseline_y = line_rect.y() + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -11130,7 +11137,7 @@ impl Painter {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     line_text,
-                    &line_runs,
+                    line_runs.as_ref(),
                     start_col,
                     end_col,
                   )
@@ -11185,7 +11192,7 @@ impl Painter {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     line_text,
-                    &line_runs,
+                    line_runs.as_ref(),
                     start_col,
                     end_col,
                   )

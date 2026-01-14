@@ -1048,22 +1048,34 @@ impl InlineFormattingContext {
     if inserted.is_empty() {
       return 0.0;
     }
-    match self.pipeline.shape_with_direction(
-      inserted,
-      style,
-      &self.font_context,
-      pipeline_direction(style.direction),
-    ) {
-      Ok(mut runs) => {
-        TextItem::apply_spacing_to_runs(
-          &mut runs,
-          inserted,
-          style.letter_spacing,
-          style.word_spacing,
-        );
-        runs.iter().map(|r| r.advance).sum()
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      match self.pipeline.shape_with_direction_arc(
+        inserted,
+        style,
+        &self.font_context,
+        pipeline_direction(style.direction),
+      ) {
+        Ok(runs) => runs.iter().map(|r| r.advance).sum(),
+        Err(_) => style.font_size * 0.5,
       }
-      Err(_) => style.font_size * 0.5,
+    } else {
+      match self.pipeline.shape_with_direction(
+        inserted,
+        style,
+        &self.font_context,
+        pipeline_direction(style.direction),
+      ) {
+        Ok(mut runs) => {
+          TextItem::apply_spacing_to_runs(
+            &mut runs,
+            inserted,
+            style.letter_spacing,
+            style.word_spacing,
+          );
+          runs.iter().map(|r| r.advance).sum()
+        }
+        Err(_) => style.font_size * 0.5,
+      }
     }
   }
 
