@@ -11911,7 +11911,8 @@ struct BrowserRuntime {
       }
 
       // Release the borrow of `tab.document` before borrowing `tab` mutably again in helper calls.
-      drop(doc);
+      // (`doc` is a reference, so `drop(doc)` would be a no-op and trigger `dropping_references`.)
+      let _ = doc;
 
       // After dispatching keyboard-initiated DOM events (click/submit), pump the JS event loop so
       // follow-up microtasks/timer tasks run before we return to the UI.
