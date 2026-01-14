@@ -3593,6 +3593,7 @@ pub fn chrome_ui_with_bookmarks(
                     } else {
                       ("", None)
                     };
+                    let secondary = secondary.filter(|s| *s != primary);
  
                     ui.vertical(|ui| {
                       // The row has a semantic AccessKit label; avoid duplicating text nodes in the
