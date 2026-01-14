@@ -247,9 +247,7 @@ impl<'a> Parser<'a> {
     // Regular functions do not have a `super` binding.
     self.super_prop_allowed = 0;
     self.super_call_allowed = 0;
-    // Regular (non-arrow) functions introduce their own `arguments` binding, so we allow
-    // `arguments` references within them even if the surrounding parse context is a class field
-    // initializer or static block.
+    // Non-arrow functions introduce their own `arguments` binding.
     self.disallow_arguments_in_class_init = 0;
     let res = self.parse_func_block_body(ctx);
     self.new_target_allowed = prev_new_target_allowed;
@@ -277,7 +275,8 @@ impl<'a> Parser<'a> {
       // within them); it is never valid in methods/fields/static blocks.
       self.super_call_allowed = 0;
     }
-    // Methods are non-arrow functions and have their own `arguments` binding.
+    // Methods (including constructors) are non-arrow functions and introduce their own `arguments`
+    // binding.
     self.disallow_arguments_in_class_init = 0;
     let res = self.parse_func_block_body(ctx);
     self.new_target_allowed = prev_new_target_allowed;
