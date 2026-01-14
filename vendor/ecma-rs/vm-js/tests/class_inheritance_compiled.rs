@@ -1107,3 +1107,50 @@ fn derived_ctor_eval_created_arrow_this_escapes_without_super_and_throws_when_ca
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_param_super_method_call_after_param_super_call_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B { __m() { return this.__x; } }
+      class D extends B {
+        constructor(a = super(), b = (this.__x = 123, super.__m())) {
+          ok = b === 123 && this.__x === 123;
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_computed_call_after_super_evaluates_key_and_args_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var key_side = 0;
+      var arg_side = 0;
+      var ok = false;
+      class B { __m(x) { return x; } }
+      class D extends B {
+        constructor() {
+          let f = () => super[(key_side = 1, "__m")]((arg_side = 1, 123));
+          super();
+          ok = f() === 123 && key_side === 1 && arg_side === 1;
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
