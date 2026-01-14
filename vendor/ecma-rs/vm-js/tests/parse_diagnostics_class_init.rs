@@ -16,11 +16,11 @@ fn assert_syntax_error(err: VmError) -> Vec<diagnostics::Diagnostic> {
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_async_function_is_vmjs0004() {
+fn await_expression_in_class_static_block_in_non_async_function_is_vmjs0004() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(
     rt
-      .exec_script("async function f(){ class C { static { await 0; } } }")
+      .exec_script("function f(){ class C { static { await 0; } } }")
       .unwrap_err(),
   );
   assert!(
