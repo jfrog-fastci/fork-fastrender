@@ -498,3 +498,77 @@ fn async_generator_optional_super_computed_member_call_short_circuits_and_skips_
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_optional_chain_on_super_property_skips_yield_star_in_computed_key(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      var side = 0;
+
+      async function* innerGen() { yield "should-not-yield"; return "k"; }
+      function inner() { side++; return innerGen(); }
+
+      class B {}
+      class D extends B {
+        async *gen() {
+          return super.missing?.[(yield* inner())];
+        }
+      }
+
+      async function f() {
+        const it = (new D()).gen();
+        const r = await it.next();
+        return r.value === undefined && r.done === true && side === 0;
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_optional_chain_after_super_property_skips_yield_star_in_computed_key(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      var side = 0;
+
+      async function* innerGen() { yield "should-not-yield"; return "k"; }
+      function inner() { side++; return innerGen(); }
+
+      class B {}
+      class D extends B {
+        async *gen() {
+          // If `super.missing` is nullish, the entire optional chain should short-circuit without
+          // evaluating any following member operations (including `yield*` in computed keys).
+          return super.missing?.a[(yield* inner())];
+        }
+      }
+
+      async function f() {
+        const it = (new D()).gen();
+        const r = await it.next();
+        return r.value === undefined && r.done === true && side === 0;
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
