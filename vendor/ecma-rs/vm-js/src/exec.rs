@@ -2,7 +2,8 @@ use crate::bigint::JsBigInt;
 use crate::async_generator::{AsyncYieldStar, YieldStarStep};
 use crate::destructure::{
   bind_assignment_target, bind_pattern, is_anonymous_function_definition,
-  maybe_set_anonymous_function_name, BindingKind,
+  maybe_set_anonymous_function_name, maybe_set_anonymous_function_name_for_property_key,
+  BindingKind,
 };
 use crate::error_object::new_error;
 use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
@@ -12992,19 +12993,19 @@ impl<'a> Evaluator<'a> {
           // ECMA-262 `SuperProperty : super [ Expression ]`:
           // - `GetThisBinding` must be observed before any key side effects (handled above),
           // - the key expression is evaluated to a value before `GetSuperBase`, and
-          // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
-          //   coercion does not affect the resolved super base (test262:
-          //   `prop-expr-getsuperbase-before-topropertykey-*`).
-          let base = self.get_super_base(&mut key_scope)?;
-          // Root the captured super base across `ToPropertyKey` and subsequent dereference:
-          // - key conversion can invoke user code / trigger GC, and may mutate the home object's
-          //   prototype (potentially making the original base unreachable),
-          // - `GetValue`/`PutValue` can invoke accessors/Proxy traps and trigger GC.
-          key_scope.push_root(base)?;
+           // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
+           //   coercion does not affect the resolved super base (test262:
+           //   `prop-expr-getsuperbase-before-topropertykey-*`).
+           let base = self.get_super_base(&mut key_scope)?;
+           // Root the captured super base across `ToPropertyKey` and subsequent dereference:
+           // - key conversion can invoke user code / trigger GC, and may mutate the home object's
+           //   prototype (potentially making the original base unreachable),
+           // - `GetValue`/`PutValue` can invoke accessors/Proxy traps and trigger GC.
+           key_scope.push_root(base)?;
 
-          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-          // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
-          match key {
+           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+           // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
+           match key {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
           };
@@ -13328,68 +13329,33 @@ impl<'a> Evaluator<'a> {
     reference: &Reference<'_>,
     value: Value,
   ) -> Result<(), VmError> {
-    // Name inference only applies when the initializer expression is *syntactically* an anonymous
-    // function/class definition (not based on the runtime value).
-    if !is_anonymous_function_definition(right) {
-      return Ok(());
-    }
-
-    let Value::Object(func_obj) = value else {
-      return Ok(());
-    };
-
-    // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
-    // are not function objects and should not have their `name` mutated.
-    let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-      Ok(f) => (
-        f.name,
-        matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
-      ),
-      Err(VmError::NotCallable) => return Ok(()),
-      Err(err) => return Err(err),
-    };
-
-    // Name inference does not apply to anonymous built-in/native functions. `vm-js` represents
-    // user-defined class constructors as native functions (so they can throw when called without
-    // `new`), so keep name inference enabled for constructable native functions.
-    if is_native_non_constructable {
-      return Ok(());
-    }
-    if !scope
-      .heap()
-      .get_string(current_name)?
-      .as_code_units()
-      .is_empty()
-    {
-      return Ok(());
-    }
-
-    let key = match *reference {
+    // Name inference for assignment and logical assignment operators.
+    //
+    // This is based on the *assignment target reference* (binding name / property key), not on the
+    // RHS expression syntax. This allows assignments like:
+    //   `x &&= await Promise.resolve(function() {})`
+    // to infer `"x"` after the await completes.
+    //
+    // For binding references, `parse-js` preserves parentheses, and name inference must not apply
+    // to parenthesized identifier targets like `(x) = ...` (ECMA-262 `IsIdentifierRef`).
+    //
+    // Private references do not participate in name inference.
+    let inferred_key = match *reference {
       Reference::Binding(name) => {
-        // For binding assignments, ECMAScript `IsIdentifierRef` excludes parenthesized identifiers
-        // from name inference.
         if !is_identifier_ref(left) {
           return Ok(());
         }
         let name_s = scope.alloc_string(name)?;
-        // Root the allocated key string across `set_function_name`, which can allocate/GC.
-        scope.push_root(Value::String(name_s))?;
-        PropertyKey::String(name_s)
+        PropertyKey::from_string(name_s)
       }
-      Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => {
-        // Root the key across `set_function_name`, which can allocate/GC.
-        scope.push_root(match key {
-          PropertyKey::String(s) => Value::String(s),
-          PropertyKey::Symbol(s) => Value::Symbol(s),
-        })?;
-        key
-      }
-      // Private-name references never participate in function name inference.
+      Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => key,
       Reference::Private { .. } => return Ok(()),
     };
 
-    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
-    Ok(())
+    // Root `right` so the signature stays stable with older call sites; the value-based inference
+    // implemented here does not consult the RHS syntax.
+    let _ = right;
+    maybe_set_anonymous_function_name_for_property_key(scope, value, inferred_key)
   }
 
   fn eval_func_expr(
@@ -63577,7 +63543,7 @@ mod tests {
 
           let errName;
           let errMsg;
-          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+           try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
 
           super();
           // `ToPropertyKey` mutates D.prototype's prototype, but it must not affect the super base

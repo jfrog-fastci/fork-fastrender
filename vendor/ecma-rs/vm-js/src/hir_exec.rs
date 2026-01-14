@@ -10469,6 +10469,10 @@ impl<'vm> HirEvaluator<'vm> {
     };
     set_scope.push_roots(&[base, key_root, value])?;
 
+    // Destructuring assignment member targets participate in anonymous function name inference when
+    // assigning a function value with a default empty `"name"` property.
+    crate::destructure::maybe_set_anonymous_function_name_for_property_key(&mut set_scope, value, key)?;
+
     // Spec: `PutValue` uses `ToObject` and then calls `[[Set]]` with the *original* base value as
     // the receiver.
     let obj = set_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;

@@ -483,15 +483,16 @@ pub(crate) fn maybe_set_anonymous_function_name_for_property_key(
     return Ok(());
   }
 
+  // Root the function object, inferred name key, and `"name"` key across `HasOwnProperty` +
+  // `SetFunctionName` (which can allocate).
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(func_obj))?;
-
-  // Root the `"name"` key and inferred name key across `HasOwnProperty` + `SetFunctionName`, which
-  // can allocate.
+  root_property_key(&mut scope, name)?;
   let name_key_s = scope.common_key_name()?;
   scope.push_root(Value::String(name_key_s))?;
 
-  // Spec-ish gating: only overwrite the default empty `"name"` property.
+  // Spec-ish gating: only overwrite the default empty `"name"` property. If user code has already
+  // installed an own `"name"` (e.g. `class { static name() {} }`), preserve it.
   if let Some(existing) = scope
     .heap()
     .object_get_own_property(func_obj, &PropertyKey::String(name_key_s))?
@@ -512,7 +513,6 @@ pub(crate) fn maybe_set_anonymous_function_name_for_property_key(
     }
   }
 
-  root_property_key(&mut scope, name)?;
   crate::function_properties::set_function_name(&mut scope, func_obj, name, None)?;
   Ok(())
 }
@@ -585,7 +585,6 @@ fn assign_to_private_member(
     }
   }
 }
-
 fn bind_object_pattern(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -2258,6 +2257,11 @@ fn assign_to_property_key(
   let roots = [base, key_root, value];
   set_scope.push_roots(&roots)?;
 
+  // Function/class name inference for destructuring assignment member targets: `PutValue` itself
+  // does not participate in `NamedEvaluation`, so apply `SetFunctionName` here when assigning a
+  // function value with a default empty `"name"` property.
+  maybe_set_anonymous_function_name_for_property_key(&mut set_scope, value, key)?;
+
   // `PutValue` for property references uses `ToObject(base)` for the target object, but uses the
   // original base value (which may be a primitive) as the receiver.
   let object = match set_scope.to_object(vm, host, hooks, base) {
@@ -2314,6 +2318,8 @@ fn assign_to_super_member(
   let key_s = set_scope.alloc_string(key)?;
   set_scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
+
+  maybe_set_anonymous_function_name_for_property_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Mirror `PutValue` null/undefined base behaviour by using `ToObject(null)` for the error.
@@ -2373,6 +2379,8 @@ fn assign_to_super_computed_member(
     Err(err) => return Err(err),
   };
   root_property_key(&mut set_scope, key)?;
+
+  maybe_set_anonymous_function_name_for_property_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Ensure `ToPropertyKey` happens before throwing for a `null` super base.

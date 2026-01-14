@@ -34652,16 +34652,16 @@ mod object_builtins_regression_tests {
           const toString = Object.prototype.toString;
           const failures = [];
 
-           // Iterator: removing @@toStringTag from %ArrayIteratorPrototype% should fall back to the
-           // inherited tag from %IteratorPrototype% ("Iterator"). Non-string tags still fall back to
-           // builtinTag ("Object").
-           const arrIter = [][Symbol.iterator]();
-           const arrIterProto = Object.getPrototypeOf(arrIter);
-           const okArrIterDefault = toString.call(arrIter) === "[object Array Iterator]";
-           Object.defineProperty(arrIterProto, Symbol.toStringTag, { configurable: true, value: null });
-           const okArrIterNull = toString.call(arrIter) === "[object Object]";
-           delete arrIterProto[Symbol.toStringTag];
-           const okArrIterFallback = toString.call(arrIter) === "[object Iterator]";
+          // Iterator: removing %ArrayIteratorPrototype%[@@toStringTag] should fall back to
+          // %IteratorPrototype%[@@toStringTag] ("Iterator"). Non-string tags still fall back to the
+          // builtinTag ("Object").
+          const arrIter = [][Symbol.iterator]();
+          const arrIterProto = Object.getPrototypeOf(arrIter);
+          const okArrIterDefault = toString.call(arrIter) === "[object Array Iterator]";
+          Object.defineProperty(arrIterProto, Symbol.toStringTag, { configurable: true, value: null });
+          const okArrIterNull = toString.call(arrIter) === "[object Object]";
+          delete arrIterProto[Symbol.toStringTag];
+          const okArrIterFallback = toString.call(arrIter) === "[object Iterator]";
 
           // Generators: when @@toStringTag is present but non-string, Object.prototype.toString
           // must fall back to the built-in tag ("Object").
