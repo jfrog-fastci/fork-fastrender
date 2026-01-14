@@ -136,7 +136,9 @@ Ways to produce traces:
 
 - `pageset_progress --trace-failures` or `--trace-slow-ms <ms>` to generate traces under `target/pageset/traces/`.
 - `FASTR_TRACE_OUT=/tmp/trace.json` with `render_pages` / `fetch_and_render` (see `docs/perf-logging.md`).
-- `FASTR_TRACE_MAX_EVENTS=<N>` caps the number of events retained per render (default 200000).
+- `FASTR_TRACE_MAX_EVENTS=<N>` caps the number of events retained per trace (default 200000). This
+  applies to both `FASTR_TRACE_OUT` (renderer pipeline) and `FASTR_BROWSER_TRACE_OUT` (windowed
+  browser UI).
 
 ### Adding new spans
 
