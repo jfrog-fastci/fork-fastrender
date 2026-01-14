@@ -1,3 +1,8 @@
+//! WebM / Matroska demuxer.
+//!
+//! Safety: encoded packet payloads are capped at [`MAX_WEBM_PACKET_BYTES`] to avoid unbounded memory
+//! usage when demuxing corrupted/adversarial files containing absurdly large blocks.
+
 use crate::error::{RenderError, RenderStage};
 use crate::media::track_selection::{
   select_primary_audio_track_id, select_primary_video_track_id, TrackCandidate, TrackFilterMode,
