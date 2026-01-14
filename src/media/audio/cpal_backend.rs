@@ -1804,10 +1804,13 @@ where
           let playback_timestamp = ts.playback;
           let latency = playback_timestamp.duration_since(&callback_timestamp);
 
+          let mut callback_period_nanos: Option<u64> = None;
           if let Some(span) = callback_span.as_mut() {
             if let Some(prev) = last_callback_timestamp.as_ref() {
               if let Some(period) = callback_timestamp.duration_since(prev) {
-                span.arg_u64("callback_period_nanos", duration_to_nanos_u64(period));
+                let nanos = duration_to_nanos_u64(period);
+                span.arg_u64("callback_period_nanos", nanos);
+                callback_period_nanos = Some(nanos);
               }
             }
           }
@@ -1859,13 +1862,13 @@ where
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
             let callback_end = Instant::now();
+            let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
             // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
             // pure frame counter when unavailable.
             let device_time_at_end = {
               let playback = playback_timestamp;
               let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
-              let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
               let since_origin = playback_origin
                 .as_ref()
@@ -1884,6 +1887,19 @@ where
 
               Some(device_time_at_end)
             };
+
+            if let Some(span) = callback_span.as_mut() {
+              let expected_period_nanos = duration_to_nanos_u64(buffer_duration);
+              span.arg_u64("callback_expected_period_nanos", expected_period_nanos);
+              if let Some(actual) = callback_period_nanos {
+                let actual = i64::try_from(actual).unwrap_or(i64::MAX);
+                let expected = i64::try_from(expected_period_nanos).unwrap_or(i64::MAX);
+                span.arg_i64(
+                  "callback_period_delta_nanos",
+                  actual.saturating_sub(expected),
+                );
+              }
+            }
 
             clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
             clock_updated = true;
