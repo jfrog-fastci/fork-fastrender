@@ -92,6 +92,13 @@ static UI_WORKER_SCROLL_BLIT_USED_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "browser_ui")]
 static UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Global counter for how many scroll-triggered paints were aborted due to a scroll paint deadline.
+///
+/// This is a lightweight integration-test hook used to assert that the optional scroll paint
+/// deadline does not cause a runaway retry loop.
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_SCROLL_PAINT_DEADLINE_TIMEOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Returns the number of renderers built by the UI worker so far (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn renderer_build_count_for_test() -> usize {
@@ -196,6 +203,18 @@ pub fn disable_tick_stats_for_test() {
 pub fn reset_scroll_blit_stats_for_test() {
   UI_WORKER_SCROLL_BLIT_USED_COUNT.store(0, Ordering::Relaxed);
   UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Returns the number of scroll paint deadline timeouts observed so far (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn scroll_paint_deadline_timeout_count_for_test() -> usize {
+  UI_WORKER_SCROLL_PAINT_DEADLINE_TIMEOUT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the per-process scroll paint deadline timeout counter (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_scroll_paint_deadline_timeout_count_for_test() {
+  UI_WORKER_SCROLL_PAINT_DEADLINE_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Navigation URL that triggers the UI worker crash test when opted in.
@@ -868,6 +887,10 @@ struct TabState {
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
   force_repaint: bool,
+  /// Backoff timestamp after a scroll paint deadline timeout.
+  ///
+  /// When set and in the future, the tab is not considered paintable even if `needs_repaint==true`.
+  repaint_after: Option<Instant>,
 
   tick_time: Duration,
   /// Tick-time (animation sampling time) of the last `FrameReady` emitted for this tab.
@@ -932,6 +955,7 @@ impl TabState {
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
+      repaint_after: None,
       tick_time: Duration::ZERO,
       last_painted_tick_time: Duration::ZERO,
       media: TabMediaWakeState::default(),
@@ -2725,6 +2749,12 @@ enum SnapshotKind {
   Paint,
 }
 
+enum RecvMessageResult {
+  Message(UiToWorker),
+  Timeout,
+  Disconnected,
+}
+
 fn combine_cancel_callbacks(
   primary: Arc<crate::render_control::CancelCallback>,
   secondary: Option<Arc<crate::render_control::CancelCallback>>,
@@ -2739,15 +2769,31 @@ fn combine_cancel_callbacks(
   }
 }
 
-fn scroll_paint_budget_from_env() -> Option<std::time::Duration> {
-  let raw = std::env::var("FASTR_SCROLL_PAINT_BUDGET_MS").ok()?;
+fn env_u64_ms(var: &str) -> Option<u64> {
+  let raw = std::env::var(var).ok()?;
   let raw = raw.trim();
   if raw.is_empty() {
     return None;
   }
   let raw = raw.replace('_', "");
-  let ms = raw.parse::<u64>().ok()?;
-  (ms > 0).then_some(std::time::Duration::from_millis(ms))
+  raw.parse::<u64>().ok()
+}
+
+fn scroll_paint_deadline_from_env() -> Option<Duration> {
+  // Prefer the new name, but keep the legacy var as an alias.
+  env_u64_ms("FASTR_SCROLL_PAINT_DEADLINE_MS")
+    .or_else(|| env_u64_ms("FASTR_SCROLL_PAINT_BUDGET_MS"))
+    .map(Duration::from_millis)
+}
+
+fn scroll_paint_backoff_from_env(deadline: Option<Duration>) -> Duration {
+  if deadline.is_some() {
+    env_u64_ms("FASTR_SCROLL_PAINT_BACKOFF_MS")
+      .map(Duration::from_millis)
+      .unwrap_or_else(|| Duration::from_millis(8))
+  } else {
+    Duration::ZERO
+  }
 }
 
 struct ActiveDownload {
@@ -2766,10 +2812,12 @@ struct BrowserRuntime {
   limits: BrowserLimits,
   /// Optional paint-time deadline budget for scroll-triggered repaints.
   ///
-  /// When configured, `run_paint` applies this as a `RenderDeadline` timeout for paints that were
-  /// triggered by `UiToWorker::Scroll` / `ScrollTo`. This helps keep scrolling responsive by
-  /// allowing slow rasterization work to be abandoned and retried later.
-  scroll_paint_budget: Option<std::time::Duration>,
+  /// When configured, `run_paint` applies this as a `RenderDeadline` timeout for paints triggered by
+  /// `UiToWorker::Scroll` / `ScrollTo`. This helps keep scrolling responsive by allowing expensive
+  /// repaints to be abandoned and retried later.
+  scroll_paint_deadline: Option<Duration>,
+  /// Minimum delay before retrying a scroll-triggered repaint after a deadline timeout.
+  scroll_paint_backoff: Duration,
   download_dir: PathBuf,
   /// In-flight downloads keyed by ID.
   ///
@@ -2873,6 +2921,8 @@ impl BrowserRuntime {
     downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   ) -> Self {
     let base_runtime_toggles = factory.runtime_toggles();
+    let scroll_paint_deadline = scroll_paint_deadline_from_env();
+    let scroll_paint_backoff = scroll_paint_backoff_from_env(scroll_paint_deadline);
     Self {
       ui_rx,
       ui_tx,
@@ -2882,7 +2932,8 @@ impl BrowserRuntime {
       debug_log_enabled: false,
       media_prefs: BrowserMediaPreferences::default(),
       limits: BrowserLimits::from_env(),
-      scroll_paint_budget: scroll_paint_budget_from_env(),
+      scroll_paint_deadline,
+      scroll_paint_backoff,
       download_dir: crate::ui::downloads::default_download_dir(),
       downloads,
       tabs: HashMap::new(),
@@ -2895,11 +2946,24 @@ impl BrowserRuntime {
     }
   }
 
-  fn recv_message_blocking(&mut self) -> Option<UiToWorker> {
+  fn recv_message(&mut self, timeout: Option<Duration>) -> RecvMessageResult {
+    use std::sync::mpsc::RecvTimeoutError;
+
     if let Some(msg) = self.deferred_msgs.pop_front() {
-      return Some(msg);
+      return RecvMessageResult::Message(msg);
     }
-    self.ui_rx.recv().ok()
+
+    match timeout {
+      Some(timeout) => match self.ui_rx.recv_timeout(timeout) {
+        Ok(msg) => RecvMessageResult::Message(msg),
+        Err(RecvTimeoutError::Timeout) => RecvMessageResult::Timeout,
+        Err(RecvTimeoutError::Disconnected) => RecvMessageResult::Disconnected,
+      },
+      None => match self.ui_rx.recv() {
+        Ok(msg) => RecvMessageResult::Message(msg),
+        Err(_) => RecvMessageResult::Disconnected,
+      },
+    }
   }
 
   fn try_recv_message(&mut self) -> Option<UiToWorker> {
@@ -2924,12 +2988,19 @@ impl BrowserRuntime {
 
   fn run(&mut self) {
     loop {
-      // If there is no pending work, block for the next message.
-      if !self.has_pending_jobs() {
-        let Some(msg) = self.recv_message_blocking() else {
-          break;
-        };
-        self.handle_message(msg);
+      // If there is no runnable work, block for the next message (or until the earliest repaint
+      // backoff expires). This avoids busy-looping when a scroll paint timed out and we scheduled a
+      // retry in the near future.
+      let now = Instant::now();
+      if !self.has_runnable_jobs(now) {
+        let timeout = self
+          .next_repaint_after(now)
+          .map(|t| t.saturating_duration_since(now));
+        match self.recv_message(timeout) {
+          RecvMessageResult::Message(msg) => self.handle_message(msg),
+          RecvMessageResult::Timeout => {}
+          RecvMessageResult::Disconnected => break,
+        }
       }
 
       // If a navigation is pending, coalesce any queued messages (viewport changes, rapid scroll
@@ -3046,11 +3117,21 @@ impl BrowserRuntime {
     }
   }
 
-  fn has_pending_jobs(&self) -> bool {
+  fn has_runnable_jobs(&self, now: Instant) -> bool {
+    self.tabs.values().any(|tab| {
+      tab.pending_navigation.is_some()
+        || (tab.needs_repaint && tab.repaint_after.is_none_or(|t| t <= now))
+    })
+  }
+
+  fn next_repaint_after(&self, now: Instant) -> Option<Instant> {
     self
       .tabs
       .values()
-      .any(|tab| tab.pending_navigation.is_some() || tab.needs_repaint)
+      .filter(|tab| tab.needs_repaint)
+      .filter_map(|tab| tab.repaint_after)
+      .filter(|t| *t > now)
+      .min()
   }
 
   fn drain_messages(&mut self) {
@@ -4122,7 +4203,17 @@ impl BrowserRuntime {
             }
           }
 
-            if changed {
+          if changed {
+            if scroll_changed {
+              // Do not override an existing non-scroll repaint reason: if the tab already needs a
+              // repaint for some other reason (viewport change, input), prefer treating the next
+              // paint as non-scroll so it is not subject to the optional scroll paint deadline.
+              if !tab.needs_repaint || tab.next_paint_is_scroll {
+                tab.next_paint_is_scroll = true;
+              }
+            } else {
+              tab.next_paint_is_scroll = false;
+            }
             if scroll_changed && emit_scroll_state_updated {
               // Emit an early scroll-state update so UIs can async-scroll the last painted texture
               // while waiting for the repaint.
@@ -4137,7 +4228,6 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
-            tab.next_paint_is_scroll = scroll_changed;
             if scroll_changed {
               tab.pending_hover_sync_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
             }
@@ -4193,10 +4283,12 @@ impl BrowserRuntime {
                   scroll: tab.scroll_state.clone(),
                 }));
               tab.last_reported_scroll_state = tab.scroll_state.clone();
+              if !tab.needs_repaint || tab.next_paint_is_scroll {
+                tab.next_paint_is_scroll = true;
+              }
               tab.cancel.bump_paint();
               tab.needs_repaint = true;
               tab.scroll_coalesce = true;
-              tab.next_paint_is_scroll = true;
             }
           } else if next != current {
             // No cached layout yet; record the scroll position for the first frame.
@@ -4205,10 +4297,12 @@ impl BrowserRuntime {
             viewport_scrolled = next.viewport != current.viewport;
             tab.scroll_state = next;
             tab.sync_js_scroll_state();
+            if !tab.needs_repaint || tab.next_paint_is_scroll {
+              tab.next_paint_is_scroll = true;
+            }
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
-            tab.next_paint_is_scroll = true;
           }
         } else {
           // No document yet; still record the scroll position for the first frame.
@@ -4579,7 +4673,7 @@ impl BrowserRuntime {
       UiToWorker::FindStop { tab_id } => {
         self.handle_find_stop(tab_id);
       }
-      UiToWorker::RequestRepaint { tab_id, reason: _ } => {
+      UiToWorker::RequestRepaint { tab_id, reason } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
@@ -4588,6 +4682,8 @@ impl BrowserRuntime {
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
         tab.force_repaint = true;
+        tab.next_paint_is_scroll =
+          matches!(reason, crate::ui::messages::RepaintReason::Scroll);
         #[cfg(test)]
         {
           self
@@ -10483,6 +10579,7 @@ impl BrowserRuntime {
   }
 
   fn next_job(&mut self) -> Option<Job> {
+    let now = Instant::now();
     if let Some(active) = self.active_tab {
       if let Some(tab) = self.tabs.get_mut(&active) {
         if let Some(req) = tab.pending_navigation.take() {
@@ -10494,10 +10591,15 @@ impl BrowserRuntime {
       }
     }
     if let Some(active) = self.active_tab {
-      if self.tabs.get(&active).is_some_and(|t| t.needs_repaint) {
+      if self
+        .tabs
+        .get(&active)
+        .is_some_and(|t| t.needs_repaint && t.repaint_after.is_none_or(|t| t <= now))
+      {
         if let Some(tab) = self.tabs.get_mut(&active) {
           let force = std::mem::take(&mut tab.force_repaint);
           let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
+          tab.repaint_after = None;
           tab.needs_repaint = false;
           tab.scroll_coalesce = false;
           tab.tick_coalesce = false;
@@ -10526,11 +10628,14 @@ impl BrowserRuntime {
     if let Some(tab_id) = self
       .tabs
       .iter()
-      .find_map(|(id, tab)| tab.needs_repaint.then_some(*id))
+      .find_map(|(id, tab)| {
+        (tab.needs_repaint && tab.repaint_after.is_none_or(|t| t <= now)).then_some(*id)
+      })
     {
       if let Some(tab) = self.tabs.get_mut(&tab_id) {
         let force = std::mem::take(&mut tab.force_repaint);
         let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
+        tab.repaint_after = None;
         tab.needs_repaint = false;
         tab.scroll_coalesce = false;
         tab.tick_coalesce = false;
@@ -12551,8 +12656,8 @@ impl BrowserRuntime {
     // in-flight work.
     let scroll_deadline = if is_scroll {
       self
-        .scroll_paint_budget
-        .map(|budget| deadline_for(cancel_callback.clone(), Some(budget)))
+        .scroll_paint_deadline
+        .map(|timeout| deadline_for(cancel_callback.clone(), Some(timeout)))
     } else {
       None
     };
@@ -12591,6 +12696,7 @@ impl BrowserRuntime {
     let mut msgs = Vec::new();
 
     let mut should_retry = false;
+    let mut scroll_deadline_timed_out = false;
     let painted = match painted {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
@@ -12604,8 +12710,13 @@ impl BrowserRuntime {
             })
           );
 
-        if cancel_callback() || scroll_timeout {
+        if cancel_callback() {
           should_retry = true;
+        } else if scroll_timeout {
+          should_retry = true;
+          scroll_deadline_timed_out = true;
+          #[cfg(feature = "browser_ui")]
+          UI_WORKER_SCROLL_PAINT_DEADLINE_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
         } else {
           if self.debug_log_enabled {
             msgs.push(WorkerToUi::DebugLog {
@@ -12622,6 +12733,18 @@ impl BrowserRuntime {
       tab.needs_repaint = true;
       if force {
         tab.force_repaint = true;
+      }
+      if is_scroll {
+        tab.next_paint_is_scroll = true;
+      }
+      if scroll_deadline_timed_out {
+        tab.repaint_after = Some(Instant::now() + self.scroll_paint_backoff);
+        if tab.scroll_state != tab.last_reported_scroll_state {
+          msgs.push(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          });
+        }
       }
     }
 

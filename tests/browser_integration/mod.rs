@@ -241,6 +241,7 @@ mod ui_worker_scroll_blit_animation_time;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_fixed_scroll_hit_test;
 mod ui_worker_pointer_hit_test_dedup;
+mod ui_worker_scroll_paint_deadline;
 mod ui_worker_scroll_to_coalescing;
 mod ui_worker_shadow_dom_composed_click;
 mod ui_worker_shutdown;
