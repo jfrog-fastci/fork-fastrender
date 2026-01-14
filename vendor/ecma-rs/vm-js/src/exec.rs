@@ -39661,6 +39661,9 @@ fn gen_eval_assignment_to_computed_member(
   // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
   // reference.
   if matches!(&*member.object.stx, Expr::Super(_)) {
+    // Evaluating a super property reference requires an initialized `this` binding. In derived
+    // constructors before `super()`, this check happens before evaluating the computed key
+    // expression.
     if evaluator.derived_constructor && !evaluator.this_initialized {
       return Err(throw_reference_error(
         evaluator.vm,
