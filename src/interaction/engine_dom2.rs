@@ -359,6 +359,10 @@ impl InteractionEngineDom2 {
   }
 
   fn select_all(&mut self, dom: &Document, focused: NodeId, is_textarea: bool) -> bool {
+    // Selecting all moves the caret/selection via a non-IME interaction, so mirror native UX by
+    // cancelling any active preedit for this control.
+    let mut changed = self.ime_cancel_internal();
+
     let current = if is_textarea {
       dom.textarea_value(focused).ok().unwrap_or_default()
     } else {
@@ -382,7 +386,8 @@ impl InteractionEngineDom2 {
       })
     };
 
-    self.sync_text_edit_paint_state()
+    changed |= self.sync_text_edit_paint_state();
+    changed
   }
 
   fn delete_for_key(
@@ -463,6 +468,10 @@ impl InteractionEngineDom2 {
     key: KeyAction,
     is_textarea: bool,
   ) -> bool {
+    // Keyboard navigation moves caret/selection via a non-IME interaction, so cancel any active
+    // preedit first.
+    let mut changed = self.ime_cancel_internal();
+
     let current = if is_textarea {
       dom.textarea_value(focused).ok().unwrap_or_default()
     } else {
@@ -558,10 +567,11 @@ impl InteractionEngineDom2 {
     }
 
     if edit == original {
-      return false;
+      return changed;
     }
     self.text_edit = Some(edit);
-    self.sync_text_edit_paint_state()
+    changed |= self.sync_text_edit_paint_state();
+    changed
   }
 }
 
@@ -1041,5 +1051,36 @@ mod tests {
     assert!(engine.state.ime_preedit.is_none());
     assert_eq!(input_value(&dom, input_id), "aZbc");
     assert_eq!(engine.text_edit.as_ref().unwrap().caret, 2);
+  }
+
+  #[test]
+  fn arrow_keys_cancel_ime_preedit_for_focused_input() {
+    let mut dom =
+      crate::dom2::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let mut engine = InteractionEngineDom2::new();
+    engine.focus_node_id(&dom, Some(input_id), true);
+
+    // Place caret between "b" and "c".
+    set_text_selection_caret(&mut engine, input_id, 2);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
+  fn select_all_cancels_ime_preedit_for_focused_input() {
+    let mut dom =
+      crate::dom2::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let mut engine = InteractionEngineDom2::new();
+    engine.focus_node_id(&dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+    assert!(engine.key_action(&mut dom, KeyAction::SelectAll));
+    assert!(engine.state.ime_preedit.is_none());
   }
 }
