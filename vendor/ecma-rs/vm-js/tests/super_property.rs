@@ -946,3 +946,48 @@ fn super_property_assignment_with_null_super_base_throws_type_error_compiled() -
   assert_value_is_utf8(&rt, value, "TypeError");
   Ok(())
 }
+
+#[test]
+fn super_property_update_expression_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class B extends A {
+        inc() { return super.x++; }
+      }
+      const b = new B();
+      b._x = 1;
+      const r = b.inc();
+      r === 1 && b._x === 2 && A.prototype._x === undefined
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_compound_assignment_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class B extends A {
+        add() { super.x += 5; return this._x; }
+      }
+      const b = new B();
+      b._x = 1;
+      b.add() === 6 && A.prototype._x === undefined
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
