@@ -114,6 +114,53 @@ fn derived_ctor_arrow_this_observes_initialized_this_after_eval_super_compiled()
 }
 
 #[test]
+fn derived_ctor_eval_super_only_once_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var out = "no error";
+      class B {}
+      class D extends B {
+        constructor() {
+          eval("super()");
+          try { eval("super()"); }
+          catch (e) { out = e.name; }
+        }
+      }
+      new D();
+      out === "ReferenceError"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_indirect_eval_super_is_syntax_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var out = "no error";
+      class B {}
+      class D extends B {
+        constructor() {
+          const e = eval;
+          try { e("super()"); }
+          catch (e) { out = e.name; }
+          super();
+        }
+      }
+      new D();
+      out === "SyntaxError"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn derived_ctor_arrow_this_created_in_eval_observes_initialized_this_after_super_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(

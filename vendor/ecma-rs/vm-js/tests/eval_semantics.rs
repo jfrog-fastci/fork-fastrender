@@ -857,6 +857,63 @@ fn direct_eval_super_call_in_field_initializer_is_syntax_error() {
 }
 
 #[test]
+fn direct_eval_super_only_once_in_derived_constructor() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          let out = "no error";
+          class B {}
+          class D extends B {
+            constructor() {
+              eval("super()");
+              try { eval("super()"); }
+              catch (e) { out = e.name; }
+            }
+          }
+          new D();
+          return out;
+        })()
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "ReferenceError");
+}
+
+#[test]
+fn indirect_eval_super_call_in_derived_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          let out = "no error";
+          class B {}
+          class D extends B {
+            constructor() {
+              const e = eval;
+              try { e("super()"); }
+              catch (e) { out = e.name; }
+              super();
+            }
+          }
+          new D();
+          return out;
+        })()
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
 fn direct_eval_with_multiple_awaits_is_still_direct_if_eval_is_overwritten_between_awaits() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
