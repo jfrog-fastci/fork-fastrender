@@ -934,7 +934,7 @@ mod tests {
 
   #[test]
   fn seek_to_zero_yields_initial_keyframe() {
-    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let bytes = webm_fixture_bytes("test_vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
 
     let video_track = demuxer
