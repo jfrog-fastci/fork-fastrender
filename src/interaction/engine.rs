@@ -1228,6 +1228,88 @@ mod tests {
   }
 
   #[test]
+  fn pointer_selection_collapse_cancels_ime_preedit_for_focused_input() {
+    use crate::style::display::FormattingContextType;
+    use crate::tree::fragment_tree::FragmentNode;
+
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut input_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    input_box.styled_node_id = Some(input_id);
+    let box_tree = BoxTree::new(BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![input_box],
+    ));
+
+    let mut input_box_id = None;
+    let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+    while let Some(node) = stack.pop() {
+      if node.styled_node_id == Some(input_id) {
+        input_box_id = Some(node.id);
+        break;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    let input_box_id = input_box_id.expect("input box id");
+
+    let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+        input_box_id,
+        vec![],
+      )],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Create an active selection. Clicking inside the highlight starts a drag-drop candidate, which
+    // defers selection collapse until mouseup.
+    set_text_selection_range(&mut engine, &mut dom, input_id, 0, "hello".chars().count());
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+
+    assert!(engine.pointer_down_with_click_count(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(10.0, 10.0),
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      1,
+    ));
+    assert!(engine.state.ime_preedit.is_some(), "preedit should survive drag-drop candidate down");
+
+    let (_changed, _action) = engine.pointer_up(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      Point::new(10.0, 10.0),
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      /* allow_default_drop */ false,
+      "https://example.com/index.html",
+      "https://example.com/",
+    );
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
   fn delete_removes_next_character_in_focused_input() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"aあb\"></body></html>").expect("parse");
@@ -9090,6 +9172,14 @@ impl InteractionEngine {
             // Update caret/selection state like a normal pointer interaction, but do not mutate the
             // value until `apply_text_drop` is called.
             if self.state.focused == Some(target_id) {
+              if self
+                .state
+                .ime_preedit
+                .as_ref()
+                .is_some_and(|ime_state| ime_state.node_id == target_id)
+              {
+                dom_changed |= self.ime_cancel_internal();
+              }
               match self.text_edit.as_mut().filter(|edit| edit.node_id == target_id) {
                 Some(edit) => {
                   edit.caret = caret;
@@ -9279,6 +9369,14 @@ impl InteractionEngine {
           .unwrap_or(0);
 
         let next_caret = candidate.down_caret.min(current_len);
+        if self
+          .state
+          .ime_preedit
+          .as_ref()
+          .is_some_and(|ime_state| ime_state.node_id == candidate.node_id)
+        {
+          dom_changed |= self.ime_cancel_internal();
+        }
         let selection_changed = if let Some(edit) = self
           .text_edit
           .as_mut()
