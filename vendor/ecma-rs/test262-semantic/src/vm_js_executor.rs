@@ -1560,13 +1560,40 @@ fn handle_microtask_errors(
     return None;
   }
 
-  // Cancellation should win.
+  // Stack overflow should never be reported as a timeout/cancellation, even if the cancel flag is
+  // set (e.g. due to a race with the cooperative timeout).
+  if let Some(err) = errors.iter().find(|err| {
+    matches!(
+      err,
+      VmError::Termination(term) if matches!(term.reason, TerminationReason::StackOverflow)
+    )
+  }) {
+    return Some(map_vm_error_with_phase(
+      case,
+      source,
+      cancel,
+      runtime,
+      ExecPhase::Runtime,
+      err.clone(),
+    ));
+  }
+
+  // Cancellation should win for other failures.
   if cancel.load(Ordering::Relaxed) {
     return Some(ExecError::Cancelled);
   }
 
-  if errors.iter().any(|e| matches!(e, VmError::Termination(_))) {
-    return Some(ExecError::Cancelled);
+  // If a job hard-terminated (deadline exceeded, interrupt, etc.), map that directly so the runner
+  // can classify it deterministically (most termination reasons map to `Cancelled`).
+  if let Some(err) = errors.iter().find(|e| matches!(e, VmError::Termination(_))) {
+    return Some(map_vm_error_with_phase(
+      case,
+      source,
+      cancel,
+      runtime,
+      ExecPhase::Runtime,
+      err.clone(),
+    ));
   }
 
   // Treat the first job error as a runtime failure.
@@ -2211,6 +2238,50 @@ f(2000);
         panic!("expected JS error, got {err:?} (cancelled={cancelled})");
       };
       assert_eq!(js.phase, ExecPhase::Resolution);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {}",
+        js.message
+      );
+    }
+  }
+
+  #[test]
+  fn microtask_termination_stack_overflow_maps_to_rangeerror_even_when_cancelled() {
+    let case = test_case("microtask_termination_stack_overflow.js");
+    let source = "// dummy source";
+
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
+
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+      let path = PathBuf::from("test/microtask_termination_stack_overflow.js");
+      let mut hooks = Test262ModuleHooks::new(&path);
+
+      let term = vm_js::Termination::new(TerminationReason::StackOverflow, Vec::new());
+      let job = Job::new(vm_js::JobKind::Promise, move |_ctx, _host| {
+        Err(VmError::Termination(term))
+      })
+      .expect("alloc job");
+
+      // Enqueue directly onto the host's microtask queue and run a checkpoint via
+      // `handle_microtask_errors`.
+      hooks.host_enqueue_promise_job(job, None);
+
+      let err = handle_microtask_errors(&case, source, &cancel, &mut runtime, &mut hooks)
+        .unwrap_or_else(|| panic!("expected microtask error (cancelled={cancelled})"));
+
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Runtime);
       assert_eq!(js.typ.as_deref(), Some("RangeError"));
       assert!(
         js.message.to_ascii_lowercase().contains("stack overflow"),
