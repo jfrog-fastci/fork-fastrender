@@ -13,6 +13,8 @@ This fixture directory contains small, deterministic HTML pages for exercising:
 - `basic_audio.html` – `<audio>` pointing at `assets/test_opus.webm`
 - `js_controls.html` – event logging + JS control buttons (play/pause/seek/mute/volume)
 - `autoplay_muted.html` – autoplay+muted smoke test with an on-page indicator
+- `playback_rate.html` – checks that `playbackRate` affects `currentTime` progression (via periodic
+  `timeupdate` events)
 
 ## Assets
 
@@ -37,4 +39,3 @@ ffmpeg -y -hide_banner -loglevel error \
   -map_metadata -1 -fflags +bitexact -flags:a +bitexact \
   tests/pages/fixtures/media_playback/assets/test_opus.webm
 ```
-

@@ -368,6 +368,11 @@ bash scripts/run_limited.sh --as 64G -- \
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
     "file://$PWD/tests/pages/fixtures/media_playback/js_controls.html"
+
+# PlaybackRate + timeupdate smoke test:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+    "file://$PWD/tests/pages/fixtures/media_playback/playback_rate.html"
 ```
 
 Useful runtime toggles while debugging:
@@ -396,15 +401,22 @@ Useful runtime toggles while debugging:
   - Note: when the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op
     sink (push accepts 0 samples).
 
-Note: full end-to-end decode→paint→DOM integration is still in progress. Today these pages are
-primarily a smoke test for `<video>/<audio>` layout and for future playback wiring.
+Note: full end-to-end media decode→paint integration is still in progress. Today these pages
+primarily exercise basic `HTMLMediaElement` API plumbing (`play`/`pause`, `currentTime`,
+`playbackRate`/`defaultPlaybackRate`, periodic `timeupdate`) plus `<video>/<audio>` layout, but they
+do **not** yet render decoded video frames or output audio.
 
 ## Known limitations / TODOs (explicit)
 
-- There is no end-to-end `HTMLMediaElement` playback engine yet (DOM events/state machine, decode
-  scheduling threads, audio output as master clock, etc).
+- `HTMLMediaElement` playback is still largely stubbed:
+  - The DOM layer maintains a best-effort playback clock (`MediaPlaybackControl`) and dispatches
+    basic events (`play`/`playing` + periodic `timeupdate`), but it does not yet drive the native
+    demux/decode pipeline or render decoded video frames.
+  - Readiness state is synthesized: `html_media_element_ensure_loaded` currently "fast-forwards"
+    through `loadedmetadata`/`loadeddata`/`canplay`/`canplaythrough` with a small fixed `duration`
+    so fixtures can test time/seek behavior deterministically.
   - Paint *can* display frames if an app supplies a `MediaFrameProvider`, but nothing in-tree wires
-    `MediaDecodePipeline`/`MediaPlayer` to the DOM yet.
+    `MediaDecodePipeline`/`MediaPlayer` output into the DOM yet.
   - `MediaFrameProvider::audio_frame` is still a stub (`src/media/mod.rs`).
 - MP4 (`Mp4ParseDemuxer`):
   - Seek is not currently keyframe-aware (it does not backtrack to sync samples), so seeking into
