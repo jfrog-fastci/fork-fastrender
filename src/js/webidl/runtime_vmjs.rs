@@ -2410,14 +2410,19 @@ impl<Host: 'static> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<
     // - Promise objects are returned directly when already from the intrinsic %Promise% constructor,
     // - thenables are assimilated via their `then` method, and
     // - the returned value is always a Promise object.
-    let mut dummy_hooks = NoopVmHostHooks;
+    //
     // Root `value` across Promise resolution: `PromiseResolve` can allocate and (when resolving
     // thenables) invoke user code.
+    //
+    // Promise resolution can also enqueue jobs; prefer calling through the real host hooks when
+    // available (native calls). When unavailable (e.g. conversion-only contexts), fall back to a
+    // no-op host hook implementation.
+    let mut noop_hooks = NoopVmHostHooks;
     let promise = webidl_js_runtime::JsRuntime::with_stack_roots(self, &[value], |rt| {
       if let Some(hooks) = rt.vm_host_hooks.as_deref_mut() {
         vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, hooks, value)
       } else {
-        vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, &mut dummy_hooks, value)
+        vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, &mut noop_hooks, value)
       }
     })?;
     self.cx.scope.push_root(promise)?;
