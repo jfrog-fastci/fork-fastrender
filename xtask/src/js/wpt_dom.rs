@@ -123,7 +123,7 @@ pub struct WptDomArgs {
 
   /// Timeout used when a test specifies `timeout=long` (seconds).
   ///
-  /// Overrides `--long-timeout-ms` (which defaults to 120000ms).
+  /// Overrides `--long-timeout-ms` (which defaults to 300000ms).
   #[arg(long, value_name = "SECS")]
   pub long_timeout_secs: Option<u64>,
 

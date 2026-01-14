@@ -49,7 +49,7 @@ function __record_harness_error(err) {
 }
 //
 function setup(func_or_props, maybe_props) {
-  // Minimal `setup()` implementation used by some WPT helpers.
+  // Minimal `setup()` implementation used by upstream WPT helpers.
   //
   // Supported call patterns:
   //   setup({ ...options... })         (ignored)
@@ -83,15 +83,6 @@ function add_result_callback(fn) {
 function add_completion_callback(fn) {
   if (typeof fn !== "function") return;
   __completion_callbacks.push(fn);
-}
-//
-// Upstream WPT provides `setup(fn)` as a convenience for shared harness scripts (e.g. `dom/common.js`)
-// to run initialization before tests are registered. Our offline runner executes scripts
-// synchronously, so we can run the callback immediately.
-function setup(arg) {
-  if (typeof arg === "function") {
-    arg();
-  }
 }
 //
 function __queue_microtask(cb) {
@@ -954,6 +945,40 @@ function test(fn, name) {
   __report_test_result(t);
   __check_complete();
   return t;
+}
+//
+// ---------------------------------------------------------------------------
+// `generate_tests` helper (used by many upstream DOM tests).
+//
+// The upstream WPT harness schedules tests to run later; this minimal harness runs tests eagerly
+// when registered via `test(...)`. Implement `generate_tests` in a closure-free style so it works
+// in the smallest supported JS environment.
+var __generate_tests_current_fn = null;
+var __generate_tests_current_case = null;
+//
+function __generate_tests_runner() {
+  var fn = __generate_tests_current_fn;
+  var t = __generate_tests_current_case;
+  var len = t.length;
+  // Common fast-paths: avoid allocating an `args` array for the typical
+  // `[name, arg1, arg2]` style WPT usage.
+  if (len === 1) return fn();
+  if (len === 2) return fn(t[1]);
+  if (len === 3) return fn(t[1], t[2]);
+  if (len === 4) return fn(t[1], t[2], t[3]);
+  if (len === 5) return fn(t[1], t[2], t[3], t[4]);
+  return fn.apply(null, t.slice(1));
+}
+//
+function generate_tests(fn, tests) {
+  for (var i = 0; i !== tests.length; i++) {
+    var t = tests[i];
+    __generate_tests_current_fn = fn;
+    __generate_tests_current_case = t;
+    test(__generate_tests_runner, t[0]);
+  }
+  __generate_tests_current_fn = null;
+  __generate_tests_current_case = null;
 }
 //
 function async_test(fn, name) {
