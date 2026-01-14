@@ -1559,6 +1559,55 @@ fn range_insert_node_splits_text_and_updates_end_when_collapsed() {
 }
 
 #[test]
+fn range_set_start_end_offsets_on_shadow_host_ignore_shadow_root() {
+  // Range boundary point offsets into a shadow host element must be defined in terms of its light
+  // DOM children; the stored ShadowRoot pseudo-child must not contribute to the offset space.
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  assert_eq!(doc.node(host).children[1], a);
+  assert_eq!(doc.node(host).children[2], b);
+
+  // The host's node-length must exclude the ShadowRoot pseudo-child.
+  assert_eq!(doc.node_length(host).unwrap(), 2);
+
+  // Offsets 0..=nodeLength are valid.
+  for offset in 0..=2 {
+    let range = doc.create_range();
+    doc.range_set_start(range, host, offset).unwrap();
+    doc.range_set_end(range, host, offset).unwrap();
+    assert_range_collapsed(&doc, range, host, offset);
+  }
+
+  // An offset that would only be valid if ShadowRoot were counted as a child must be rejected.
+  let range = doc.create_range();
+  assert_eq!(
+    doc.range_set_start(range, host, 3),
+    Err(DomError::IndexSizeError)
+  );
+  assert_eq!(
+    doc.range_set_end(range, host, 3),
+    Err(DomError::IndexSizeError)
+  );
+}
+
+#[test]
 fn range_insert_node_ignores_shadow_root_in_host_offset_space() {
   // `dom2` stores an attached ShadowRoot as a child of the host element for renderer traversal.
   // Range boundary point offsets into the host must exclude that ShadowRoot so inserting at offset 0
@@ -1600,6 +1649,72 @@ fn range_insert_node_ignores_shadow_root_in_host_offset_space() {
   assert_eq!(doc.range_start_offset(range).unwrap(), 0);
   assert_eq!(doc.range_end_container(range).unwrap(), host);
   assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
+fn range_insert_node_on_shadow_host_inserts_between_light_dom_children() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+  let shadow_root = doc.node(host).children[0];
+  assert!(matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }));
+
+  // Insert at host offset 1 (between #a and #b).
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 1).unwrap();
+
+  let inserted = doc.create_element("i", "");
+  doc.range_insert_node(range, inserted).unwrap();
+
+  assert_eq!(doc.node(host).children, vec![shadow_root, a, inserted, b]);
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_insert_node_on_shadow_host_inserts_after_last_light_dom_child() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+  let shadow_root = doc.node(host).children[0];
+  assert!(matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }));
+
+  // Insert at host offset 2 (after #a and #b).
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 2).unwrap();
+  doc.range_set_end(range, host, 2).unwrap();
+
+  let inserted = doc.create_element("i", "");
+  doc.range_insert_node(range, inserted).unwrap();
+
+  assert_eq!(doc.node(host).children, vec![shadow_root, a, b, inserted]);
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
 }
 
 #[test]

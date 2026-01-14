@@ -14488,7 +14488,6 @@ mod base_url_tests {
 mod media_wakeup_tests {
   use super::*;
   use std::time::{Duration, Instant};
-
   fn recv_media_wake(rx: &WorkerToUiInbox) -> (TabId, Duration, WakeReason) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {

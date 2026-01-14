@@ -7,7 +7,7 @@
 
 use crate::sandbox::SandboxStatus;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinuxNamespacesConfig {
   /// When false, this module is a no-op and returns [`SandboxStatus::Unsupported`].
   pub enabled: bool,

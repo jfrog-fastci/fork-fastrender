@@ -303,7 +303,7 @@ pub enum RendererSeccompPolicy {
   /// network sockets.
   RendererDefault,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RendererSandboxConfig {
   /// Master gate for installing a seccomp syscall filter.
   ///

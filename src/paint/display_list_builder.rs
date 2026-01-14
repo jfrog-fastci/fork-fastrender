@@ -22722,6 +22722,7 @@ mod tests {
     let fragment = FragmentNode::new_with_style(
       Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
       FragmentContent::Replaced {
+        box_id: Some(1),
         replaced_type: ReplacedType::Video {
           src: "v.mp4".to_string(),
           poster: None,
@@ -22729,7 +22730,6 @@ mod tests {
           referrer_policy: None,
           controls: false,
         },
-        box_id: Some(1),
       },
       vec![],
       style,
