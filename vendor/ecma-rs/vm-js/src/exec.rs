@@ -16705,7 +16705,7 @@ pub(crate) enum GenFrame {
     /// the `this` binding / setter receiver for `super.x` / `super[expr]`.
     receiver: Option<Value>,
   },
-  /// Continue an `+=` assignment after evaluating the RHS.
+  /// Continue a compound assignment after evaluating the RHS.
   AssignAddAfterRhs {
     expr: *const BinaryExpr,
     base: Option<Value>,
@@ -36782,14 +36782,7 @@ fn gen_eval_expr_chain(
         }
       }
     }
-    Expr::Binary(binary)
-      if matches!(
-        binary.stx.operator,
-        OperatorName::Assignment
-          | OperatorName::AssignmentAddition
-          | OperatorName::AssignmentExponentiation
-      ) =>
-    {
+    Expr::Binary(binary) if binary.stx.operator.is_assignment() => {
       gen_eval_assignment_expr(evaluator, scope, &binary.stx)
     }
     Expr::Binary(binary) => match gen_eval_expr(evaluator, scope, &binary.stx.left)? {
@@ -38482,6 +38475,46 @@ fn gen_eval_assignment_expr(
       }
     }
 
+    OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder
+    | OperatorName::AssignmentBitwiseAnd
+    | OperatorName::AssignmentBitwiseOr
+    | OperatorName::AssignmentBitwiseXor
+    | OperatorName::AssignmentBitwiseLeftShift
+    | OperatorName::AssignmentBitwiseRightShift
+    | OperatorName::AssignmentBitwiseUnsignedRightShift
+    | OperatorName::AssignmentLogicalAnd
+    | OperatorName::AssignmentLogicalOr
+    | OperatorName::AssignmentNullishCoalescing => {
+      if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+        return Err(VmError::Unimplemented(
+          "compound assignment to destructuring patterns",
+        ));
+      }
+
+      match &*expr.left.stx {
+        Expr::Id(id) => gen_eval_assignment_apply_reference(
+          evaluator,
+          scope,
+          expr,
+          Reference::Binding(id.stx.name.as_str()),
+        ),
+        Expr::IdPat(id) => gen_eval_assignment_apply_reference(
+          evaluator,
+          scope,
+          expr,
+          Reference::Binding(id.stx.name.as_str()),
+        ),
+        Expr::Member(member) => gen_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+        Expr::ComputedMember(member) => {
+          gen_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+        }
+        _ => Err(VmError::Unimplemented("expression is not a reference")),
+      }
+    }
+
     _ => Err(VmError::InvariantViolation(
       "generator assignment evaluator called for non-assignment operator",
     )),
@@ -38859,6 +38892,25 @@ fn gen_eval_assignment_to_super_computed_member_after_member(
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
 
+#[inline]
+fn assignment_op_to_binary_op(operator: OperatorName) -> Option<OperatorName> {
+  match operator {
+    OperatorName::AssignmentAddition => Some(OperatorName::Addition),
+    OperatorName::AssignmentExponentiation => Some(OperatorName::Exponentiation),
+    OperatorName::AssignmentSubtraction => Some(OperatorName::Subtraction),
+    OperatorName::AssignmentMultiplication => Some(OperatorName::Multiplication),
+    OperatorName::AssignmentDivision => Some(OperatorName::Division),
+    OperatorName::AssignmentRemainder => Some(OperatorName::Remainder),
+    OperatorName::AssignmentBitwiseAnd => Some(OperatorName::BitwiseAnd),
+    OperatorName::AssignmentBitwiseOr => Some(OperatorName::BitwiseOr),
+    OperatorName::AssignmentBitwiseXor => Some(OperatorName::BitwiseXor),
+    OperatorName::AssignmentBitwiseLeftShift => Some(OperatorName::BitwiseLeftShift),
+    OperatorName::AssignmentBitwiseRightShift => Some(OperatorName::BitwiseRightShift),
+    OperatorName::AssignmentBitwiseUnsignedRightShift => Some(OperatorName::BitwiseUnsignedRightShift),
+    _ => None,
+  }
+}
+
 fn gen_eval_assignment_apply_reference(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -38938,7 +38990,18 @@ fn gen_eval_assignment_apply_reference(
         }
       }
     }
-    OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation => {
+    OperatorName::AssignmentAddition
+    | OperatorName::AssignmentExponentiation
+    | OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder
+    | OperatorName::AssignmentBitwiseAnd
+    | OperatorName::AssignmentBitwiseOr
+    | OperatorName::AssignmentBitwiseXor
+    | OperatorName::AssignmentBitwiseLeftShift
+    | OperatorName::AssignmentBitwiseRightShift
+    | OperatorName::AssignmentBitwiseUnsignedRightShift => {
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -38953,23 +39016,10 @@ fn gen_eval_assignment_apply_reference(
             let right = v.unwrap_or(Value::Undefined);
             let mut compound_scope = op_scope.reborrow();
             compound_scope.push_root(right)?;
-            let value = match expr.operator {
-              OperatorName::AssignmentAddition => evaluator
-                .addition_operator(&mut compound_scope, left, right)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                })?,
-              OperatorName::AssignmentExponentiation => evaluator
-                .exponentiation_operator(&mut compound_scope, left, right)
-                .map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                })?,
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "generator compound assignment evaluator called for unsupported operator",
-                ))
-              }
-            };
+            let op = assignment_op_to_binary_op(expr.operator).ok_or(VmError::InvariantViolation(
+              "missing binary operator mapping for generator compound assignment",
+            ))?;
+            let value = async_apply_binary_operator(evaluator, &mut compound_scope, op, left, right)?;
             compound_scope.push_root(value)?;
             evaluator
               .put_value_to_reference(&mut compound_scope, &reference, value)
@@ -39030,6 +39080,93 @@ fn gen_eval_assignment_apply_reference(
               key,
               receiver,
               left,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentLogicalAnd
+    | OperatorName::AssignmentLogicalOr
+    | OperatorName::AssignmentNullishCoalescing => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator
+        .get_value_from_reference(&mut op_scope, &reference)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      let should_assign = match expr.operator {
+        OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
+        OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
+        OperatorName::AssignmentNullishCoalescing => is_nullish(left),
+        _ => unreachable!(),
+      };
+      if !should_assign {
+        return Ok(GenEval::Complete(Completion::normal(left)));
+      }
+
+      // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+      op_scope.push_root(left)?;
+
+      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let value = v.unwrap_or(Value::Undefined);
+            op_scope.push_root(value)?;
+            evaluator
+              .maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+            evaluator
+              .put_value_to_reference(&mut op_scope, &reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          let (base, key, receiver) = match reference {
+            Reference::Binding(_) => (None, None, None),
+            Reference::Property { base, key } => {
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(sym) => Value::Symbol(sym),
+              };
+              (Some(base), Some(key_value), None)
+            }
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(sym) => Value::Symbol(sym),
+              };
+              (Some(base), Some(key_value), Some(receiver))
+            }
+            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
+          };
+
+          // Root the reference components so they survive until the next yield boundary.
+          drop(op_scope);
+          if let Some(b) = base {
+            scope.push_root(b)?;
+          }
+          if let Some(k) = key {
+            scope.push_root(k)?;
+          }
+          if let Some(r) = receiver {
+            scope.push_root(r)?;
+          }
+
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::AssignAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base,
+              key,
+              receiver,
             },
           )?;
           Ok(GenEval::Suspend(suspend))
@@ -41690,19 +41827,10 @@ fn gen_resume_from_frames(
                 ))
               }
             };
-            let value = match expr.operator {
-              OperatorName::AssignmentAddition => evaluator
-                .addition_operator(&mut op_scope, left, right)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
-              OperatorName::AssignmentExponentiation => evaluator
-                .exponentiation_operator(&mut op_scope, left, right)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignAddAfterRhs used for non-compound operator",
-                ))
-              }
-            };
+            let op = assignment_op_to_binary_op(expr.operator).ok_or(VmError::InvariantViolation(
+              "AssignAddAfterRhs used for non-compound operator",
+            ))?;
+            let value = async_apply_binary_operator(evaluator, &mut op_scope, op, left, right)?;
             op_scope.push_root(value)?;
             evaluator
               .put_value_to_reference(&mut op_scope, &reference, value)
