@@ -127,3 +127,79 @@ fn compiled_script_with_private_names_falls_back_and_executes() -> Result<(), Vm
   assert_eq!(value, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn direct_eval_can_access_private_instance_field() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class A {
+        #x = 14;
+        g() {
+          return eval("this.#x");
+        }
+      }
+      (new A()).g();
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(14.0));
+}
+
+#[test]
+fn nested_class_can_reference_outer_private_name() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class A {
+        #x = 5;
+        makeB() {
+          class B {
+            #y = 1;
+            getX(o) { return o.#x; }
+          }
+          return new B();
+        }
+      }
+      const a = new A();
+      const b = a.makeB();
+      b.getX(a) === 5;
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn nested_class_private_access_throws_type_error_on_wrong_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        class A {
+          #x = 10;
+          f() {
+            class B {
+              #y = 1;
+              g() {
+                // `#x` resolves to A's private name, but `this` is a B instance,
+                // so the brand check fails and should throw a TypeError.
+                return this.#x;
+              }
+            }
+            this.y = new B();
+          }
+          constructor() { this.f(); }
+          g() { return this.y.g(); }
+        }
+        const a = new A();
+        try { a.g(); return false; } catch (e) { return e instanceof TypeError; }
+      })();
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

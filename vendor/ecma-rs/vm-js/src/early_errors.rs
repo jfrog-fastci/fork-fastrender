@@ -87,7 +87,7 @@ pub(crate) fn validate_top_level<F>(
 where
   F: FnMut() -> Result<(), VmError>,
 {
-  let diags = collect_top_level(stmts, opts, source, tick)?;
+  let diags = collect_top_level_with_enclosing_private_names(stmts, opts, source, None, tick)?;
   if diags.is_empty() {
     Ok(())
   } else {
@@ -99,6 +99,38 @@ pub(crate) fn collect_top_level<F>(
   stmts: &[Node<Stmt>],
   opts: EarlyErrorOptions,
   source: Option<&str>,
+  tick: &mut F,
+) -> Result<Vec<Diagnostic>, VmError>
+where
+  F: FnMut() -> Result<(), VmError>,
+{
+  collect_top_level_with_enclosing_private_names(stmts, opts, source, None, tick)
+}
+
+pub(crate) fn validate_top_level_with_enclosing_private_names<F>(
+  stmts: &[Node<Stmt>],
+  opts: EarlyErrorOptions,
+  source: Option<&str>,
+  enclosing_private_names: Option<HashSet<String>>,
+  tick: &mut F,
+) -> Result<(), VmError>
+where
+  F: FnMut() -> Result<(), VmError>,
+{
+  let diags =
+    collect_top_level_with_enclosing_private_names(stmts, opts, source, enclosing_private_names, tick)?;
+  if diags.is_empty() {
+    Ok(())
+  } else {
+    Err(VmError::Syntax(diags))
+  }
+}
+
+pub(crate) fn collect_top_level_with_enclosing_private_names<F>(
+  stmts: &[Node<Stmt>],
+  opts: EarlyErrorOptions,
+  source: Option<&str>,
+  enclosing_private_names: Option<HashSet<String>>,
   tick: &mut F,
 ) -> Result<Vec<Diagnostic>, VmError>
 where
@@ -121,6 +153,15 @@ where
     labels: Vec::new(),
     private_names: Vec::new(),
   };
+  if let Some(private_names) = enclosing_private_names {
+    if !private_names.is_empty() {
+      ctx
+        .private_names
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      ctx.private_names.push(private_names);
+    }
+  }
   walker.visit_stmt_list(&mut ctx, StmtListKind::VarScope, stmts)?;
   Ok(walker.diags)
 }
@@ -193,8 +234,9 @@ struct ControlContext {
   labels: Vec<LabelInfo>,
   /// Stack of declared private names for the innermost active class body.
   ///
-  /// Private names are not inherited across class boundaries (nested classes introduce a fresh
-  /// private name environment), so validation consults only the last element.
+  /// Private names are lexically scoped and can be referenced from nested classes/functions.
+  /// Nested classes push an additional private-name set but do not discard outer sets, so
+  /// validation consults the full stack when resolving a private identifier.
   private_names: Vec<HashSet<String>>,
 }
 
@@ -349,10 +391,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     name: &str,
   ) -> Result<(), VmError> {
-    let ok = ctx
-      .private_names
-      .last()
-      .is_some_and(|names| names.contains(name));
+    // Private identifiers are lexically scoped and can be referenced from nested classes/functions
+    // as long as some enclosing class body declared the name.
+    let ok = ctx.private_names.iter().rev().any(|names| names.contains(name));
     if !ok {
       self.push_error(loc, "invalid private name")?;
     }

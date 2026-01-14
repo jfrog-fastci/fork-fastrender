@@ -7458,12 +7458,11 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(())
   }
 
-  /// Resolves a private name within the innermost active private-name environment.
+  /// Resolves a private name within the current lexical private-name environment chain.
   ///
-  /// Private names are lexically scoped to the nearest enclosing class body and are not inherited
-  /// across class boundaries. Therefore this resolves against the first environment record in the
-  /// chain that contains private-name metadata, and does **not** continue searching outer
-  /// environments.
+  /// Private names are lexically scoped and may be referenced from nested classes and functions.
+  /// Resolution therefore walks the lexical environment chain and returns the first matching
+  /// private-name entry (innermost binding), if any.
   pub(crate) fn resolve_private_name_symbol(
     &self,
     env: GcEnv,
@@ -7479,8 +7478,6 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
                 return Ok(Some(entry.sym));
               }
             }
-            // Stop at the first private-name environment boundary.
-            return Ok(None);
           }
           current = rec.outer;
         }

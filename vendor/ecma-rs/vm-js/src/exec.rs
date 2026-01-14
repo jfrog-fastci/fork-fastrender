@@ -535,11 +535,46 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   let strict = caller_strict
     || detect_use_strict_directive(source.text.as_ref(), 0, 0, &top.stx.body, || vm.tick())?;
   {
+    // Direct eval inherits the caller's lexical private-name environment.
+    //
+    // This is required so code like:
+    //   class C { #x; m(){ return eval("this.#x"); } }
+    // can successfully resolve `#x`.
+    //
+    // Note that indirect eval does *not* inherit private names (see `perform_indirect_eval`).
+    let enclosing_private_names: Option<HashSet<String>> = {
+      let mut names: HashSet<String> = HashSet::new();
+      let mut current = Some(env.lexical_env);
+      while let Some(e) = current {
+        match scope.heap().get_env_record(e)? {
+          crate::env::EnvRecord::Declarative(rec) => {
+            if let Some(private_names) = rec.private_names.as_deref() {
+              for entry in private_names {
+                let name = entry.name.as_ref();
+                if !names.contains(name) {
+                  names
+                    .try_reserve(1)
+                    .map_err(|_| VmError::OutOfMemory)?;
+                  names.insert(try_clone_string(name)?);
+                }
+              }
+            }
+            current = rec.outer;
+          }
+          crate::env::EnvRecord::Object(rec) => {
+            current = rec.outer;
+          }
+        }
+      }
+      if names.is_empty() { None } else { Some(names) }
+    };
+
     let mut tick = || vm.tick();
-    match crate::early_errors::validate_top_level(
+    match crate::early_errors::validate_top_level_with_enclosing_private_names(
       &top.stx.body,
       crate::early_errors::EarlyErrorOptions::script_with_super_call(strict, allow_super_call),
       Some(source.text.as_ref()),
+      enclosing_private_names,
       &mut tick,
     ) {
       Ok(()) => {}
