@@ -16548,115 +16548,125 @@ impl App {
     let window_id = self.window.id();
     let kind = export.kind;
 
-    let spawn_result = std::thread::Builder::new()
-      .name(format!("fastr-page-export-{}", export.tab_id.0))
-      .spawn(move || {
-        use base64::Engine as _;
-        use std::io::Write as _;
+    let spawn_result = {
+      let proxy = proxy.clone();
+      std::thread::Builder::new()
+        .name(format!("fastr-page-export-{}", export.tab_id.0))
+        .spawn(move || {
+          use base64::Engine as _;
+          use std::io::Write as _;
 
-        let result: Result<std::path::PathBuf, String> = (|| {
-          let part_path = fastrender::ui::downloads::part_path_for_final(&export.path);
-          let cleanup_part = || {
-            let _ = std::fs::remove_file(&part_path);
-          };
+          let result: Result<std::path::PathBuf, String> = (|| {
+            let part_path = fastrender::ui::downloads::part_path_for_final(&export.path);
+            let cleanup_part = || {
+              let _ = std::fs::remove_file(&part_path);
+            };
 
-          // If a previous export attempt crashed/was interrupted, clear any stale `.part` file up
-          // front so failures never leave behind confusing artifacts.
-          cleanup_part();
+            // If a previous export attempt crashed/was interrupted, clear any stale `.part` file up
+            // front so failures never leave behind confusing artifacts.
+            cleanup_part();
 
-          if let Some(parent) = export.path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
-              .map_err(|err| format!("failed to create export dir {}: {err}", parent.display()))?;
-          }
+            if let Some(parent) = export.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+              std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create export dir {}: {err}", parent.display()))?;
+            }
 
-          let bytes: Vec<u8> = match kind {
-            PageExportKind::Print => fastrender::image_output::encode_image(
-              &pixmap,
-              fastrender::OutputFormat::Png,
-            )
-            .map_err(|err| err.to_string())?,
-            PageExportKind::SavePage => {
-              let png_bytes = fastrender::image_output::encode_image(
+            let bytes: Vec<u8> = match kind {
+              PageExportKind::Print => fastrender::image_output::encode_image(
                 &pixmap,
                 fastrender::OutputFormat::Png,
               )
-              .map_err(|err| err.to_string())?;
-              let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+              .map_err(|err| err.to_string())?,
+              PageExportKind::SavePage => {
+                let png_bytes = fastrender::image_output::encode_image(
+                  &pixmap,
+                  fastrender::OutputFormat::Png,
+                )
+                .map_err(|err| err.to_string())?;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
 
-              fn escape_html(raw: &str) -> String {
-                raw
-                  .replace('&', "&amp;")
-                  .replace('<', "&lt;")
-                  .replace('>', "&gt;")
-                  .replace('"', "&quot;")
-                  .replace('\'', "&#39;")
-              }
+                fn escape_html(raw: &str) -> String {
+                  raw
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+                    .replace('\'', "&#39;")
+                }
 
-              let title = export
-                .page_title
-                .as_deref()
-                .filter(|t| !t.trim().is_empty())
-                .or_else(|| export.page_url.as_deref())
-                .unwrap_or("Saved page");
-              let title = escape_html(title);
-              let url = export
-                .page_url
-                .as_deref()
-                .map(escape_html)
-                .unwrap_or_default();
+                let title = export
+                  .page_title
+                  .as_deref()
+                  .filter(|t| !t.trim().is_empty())
+                  .or_else(|| export.page_url.as_deref())
+                  .unwrap_or("Saved page");
+                let title = escape_html(title);
+                let url = export
+                  .page_url
+                  .as_deref()
+                  .map(escape_html)
+                  .unwrap_or_default();
 
-              let html = format!(
-                "<!doctype html>\n\
+                let html = format!(
+                  "<!doctype html>\n\
 <meta charset=\"utf-8\">\n\
 <title>{title}</title>\n\
 <style>body{{margin:0;font-family:sans-serif}}.meta{{padding:12px}}</style>\n\
 <div class=\"meta\">Saved from: <a href=\"{url}\">{url}</a></div>\n\
 <img alt=\"Page snapshot\" src=\"data:image/png;base64,{b64}\" style=\"max-width:100%;height:auto\" />\n"
-              );
-              html.into_bytes()
-            }
-          };
+                );
+                html.into_bytes()
+              }
+            };
 
-          let mut writer = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part_path)
-          {
-            Ok(file) => file,
-            Err(err) => {
+            let mut writer = match std::fs::OpenOptions::new()
+              .write(true)
+              .create_new(true)
+              .open(&part_path)
+            {
+              Ok(file) => file,
+              Err(err) => {
+                cleanup_part();
+                return Err(format!(
+                  "failed to create temp export file {}: {err}",
+                  part_path.display()
+                ));
+              }
+            };
+
+            if let Err(err) = writer.write_all(&bytes) {
+              drop(writer);
               cleanup_part();
-              return Err(format!(
-                "failed to create temp export file {}: {err}",
-                part_path.display()
-              ));
+              return Err(format!("failed to write export file {}: {err}", part_path.display()));
             }
-          };
-
-          if let Err(err) = writer.write_all(&bytes) {
+            if let Err(err) = writer.flush() {
+              drop(writer);
+              cleanup_part();
+              return Err(format!("failed to flush export file {}: {err}", part_path.display()));
+            }
+            let _ = writer.sync_all();
             drop(writer);
-            cleanup_part();
-            return Err(format!("failed to write export file {}: {err}", part_path.display()));
-          }
-          if let Err(err) = writer.flush() {
-            drop(writer);
-            cleanup_part();
-            return Err(format!("failed to flush export file {}: {err}", part_path.display()));
-          }
-          let _ = writer.sync_all();
-          drop(writer);
 
-          match std::fs::rename(&part_path, &export.path) {
-            Ok(()) => {}
-            Err(err) => {
-              // Best-effort Windows compatibility: if rename fails due to destination already
-              // existing, remove it and retry.
-              let retry = matches!(
-                err.kind(),
-                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-              );
-              if retry {
-                let _ = std::fs::remove_file(&export.path);
-                if let Err(err) = std::fs::rename(&part_path, &export.path) {
+            match std::fs::rename(&part_path, &export.path) {
+              Ok(()) => {}
+              Err(err) => {
+                // Best-effort Windows compatibility: if rename fails due to destination already
+                // existing, remove it and retry.
+                let retry = matches!(
+                  err.kind(),
+                  std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                );
+                if retry {
+                  let _ = std::fs::remove_file(&export.path);
+                  if let Err(err) = std::fs::rename(&part_path, &export.path) {
+                    cleanup_part();
+                    return Err(format!(
+                      "failed to finalize export (rename {} -> {}): {err}",
+                      part_path.display(),
+                      export.path.display()
+                    ));
+                  }
+                } else {
                   cleanup_part();
                   return Err(format!(
                     "failed to finalize export (rename {} -> {}): {err}",
@@ -16664,29 +16674,27 @@ impl App {
                     export.path.display()
                   ));
                 }
-              } else {
-                cleanup_part();
-                return Err(format!(
-                  "failed to finalize export (rename {} -> {}): {err}",
-                  part_path.display(),
-                  export.path.display()
-                ));
               }
             }
-          }
 
-          Ok(export.path)
-        })();
+            Ok(export.path)
+          })();
 
-        let _ = proxy.send_event(UserEvent::PageExportFinished {
-          window_id,
-          kind,
-          result,
-        });
-      });
+          let _ = proxy.send_event(UserEvent::PageExportFinished {
+            window_id,
+            kind,
+            result,
+          });
+        })
+    };
 
     if let Err(err) = spawn_result {
       eprintln!("failed to spawn page export thread: {err}");
+      let _ = proxy.send_event(UserEvent::PageExportFinished {
+        window_id,
+        kind,
+        result: Err(err.to_string()),
+      });
     }
   }
 
