@@ -1551,10 +1551,13 @@ fn await_using_declaration_at_script_top_level_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_script_block_is_syntax_error() {
+fn await_using_declaration_in_script_block_is_async_and_allowed() {
   let mut rt = new_runtime();
-  let err = rt.exec_script("{ await using x = null; }").unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let value = rt.exec_script("{ await using x = null; }").unwrap();
+  let Value::Object(promise_obj) = value else {
+    panic!("expected Promise object from async classic script, got {value:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
 }
 
 #[test]

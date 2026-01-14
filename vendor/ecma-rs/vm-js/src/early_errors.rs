@@ -2713,7 +2713,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if id.stx.name == "arguments" && !ctx.arguments_allowed {
           self.push_error(
             expr.loc,
-            "arguments is not allowed in class static initialization blocks",
+            "'arguments' is not allowed in class field initializer or static initialization block",
           )?;
         }
         if id.stx.name.starts_with('#') {
