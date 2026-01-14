@@ -16829,6 +16829,13 @@ pub(crate) enum GenFrame {
     obj: GcObject,
     next_member_index: usize,
   },
+
+  /// Continue evaluating a template literal after evaluating a substitution.
+  LitTemplateAfterSubstitution {
+    expr: *const LitTemplateExpr,
+    next_part_index: usize,
+    units: Vec<u16>,
+  },
 }
 
 impl Trace for GenFrame {
@@ -37649,6 +37656,7 @@ fn gen_eval_expr_chain(
     },
     Expr::LitArr(arr) => gen_eval_lit_arr(evaluator, scope, &arr.stx),
     Expr::LitObj(obj) => gen_eval_lit_obj(evaluator, scope, &obj.stx),
+    Expr::LitTemplate(tpl) => gen_eval_lit_template(evaluator, scope, &tpl.stx),
     _ => Err(VmError::Unimplemented("yield in expression type")),
   };
 
@@ -38094,6 +38102,69 @@ fn gen_eval_lit_obj_apply_valued_member(
       "yield in object literal member type",
     )),
   }
+}
+
+fn gen_eval_lit_template(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitTemplateExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  gen_eval_lit_template_from(evaluator, scope, expr, 0, Vec::new())
+}
+
+fn gen_eval_lit_template_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitTemplateExpr,
+  start_part_index: usize,
+  mut units: Vec<u16>,
+) -> Result<GenEval<Completion>, VmError> {
+  for (part_index, part) in expr.parts.iter().enumerate().skip(start_part_index) {
+    match part {
+      LitTemplatePart::String(s) => {
+        let len = s.encode_utf16().count();
+        units.try_reserve(len).map_err(|_| VmError::OutOfMemory)?;
+        units.extend(s.encode_utf16());
+      }
+      LitTemplatePart::Substitution(sub_expr) => match gen_eval_expr(evaluator, scope, sub_expr)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let value = v.unwrap_or(Value::Undefined);
+            let append_res: Result<(), VmError> = (|| {
+              let mut string_scope = scope.reborrow();
+              string_scope.push_root(value)?;
+              let s = evaluator.to_string_operator(&mut string_scope, value)?;
+              string_scope.push_root(Value::String(s))?;
+              let js = string_scope.heap().get_string(s)?;
+              units
+                .try_reserve(js.len_code_units())
+                .map_err(|_| VmError::OutOfMemory)?;
+              units.extend_from_slice(js.as_code_units());
+              Ok(())
+            })();
+            if let Err(err) = append_res {
+              return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+            }
+          }
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::LitTemplateAfterSubstitution {
+              expr: expr as *const LitTemplateExpr,
+              next_part_index: part_index.saturating_add(1),
+              units,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    }
+  }
+
+  let s = scope.alloc_string_from_u16_vec(units)?;
+  Ok(GenEval::Complete(Completion::normal(Value::String(s))))
 }
 
 fn gen_yield_star_begin(
@@ -42935,6 +43006,42 @@ fn gen_resume_from_frames(
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
               suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::LitTemplateAfterSubstitution {
+        expr,
+        next_part_index,
+        mut units,
+      } => match state {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          let append_res: Result<(), VmError> = (|| {
+            let mut string_scope = scope.reborrow();
+            string_scope.push_root(value)?;
+            let s = evaluator.to_string_operator(&mut string_scope, value)?;
+            string_scope.push_root(Value::String(s))?;
+            let js = string_scope.heap().get_string(s)?;
+            units
+              .try_reserve(js.len_code_units())
+              .map_err(|_| VmError::OutOfMemory)?;
+            units.extend_from_slice(js.as_code_units());
+            Ok(())
+          })();
+          if let Err(err) = append_res {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          let expr = unsafe { &*expr };
+          match gen_eval_lit_template_from(evaluator, scope, expr, next_part_index, units)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
