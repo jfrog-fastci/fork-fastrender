@@ -1252,6 +1252,32 @@ mod tests {
   }
 
   #[test]
+  fn flush_drops_buffered_audio_without_resetting_clock() {
+    let backend = NullAudioBackend::new(48_000, 1);
+    let stream = backend.create_stream();
+
+    stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
+    stream.play();
+
+    // Consume half the buffer.
+    let out0 = backend.render(24_000);
+    assert!(all_samples_eq(&out0, 1.0));
+    assert_eq!(stream.current_time(), Duration::from_millis(500));
+
+    // Flush should drop the remaining queued audio but preserve the current clock position.
+    stream.flush();
+    let out1 = backend.render(24_000);
+    assert!(all_samples_eq(&out1, 0.0));
+    assert_eq!(stream.current_time(), Duration::from_millis(500));
+
+    // New audio should continue from the same timebase (not reset).
+    stream.enqueue_samples(vec![2.0; 48_000]).unwrap();
+    let out2 = backend.render(24_000);
+    assert!(all_samples_eq(&out2, 2.0));
+    assert_eq!(stream.current_time(), Duration::from_secs(1));
+  }
+
+  #[test]
   fn flush_is_safe_concurrently_with_mixing() {
     let mixer = Arc::new(AudioMixer::new(48_000, 1));
     let stream = mixer.create_stream();
