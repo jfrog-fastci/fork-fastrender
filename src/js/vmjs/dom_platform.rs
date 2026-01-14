@@ -2161,6 +2161,14 @@ mod tests {
     let _div_root = scope.heap_mut().add_root(Value::Object(div_wrapper))?;
     let err = platform.require_html_media_element_handle(scope.heap(), Value::Object(div_wrapper));
     assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+
+    // Non-objects and non-wrapper objects should also fail brand checks.
+    let err = platform.require_html_media_element_handle(scope.heap(), Value::Undefined);
+    assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
+
+    let obj = scope.alloc_object()?;
+    let err = platform.require_html_media_element_handle(scope.heap(), Value::Object(obj));
+    assert!(matches!(err, Err(VmError::TypeError("Illegal invocation"))));
     Ok(())
   }
 
