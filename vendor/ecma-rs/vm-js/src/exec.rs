@@ -805,6 +805,19 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   Ok(VmError::Throw(value))
 }
 
+#[inline]
+fn check_disposable_resource_value(vm: &Vm, scope: &mut Scope<'_>, value: Value) -> Result<(), VmError> {
+  match value {
+    Value::Null | Value::Undefined => Ok(()),
+    Value::Object(_) => Ok(()),
+    _ => Err(throw_type_error(
+      vm,
+      scope,
+      "Using declaration initializer must be an object",
+    )?),
+  }
+}
+
 fn throw_syntax_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -4839,16 +4852,26 @@ impl<'a> Evaluator<'a> {
       self.tick()?;
       match &*stmt.stx {
         Stmt::VarDecl(var) => {
-          if var.stx.mode != VarDeclMode::Let && var.stx.mode != VarDeclMode::Const {
+          if !matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) {
             continue;
           }
           for declarator in &var.stx.declarators {
             self.tick()?;
-            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
-              return Err(syntax_error(
-                declarator.pattern.loc,
-                "Missing initializer in const declaration",
-              ));
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+            ) && declarator.initializer.is_none()
+            {
+              let message = match var.stx.mode {
+                VarDeclMode::Const => "Missing initializer in const declaration",
+                VarDeclMode::Using => "Missing initializer in using declaration",
+                VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+                _ => unreachable!(),
+              };
+              return Err(syntax_error(declarator.pattern.loc, message));
             }
             self.collect_lexical_decl_names_from_pat(
               &declarator.pattern.stx.pat.stx,
@@ -5139,16 +5162,26 @@ impl<'a> Evaluator<'a> {
       self.tick()?;
       match &*stmt.stx {
         Stmt::VarDecl(var) => {
-          if var.stx.mode != VarDeclMode::Let && var.stx.mode != VarDeclMode::Const {
+          if !matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) {
             continue;
           }
           for declarator in &var.stx.declarators {
             self.tick()?;
-            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
-              return Err(syntax_error(
-                declarator.pattern.loc,
-                "Missing initializer in const declaration",
-              ));
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+            ) && declarator.initializer.is_none()
+            {
+              let message = match var.stx.mode {
+                VarDeclMode::Const => "Missing initializer in const declaration",
+                VarDeclMode::Using => "Missing initializer in using declaration",
+                VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+                _ => unreachable!(),
+              };
+              return Err(syntax_error(declarator.pattern.loc, message));
             }
             self.collect_lexical_decl_names_from_pat(
               &declarator.pattern.stx.pat.stx,
@@ -6163,14 +6196,27 @@ impl<'a> Evaluator<'a> {
       self.tick()?;
       match &*stmt.stx {
         Stmt::VarDecl(var)
-          if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+          if matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) =>
         {
           for declarator in &var.stx.declarators {
             self.tick()?;
-            if var.stx.mode == VarDeclMode::Const && declarator.initializer.is_none() {
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+            ) && declarator.initializer.is_none()
+            {
+              let message = match var.stx.mode {
+                VarDeclMode::Const => "Missing initializer in const declaration",
+                VarDeclMode::Using => "Missing initializer in using declaration",
+                VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+                _ => unreachable!(),
+              };
               return Err(syntax_error(
                 declarator.pattern.loc,
-                "Missing initializer in const declaration",
+                message,
               ));
             }
             // Reuse lexical declaration collection logic to detect duplicates across complex patterns.
@@ -6293,7 +6339,7 @@ impl<'a> Evaluator<'a> {
               )?;
             }
           }
-          VarDeclMode::Const => {
+          VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing => {
             for declarator in &var.stx.declarators {
               self.tick()?;
               self.instantiate_lexical_names_from_pat(
@@ -6962,7 +7008,14 @@ impl<'a> Evaluator<'a> {
     // This avoids allocating an empty `EnvRecord` for blocks like `{ x++; }` that are executed in
     // tight loops, keeping fuel-based termination responsive for hostile input.
     let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
-      Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+      Stmt::VarDecl(var)
+        if matches!(
+          var.stx.mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) =>
+      {
+        true
+      }
       Stmt::ClassDecl(_) => true,
       Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
@@ -7321,6 +7374,35 @@ impl<'a> Evaluator<'a> {
             self.strict,
             self.this,
           )?;
+        }
+        Ok(Completion::empty())
+      }
+
+      VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+        for declarator in &decl.declarators {
+          let Some(init) = &declarator.initializer else {
+            let message = match decl.mode {
+              VarDeclMode::Using => "Missing initializer in using declaration",
+              VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+              _ => unreachable!(),
+            };
+            return Err(syntax_error(declarator.pattern.loc, message));
+          };
+          let value = self.eval_expr(scope, init)?;
+
+          bind_pattern(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            self.env,
+            &declarator.pattern.stx.pat.stx,
+            value,
+            BindingKind::Const,
+            self.strict,
+            self.this,
+          )?;
+          check_disposable_resource_value(self.vm, scope, value)?;
         }
         Ok(Completion::empty())
       }
@@ -8841,7 +8923,15 @@ impl<'a> Evaluator<'a> {
       } else {
         // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
         let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
-          Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => {
+          Stmt::VarDecl(var)
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Let
+                | VarDeclMode::Const
+                | VarDeclMode::Using
+                | VarDeclMode::AwaitUsing
+            ) =>
+          {
             true
           }
           Stmt::ClassDecl(_) => true,
@@ -9085,7 +9175,10 @@ impl<'a> Evaluator<'a> {
     // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
     let lexical_init = match &stmt.init {
       parse_js::ast::stmt::ForTripleStmtInit::Decl(decl)
-        if decl.stx.mode == VarDeclMode::Let || decl.stx.mode == VarDeclMode::Const =>
+        if matches!(
+          decl.stx.mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) =>
       {
         Some(decl)
       }
@@ -9583,7 +9676,14 @@ impl<'a> Evaluator<'a> {
     // `let`/`const` declarations would attempt to re-initialize bindings on subsequent iterations
     // and trip `env_initialize_binding`'s "already initialized" invariant.
     let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
-      Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+      Stmt::VarDecl(var)
+        if matches!(
+          var.stx.mode,
+          VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+        ) =>
+      {
+        true
+      }
       Stmt::ClassDecl(_) => true,
       Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
@@ -17441,7 +17541,14 @@ fn async_eval_block_stmt(
   }
 
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
-    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::VarDecl(var)
+      if matches!(
+        var.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      true
+    }
     Stmt::ClassDecl(_) => true,
     Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
@@ -17544,7 +17651,14 @@ fn async_eval_catch(
     } else {
       // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
-        Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+        Stmt::VarDecl(var)
+          if matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) =>
+        {
+          true
+        }
         Stmt::ClassDecl(_) => true,
         Stmt::FunctionDecl(_) => evaluator.strict,
         _ => false,
@@ -18035,6 +18149,14 @@ fn async_eval_var_decl(
             "Missing initializer in const declaration",
           ));
         }
+        VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+          let message = match decl.mode {
+            VarDeclMode::Using => "Missing initializer in using declaration",
+            VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+            _ => unreachable!(),
+          };
+          return Err(syntax_error(declarator.pattern.loc, message));
+        }
         _ => return Err(VmError::Unimplemented("var declaration kind")),
       }
     };
@@ -18149,6 +18271,47 @@ fn async_bind_var_declarator_value(
         .heap_mut()
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
       Ok(AsyncEval::Complete(()))
+    }
+    VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+      // `using` and `await using` declarations introduce immutable lexical bindings and register
+      // disposable resources.
+      if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        // `using` does not allow binding patterns, but handle defensively.
+        let bind_res = async_bind_pattern(
+          evaluator,
+          scope,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Const,
+        )?;
+        match bind_res {
+          AsyncEval::Complete(()) => {
+            check_disposable_resource_value(evaluator.vm, scope, value)?;
+            Ok(AsyncEval::Complete(()))
+          }
+          AsyncEval::Suspend(_) => Err(VmError::Unimplemented(
+            "await in using declaration binding pattern",
+          )),
+        }
+      } else {
+        let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+          return Err(VmError::InvariantViolation(
+            "internal error: using declaration pattern mismatch",
+          ));
+        };
+        let name = id.stx.name.as_str();
+        if !scope
+          .heap()
+          .env_has_binding(evaluator.env.lexical_env, name)?
+        {
+          scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+        check_disposable_resource_value(evaluator.vm, scope, value)?;
+        Ok(AsyncEval::Complete(()))
+      }
     }
     _ => Err(VmError::Unimplemented("var declaration kind")),
   }
@@ -20603,7 +20766,14 @@ fn async_eval_for_body(
   // See `Evaluator::eval_for_body` for why we sometimes need an explicit lexical environment for
   // `ForBody` statement lists.
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
-    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::VarDecl(var)
+      if matches!(
+        var.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      true
+    }
     Stmt::ClassDecl(_) => true,
     Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
@@ -33104,7 +33274,14 @@ fn gen_eval_block_stmt(
   }
 
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
-    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::VarDecl(var)
+      if matches!(
+        var.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      true
+    }
     Stmt::ClassDecl(_) => true,
     Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
@@ -33175,7 +33352,14 @@ fn gen_eval_catch(
     } else {
       // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
-        Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+        Stmt::VarDecl(var)
+          if matches!(
+            var.stx.mode,
+            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+          ) =>
+        {
+          true
+        }
         Stmt::ClassDecl(_) => true,
         Stmt::FunctionDecl(_) => evaluator.strict,
         _ => false,
@@ -33338,6 +33522,14 @@ fn gen_eval_var_decl(
             "Missing initializer in const declaration",
           ));
         }
+        VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+          let message = match decl.mode {
+            VarDeclMode::Using => "Missing initializer in using declaration",
+            VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
+            _ => unreachable!(),
+          };
+          return Err(syntax_error(declarator.pattern.loc, message));
+        }
         _ => return Err(VmError::Unimplemented("var declaration kind")),
       }
     };
@@ -33458,6 +33650,44 @@ fn gen_bind_var_declarator_value(
       scope
         .heap_mut()
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+    }
+    VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+      // `using` and `await using` declarations introduce immutable lexical bindings and register
+      // disposable resources.
+      if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        // `using` does not allow binding patterns, but handle defensively.
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Const,
+          evaluator.strict,
+          evaluator.this,
+        )?;
+        check_disposable_resource_value(evaluator.vm, scope, value)?;
+        return Ok(());
+      }
+
+      let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+        return Err(VmError::InvariantViolation(
+          "internal error: using declaration pattern mismatch",
+        ));
+      };
+      let name = id.stx.name.as_str();
+      if !scope
+        .heap()
+        .env_has_binding(evaluator.env.lexical_env, name)?
+      {
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+      }
+      scope
+        .heap_mut()
+        .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+      check_disposable_resource_value(evaluator.vm, scope, value)?;
     }
     _ => return Err(VmError::Unimplemented("var declaration kind")),
   }
@@ -33764,7 +33994,14 @@ fn gen_eval_for_body(
   // `gen_eval_block_stmt` so block-scoped declarations are instantiated in a fresh lexical
   // environment for each evaluation of the body (i.e. per loop iteration).
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
-    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::VarDecl(var)
+      if matches!(
+        var.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      true
+    }
     Stmt::ClassDecl(_) => true,
     Stmt::FunctionDecl(_) => evaluator.strict,
     _ => false,
