@@ -1093,6 +1093,33 @@ mod mp4_seek_preroll_tests {
   }
 }
 
+#[cfg(all(test, feature = "media_mp4"))]
+mod mp4_duration_tests {
+  use super::{MediaDemuxer as _, Mp4PacketDemuxer};
+
+  #[test]
+  fn mp4_packet_demuxer_emits_duration_without_mp4parse_sample_tables() {
+    // `Mp4PacketDemuxer::open` / `from_bytes` attempt to read mp4parse sample tables, which already
+    // include per-sample durations. This test exercises the fallback path by constructing the
+    // demuxer from an `mp4::Mp4Reader` directly (no mp4parse metadata).
+    let bytes =
+      std::fs::read("tests/fixtures/media/test_h264_aac.mp4").expect("read mp4 fixture");
+    let len = bytes.len() as u64;
+    let cursor = std::io::Cursor::new(bytes);
+    let mp4 = mp4::Mp4Reader::read_header(cursor, len).expect("mp4 read_header");
+
+    let mut demuxer = Mp4PacketDemuxer::from_reader(mp4).expect("create demuxer");
+    let pkt = demuxer
+      .next_packet()
+      .expect("next_packet")
+      .expect("expected packet");
+    assert!(
+      pkt.duration_ns > 0,
+      "expected non-zero duration_ns even without mp4parse sample tables"
+    );
+  }
+}
+
 #[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   fn tracks(&self) -> &[MediaTrackInfo] {
@@ -1192,8 +1219,8 @@ fn mp4_fill_peeked<R: Read + Seek>(
       .and_then(|t| t.samples.get(sample_idx as usize - 1))
       .copied();
 
-    let (dts_ns, pts_ns, duration_ns, is_keyframe) = match timing {
-      Some(t) => (t.dts_ns, t.pts_ns, t.duration_ns, t.is_sync),
+    let (dts_ns, pts_ns, is_keyframe) = match timing {
+      Some(t) => (t.dts_ns, t.pts_ns, t.is_sync),
       None => {
         // Fallback: treat the mp4 crate's sample time as both PTS+DTS (no CTTS support).
         let start_time = sample.start_time;
@@ -1202,8 +1229,20 @@ fn mp4_fill_peeked<R: Read + Seek>(
         } else {
           (start_time.saturating_mul(1_000_000_000)).saturating_div(u64::from(cursor.timescale))
         };
-        (pts_ns, pts_ns, 0, sample.is_sync)
+        (pts_ns, pts_ns, sample.is_sync)
       }
+    };
+
+    let duration_ticks: u64 = match sample.duration.try_into() {
+      Ok(v) => v,
+      Err(_) => u64::MAX,
+    };
+    let duration_ns = if cursor.timescale == 0 {
+      0
+    } else {
+      duration_ticks
+        .saturating_mul(1_000_000_000)
+        .saturating_div(u64::from(cursor.timescale))
     };
 
     cursor.peeked = Some(MediaPacket {
