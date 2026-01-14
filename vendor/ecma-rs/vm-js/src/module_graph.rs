@@ -19,7 +19,7 @@ use crate::{
 use crate::{ExternalMemoryToken, Heap, VmHost, VmHostHooks};
 use core::mem;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use parse_js::ast::node::Node;
 use parse_js::ast::stx::TopLevel;
@@ -900,6 +900,7 @@ impl ModuleGraph {
     vm: &mut Vm,
     module: ModuleId,
     exec_list: &mut Vec<ModuleId>,
+    exec_set: &mut HashSet<ModuleId>,
   ) -> Result<(), VmError> {
     vm.tick()?;
     let idx = module_index(module);
@@ -913,7 +914,9 @@ impl ModuleGraph {
         vm.tick()?;
       }
       let parent = self.async_eval_states[idx].async_parent_modules[parent_i];
-      if exec_list.contains(&parent) {
+      // `exec_list` can grow large for module graphs with many async-parent edges. Avoid
+      // `Vec::contains` here (O(n^2) in the number of ancestors) by tracking membership in a set.
+      if exec_set.contains(&parent) {
         continue;
       }
 
@@ -935,9 +938,13 @@ impl ModuleGraph {
         exec_list
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
+        exec_set
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
         exec_list.push(parent);
+        exec_set.insert(parent);
         if !self.modules[parent_idx].has_tla {
-          self.gather_available_ancestors(vm, parent, exec_list)?;
+          self.gather_available_ancestors(vm, parent, exec_list, exec_set)?;
         }
       }
     }
@@ -974,7 +981,8 @@ impl ModuleGraph {
     self.async_eval_states[idx].async_evaluation_order = AsyncEvaluationOrder::Done;
 
     let mut exec_list: Vec<ModuleId> = Vec::new();
-    self.gather_available_ancestors(vm, module, &mut exec_list)?;
+    let mut exec_set: HashSet<ModuleId> = HashSet::new();
+    self.gather_available_ancestors(vm, module, &mut exec_list, &mut exec_set)?;
 
     crate::tick::sort_unstable_by_with_ticks(
       &mut exec_list,
@@ -2220,15 +2228,26 @@ impl ModuleGraph {
     if !self.scc_dirty {
       return Ok(());
     }
+    vm.tick()?;
 
     let module_count = self.modules.len();
-    for slot in &mut self.scc_members {
+    const RESET_TICK_EVERY: usize = 1024;
+    for (i, slot) in self.scc_members.iter_mut().enumerate() {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       slot.clear();
     }
-    for slot in &mut self.scc_deps {
+    for (i, slot) in self.scc_deps.iter_mut().enumerate() {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       slot.clear();
     }
-    for slot in &mut self.scc_parents {
+    for (i, slot) in self.scc_parents.iter_mut().enumerate() {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       slot.clear();
     }
     fn ensure_outer_len<T>(
@@ -2251,7 +2270,10 @@ impl ModuleGraph {
     ensure_outer_len(&mut self.scc_deps, module_count)?;
     ensure_outer_len(&mut self.scc_parents, module_count)?;
 
-    for module in &mut self.modules {
+    for (i, module) in self.modules.iter_mut().enumerate() {
+      if i % RESET_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       module.cycle_root = None;
     }
 
@@ -2364,7 +2386,10 @@ impl ModuleGraph {
     }
 
     // --- Assign canonical cycle roots (minimum module id per SCC) and cache member lists ---
-    for scc in sccs {
+    for (scc_i, scc) in sccs.into_iter().enumerate() {
+      if scc_i % 64 == 0 && scc_i != 0 {
+        vm.tick()?;
+      }
       let Some(&root_idx) = scc.iter().min() else {
         continue;
       };
@@ -2374,7 +2399,10 @@ impl ModuleGraph {
       members
         .try_reserve_exact(scc.len())
         .map_err(|_| VmError::OutOfMemory)?;
-      for &idx in &scc {
+      for (i, &idx) in scc.iter().enumerate() {
+        if i % RESET_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
         let id = ModuleId::from_raw(idx as u64);
         members.push(id);
       }
@@ -2389,7 +2417,10 @@ impl ModuleGraph {
       self.scc_members[root_idx] = members;
 
       // Assign the canonical cycle root to each member.
-      for &idx in &scc {
+      for (i, &idx) in scc.iter().enumerate() {
+        if i % RESET_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
         if let Some(record) = self.modules.get_mut(idx) {
           record.cycle_root = Some(root);
         }
@@ -2407,6 +2438,7 @@ impl ModuleGraph {
       let root = ModuleId::from_raw(root_idx as u64);
 
       let mut deps: Vec<ModuleId> = Vec::new();
+      let mut deps_set: HashSet<ModuleId> = HashSet::new();
       for (mi, member) in members.iter().copied().enumerate() {
         if mi % 32 == 0 && mi != 0 {
           vm.tick()?;
@@ -2430,20 +2462,27 @@ impl ModuleGraph {
           if dep_root == root {
             continue;
           }
-          if !deps.contains(&dep_root) {
+          if !deps_set.contains(&dep_root) {
             deps.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            deps_set
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
             deps.push(dep_root);
+            deps_set.insert(dep_root);
           }
         }
       }
 
-      for dep_root in deps.iter().copied() {
+      for (di, dep_root) in deps.iter().copied().enumerate() {
+        if di % 64 == 0 && di != 0 {
+          vm.tick()?;
+        }
         let dep_idx = module_index(dep_root);
         let parents = &mut self.scc_parents[dep_idx];
-        if !parents.contains(&root) {
-          parents.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-          parents.push(root);
-        }
+        // `deps` is already de-duplicated, and each SCC root is processed at most once per
+        // `ensure_scc_info` run, so this push cannot introduce duplicates in `scc_parents`.
+        parents.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        parents.push(root);
       }
 
       self.scc_deps[root_idx] = deps;
