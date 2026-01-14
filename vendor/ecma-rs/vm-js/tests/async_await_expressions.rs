@@ -252,7 +252,7 @@ fn await_in_delete_expression_strict_mode_nonconfigurable_member_throws() -> Res
           delete (await Promise.resolve(obj)).x;
           return "no";
         } catch (e) {
-          return e.name;
+          return e.name + ":" + e.message;
         }
       }
       var obj = {};
@@ -266,7 +266,10 @@ fn await_in_delete_expression_strict_mode_nonconfigurable_member_throws() -> Res
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "TypeError");
+  assert_eq!(
+    value_to_string(&rt, value),
+    "TypeError:Cannot delete property"
+  );
   Ok(())
 }
 
@@ -283,7 +286,7 @@ fn await_in_delete_expression_strict_mode_nonconfigurable_computed_throws() -> R
           delete obj[await Promise.resolve("x")];
           return "no";
         } catch (e) {
-          return e.name;
+          return e.name + ":" + e.message;
         }
       }
       var obj = {};
@@ -297,7 +300,10 @@ fn await_in_delete_expression_strict_mode_nonconfigurable_computed_throws() -> R
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "TypeError");
+  assert_eq!(
+    value_to_string(&rt, value),
+    "TypeError:Cannot delete property"
+  );
   Ok(())
 }
 
