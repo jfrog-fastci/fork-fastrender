@@ -13144,10 +13144,10 @@ impl PerfWindowLog {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Default)]
 struct PendingPageSubtreeAccessKitUpdate {
+  root_id: accesskit::NodeId,
   nodes: Vec<(accesskit::NodeId, accesskit::Node)>,
-  focus: Option<accesskit::NodeId>,
+  focus_id: Option<accesskit::NodeId>,
 }
 
 // The windowed browser UI can receive a page-accessibility subtree from the worker and merge it
@@ -13689,8 +13689,9 @@ impl App {
   fn merge_page_subtree_accesskit_update(
     platform_output: &mut egui::PlatformOutput,
     page_subtree: PendingPageSubtreeAccessKitUpdate,
+    page_has_focus: bool,
   ) -> bool {
-    if page_subtree.nodes.is_empty() && page_subtree.focus.is_none() {
+    if page_subtree.nodes.is_empty() && page_subtree.focus_id.is_none() && !page_has_focus {
       return false;
     }
 
@@ -13708,8 +13709,12 @@ impl App {
       .expect("accesskit_update must be present after synthesizing"); // fastrender-allow-unwrap
 
     update.nodes.extend(page_subtree.nodes);
-    if let Some(focus) = page_subtree.focus {
-      update.focus = Some(focus);
+    if page_has_focus {
+      if let Some(focus) = page_subtree.focus_id {
+        update.focus = Some(focus);
+      } else {
+        update.focus = Some(page_subtree.root_id);
+      }
     }
 
     debug_assert!(
@@ -28411,7 +28416,11 @@ impl App {
     }
     if let Some(tab_id) = self.browser_state.active_tab_id() {
       if let Some(page_subtree) = self.pending_page_subtree_accesskit.remove(&tab_id) {
-        let merged = Self::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
+        let merged = Self::merge_page_subtree_accesskit_update(
+          &mut platform_output,
+          page_subtree,
+          self.page_has_focus,
+        );
         debug_assert!(
           !merged || platform_output.accesskit_update.is_some(),
           "expected accesskit_update to be Some after merging page subtree for tab {tab_id:?}"
@@ -30332,15 +30341,14 @@ mod page_subtree_accesskit_merge_tests {
     let node = builder.build();
 
     let page_subtree = PendingPageSubtreeAccessKitUpdate {
+      root_id: node_id,
       nodes: vec![(node_id, node)],
-      focus: Some(node_id),
+      focus_id: Some(node_id),
     };
 
-    let merged = App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
-    assert!(
-      merged,
-      "expected page subtree merge helper to report a merge"
-    );
+    let merged =
+      App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree, true);
+    assert!(merged, "expected page subtree merge helper to report a merge");
 
     let update = platform_output
       .accesskit_update
@@ -30359,6 +30367,114 @@ mod page_subtree_accesskit_merge_tests {
       update.focus,
       Some(node_id),
       "expected synthesized AccessKit update to include focus when provided"
+    );
+  }
+
+  #[test]
+  fn merge_falls_back_to_page_root_focus_when_page_has_focus_but_subtree_has_no_focused_node() {
+    use fastrender::accessibility::{AccessibilityNode, AccessibilityState};
+    use fastrender::ui::page_accesskit_subtree::accesskit_subtree_for_page;
+    use fastrender::ui::TabId;
+
+    let a11y_tree = AccessibilityNode {
+      node_id: 1,
+      role: "document".to_string(),
+      role_description: None,
+      name: Some("Test document".to_string()),
+      description: None,
+      value: None,
+      level: None,
+      html_tag: None,
+      id: None,
+      dom_node_id: 1,
+      relations: None,
+      states: AccessibilityState::default(),
+      children: vec![AccessibilityNode {
+        node_id: 2,
+        role: "button".to_string(),
+        role_description: None,
+        name: Some("Click me".to_string()),
+        description: None,
+        value: None,
+        level: None,
+        html_tag: None,
+        id: None,
+        dom_node_id: 2,
+        relations: None,
+        states: AccessibilityState::default(),
+        children: Vec::new(),
+        #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+        debug: None,
+      }],
+      #[cfg(any(debug_assertions, feature = "a11y_debug"))]
+      debug: None,
+    };
+
+    // Build a subtree update where no node is focused (`states.focused = false` everywhere).
+    let subtree = accesskit_subtree_for_page(TabId(1), 1, &a11y_tree);
+    let root_id = subtree.root_id;
+
+    let root_node = subtree
+      .nodes
+      .iter()
+      .find_map(|(id, node)| (*id == root_id).then_some(node))
+      .expect("expected subtree to contain root node");
+    assert!(
+      root_node.supports_action(accesskit::Action::Focus),
+      "expected page document root to support Focus action"
+    );
+
+    let page_subtree = PendingPageSubtreeAccessKitUpdate {
+      root_id,
+      nodes: subtree.nodes,
+      focus_id: subtree.focus_id,
+    };
+
+    let mut platform_output = egui::PlatformOutput::default();
+    platform_output.accesskit_update = None;
+
+    let merged =
+      App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree, true);
+    assert!(merged);
+
+    let merged_update = platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be synthesized");
+
+    assert_eq!(merged_update.focus, Some(root_id));
+  }
+
+  #[test]
+  fn merge_does_not_override_focus_when_page_has_focus_is_false() {
+    let existing_focus = accesskit::NodeId(std::num::NonZeroU128::new(7).unwrap());
+    let existing_node = accesskit::NodeBuilder::new(accesskit::Role::Button).build();
+    let mut platform_output = egui::PlatformOutput::default();
+    platform_output.accesskit_update = Some(accesskit::TreeUpdate {
+      nodes: vec![(existing_focus, existing_node)],
+      tree: None,
+      focus: Some(existing_focus),
+    });
+
+    let page_root_id = accesskit::NodeId(std::num::NonZeroU128::new(42).unwrap());
+    let page_node = accesskit::NodeBuilder::new(accesskit::Role::RootWebArea).build();
+    let page_subtree = PendingPageSubtreeAccessKitUpdate {
+      root_id: page_root_id,
+      nodes: vec![(page_root_id, page_node)],
+      focus_id: Some(page_root_id),
+    };
+
+    let merged = App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree, false);
+    assert!(merged, "expected nodes to be merged even when page_has_focus is false");
+
+    let update = platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update");
+    assert_eq!(
+      update.focus,
+      Some(existing_focus),
+      "expected merge to preserve existing focus when page has no keyboard focus"
     );
   }
 }

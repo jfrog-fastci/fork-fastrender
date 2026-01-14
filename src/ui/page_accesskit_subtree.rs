@@ -65,6 +65,9 @@ fn build_subtree_nodes(
 
   let role = role_from_fastr_role(&node.role);
   let mut builder = accesskit::NodeBuilder::new(role);
+  if role == accesskit::Role::Document {
+    builder.add_action(accesskit::Action::Focus);
+  }
   if let Some(name) = node.name.as_deref().and_then(normalize_name) {
     builder.set_name(name);
   }
