@@ -1710,11 +1710,22 @@ pub fn import_attributes_from_options_with_host_and_hooks(
   }
 
   // Sort by key (and value for determinism) by UTF-16 code unit order.
-  crate::tick::sort_unstable_by_with_ticks(
+  crate::tick::sort_unstable_by_with_ticks_and_fallible_compare(
     &mut attributes,
-    |a, b| match a.key.cmp(&b.key) {
-      std::cmp::Ordering::Equal => a.value.cmp(&b.value),
-      non_eq => non_eq,
+    |a, b, tick| {
+      let key_ord = crate::tick::code_units_cmp_with_ticks(
+        a.key.as_code_units(),
+        b.key.as_code_units(),
+        || tick(),
+      )?;
+      if key_ord != std::cmp::Ordering::Equal {
+        return Ok(key_ord);
+      }
+      crate::tick::code_units_cmp_with_ticks(
+        a.value.as_code_units(),
+        b.value.as_code_units(),
+        || tick(),
+      )
     },
     || vm.tick(),
   )

@@ -13,8 +13,8 @@ use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{
-  cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
-  RealmId, RootId, Scope, ScriptId, SourceText, StackFrame, Value, Vm, VmError,
+  ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest, RealmId, RootId,
+  Scope, ScriptId, SourceText, StackFrame, Value, Vm, VmError,
 };
 use crate::{ExternalMemoryToken, Heap, VmHost, VmHostHooks};
 use core::mem;
@@ -1520,7 +1520,11 @@ impl ModuleGraph {
     // Avoid cloning attacker-controlled strings: infallible `String::clone` can abort the process
     // under allocator OOM. Also use `sort_unstable_by` to avoid allocations from the stable sort
     // implementation (sorting does not require stability because export names are unique).
-    crate::tick::sort_unstable_by_with_ticks(&mut exports, |a, b| cmp_utf16(a, b), || vm.tick())?;
+    crate::tick::sort_unstable_by_with_ticks_and_fallible_compare(
+      &mut exports,
+      |a, b, tick| crate::module_request::cmp_utf16_with_ticks(a.as_str(), b.as_str(), tick),
+      || vm.tick(),
+    )?;
 
     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
       "module namespaces require intrinsics",

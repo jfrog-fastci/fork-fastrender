@@ -70,6 +70,78 @@ pub(crate) fn sort_unstable_by_with_ticks<T>(
   }
 }
 
+/// Unstable sorting with a fallible comparator and periodic ticks.
+///
+/// This is a more flexible variant of [`sort_unstable_by_with_ticks`] for cases where comparisons
+/// themselves may perform substantial work (for example, comparing very large UTF-16 strings).
+///
+/// The supplied `compare` closure:
+/// - receives a mutable `tick` callback it can invoke while comparing, and
+/// - returns `Result<Ordering, VmError>` so it can propagate tick errors (or other `VmError`s)
+///   without panicking.
+///
+/// Like [`sort_unstable_by_with_ticks`], this helper:
+/// - performs an initial `tick()` so small sorts still observe VM budgets, and
+/// - calls `tick()` every [`DEFAULT_TICK_EVERY`] comparator invocations.
+///
+/// # Panic safety
+///
+/// This routine uses a sentinel panic + `catch_unwind` internally to escape Rust's infallible sort
+/// implementation. All panics are caught and surfaced as a `VmError` (either the comparator error
+/// or an `InvariantViolation`), so no panics escape to callers.
+pub(crate) fn sort_unstable_by_with_ticks_and_fallible_compare<T>(
+  slice: &mut [T],
+  mut compare: impl FnMut(
+    &T,
+    &T,
+    &mut dyn FnMut() -> Result<(), VmError>,
+  ) -> Result<Ordering, VmError>,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<(), VmError> {
+  // Ensure very small sorts still observe VM budgets.
+  tick()?;
+
+  // Use a sentinel to abort `sort_unstable_by` early when `tick()` or the comparator fails.
+  struct SortAbort;
+
+  let mut comparisons: usize = 0;
+  let mut abort_err: Option<VmError> = None;
+
+  let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    slice.sort_unstable_by(|a, b| {
+      comparisons = comparisons.wrapping_add(1);
+      // Avoid ticking on the first comparison so small sorts don't effectively double-charge fuel
+      // too aggressively (we already tick once before entering this helper).
+      if (comparisons & (DEFAULT_TICK_EVERY - 1)) == 0 {
+        if let Err(err) = tick() {
+          abort_err = Some(err);
+          std::panic::panic_any(SortAbort);
+        }
+      }
+
+      match compare(a, b, &mut tick) {
+        Ok(ord) => ord,
+        Err(err) => {
+          abort_err = Some(err);
+          std::panic::panic_any(SortAbort);
+        }
+      }
+    });
+  }));
+
+  match res {
+    Ok(()) => Ok(()),
+    Err(panic) => {
+      if panic.is::<SortAbort>() {
+        return Err(abort_err.unwrap_or(VmError::InvariantViolation(
+          "sort aborted without a captured error",
+        )));
+      }
+      Err(VmError::InvariantViolation("sort panicked"))
+    }
+  }
+}
+
 /// Call `tick()` every `every` iterations (including iteration 0).
 ///
 /// `every` should be a power-of-two so the check can be compiled down to a fast bitmask.

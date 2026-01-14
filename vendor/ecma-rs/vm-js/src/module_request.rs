@@ -32,6 +32,41 @@ pub fn cmp_utf16(a: &str, b: &str) -> Ordering {
   }
 }
 
+/// Tick-aware variant of [`cmp_utf16`].
+///
+/// This compares two UTF-8 strings by the lexicographic ordering of their UTF-16 code units
+/// (ECMA-262 string ordering), calling `tick()` periodically so very large strings cannot perform
+/// long stretches of uninterruptible work.
+pub(crate) fn cmp_utf16_with_ticks(
+  a: &str,
+  b: &str,
+  tick: &mut dyn FnMut() -> Result<(), VmError>,
+) -> Result<Ordering, VmError> {
+  let mut a_units = a.encode_utf16();
+  let mut b_units = b.encode_utf16();
+
+  let mut i: usize = 0;
+  loop {
+    // Avoid ticking on the first iteration so short comparisons don't effectively double-charge
+    // fuel (callers should tick once before entering large sorts).
+    if i != 0 {
+      crate::tick::tick_every(i, crate::tick::DEFAULT_TICK_EVERY, tick)?;
+    }
+
+    match (a_units.next(), b_units.next()) {
+      (Some(a_u), Some(b_u)) => match a_u.cmp(&b_u) {
+        Ordering::Equal => {}
+        non_eq => return Ok(non_eq),
+      },
+      (None, Some(_)) => return Ok(Ordering::Less),
+      (Some(_), None) => return Ok(Ordering::Greater),
+      (None, None) => return Ok(Ordering::Equal),
+    }
+
+    i = i.wrapping_add(1);
+  }
+}
+
 /// An `ImportAttribute` record.
 ///
 /// Spec: <https://tc39.es/ecma262/#importattribute-record>
@@ -61,6 +96,26 @@ fn cmp_import_attribute(a: &ImportAttribute, b: &ImportAttribute) -> Ordering {
     Ordering::Equal => a.value.cmp(&b.value),
     non_eq => non_eq,
   }
+}
+
+fn cmp_import_attribute_with_ticks(
+  a: &ImportAttribute,
+  b: &ImportAttribute,
+  tick: &mut dyn FnMut() -> Result<(), VmError>,
+) -> Result<Ordering, VmError> {
+  let key_ord = crate::tick::code_units_cmp_with_ticks(
+    a.key.as_code_units(),
+    b.key.as_code_units(),
+    || tick(),
+  )?;
+  if key_ord != Ordering::Equal {
+    return Ok(key_ord);
+  }
+  crate::tick::code_units_cmp_with_ticks(
+    a.value.as_code_units(),
+    b.value.as_code_units(),
+    || tick(),
+  )
 }
 
 /// A `ModuleRequest` record.
@@ -120,7 +175,11 @@ impl ModuleRequest {
     mut attributes: Vec<ImportAttribute>,
     tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Self, VmError> {
-    crate::tick::sort_unstable_by_with_ticks(&mut attributes, cmp_import_attribute, tick)?;
+    crate::tick::sort_unstable_by_with_ticks_and_fallible_compare(
+      &mut attributes,
+      |a, b, tick| cmp_import_attribute_with_ticks(a, b, tick),
+      tick,
+    )?;
     Ok(Self {
       specifier,
       attributes,
@@ -153,7 +212,11 @@ impl ModuleRequest {
     &mut self,
     tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<(), VmError> {
-    crate::tick::sort_unstable_by_with_ticks(&mut self.attributes, cmp_import_attribute, tick)
+    crate::tick::sort_unstable_by_with_ticks_and_fallible_compare(
+      &mut self.attributes,
+      |a, b, tick| cmp_import_attribute_with_ticks(a, b, tick),
+      tick,
+    )
   }
 
   /// Builder helper: append an import attribute and re-canonicalize.
