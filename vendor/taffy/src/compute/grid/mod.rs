@@ -232,7 +232,9 @@ fn inherited_line_names(
   let mut result: Vec<Vec<Ident>> = Vec::with_capacity(span as usize + 1);
   for i in 0..=span {
     let mut names: Vec<Ident> = Vec::new();
-    let global_index = start.0 + i as i16;
+    // Use i32 arithmetic to avoid i16 overflow when the subgrid start is near the representable
+    // bounds and the span is large.
+    let global_index = (start.0 as i32) + (i as i32);
     if global_index >= 0 {
       if let Some(parent) = parent_names.get(global_index as usize) {
         names.extend(parent.iter().cloned());
@@ -263,7 +265,10 @@ fn inherited_area_line_names(
   }
 
   let sub_start = start;
-  let sub_end = start + span;
+  // Avoid triggering `OriginZeroLine + u16` debug assertions on extreme spans.
+  let sub_end = OriginZeroLine(
+    ((start.0 as i32) + (span as i32)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+  );
 
   for area in parent_areas.iter() {
     let (axis_start, axis_end) = match axis {
@@ -288,8 +293,8 @@ fn inherited_area_line_names(
       continue;
     }
 
-    let local_start = (clamped_start.0 - sub_start.0) as usize;
-    let local_end = (clamped_end.0 - sub_start.0) as usize;
+    let local_start = ((clamped_start.0 as i32) - (sub_start.0 as i32)) as usize;
+    let local_end = ((clamped_end.0 as i32) - (sub_start.0 as i32)) as usize;
 
     let base: &str = area.name.as_ref();
     let start_name = Ident::from(format!("{base}-start"));
@@ -359,10 +364,10 @@ fn inherited_template_areas_for_subgrid(
       continue;
     }
 
-    let local_row_start = (clamped_row_start.0 - subgrid_row_span.start.0) as i32 + 1;
-    let local_row_end = (clamped_row_end.0 - subgrid_row_span.start.0) as i32 + 1;
-    let local_col_start = (clamped_col_start.0 - subgrid_col_span.start.0) as i32 + 1;
-    let local_col_end = (clamped_col_end.0 - subgrid_col_span.start.0) as i32 + 1;
+    let local_row_start = ((clamped_row_start.0 as i32) - (subgrid_row_span.start.0 as i32)) + 1;
+    let local_row_end = ((clamped_row_end.0 as i32) - (subgrid_row_span.start.0 as i32)) + 1;
+    let local_col_start = ((clamped_col_start.0 as i32) - (subgrid_col_span.start.0 as i32)) + 1;
+    let local_col_end = ((clamped_col_end.0 as i32) - (subgrid_col_span.start.0 as i32)) + 1;
 
     let (Ok(row_start), Ok(row_end), Ok(column_start), Ok(column_end)) = (
       u16::try_from(local_row_start),
@@ -387,6 +392,82 @@ fn inherited_template_areas_for_subgrid(
   }
 
   result
+}
+
+#[cfg(test)]
+mod overlarge_subgrid_math_tests {
+  use super::*;
+
+  #[test]
+  fn inherited_line_names_does_not_overflow_when_start_near_i16_max() {
+    let names = inherited_line_names(
+      20,
+      OriginZeroLine(i16::MAX - 5),
+      &[],
+      &[],
+    );
+    assert_eq!(names.len(), 21);
+  }
+
+  #[test]
+  fn inherited_area_line_names_does_not_overflow_large_negative_start() {
+    // Regression: `(clamped_end.0 - sub_start.0)` can overflow i16 when the subgrid spans a large
+    // portion of the OriginZeroLine range.
+    let span: u16 = 65534;
+    let start = OriginZeroLine(-32767);
+    let areas = vec![GridTemplateArea {
+      name: Ident::from("content"),
+      row_start: 1,
+      row_end: 2,
+      column_start: 1,
+      // This makes `axis_end_oz == 32767`.
+      column_end: 32768,
+    }];
+    let line_names = inherited_area_line_names(span, start, &areas, AbstractAxis::Inline);
+    assert_eq!(line_names.len(), span as usize + 1);
+
+    assert!(
+      line_names[32767]
+        .iter()
+        .any(|name| name.as_str() == "content-start"),
+      "expected content-start at local_start=32767"
+    );
+    assert!(
+      line_names[65534]
+        .iter()
+        .any(|name| name.as_str() == "content-end"),
+      "expected content-end at local_end=65534"
+    );
+  }
+
+  #[test]
+  fn inherited_template_areas_for_subgrid_does_not_overflow_large_negative_span() {
+    // Regression: local coordinate conversion used i16 subtraction which can overflow/panic when the
+    // subgrid start is very negative and the inherited area edges are very positive.
+    let subgrid_row_span = Line {
+      start: OriginZeroLine(-32767),
+      end: OriginZeroLine(32767),
+    };
+    let subgrid_col_span = Line {
+      start: OriginZeroLine(0),
+      end: OriginZeroLine(1),
+    };
+    let parent_areas = vec![GridTemplateArea {
+      name: Ident::from("content"),
+      row_start: 1,
+      row_end: 32768,
+      column_start: 1,
+      column_end: 2,
+    }];
+
+    let out = inherited_template_areas_for_subgrid(subgrid_row_span, subgrid_col_span, &parent_areas, false);
+    assert_eq!(out.len(), 1);
+    let area = &out[0];
+    assert_eq!(area.row_start, 32768);
+    assert_eq!(area.row_end, 65535);
+    assert_eq!(area.column_start, 1);
+    assert_eq!(area.column_end, 2);
+  }
 }
 
 fn collect_child_subgrid_line_names(style: &Style, axis: AbstractAxis) -> Vec<Vec<Ident>> {
