@@ -1858,7 +1858,26 @@ impl<'vm> HirEvaluator<'vm> {
                               return Ok(false);
                             }
                             if let Some(init_id) = declarator.init {
-                              if self.hir_expr_contains_await_for_async_analysis(
+                              let init_expr = self.get_expr(body, init_id)?;
+                              if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                                if !matches!(
+                                  var_decl.kind,
+                                  hir_js::VarDeclKind::Var
+                                    | hir_js::VarDeclKind::Let
+                                    | hir_js::VarDeclKind::Const
+                                ) {
+                                  return Ok(false);
+                                }
+                                if !direct_await_operand_has_no_await(
+                                  self,
+                                  script,
+                                  body,
+                                  awaited_expr,
+                                  &mut steps,
+                                )? {
+                                  return Ok(false);
+                                }
+                              } else if self.hir_expr_contains_await_for_async_analysis(
                                 script,
                                 body,
                                 init_id,
@@ -2135,14 +2154,31 @@ impl<'vm> HirEvaluator<'vm> {
                     }
                   }
                   hir_js::ForInit::Var(var_decl) => {
-                    // `ForTripleAwaitState` does not support awaiting inside variable-declarator
-                    // initializers in the init position, so require the entire decl to be await-free.
                     for declarator in var_decl.declarators.iter() {
                       if self.hir_pat_contains_await_for_async_analysis(script, body, declarator.pat, &mut steps)? {
                         return Ok(false);
                       }
                       if let Some(init_id) = declarator.init {
-                        if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
+                        let init_expr = self.get_expr(body, init_id)?;
+                        if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                          // Support direct `await <expr>` initializers for `var`/`let`/`const`
+                          // declarations in the init position.
+                          if !matches!(
+                            var_decl.kind,
+                            hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+                          ) {
+                            return Ok(false);
+                          }
+                          if !direct_await_operand_has_no_await(
+                            self,
+                            script,
+                            body,
+                            awaited_expr,
+                            &mut steps,
+                          )? {
+                            return Ok(false);
+                          }
+                        } else if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
                           return Ok(false);
                         }
                       }
@@ -15447,11 +15483,13 @@ impl ForOfState {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum ForTripleAwaitStage {
   Init,
   /// Awaiting a direct `await <expr>` in the init position.
   AwaitInitExpr,
+  /// Awaiting `const x = await <expr>` (and similar) in the init position.
+  AwaitInitVarDecl { declarator_index: usize },
   /// Awaiting `x = await <expr>` in the init position.
   AwaitInitAssign,
   /// Awaiting `({ ... } = await <expr>)` / `[ ... ] = await <expr>` in the init position.
@@ -15510,6 +15548,7 @@ struct ForTripleAwaitState {
   label_set: Box<[hir_js::NameId]>,
 
   outer_lex: Option<GcEnv>,
+  loop_env: Option<GcEnv>,
   iter_env: Option<GcEnv>,
   v_root: Option<RootId>,
   pending_assign: Option<PendingAssignment>,
@@ -15551,6 +15590,7 @@ impl ForTripleAwaitState {
       body_stmt,
       label_set: labels.into_boxed_slice(),
       outer_lex: None,
+      loop_env: None,
       iter_env: None,
       v_root: None,
       pending_assign: None,
@@ -15631,6 +15671,7 @@ impl ForTripleAwaitState {
               // the initializer with TDZ semantics.
               let loop_env = scope.env_create(Some(outer_lex))?;
               evaluator.env.set_lexical_env(scope.heap_mut(), loop_env);
+              self.loop_env = Some(loop_env);
 
               // Bind names in TDZ before evaluating initializers.
               for declarator in &init_decl.declarators {
@@ -15661,13 +15702,53 @@ impl ForTripleAwaitState {
               }
 
               // Evaluate initializer(s) and initialize the bindings.
-              evaluator.eval_var_decl(scope, body, init_decl)?;
+              match init_decl.kind {
+                hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const => {
+                  for (i, declarator) in init_decl.declarators.iter().enumerate() {
+                    evaluator.vm.tick()?;
+                    let init_missing = declarator.init.is_none();
+                    if let Some(init_id) = declarator.init {
+                      let init_expr = evaluator.get_expr(body, init_id)?;
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                        // Budget once for the await expression itself.
+                        evaluator.vm.tick()?;
+                        let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+                        self.stage = ForTripleAwaitStage::AwaitInitVarDecl {
+                          declarator_index: i,
+                        };
+                        return Ok(ForTripleAwaitPoll::Await {
+                          kind: crate::exec::AsyncSuspendKind::Await,
+                          await_value,
+                          await_offset: init_expr.span.start,
+                        });
+                      }
+                    }
+
+                    let value = match declarator.init {
+                      Some(init) => evaluator.eval_expr(scope, body, init)?,
+                      None => Value::Undefined,
+                    };
+                    evaluator.bind_var_decl_pat(
+                      scope,
+                      body,
+                      declarator.pat,
+                      init_decl.kind,
+                      init_missing,
+                      value,
+                    )?;
+                  }
+                }
+                _ => {
+                  evaluator.eval_var_decl(scope, body, init_decl)?;
+                }
+              }
 
               // Enter the first per-iteration environment.
               let iter_env =
                 evaluator.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
               evaluator.env.set_lexical_env(scope.heap_mut(), iter_env);
               self.iter_env = Some(iter_env);
+              self.loop_env = None;
 
               self.stage = ForTripleAwaitStage::Test;
               continue;
@@ -15866,7 +15947,39 @@ impl ForTripleAwaitState {
                   }
                 }
                 hir_js::ForInit::Var(decl) => {
-                  evaluator.eval_var_decl(scope, body, decl)?;
+                  for (i, declarator) in decl.declarators.iter().enumerate() {
+                    evaluator.vm.tick()?;
+                    let init_missing = declarator.init.is_none();
+                    if let Some(init_id) = declarator.init {
+                      let init_expr = evaluator.get_expr(body, init_id)?;
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                        // Budget once for the await expression itself.
+                        evaluator.vm.tick()?;
+                        let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+                        self.stage = ForTripleAwaitStage::AwaitInitVarDecl {
+                          declarator_index: i,
+                        };
+                        return Ok(ForTripleAwaitPoll::Await {
+                          kind: crate::exec::AsyncSuspendKind::Await,
+                          await_value,
+                          await_offset: init_expr.span.start,
+                        });
+                      }
+                    }
+
+                    let value = match declarator.init {
+                      Some(init) => evaluator.eval_expr(scope, body, init)?,
+                      None => Value::Undefined,
+                    };
+                    evaluator.bind_var_decl_pat(
+                      scope,
+                      body,
+                      declarator.pat,
+                      decl.kind,
+                      init_missing,
+                      value,
+                    )?;
+                  }
                 }
               }
             }
@@ -15889,6 +16002,96 @@ impl ForTripleAwaitState {
                 return Err(err);
               }
             }
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+          }
+
+          ForTripleAwaitStage::AwaitInitVarDecl { declarator_index } => {
+            let declarator_index = declarator_index;
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "for-triple init var decl await missing resume value",
+              ));
+            };
+
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                self.restore_outer_lex(evaluator, scope);
+                self.cleanup_roots(scope.heap_mut());
+                return Err(err);
+              }
+            };
+
+            let Some(hir_js::ForInit::Var(decl)) = self.init.as_ref() else {
+              return Err(VmError::InvariantViolation(
+                "for-triple init var decl await missing var decl init",
+              ));
+            };
+
+            let declarator = decl.declarators.get(declarator_index).ok_or(
+              VmError::InvariantViolation("for-triple init var decl await declarator index out of bounds"),
+            )?;
+            evaluator.bind_var_decl_pat(
+              scope,
+              body,
+              declarator.pat,
+              decl.kind,
+              /* init_missing */ false,
+              resumed_value,
+            )?;
+
+            for (j, declarator) in decl
+              .declarators
+              .iter()
+              .enumerate()
+              .skip(declarator_index.saturating_add(1))
+            {
+              evaluator.vm.tick()?;
+              let init_missing = declarator.init.is_none();
+              if let Some(init_id) = declarator.init {
+                let init_expr = evaluator.get_expr(body, init_id)?;
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                  evaluator.vm.tick()?;
+                  let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+                  self.stage = ForTripleAwaitStage::AwaitInitVarDecl {
+                    declarator_index: j,
+                  };
+                  return Ok(ForTripleAwaitPoll::Await {
+                    kind: crate::exec::AsyncSuspendKind::Await,
+                    await_value,
+                    await_offset: init_expr.span.start,
+                  });
+                }
+              }
+
+              let value = match declarator.init {
+                Some(init) => evaluator.eval_expr(scope, body, init)?,
+                None => Value::Undefined,
+              };
+              evaluator.bind_var_decl_pat(scope, body, declarator.pat, decl.kind, init_missing, value)?;
+            }
+
+            // If this is a lexical loop head, enter the first per-iteration environment now that
+            // initialization has completed.
+            if matches!(decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+              let outer_lex = self
+                .outer_lex
+                .ok_or(VmError::InvariantViolation("missing for-triple outer lex env"))?;
+              let loop_env = self.loop_env.ok_or(VmError::InvariantViolation(
+                "missing for-triple loop env after init var decl await",
+              ))?;
+
+              let iter_env = evaluator.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
+              evaluator.env.set_lexical_env(scope.heap_mut(), iter_env);
+              self.iter_env = Some(iter_env);
+              self.loop_env = None;
+            } else if matches!(decl.kind, hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing) {
+              return Err(VmError::InvariantViolation(
+                "await in for-loop init `using` declarations is not supported (hir async)",
+              ));
+            }
+
             self.stage = ForTripleAwaitStage::Test;
             continue;
           }

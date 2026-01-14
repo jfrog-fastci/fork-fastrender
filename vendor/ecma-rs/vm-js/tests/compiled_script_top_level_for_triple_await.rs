@@ -69,6 +69,112 @@ fn compiled_script_top_level_for_triple_await_in_init_suspends_and_resumes() -> 
 }
 
 #[test]
+fn compiled_script_top_level_for_triple_await_in_init_var_decl_suspends_and_resumes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var x;
+      for (var x = await Promise.resolve(1); x < 3; x++) {
+        log.push(x);
+      }
+      log.push("done");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in for-loop init var declaration should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "supported top-level await scripts should not trigger the general compiled-script AST fallback"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The init declaration after `await` should not have executed yet.
+  assert_eq!(rt.exec_script("x")?, Value::Undefined);
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "1,2,done");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_for_triple_await_in_init_let_decl_suspends_and_resumes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      for (let x = await Promise.resolve(1); x < 3; x++) {
+        log.push(x);
+      }
+      log.push("done");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in for-loop init let declaration should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "supported top-level await scripts should not trigger the general compiled-script AST fallback"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The init declaration after `await` should not have executed yet.
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "1,2,done");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_for_triple_await_in_init_destructuring_assignment_suspends_and_resumes(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();

@@ -102,6 +102,27 @@ fn compiled_async_await_in_for_triple_init() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_async_await_in_for_triple_init_var_decl() -> Result<(), VmError> {
+  let out = run_async_fn_case(
+    r#"
+      async function f(){
+        let out='';
+        for (let i = await Promise.resolve(0); i < 2; i++) { out += i; }
+        return out;
+      }
+    "#,
+    |heap, value| {
+      let Value::String(s) = value else {
+        panic!("expected string, got {value:?}");
+      };
+      heap.get_string(s).unwrap().to_utf8_lossy()
+    },
+  )?;
+  assert_eq!(out, "01");
+  Ok(())
+}
+
+#[test]
 fn compiled_async_await_in_for_triple_test() -> Result<(), VmError> {
   let value = run_async_fn_case(
     r#"

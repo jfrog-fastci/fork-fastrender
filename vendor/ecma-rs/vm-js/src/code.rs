@@ -824,11 +824,24 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
         }
       }
       ForTripleStmtInit::Decl(decl) => {
-        // The compiled evaluator does not support `await` inside loop-initializer declarations
-        // yet.
         if decl.stx.declarators.iter().any(|d| {
-          pat_contains_await(&d.pattern.stx.pat.stx)
-            || d.initializer.as_ref().is_some_and(expr_contains_await)
+          if pat_contains_await(&d.pattern.stx.pat.stx) {
+            return true;
+          }
+          let Some(init) = d.initializer.as_ref() else {
+            return false;
+          };
+
+          if let Some(arg) = expr_direct_await_arg(init) {
+            // Support direct `await <expr>` initializers for `var`/`let`/`const` declarations only.
+            if !matches!(decl.stx.mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
+              return true;
+            }
+            // Reject nested awaits inside the awaited operand.
+            expr_contains_await(arg)
+          } else {
+            expr_contains_await(init)
+          }
         }) {
           return true;
         }
@@ -1180,8 +1193,22 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       ForTripleStmtInit::None => true,
       ForTripleStmtInit::Expr(expr) => for_triple_head_expr_supported(expr, /* allow_assignment */ true),
       ForTripleStmtInit::Decl(decl) => decl.stx.declarators.iter().all(|d| {
-        !pat_contains_await(&d.pattern.stx.pat.stx)
-          && d.initializer.as_ref().is_none_or(|init| !expr_contains_await(init))
+        if pat_contains_await(&d.pattern.stx.pat.stx) {
+          return false;
+        }
+        let Some(init) = d.initializer.as_ref() else {
+          return true;
+        };
+
+        if let Some(arg) = expr_direct_await_arg(init) {
+          // Support direct `await <expr>` initializers for `var`/`let`/`const` only.
+          if !matches!(decl.stx.mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
+            return false;
+          }
+          !expr_contains_await(arg)
+        } else {
+          !expr_contains_await(init)
+        }
       }),
     };
     if !init_supported {
