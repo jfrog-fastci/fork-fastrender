@@ -550,7 +550,7 @@ fn tla_compiled_module_member_assignment_await_survives_gc_without_ast_fallback(
     )?);
     let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
     // Simulate an embedding that discards the `parse-js` AST after compilation.
-    record.ast = None;
+    record.clear_ast();
     record.source = None;
 
     let m = graph.add_module_with_specifier("m.js", record)?;
