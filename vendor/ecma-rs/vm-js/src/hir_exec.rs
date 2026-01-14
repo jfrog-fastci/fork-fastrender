@@ -12429,6 +12429,7 @@ mod compiled_hir_async_await_semantics_tests {
  
   #[derive(Clone, Copy, Debug)]
   enum ExpectedValue {
+    Bool(bool),
     Number(f64),
     String(&'static str),
   }
@@ -12509,6 +12510,12 @@ mod compiled_hir_async_await_semantics_tests {
       .expect("fulfilled Promise missing [[PromiseResult]]");
  
     match expected {
+      ExpectedValue::Bool(b) => {
+        assert!(
+          matches!(resolved, Value::Bool(m) if m == b),
+          "expected Promise to fulfill with {b}, got {resolved:?}"
+        );
+      }
       ExpectedValue::Number(n) => {
         assert!(
           matches!(resolved, Value::Number(m) if m == n),
@@ -12790,7 +12797,121 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Number(3.0),
     )
   }
- 
+  
+  #[test]
+  fn compiled_async_await_in_member_base_simple_assignment() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let obj = {x: 1};
+          (await Promise.resolve(obj)).x = 2;
+          return obj.x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_await_in_member_base_compound_assignment() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let obj = {x: 1};
+          (await Promise.resolve(obj)).x += 1;
+          return obj.x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_await_in_member_base_update_expression() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let obj = {x: 1};
+          (await Promise.resolve(obj)).x++;
+          return obj.x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_comma_operator_multiple_awaits() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          return (await Promise.resolve(1), await Promise.resolve(2));
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_in_operator_await_on_rhs() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          return ('x' in (await Promise.resolve({x:1}))) === true;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Bool(true),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_instanceof_operator_await_on_lhs() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          return (await Promise.resolve([])) instanceof Array;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Bool(true),
+    )
+  }
+  
+  #[test]
+  fn compiled_async_unary_operators_on_awaited_values() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let a = +(await Promise.resolve('1'));
+          let b = !(await Promise.resolve(false));
+          let c = typeof (await Promise.resolve(undefined));
+          return a === 1 && b === true && c === 'undefined';
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Bool(true),
+    )
+  }
+  
   #[test]
   fn compiled_top_level_await_script_resolves_completion_value() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
