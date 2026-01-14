@@ -30,12 +30,15 @@ bash scripts/run_vm_js_generator_yield_tests.sh
 
 This script is safe to run directly: it wraps each `cargo test` invocation in `timeout -k`.
 
-This executes (at minimum):
-- `generators_yield_operators`
-- `generators_delete_yield`
-- `generators_binary_ops_yield`
-- `generators_binary_more_ops_yield`
-- `generators_destructuring_assignment_yield`
+ This executes (at minimum):
+ - `generators_yield_operators`
+ - `generators_delete_yield`
+ - `generators_binary_ops_yield`
+ - `generators_binary_more_ops_yield`
+ - `generators_destructuring_assignment_yield`
+ - `generators_optional_chaining_yield`
+ - `generators_optional_chaining_yield_star`
+ - `generators_optional_chaining_super_property_yield`
 
 ### Build speed matters
 
