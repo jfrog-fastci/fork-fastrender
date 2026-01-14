@@ -14,10 +14,14 @@ use crate::ui::untrusted::clamp_untrusted_utf8;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
+use serde::de::{Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 const SESSION_ENV_PATH: &str = "FASTR_BROWSER_SESSION_PATH";
@@ -64,6 +68,127 @@ const MAX_SESSION_URL_BYTES: usize = protocol_limits::MAX_URL_BYTES;
 
 /// Maximum UTF-8 bytes retained for tab group titles stored in the session file.
 const MAX_SESSION_GROUP_TITLE_BYTES: usize = 256;
+
+fn deserialize_string_truncated<'de, D, const MAX_BYTES: usize>(
+  deserializer: D,
+) -> Result<String, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  let cow: Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+  let trimmed = cow.trim();
+  let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_BYTES).trim();
+  Ok(truncated.to_string())
+}
+
+fn deserialize_url_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_string_truncated::<'de, D, MAX_SESSION_URL_BYTES>(deserializer)
+}
+
+fn deserialize_tab_group_title<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_string_truncated::<'de, D, MAX_SESSION_GROUP_TITLE_BYTES>(deserializer)
+}
+
+fn deserialize_vec_with_limit<'de, D, T, const MAX_ITEMS: usize>(
+  deserializer: D,
+) -> Result<Vec<T>, D::Error>
+where
+  D: Deserializer<'de>,
+  T: Deserialize<'de>,
+{
+  struct LimitedVisitor<T, const MAX_ITEMS: usize>(PhantomData<T>);
+
+  impl<'de, T, const MAX_ITEMS: usize> Visitor<'de> for LimitedVisitor<T, MAX_ITEMS>
+  where
+    T: Deserialize<'de>,
+  {
+    type Value = Vec<T>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+      write!(f, "a sequence with at most {MAX_ITEMS} items")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+      A: SeqAccess<'de>,
+    {
+      let mut values: Vec<T> = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(MAX_ITEMS));
+      while values.len() < MAX_ITEMS {
+        match seq.next_element()? {
+          Some(value) => values.push(value),
+          None => return Ok(values),
+        }
+      }
+      while seq.next_element::<IgnoredAny>()?.is_some() {}
+      Ok(values)
+    }
+  }
+
+  deserializer.deserialize_seq(LimitedVisitor::<T, MAX_ITEMS>(PhantomData))
+}
+
+fn deserialize_session_windows<'de, D>(
+  deserializer: D,
+) -> Result<Vec<BrowserSessionWindow>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_vec_with_limit::<'de, D, BrowserSessionWindow, MAX_SESSION_WINDOWS>(deserializer)
+}
+
+fn deserialize_window_tabs<'de, D>(deserializer: D) -> Result<Vec<BrowserSessionTab>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_vec_with_limit::<'de, D, BrowserSessionTab, MAX_SESSION_TABS_PER_WINDOW>(deserializer)
+}
+
+fn deserialize_window_tab_groups<'de, D>(
+  deserializer: D,
+) -> Result<Vec<BrowserSessionTabGroup>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_vec_with_limit::<'de, D, BrowserSessionTabGroup, MAX_SESSION_TAB_GROUPS_PER_WINDOW>(
+    deserializer,
+  )
+}
+
+fn deserialize_window_downloads<'de, D>(
+  deserializer: D,
+) -> Result<Vec<BrowserSessionDownload>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_vec_with_limit::<'de, D, BrowserSessionDownload, MAX_PERSISTED_DOWNLOADS>(
+    deserializer,
+  )
+}
+
+fn deserialize_window_closed_tabs<'de, D>(
+  deserializer: D,
+) -> Result<Vec<BrowserSessionClosedTab>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_vec_with_limit::<'de, D, BrowserSessionClosedTab, CLOSED_TAB_STACK_CAPACITY>(
+    deserializer,
+  )
+}
+
+fn deserialize_v1_tabs<'de, D>(deserializer: D) -> Result<Vec<BrowserSessionTab>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_window_tabs(deserializer)
+}
+
 fn default_did_exit_cleanly() -> bool {
   true
 }
@@ -116,6 +241,7 @@ fn is_default_tab_group_title(value: &String) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionTab {
+  #[serde(deserialize_with = "deserialize_url_string")]
   pub url: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub zoom: Option<f32>,
@@ -135,6 +261,7 @@ pub struct BrowserSessionTab {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionClosedTab {
+  #[serde(deserialize_with = "deserialize_url_string")]
   pub url: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub title: Option<String>,
@@ -147,6 +274,7 @@ pub struct BrowserSessionClosedTab {
 pub struct BrowserSessionTabGroup {
   #[serde(
     default = "default_tab_group_title",
+    deserialize_with = "deserialize_tab_group_title",
     skip_serializing_if = "is_default_tab_group_title"
   )]
   pub title: String,
@@ -171,7 +299,7 @@ impl BrowserSessionTabGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserSessionDownload {
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_url_string")]
   pub url: String,
   #[serde(default)]
   pub file_name: String,
@@ -215,7 +343,9 @@ impl BrowserSessionDownload {
       DownloadStatus::Completed => (BrowserSessionDownloadStatus::Completed, None),
       DownloadStatus::Cancelled => (BrowserSessionDownloadStatus::Cancelled, None),
       DownloadStatus::InProgress { .. } => (BrowserSessionDownloadStatus::InProgress, None),
-      DownloadStatus::Failed { error } => (BrowserSessionDownloadStatus::Failed, Some(error.clone())),
+      DownloadStatus::Failed { error } => {
+        (BrowserSessionDownloadStatus::Failed, Some(error.clone()))
+      }
     };
 
     Self {
@@ -301,16 +431,28 @@ impl BrowserWindowState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionWindow {
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_window_tabs")]
   pub tabs: Vec<BrowserSessionTab>,
-  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_window_downloads",
+    skip_serializing_if = "Vec::is_empty"
+  )]
   pub downloads: Vec<BrowserSessionDownload>,
-  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_window_tab_groups",
+    skip_serializing_if = "Vec::is_empty"
+  )]
   pub tab_groups: Vec<BrowserSessionTabGroup>,
   /// Stack of recently closed tabs for "Reopen closed tab" UX.
   ///
   /// Oldest entries first; newest/most-recent entry at the end (LIFO stack semantics).
-  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_window_closed_tabs",
+    skip_serializing_if = "Vec::is_empty"
+  )]
   pub closed_tabs: Vec<BrowserSessionClosedTab>,
   #[serde(default)]
   pub active_tab_index: usize,
@@ -570,10 +712,11 @@ pub struct BrowserSession {
   pub version: u32,
   #[serde(
     default = "default_home_url",
+    deserialize_with = "deserialize_url_string",
     skip_serializing_if = "is_default_home_url"
   )]
   pub home_url: String,
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_session_windows")]
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
   pub active_window_index: usize,
@@ -1416,7 +1559,9 @@ mod tests {
           },
         ],
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1450,14 +1595,19 @@ mod tests {
         error: None,
       }],
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
     .sanitized();
 
     assert_eq!(window.downloads.len(), 1);
-    assert_eq!(window.downloads[0].status, BrowserSessionDownloadStatus::Cancelled);
+    assert_eq!(
+      window.downloads[0].status,
+      BrowserSessionDownloadStatus::Cancelled
+    );
   }
 
   #[test]
@@ -1483,7 +1633,9 @@ mod tests {
       }],
       downloads,
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -1491,8 +1643,7 @@ mod tests {
 
     assert_eq!(window.downloads.len(), MAX_PERSISTED_DOWNLOADS);
     assert_eq!(
-      window.downloads[0].file_name,
-      "2.bin",
+      window.downloads[0].file_name, "2.bin",
       "expected oldest downloads to be evicted first"
     );
     assert_eq!(
@@ -1585,7 +1736,10 @@ mod tests {
   fn session_backup_path_appends_bak_suffix_after_existing_extension() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
-    assert_eq!(session_backup_path(&path), dir.path().join("session.json.bak"));
+    assert_eq!(
+      session_backup_path(&path),
+      dir.path().join("session.json.bak")
+    );
   }
 
   #[test]
@@ -1653,8 +1807,11 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       });
@@ -1677,6 +1834,85 @@ mod tests {
   }
 
   #[test]
+  fn session_deserialization_is_bounded() {
+    use serde_json::json;
+
+    let long_url = format!(
+      "https://example.com/{}",
+      "a".repeat(MAX_SESSION_URL_BYTES + 64)
+    );
+    let long_title = "€".repeat(MAX_SESSION_GROUP_TITLE_BYTES + 64);
+
+    let tabs: Vec<serde_json::Value> = (0..(MAX_SESSION_TABS_PER_WINDOW + 10))
+      .map(|idx| {
+        if idx == 0 {
+          json!({"url": long_url.clone()})
+        } else {
+          json!({"url": "about:newtab"})
+        }
+      })
+      .collect();
+
+    let tab_groups: Vec<serde_json::Value> = (0..(MAX_SESSION_TAB_GROUPS_PER_WINDOW + 2))
+      .map(|idx| {
+        if idx == 0 {
+          json!({"title": long_title.clone()})
+        } else {
+          json!({"title": format!("g{idx}")})
+        }
+      })
+      .collect();
+
+    let mut windows: Vec<serde_json::Value> = Vec::new();
+    windows.push(json!({"tabs": tabs, "tab_groups": tab_groups, "active_tab_index": 0}));
+    for _ in 0..(MAX_SESSION_WINDOWS + 2) {
+      windows.push(json!({"tabs": [{"url": "about:newtab"}], "active_tab_index": 0}));
+    }
+
+    let raw = json!({
+      "version": SESSION_VERSION,
+      "home_url": long_url,
+      "windows": windows,
+      "active_window_index": 0
+    })
+    .to_string();
+
+    let parsed: BrowserSessionFile = serde_json::from_str(&raw).expect("deserialize session file");
+    let BrowserSessionFile::V2(session) = parsed else {
+      panic!("expected v2 session file");
+    };
+
+    assert_eq!(session.windows.len(), MAX_SESSION_WINDOWS);
+    assert_eq!(session.windows[0].tabs.len(), MAX_SESSION_TABS_PER_WINDOW);
+    assert_eq!(
+      session.windows[0].tab_groups.len(),
+      MAX_SESSION_TAB_GROUPS_PER_WINDOW
+    );
+
+    assert!(session.home_url.as_bytes().len() <= MAX_SESSION_URL_BYTES);
+    assert!(session.windows[0].tabs[0].url.as_bytes().len() <= MAX_SESSION_URL_BYTES);
+    assert!(
+      session.windows[0].tab_groups[0].title.as_bytes().len() <= MAX_SESSION_GROUP_TITLE_BYTES
+    );
+  }
+
+  #[test]
+  fn legacy_v1_deserialization_limits_tabs() {
+    use serde_json::json;
+
+    let tabs: Vec<serde_json::Value> = (0..(MAX_SESSION_TABS_PER_WINDOW + 5))
+      .map(|_| json!({"url": "about:newtab"}))
+      .collect();
+    let raw = json!({"tabs": tabs, "active_tab_index": 0}).to_string();
+
+    let parsed: BrowserSessionFile = serde_json::from_str(&raw).expect("deserialize legacy v1");
+    let BrowserSessionFile::V1(v1) = parsed else {
+      panic!("expected v1 session file");
+    };
+    assert_eq!(v1.tabs.len(), MAX_SESSION_TABS_PER_WINDOW);
+  }
+
+  #[test]
   fn window_truncates_tabs_and_clamps_active_tab_index() {
     let mut tabs = Vec::new();
     for _ in 0..(MAX_SESSION_TABS_PER_WINDOW + 10) {
@@ -1691,8 +1927,11 @@ mod tests {
 
     let window = BrowserSessionWindow {
       tabs,
+      downloads: Vec::new(),
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: MAX_SESSION_TABS_PER_WINDOW + 999,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -1734,8 +1973,11 @@ mod tests {
 
     let window = BrowserSessionWindow {
       tabs,
+      downloads: Vec::new(),
       tab_groups,
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -1781,8 +2023,11 @@ mod tests {
         pinned: false,
         group: None,
       }],
+      downloads: Vec::new(),
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     };
@@ -1800,8 +2045,11 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1827,12 +2075,15 @@ mod tests {
         pinned: false,
         group: Some(0),
       }],
+      downloads: Vec::new(),
       tab_groups: vec![BrowserSessionTabGroup {
         title: long_title,
         color: TabGroupColor::Red,
         collapsed: false,
       }],
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -2423,7 +2674,7 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 struct BrowserSessionV1 {
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_v1_tabs")]
   tabs: Vec<BrowserSessionTab>,
   #[serde(default)]
   active_tab_index: usize,
