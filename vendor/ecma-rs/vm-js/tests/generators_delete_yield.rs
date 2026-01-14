@@ -123,6 +123,63 @@ fn generator_delete_optional_chain_propagates_and_skips_yield_in_key_after_base_
 }
 
 #[test]
+fn generator_delete_member_throws_in_strict_mode_when_not_configurable_after_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(o) {
+        'use strict';
+        try {
+          delete (yield o).x;
+          return "no";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var o = {};
+      Object.defineProperty(o, "x", { value: 1, configurable: false });
+      var it = g(o);
+      var r1 = it.next();
+      var r2 = it.next(o);
+      r1.value === o && r1.done === false &&
+      r2.value === "TypeError" && r2.done === true
+    "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_delete_computed_member_throws_in_strict_mode_when_not_configurable_after_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(o) {
+        'use strict';
+        try {
+          return delete o[(yield "yielded")];
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var o = {};
+      Object.defineProperty(o, "x", { value: 1, configurable: false });
+      var it = g(o);
+      var r1 = it.next();
+      var r2 = it.next("x");
+      r1.value === "yielded" && r1.done === false &&
+      r2.value === "TypeError" && r2.done === true
+    "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_delete_super_computed_member_evaluates_key_and_to_property_key_before_reference_error() {
   let mut rt = new_runtime();
   let value = rt

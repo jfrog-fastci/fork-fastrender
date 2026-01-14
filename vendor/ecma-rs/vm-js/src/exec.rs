@@ -36333,17 +36333,28 @@ fn gen_delete_member_after_base(
   del_scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
 
-  let object = evaluator.to_object_operator(&mut del_scope, base)?;
+  let object = evaluator
+    .to_object_operator(&mut del_scope, base)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
   del_scope.push_root(Value::Object(object))?;
 
-  Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+  let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
     evaluator.vm,
     &mut del_scope,
     &mut *evaluator.host,
     &mut *evaluator.hooks,
     object,
     key,
-  )?))
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  if evaluator.strict && !ok {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot delete property",
+    )?);
+  }
+  Ok(Value::Bool(ok))
 }
 
 fn gen_delete_computed_member_after_base(
@@ -36401,7 +36412,9 @@ fn gen_delete_computed_member_after_member(
 ) -> Result<Value, VmError> {
   let mut del_scope = scope.reborrow();
   del_scope.push_roots(&[base, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut del_scope, member_value)?;
+  let key = evaluator
+    .to_property_key_operator(&mut del_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
   // Root the allocated key across `ToObject(base)` / `[[Delete]]` in case either operation triggers
   // a GC.
   let key_root = match key {
@@ -36420,17 +36433,28 @@ fn gen_delete_computed_member_after_member(
     )?);
   }
 
-  let object = evaluator.to_object_operator(&mut del_scope, base)?;
+  let object = evaluator
+    .to_object_operator(&mut del_scope, base)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
   del_scope.push_root(Value::Object(object))?;
 
-  Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
+  let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
     evaluator.vm,
     &mut del_scope,
     &mut *evaluator.host,
     &mut *evaluator.hooks,
     object,
     key,
-  )?))
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+  if evaluator.strict && !ok {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot delete property",
+    )?);
+  }
+  Ok(Value::Bool(ok))
 }
 
 fn gen_member_after_base(
