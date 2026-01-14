@@ -2484,7 +2484,14 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
       &mut heap,
       "a.js",
       r#"
-        export default async function() { return this === undefined ? 1 : -100; }
+        // Create a cyclic graph so the importer module executes before the exporting module. This
+        // requires the default-exported function binding to be initialized during module
+        // instantiation (hoisted), not during module evaluation.
+        import { touch } from "b";
+        export default async function() {
+          return this === undefined ? 1 : (this === globalThis ? -100 : 6);
+        }
+        export const seenTouch = touch;
       "#,
     )?;
     assert!(
@@ -2506,15 +2513,19 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
         &mut heap,
         r#"
           import f from "a";
+          export const touch = 1;
           export let r = 0;
           export const n = f.name;
-          f().then(v => { r = v; });
+          f().then(v => { r += v; });
+          // Ensure explicit receiver binding is preserved when async function bodies execute via
+          // call-time AST fallback.
+          f.call({}).then(v => { r += v; });
         "#,
       )?,
     )?;
     graph.link_all_by_specifier();
 
-    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), a)?;
     assert!(
       graph.module(a).ast.is_none(),
       "linking should not parse/retain an AST when compiled HIR is available"
@@ -2525,7 +2536,7 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
       &mut heap,
       realm.global_object(),
       realm.id(),
-      b,
+      a,
       &mut host,
       &mut hooks,
     )?;
@@ -2548,12 +2559,18 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
     let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
     assert_eq!(
       ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "r")?,
-      Value::Number(1.0)
+      Value::Number(7.0)
     );
     let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
       panic!("expected b.n to be a string");
     };
     assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
+
+    let ns_a = graph.get_module_namespace(a, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_a, "seenTouch")?,
+      Value::Number(1.0)
+    );
 
     drop(scope);
 

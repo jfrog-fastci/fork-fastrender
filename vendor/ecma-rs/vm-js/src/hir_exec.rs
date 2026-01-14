@@ -17708,21 +17708,21 @@ pub(crate) fn hir_async_resume_continuation(
         // Under memory pressure we must still throw/reject with the original reason.
         let await_stmt_offset = match (|| -> Result<u32, VmError> {
           let hir = cont.script.hir.as_ref();
-          let body = hir
-            .body(hir.root_body())
-            .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
-          let stmt_index = match cont.resume {
-            HirAsyncResumePoint::ExprStmt { next_stmt_index }
-            | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
-            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
-          };
-          let stmt_id = *body
-            .root_stmts
-            .get(stmt_index)
-            .ok_or(VmError::InvariantViolation(
-              "hir async script await stmt index out of bounds",
-            ))?;
+           let body = hir
+             .body(hir.root_body())
+             .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+           let stmt_index = match cont.resume {
+             HirAsyncResumePoint::ExprStmt { next_stmt_index }
+             | HirAsyncResumePoint::Assignment { next_stmt_index }
+             | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
+             HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+           };
+           let stmt_id = *body
+             .root_stmts
+             .get(stmt_index)
+             .ok_or(VmError::InvariantViolation(
+               "hir async script await stmt index out of bounds",
+             ))?;
           Ok(
             body
               .stmts
@@ -18330,15 +18330,15 @@ pub(crate) fn hir_async_resume_continuation(
           cont.assign_left_root = Some(left_root);
         }
 
-        let await_stmt_offset = match (|| -> Result<u32, VmError> {
-          let stmt_index = match cont.resume {
-            HirAsyncResumePoint::ExprStmt { next_stmt_index }
-            | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
-            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
-          };
-          let stmt_id = *body
-            .root_stmts
+         let await_stmt_offset = match (|| -> Result<u32, VmError> {
+           let stmt_index = match cont.resume {
+             HirAsyncResumePoint::ExprStmt { next_stmt_index }
+             | HirAsyncResumePoint::Assignment { next_stmt_index }
+             | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
+             HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+           };
+           let stmt_id = *body
+             .root_stmts
             .get(stmt_index)
             .ok_or(VmError::InvariantViolation(
               "hir async script await stmt index out of bounds",
