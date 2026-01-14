@@ -243,3 +243,55 @@ fn generator_array_literal_yield_after_spread_uses_updated_index() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_yield_in_spread_preserves_hole_before_spread() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return [ , ...(yield 0) ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next([1, 2]);
+      r1.value === 0 && r1.done === false &&
+      r2.done === true &&
+      Array.isArray(r2.value) &&
+      r2.value.length === 3 &&
+      Object.prototype.hasOwnProperty.call(r2.value, 0) === false &&
+      r2.value[1] === 1 &&
+      r2.value[2] === 2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_literal_yield_in_spread_preserves_left_to_right_eval_order() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = '';
+      function f() { log += 'f'; return 1; }
+      function g() { log += 'g'; return 2; }
+
+      function* gen() { return [ f(), ...(yield 0), g() ]; }
+      var it = gen();
+      var r1 = it.next();
+      var r2 = it.next([10]);
+
+      r1.value === 0 && r1.done === false &&
+      r2.done === true &&
+      Array.isArray(r2.value) &&
+      r2.value.length === 3 &&
+      r2.value[0] === 1 &&
+      r2.value[1] === 10 &&
+      r2.value[2] === 2 &&
+      log === 'fg'
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
