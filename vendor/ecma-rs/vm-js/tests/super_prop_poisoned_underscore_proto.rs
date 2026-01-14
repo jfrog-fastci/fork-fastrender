@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -22,6 +22,32 @@ fn super_prop_does_not_consult_poisoned_proto() -> Result<(), VmError> {
     "#,
   )?;
 
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_prop_does_not_consult_poisoned_proto_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      Object.defineProperty(Object.prototype, "__proto__", {
+        get() { throw "poison"; }
+      });
+
+      ({ m() {
+        return super['CONSTRUCTOR'.toLowerCase()] === Object
+          && super.toString() === "[object Object]";
+      } }).m()
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test should execute on the compiled (HIR) path"
+  );
+  let value = rt.exec_compiled_script(script)?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
