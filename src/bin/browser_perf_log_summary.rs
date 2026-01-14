@@ -45,6 +45,7 @@ struct Cli {
   /// - `cpu_summary`
   /// - `memory_summary`
   /// - `frame_upload`
+  /// - `worker_wake_summary`
   /// - `idle_sample` (legacy alias: `idle_summary`)
   #[arg(long, value_name = "EVENT")]
   only_event: Option<String>,
@@ -64,6 +65,7 @@ enum EventFilter {
   CpuSummary,
   MemorySummary,
   FrameUpload,
+  WorkerWakeSummary,
   IdleSample,
   TabSwitch,
 }
@@ -82,10 +84,11 @@ fn parse_event_filter(raw: &str) -> Result<EventFilter, String> {
     "cpu_summary" | "cpu" => Ok(EventFilter::CpuSummary),
     "memory_summary" | "memory" => Ok(EventFilter::MemorySummary),
     "frame_upload" | "upload" => Ok(EventFilter::FrameUpload),
+    "worker_wake_summary" | "worker_wake" | "worker-wake" => Ok(EventFilter::WorkerWakeSummary),
     "idle_sample" | "idle_summary" => Ok(EventFilter::IdleSample),
     "tab_switch" | "tabswitch" | "tab-switch" => Ok(EventFilter::TabSwitch),
     other => Err(format!(
-      "unknown --only-event {other:?}; expected frame|input|scroll|resize|ttfp|cpu_summary|memory_summary|frame_upload|idle_sample|tab_switch"
+      "unknown --only-event {other:?}; expected frame|input|scroll|resize|ttfp|cpu_summary|memory_summary|frame_upload|worker_wake_summary|idle_sample|tab_switch"
     )),
   }
 }
@@ -112,7 +115,8 @@ fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
       | BrowserPerfLogEventV2::CpuSummary { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::IdleSample { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::FrameUpload { t_ms, ts_ms, .. }
-      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
+      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::WorkerWakeSummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
       BrowserPerfLogEventV2::Unknown => None,
     },
     BrowserPerfLogEvent::V1(event) => match event {
@@ -142,6 +146,7 @@ fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> boo
       BrowserPerfLogEventV2::CpuSummary { .. } => filter == EventFilter::CpuSummary,
       BrowserPerfLogEventV2::MemorySummary { .. } => filter == EventFilter::MemorySummary,
       BrowserPerfLogEventV2::FrameUpload { .. } => filter == EventFilter::FrameUpload,
+      BrowserPerfLogEventV2::WorkerWakeSummary { .. } => filter == EventFilter::WorkerWakeSummary,
       BrowserPerfLogEventV2::IdleSample { .. } => filter == EventFilter::IdleSample,
       BrowserPerfLogEventV2::Unknown => false,
     },
@@ -179,6 +184,14 @@ struct Samples {
   coalesced_frames: Vec<f64>,
   cpu_percent: Vec<f64>,
   idle_fps: Vec<f64>,
+  worker_msgs_forwarded_per_sec: Vec<f64>,
+  worker_msgs_processed_per_sec: Vec<f64>,
+  worker_wakes_handled_per_sec: Vec<f64>,
+  worker_wake_events_sent_per_sec: Vec<f64>,
+  worker_wake_events_coalesced_per_sec: Vec<f64>,
+  worker_pending_msgs_estimate: Vec<f64>,
+  worker_msgs_per_nonempty_wake: Vec<f64>,
+  worker_max_drain: Vec<f64>,
   rss_bytes: Vec<u64>,
   rss_first_bytes: Option<u64>,
   rss_last_bytes: Option<u64>,
@@ -200,6 +213,14 @@ struct Summary {
   coalesced_frames: ScalarStats,
   cpu_percent: ScalarStats,
   idle_fps: ScalarStats,
+  worker_msgs_forwarded_per_sec: ScalarStats,
+  worker_msgs_processed_per_sec: ScalarStats,
+  worker_wakes_handled_per_sec: ScalarStats,
+  worker_wake_events_sent_per_sec: ScalarStats,
+  worker_wake_events_coalesced_per_sec: ScalarStats,
+  worker_pending_msgs_estimate: ScalarStats,
+  worker_msgs_per_nonempty_wake: ScalarStats,
+  worker_max_drain: ScalarStats,
   rss_bytes: RssStats,
   rss_mb: ScalarStats,
   rss_first_mb: Option<f64>,
@@ -386,6 +407,70 @@ fn print_table(summary: &Summary) {
     fmt_opt_f64(summary.idle_fps.min, 2),
     fmt_opt_f64(summary.idle_fps.mean, 2),
     fmt_opt_f64(summary.idle_fps.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_msgs_forwarded_per_sec",
+    summary.worker_msgs_forwarded_per_sec.count,
+    fmt_opt_f64(summary.worker_msgs_forwarded_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_msgs_forwarded_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_msgs_forwarded_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_msgs_processed_per_sec",
+    summary.worker_msgs_processed_per_sec.count,
+    fmt_opt_f64(summary.worker_msgs_processed_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_msgs_processed_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_msgs_processed_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_wakes_handled_per_sec",
+    summary.worker_wakes_handled_per_sec.count,
+    fmt_opt_f64(summary.worker_wakes_handled_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_wakes_handled_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_wakes_handled_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_wake_events_sent_per_sec",
+    summary.worker_wake_events_sent_per_sec.count,
+    fmt_opt_f64(summary.worker_wake_events_sent_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_wake_events_sent_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_wake_events_sent_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_wake_events_coalesced_per_sec",
+    summary.worker_wake_events_coalesced_per_sec.count,
+    fmt_opt_f64(summary.worker_wake_events_coalesced_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_wake_events_coalesced_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_wake_events_coalesced_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_pending_msgs_estimate",
+    summary.worker_pending_msgs_estimate.count,
+    fmt_opt_f64(summary.worker_pending_msgs_estimate.min, 0),
+    fmt_opt_f64(summary.worker_pending_msgs_estimate.mean, 0),
+    fmt_opt_f64(summary.worker_pending_msgs_estimate.max, 0),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_msgs_per_nonempty_wake",
+    summary.worker_msgs_per_nonempty_wake.count,
+    fmt_opt_f64(summary.worker_msgs_per_nonempty_wake.min, 2),
+    fmt_opt_f64(summary.worker_msgs_per_nonempty_wake.mean, 2),
+    fmt_opt_f64(summary.worker_msgs_per_nonempty_wake.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_max_drain",
+    summary.worker_max_drain.count,
+    fmt_opt_f64(summary.worker_max_drain.min, 0),
+    fmt_opt_f64(summary.worker_max_drain.mean, 0),
+    fmt_opt_f64(summary.worker_max_drain.max, 0),
   );
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
@@ -599,6 +684,44 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.rss_last_bytes = Some(rss);
               }
             }
+            BrowserPerfLogEventV2::WorkerWakeSummary {
+              worker_msgs_forwarded_per_sec,
+              worker_msgs_processed_per_sec,
+              worker_wakes_handled_per_sec,
+              worker_wake_events_sent_per_sec,
+              worker_wake_events_coalesced_per_sec,
+              worker_pending_msgs_estimate,
+              worker_msgs_per_nonempty_wake,
+              worker_max_drain,
+              ..
+            } => {
+              if let Some(v) = worker_msgs_forwarded_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_msgs_forwarded_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_msgs_processed_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_msgs_processed_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_wakes_handled_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_wakes_handled_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_wake_events_sent_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_wake_events_sent_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_wake_events_coalesced_per_sec.filter(|v| v.is_finite()) {
+                samples
+                  .worker_wake_events_coalesced_per_sec
+                  .push(f64::from(v));
+              }
+              if let Some(v) = worker_pending_msgs_estimate {
+                samples.worker_pending_msgs_estimate.push(v as f64);
+              }
+              if let Some(v) = worker_msgs_per_nonempty_wake.filter(|v| v.is_finite()) {
+                samples.worker_msgs_per_nonempty_wake.push(f64::from(v));
+              }
+              if let Some(v) = worker_max_drain {
+                samples.worker_max_drain.push(v as f64);
+              }
+            }
             BrowserPerfLogEventV2::Unknown => {
               unknown_events = unknown_events.saturating_add(1);
             }
@@ -705,6 +828,16 @@ fn run(cli: Cli) -> Result<(), String> {
     coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
     cpu_percent: scalar_stats(&mut samples.cpu_percent),
     idle_fps: scalar_stats(&mut samples.idle_fps),
+    worker_msgs_forwarded_per_sec: scalar_stats(&mut samples.worker_msgs_forwarded_per_sec),
+    worker_msgs_processed_per_sec: scalar_stats(&mut samples.worker_msgs_processed_per_sec),
+    worker_wakes_handled_per_sec: scalar_stats(&mut samples.worker_wakes_handled_per_sec),
+    worker_wake_events_sent_per_sec: scalar_stats(&mut samples.worker_wake_events_sent_per_sec),
+    worker_wake_events_coalesced_per_sec: scalar_stats(
+      &mut samples.worker_wake_events_coalesced_per_sec,
+    ),
+    worker_pending_msgs_estimate: scalar_stats(&mut samples.worker_pending_msgs_estimate),
+    worker_msgs_per_nonempty_wake: scalar_stats(&mut samples.worker_msgs_per_nonempty_wake),
+    worker_max_drain: scalar_stats(&mut samples.worker_max_drain),
     rss_bytes,
     rss_mb,
     rss_first_mb,
@@ -743,6 +876,14 @@ mod tests {
     assert_eq!(
       parse_event_filter("tab-switch").unwrap(),
       EventFilter::TabSwitch
+    );
+    assert_eq!(
+      parse_event_filter("worker_wake_summary").unwrap(),
+      EventFilter::WorkerWakeSummary
+    );
+    assert_eq!(
+      parse_event_filter("worker-wake").unwrap(),
+      EventFilter::WorkerWakeSummary
     );
   }
 

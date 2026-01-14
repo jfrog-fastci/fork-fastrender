@@ -179,6 +179,34 @@ pub enum BrowserPerfLogEventV2 {
     #[serde(default)]
     rss_mb: Option<f64>,
   },
+  WorkerWakeSummary {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
+    worker_msgs_forwarded_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_msgs_processed_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_wakes_handled_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_wake_events_sent_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_wake_events_coalesced_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_followup_wakes_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_empty_wakes_per_sec: Option<f32>,
+    #[serde(default)]
+    worker_pending_msgs_estimate: Option<u64>,
+    #[serde(default)]
+    worker_msgs_per_nonempty_wake: Option<f32>,
+    #[serde(default)]
+    worker_last_drain: Option<u64>,
+    #[serde(default)]
+    worker_max_drain: Option<u64>,
+  },
   #[serde(other)]
   Unknown,
 }
@@ -398,6 +426,42 @@ mod tests {
       }) => {
         assert_eq!(frames_presented, Some(10));
         assert_eq!(dropped_frames, Some(2));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_worker_wake_summary_v2() {
+    let json = r#"{
+      "event":"worker_wake_summary",
+      "schema_version":2,
+      "t_ms":500,
+      "window_id":"WindowId(9)",
+      "worker_msgs_forwarded_per_sec":10.0,
+      "worker_msgs_processed_per_sec":9.5,
+      "worker_wakes_handled_per_sec":2.0,
+      "worker_wake_events_sent_per_sec":1.0,
+      "worker_wake_events_coalesced_per_sec":99.0,
+      "worker_followup_wakes_per_sec":0.25,
+      "worker_empty_wakes_per_sec":0.5,
+      "worker_pending_msgs_estimate":12,
+      "worker_msgs_per_nonempty_wake":4.0,
+      "worker_last_drain":8,
+      "worker_max_drain":16
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::WorkerWakeSummary {
+        worker_wake_events_coalesced_per_sec,
+        worker_pending_msgs_estimate,
+        worker_max_drain,
+        ..
+      }) => {
+        assert_eq!(worker_wake_events_coalesced_per_sec, Some(99.0));
+        assert_eq!(worker_pending_msgs_estimate, Some(12));
+        assert_eq!(worker_max_drain, Some(16));
       }
       other => panic!("unexpected event parsed: {other:?}"),
     }

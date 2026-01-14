@@ -288,8 +288,8 @@ see
   - When enabled, the `browser` binary emits JSONL (one JSON object per line) events describing
     frame-time samples, input latency, resize latency, and navigation TTFP measurements.
     Event types include: `frame`, `input`, `tab_switch`, `resize`, `navigation`, `ttfp`, `stage`,
-    `frame_upload`; plus periodic diagnostics like `idle_sample`/`idle_summary`, `cpu_summary`, and
-    `memory_summary` (the schema evolves; treat this list as non-exhaustive).
+    `frame_upload`, `worker_wake_summary`; plus periodic diagnostics like `idle_sample`/`idle_summary`,
+    `cpu_summary`, and `memory_summary` (the schema evolves; treat this list as non-exhaustive).
   - Worker stage heartbeat events (`event=stage`) are emitted when the windowed UI processes
     `WorkerToUi::Stage` messages. These include:
     - `tab_id`, `stage` (e.g. `layout`, `paint_build`), and `hotspot` (coarse bucket such as

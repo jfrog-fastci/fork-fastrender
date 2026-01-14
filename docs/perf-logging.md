@@ -145,7 +145,7 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|scroll|resize|ttfp|tab_switch|idle_sample|cpu_summary|memory_summary|frame_upload`: summarize a single event type.
+- `--only-event frame|input|scroll|resize|ttfp|tab_switch|idle_sample|cpu_summary|memory_summary|frame_upload|worker_wake_summary`: summarize a single event type.
   (`idle_summary` is accepted as a legacy alias; `scroll` is a convenience filter for wheel-driven `input` events.)
 
 To focus specifically on RSS over a windowed interaction, combine the event filter and time window:
@@ -161,7 +161,10 @@ to quickly spot RSS growth over the selected window.
 For idle diagnostics, you can also summarize `idle_sample` events; the summary output reports
 `idle_fps` (lower is better; ideally the browser is not drawing frames at all while idle).
 
-Note: the perf log contains additional event types (e.g. `worker_wake_summary`) that are currently
+To diagnose UI↔worker wake coalescing, summarize `worker_wake_summary` events; the summary output
+reports wake rates (sent/coalesced) and a best-effort `worker_pending_msgs_estimate`.
+
+Note: the perf log contains additional event types (e.g. `navigation`, `stage`) that are currently
 not summarized by `browser_perf_log_summary`; use `jq`/pandas for custom analysis.
 
 ### Headless benchmark harness: `ui_perf_smoke`
