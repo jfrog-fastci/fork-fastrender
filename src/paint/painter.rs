@@ -21880,6 +21880,46 @@ mod tests {
   }
 
   #[test]
+  fn remote_iframe_layer_split_preserves_display_list_metadata() {
+    let mut list = crate::paint::display_list::DisplayList::from_items(vec![
+      crate::paint::display_list::DisplayItem::FillRect(crate::paint::display_list::FillRectItem {
+        rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+        color: Rgba::WHITE,
+      }),
+      crate::paint::display_list::DisplayItem::RemoteFrameSlot(
+        crate::paint::display_list::RemoteFrameSlotItem {
+          slot_index: 123,
+          src: "https://example.com".to_string(),
+          rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+          clip: None,
+        },
+      ),
+      crate::paint::display_list::DisplayItem::FillRect(crate::paint::display_list::FillRectItem {
+        rect: Rect::from_xywh(10.0, 10.0, 5.0, 5.0),
+        color: Rgba::WHITE,
+      }),
+    ]);
+    list.mark_has_scroll_linked_animations();
+    list.set_has_gif_images(true);
+    list.set_has_animation_time_dependent_images(true);
+
+    let plan = split_display_list_for_remote_iframe_slots(&list).expect("split plan");
+    assert_eq!(plan.slots.len(), 1);
+    assert_eq!(plan.slots[0].slot_index, 0);
+    assert_eq!(plan.layers.len(), 2);
+
+    for layer in plan.layers {
+      assert!(layer.has_scroll_linked_animations());
+      assert!(layer.has_gif_images());
+      assert!(layer.has_animation_time_dependent_images());
+      assert!(!layer.items().iter().any(|item| matches!(
+        item,
+        crate::paint::display_list::DisplayItem::RemoteFrameSlot(_)
+      )));
+    }
+  }
+
+  #[test]
   fn normalize_color_stops_preserves_out_of_range_positions() {
     let stops = vec![
       ColorStop {
