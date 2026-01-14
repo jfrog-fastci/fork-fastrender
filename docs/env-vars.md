@@ -349,6 +349,8 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
   - The session file stores both session-restore state (windows/tabs, including a per-window “recently closed tabs” stack)
     and persisted chrome settings (appearance/UI scale, home page, menu bar visibility, window geometry).
+  - Note: even when tabs are not restored (e.g. `browser <url>` or `--no-restore`), the browser may
+    still load the session file to reuse those persisted chrome settings.
   - Note: the browser may create sidecar files next to the session path:
     - a lock file (same path with `.lock` extension) to prevent multiple `browser` instances from writing the same session, and
     - a last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`) used to recover if the primary session file is corrupted/unparseable.
