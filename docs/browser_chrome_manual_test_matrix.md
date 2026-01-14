@@ -450,6 +450,9 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
   - macOS: Cmd+D
 - [ ] Bookmarks bar toggle works (Ctrl/Cmd+Shift+B).
 - [ ] Bookmarks manager opens (Ctrl/Cmd+Shift+O).
+- [ ] Bookmarks panel toggle works:
+  - [ ] Menu bar: Bookmarks → Bookmarks panel
+  - [ ] Page context menu: Show Bookmarks
 - [ ] Bookmarks panel/manager behaviour (when open):
   - [ ] Search filters bookmarks.
   - [ ] Clicking a bookmark navigates (and can be opened in a new tab when offered).
