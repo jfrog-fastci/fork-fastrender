@@ -120,6 +120,81 @@ fn run_microtasks(
   }
 }
 
+fn supports_compiled_modules(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> bool {
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let supported = (|| {
+    let script = match CompiledScript::compile_module(heap, "feature_probe.js", "export default 1;") {
+      Ok(s) => s,
+      // If compilation fails for a valid module, treat it as "supported" so tests fail rather than
+      // silently skipping.
+      Err(_) => return true,
+    };
+    let mut record = match SourceTextModuleRecord::parse_source(script.source.clone()) {
+      Ok(r) => r,
+      Err(_) => return true,
+    };
+    record.compiled = Some(script);
+    record.ast = None;
+
+    if graph.add_module_with_specifier("a", record).is_err() {
+      return true;
+    };
+    let Ok(record_b) = SourceTextModuleRecord::parse(heap, "import x from \"a\"; export const y = x;") else {
+      return true;
+    };
+    let Ok(b) = graph.add_module_with_specifier("b", record_b) else {
+      return true;
+    };
+    graph.link_all_by_specifier();
+
+    let promise = match graph.evaluate(
+      vm,
+      heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return false,
+      // Any other error means the compiled-module path exists but may be buggy; don't skip.
+      Err(_) => return true,
+    };
+
+    let mut scope = heap.scope();
+    if scope.push_root(promise).is_err() {
+      return true;
+    }
+    let Value::Object(promise_obj) = promise else {
+      return true;
+    };
+
+    // If ModuleGraph rejects the promise with an internal "module AST missing" error, compiled
+    // modules aren't supported yet.
+    match promise_rejection_message_contains(
+      vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    ) {
+      Ok(true) => false,
+      _ => true,
+    }
+  })();
+
+  graph.teardown(vm, heap);
+  // Discard any jobs so dropping `hooks` doesn't trip `Job` root-leak debug assertions.
+  let mut ctx = MicrotaskCtx { vm, heap, host: &mut host };
+  hooks.teardown(&mut ctx);
+  supported
+}
+
 #[test]
 fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
@@ -128,6 +203,10 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
   let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
     let script_a = CompiledScript::compile_module(
       &mut heap,
       "a.js",
@@ -186,18 +265,13 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
     )?;
     graph.link_all_by_specifier();
 
-    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
-      Ok(()) => {}
-      // Older builds may not support compiled modules yet; skip rather than failing unrelated suites.
-      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
-      Err(e) => return Err(e),
-    };
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
     assert!(
       graph.module(a).ast.is_none(),
       "linking should not parse/retain an AST when compiled HIR is available"
     );
 
-    let promise = match graph.evaluate(
+    let promise = graph.evaluate(
       &mut vm,
       &mut heap,
       realm.global_object(),
@@ -205,27 +279,13 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
       b,
       &mut host,
       &mut hooks,
-    ) {
-      Ok(p) => p,
-      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
-      Err(e) => return Err(e),
-    };
+    )?;
 
     let mut scope = heap.scope();
     scope.push_root(promise)?;
     let Value::Object(promise_obj) = promise else {
       panic!("ModuleGraph::evaluate should return a Promise object");
     };
-    if promise_rejection_message_contains(
-      &mut vm,
-      &mut host,
-      &mut hooks,
-      &mut scope,
-      promise_obj,
-      "module AST missing",
-    )? {
-      return Ok(());
-    }
     assert_eq!(
       scope.heap().promise_state(promise_obj)?,
       PromiseState::Fulfilled,
