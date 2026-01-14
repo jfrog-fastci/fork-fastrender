@@ -4247,4 +4247,36 @@ mod tests {
     assert!(matches!(err, VmError::OutOfMemory));
     Ok(())
   }
+
+  #[test]
+  fn ensure_no_tla_in_resolved_graph_returns_out_of_memory_on_alloc_failure() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+
+    let mut graph = ModuleGraph::new();
+    let module = graph.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
+
+    let _guard = FailAllocsGuard::new();
+    let err = graph
+      .ensure_no_tla_in_resolved_graph(&mut vm, module)
+      .expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
+
+  #[test]
+  fn inner_module_evaluation_returns_out_of_memory_on_alloc_failure() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+
+    let mut graph = ModuleGraph::new();
+    let module = graph.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
+
+    let _guard = FailAllocsGuard::new();
+    let err = graph
+      .inner_module_evaluation(&mut vm, module)
+      .expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
 }
