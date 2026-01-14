@@ -243,6 +243,13 @@ fn private_in_operator_without_decl_is_syntax_error() {
 }
 
 #[test]
+fn parenthesized_private_in_operator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("(#x) in {};").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn private_identifier_in_expression_position_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("#x;").unwrap_err();
