@@ -128,6 +128,36 @@ fn var_and_lexical_decl_conflict_in_class_static_block_is_syntax_error() {
 }
 
 #[test]
+fn duplicate_private_name_in_class_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { #x; #x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_name_may_not_be_both_static_and_instance_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { #x; static #x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_in_operator_without_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("#x in {};").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn delete_private_reference_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { #x; m() { delete this.#x; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn rest_parameter_must_be_last() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function f(...a, b) {}").unwrap_err();
@@ -147,6 +177,13 @@ fn optional_chaining_is_invalid_destructuring_assignment_target() {
   let err = rt
     .exec_script("var o = null; ({ a: o?.x } = { a: 1 });")
     .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn destructuring_assignment_pattern_with_non_equals_operator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("({ a } += 1);").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -242,9 +279,43 @@ fn duplicate_parameter_names_in_strict_mode_are_syntax_error() {
 }
 
 #[test]
+fn duplicate_parameter_names_in_function_made_strict_by_directive_are_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function f(a, a) { "use strict"; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn restricted_eval_param_in_function_made_strict_by_directive_are_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function f(eval) { "use strict"; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn restricted_arguments_param_in_function_made_strict_by_directive_are_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function f(arguments) { "use strict"; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn duplicate_parameter_names_in_non_simple_parameter_list_are_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function f(a = 0, a) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_parameter_names_in_arrow_function_are_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("((a, a) => {});").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -318,6 +389,27 @@ fn escaped_eval_as_function_name_in_strict_mode_is_syntax_error() {
 fn escaped_eval_assignment_target_in_strict_mode_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; \u0065val = 1;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_delete_unqualified_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; delete x;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_assignment_to_arguments_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; arguments = 1;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_postfix_increment_eval_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; eval++;"#).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -451,6 +543,27 @@ fn function_constructor_early_errors_are_catchable_syntax_error() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn lexical_declaration_may_not_bind_let_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("let let = 0;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn const_declaration_may_not_bind_let_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("const let = 0;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn function_decl_name_conflicts_with_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("function f() {} let f;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
