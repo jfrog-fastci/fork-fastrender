@@ -164,14 +164,15 @@ fn hir_async_return_await_resolved() -> Result<(), VmError> {
 }
 
 #[test]
-fn hir_async_return_await_rejected_is_catchable() -> Result<(), VmError> {
+fn hir_async_return_await_rejected_is_caught() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let func_obj = compile_and_get_function(
     &mut rt,
     r#"
       async function f(){
-        return await Promise.reject('x');
+        try { return await Promise.reject('x'); }
+        catch(e){ return e; }
       }
       f
     "#,
@@ -179,20 +180,21 @@ fn hir_async_return_await_rejected_is_catchable() -> Result<(), VmError> {
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
-  assert_eq!(state, PromiseState::Rejected);
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_value_utf8_string_eq(&rt, result, "x")?;
   Ok(())
 }
 
 #[test]
-fn hir_async_throw_await_resolved_is_catchable() -> Result<(), VmError> {
+fn hir_async_throw_await_resolved_is_caught() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let func_obj = compile_and_get_function(
     &mut rt,
     r#"
       async function f(){
-        throw await Promise.resolve('y');
+        try { throw await Promise.resolve('y'); }
+        catch(e){ return e; }
       }
       f
     "#,
@@ -200,20 +202,21 @@ fn hir_async_throw_await_resolved_is_catchable() -> Result<(), VmError> {
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
-  assert_eq!(state, PromiseState::Rejected);
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_value_utf8_string_eq(&rt, result, "y")?;
   Ok(())
 }
 
 #[test]
-fn hir_async_throw_await_rejected_is_catchable() -> Result<(), VmError> {
+fn hir_async_throw_await_rejected_is_caught() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let func_obj = compile_and_get_function(
     &mut rt,
     r#"
       async function f(){
-        throw await Promise.reject('z');
+        try { throw await Promise.reject('z'); }
+        catch(e){ return e; }
       }
       f
     "#,
@@ -221,7 +224,7 @@ fn hir_async_throw_await_rejected_is_catchable() -> Result<(), VmError> {
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
-  assert_eq!(state, PromiseState::Rejected);
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_value_utf8_string_eq(&rt, result, "z")?;
   Ok(())
 }

@@ -20060,6 +20060,8 @@ enum TryStmtStage {
     next_stmt_index_after: usize,
     await_stmt_offset: u32,
   },
+  AwaitReturn,
+  AwaitThrow { throw_stmt_offset: u32 },
 }
 
 #[derive(Debug)]
@@ -20288,6 +20290,82 @@ impl TryStmtState {
           continue;
         }
 
+        TryStmtStage::AwaitReturn => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "try stmt await return stage missing resume value",
+            ));
+          };
+
+          let pending: Result<Flow, VmError> = match resume {
+            Ok(v) => Ok(Flow::Return(v)),
+            Err(err) => {
+              if err.is_throw_completion() {
+                Err(err)
+              } else {
+                return Err(err);
+              }
+            }
+          };
+
+          if let Some(id) = self.last_value_root.take() {
+            scope.heap_mut().remove_root(id);
+          }
+          self.last_value_present = false;
+
+          let outer = self
+            .outer_lex
+            .take()
+            .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+          return self.finalize_pending(evaluator, scope, body, pending);
+        }
+
+        TryStmtStage::AwaitThrow { throw_stmt_offset } => {
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "try stmt await throw stage missing resume value",
+            ));
+          };
+
+          let pending: Result<Flow, VmError> = match resume {
+            Ok(v) => {
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                throw_stmt_offset,
+                VmError::Throw(v),
+              );
+              match err {
+                VmError::Throw(_) | VmError::ThrowWithStack { .. } => Err(err),
+                other => return Err(other),
+              }
+            }
+            Err(err) => {
+              if err.is_throw_completion() {
+                Err(err)
+              } else {
+                return Err(err);
+              }
+            }
+          };
+
+          if let Some(id) = self.last_value_root.take() {
+            scope.heap_mut().remove_root(id);
+          }
+          self.last_value_present = false;
+
+          let outer = self
+            .outer_lex
+            .take()
+            .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+          return self.finalize_pending(evaluator, scope, body, pending);
+        }
+
         TryStmtStage::TryBlock => {
           if resume_value.is_some() {
             return Err(VmError::InvariantViolation(
@@ -20404,6 +20482,94 @@ impl TryStmtState {
               await_stmt_offset: loop_offset,
             };
             continue;
+          }
+
+          // Direct `return await <expr>;` and `throw await <expr>;` must suspend and resume via
+          // microtasks, even when awaiting an already-settled Promise. The synchronous evaluator's
+          // `ExprKind::Await` support intentionally "unwraps" already-settled Promises (and errors on
+          // pending ones) while full expression-level await is being implemented; avoid that path
+          // here so async functions preserve correct semantics inside `try` blocks.
+          if let hir_js::StmtKind::Return(Some(expr_id)) = &stmt.kind {
+            let expr = evaluator.get_expr(body, *expr_id)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+              let await_stmt_offset = expr.span.start;
+              // Budget once for statement entry and once for the await expression itself.
+              evaluator.vm.tick()?;
+              evaluator.vm.tick()?;
+              let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+                Ok(v) => v,
+                Err(err) => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt.span.start,
+                    err,
+                  );
+
+                  if let Some(id) = self.last_value_root.take() {
+                    scope.heap_mut().remove_root(id);
+                  }
+                  self.last_value_present = false;
+
+                  let outer = self
+                    .outer_lex
+                    .take()
+                    .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+                  return self.finalize_pending(evaluator, scope, body, Err(err));
+                }
+              };
+              self.stage = TryStmtStage::AwaitReturn;
+              return Ok(TryStmtPoll::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+                await_stmt_offset,
+              });
+            }
+          }
+
+          if let hir_js::StmtKind::Throw(expr_id) = &stmt.kind {
+            let expr = evaluator.get_expr(body, *expr_id)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+              let await_stmt_offset = expr.span.start;
+              evaluator.vm.tick()?;
+              evaluator.vm.tick()?;
+              let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+                Ok(v) => v,
+                Err(err) => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt.span.start,
+                    err,
+                  );
+
+                  if let Some(id) = self.last_value_root.take() {
+                    scope.heap_mut().remove_root(id);
+                  }
+                  self.last_value_present = false;
+
+                  let outer = self
+                    .outer_lex
+                    .take()
+                    .ok_or(VmError::InvariantViolation("try stmt missing outer lexical env"))?;
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+                  return self.finalize_pending(evaluator, scope, body, Err(err));
+                }
+              };
+              self.stage = TryStmtStage::AwaitThrow {
+                throw_stmt_offset: stmt.span.start,
+              };
+              return Ok(TryStmtPoll::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+                await_stmt_offset,
+              });
+            }
           }
 
           // Evaluate other statements synchronously and apply statement-list `UpdateEmpty`.
@@ -23071,8 +23237,11 @@ impl HirAsyncState {
         finally_block,
       } = &stmt.kind
       {
-        // Detect whether the try block contains a top-level `for await..of` loop so we can avoid
-        // routing it through the synchronous evaluator (which rejects `await_ = true`).
+        // Detect whether the try block contains an async-only construct so we can avoid routing it
+        // through the synchronous evaluator. This includes:
+        // - `for await..of` loops (the synchronous evaluator rejects `await_ = true`), and
+        // - direct statement-level `return await` / `throw await` forms, which must always suspend
+        //   and resume via microtasks (even when awaiting already-settled Promises).
         let block_stmt = evaluator.get_stmt(body, *block)?;
         if let hir_js::StmtKind::Block(stmts) = &block_stmt.kind {
           let mut needs_async_try: bool = false;
@@ -23106,6 +23275,20 @@ impl HirAsyncState {
                   }
                 }
                 if needs_async_try {
+                  break;
+                }
+              }
+              hir_js::StmtKind::Return(Some(expr_id)) => {
+                let expr = evaluator.get_expr(body, *expr_id)?;
+                if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                  needs_async_try = true;
+                  break;
+                }
+              }
+              hir_js::StmtKind::Throw(expr_id) => {
+                let expr = evaluator.get_expr(body, *expr_id)?;
+                if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                  needs_async_try = true;
                   break;
                 }
               }
