@@ -13916,7 +13916,10 @@ impl AsyncObjectPatternBindingState {
         return Err(err);
       }
     };
-    root_scope.push_root(Value::Object(obj))?;
+    if let Err(err) = root_scope.push_root(Value::Object(obj)) {
+      root_scope.heap_mut().remove_root(src_value_root);
+      return Err(err);
+    }
     let obj_root = match root_scope.heap_mut().add_root(Value::Object(obj)) {
       Ok(id) => id,
       Err(err) => {
@@ -19756,7 +19759,10 @@ impl AsyncDestructuringAssignState {
         return Err(err);
       }
     };
-    root_scope.push_root(Value::Object(obj))?;
+    if let Err(err) = root_scope.push_root(Value::Object(obj)) {
+      root_scope.heap_mut().remove_root(src_value_root);
+      return Err(err);
+    }
     let obj_root = match root_scope.heap_mut().add_root(Value::Object(obj)) {
       Ok(id) => id,
       Err(err) => {

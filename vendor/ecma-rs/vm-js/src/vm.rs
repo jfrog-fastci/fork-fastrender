@@ -5663,6 +5663,101 @@ mod tests {
   }
 
   #[test]
+  fn microtask_checkpoint_termination_tears_down_hir_async_function_continuations(
+  ) -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let script = crate::CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() { await 1; }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(
+      !script.requires_ast_fallback,
+      "expected compiled script to execute in the HIR script path"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected script to evaluate to an async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected async function to execute via the compiled async evaluator, got {func_data:?}"
+    );
+
+    // Keep the function object alive across checkpoint teardown.
+    let func_root = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(func_obj))?;
+      scope.heap_mut().add_root(Value::Object(func_obj))?
+    };
+
+    let baseline_roots = rt.heap.persistent_root_count();
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    let _promise = {
+      let mut scope = rt.heap.scope();
+      let callee = scope
+        .heap()
+        .get_root(func_root)
+        .expect("missing rooted async function");
+      rt.vm
+        .call_without_host(&mut scope, callee, Value::Undefined, &[])?
+    };
+
+    assert!(
+      !rt.vm.microtask_queue().is_empty(),
+      "expected async function await to enqueue a microtask"
+    );
+    assert!(
+      rt.vm.async_continuation_count() > 0,
+      "expected async function await to store an async continuation"
+    );
+    assert!(
+      rt.vm
+        .async_continuations
+        .values()
+        .any(|c| matches!(
+          c,
+          VmAsyncContinuation::Ast(cont)
+            if cont.frames.iter().any(|f| matches!(f, crate::exec::AsyncFrame::HirAsync { .. }))
+        )),
+      "expected async function to store a compiled (HIR) async frame inside an AST async continuation"
+    );
+
+    // Force a termination when the checkpoint attempts to run the first job.
+    rt.vm.set_budget(Budget {
+      fuel: Some(0),
+      deadline: None,
+      check_time_every: 1,
+    });
+    let err = rt
+      .vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .expect_err("expected microtask checkpoint to terminate");
+    assert!(matches!(err, VmError::Termination(_)));
+
+    assert!(rt.vm.microtask_queue().is_empty());
+    assert_eq!(rt.vm.async_continuation_count(), 0);
+    assert_eq!(rt.heap.persistent_root_count(), baseline_roots);
+    assert_eq!(rt.heap.persistent_env_root_count(), baseline_env_roots);
+
+    rt.heap.remove_root(func_root);
+    Ok(())
+  }
+
+  #[test]
   fn microtask_checkpoint_termination_tears_down_hir_async_continuations() -> Result<(), VmError> {
     let mut rt = new_runtime();
     let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", "await 1;")?;
