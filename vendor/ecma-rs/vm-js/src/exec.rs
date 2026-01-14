@@ -27212,6 +27212,65 @@ fn async_eval_tagged_template(
   expr: &Node<TaggedTemplateExpr>,
 ) -> Result<AsyncEval<Value>, VmError> {
   match &*expr.stx.function.stx {
+    // `super.prop\`...\`` tagged template call.
+    //
+    // This is a Super Reference which must not evaluate the synthetic `super` base expression.
+    Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+      if member.stx.optional_chaining {
+        return Err(VmError::Unimplemented(
+          "optional chaining super member tagged template",
+        ));
+      }
+      if member.stx.right.starts_with('#') {
+        return Err(VmError::Unimplemented("super private name"));
+      }
+
+      // Spec: `super` uses the current `this` binding as the call receiver (`GetThisBinding`).
+      let receiver = async_get_super_receiver(evaluator, scope)?;
+
+      let callee_value = {
+        let mut key_scope = scope.reborrow();
+        // Root receiver + key across `GetSuperBase()` and any proxy traps.
+        key_scope.push_root(receiver)?;
+        let key_s = key_scope.alloc_string(&member.stx.right)?;
+        key_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+
+        let base = evaluator
+          .get_super_base(&mut key_scope)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+        let reference = Reference::SuperProperty { base, key, receiver };
+        evaluator
+          .get_value_from_reference(&mut key_scope, &reference)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
+      };
+
+      async_eval_tagged_template_with_callee(evaluator, scope, expr, callee_value, receiver)
+    }
+
+    // `super[expr]\`...\`` tagged template call with an `await` in the computed key expression.
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      if member.stx.optional_chaining {
+        return Err(VmError::Unimplemented(
+          "optional chaining super member tagged template",
+        ));
+      }
+
+      // Evaluating a super property reference requires an initialized `this` binding. In derived
+      // constructors before `super()`, this check happens before evaluating the computed key
+      // expression.
+      let _ = async_get_super_receiver(evaluator, scope)?;
+
+      // `super` is not an ordinary expression and is not evaluated as the computed-member base.
+      async_eval_tagged_template_computed_member_after_base(
+        evaluator,
+        scope,
+        expr,
+        &member.stx,
+        Value::Undefined,
+      )
+    }
+
     Expr::Member(member) => match async_eval_expr(evaluator, scope, &member.stx.left)? {
       AsyncEval::Complete(base) => {
         async_eval_tagged_template_member_after_base(evaluator, scope, expr, &member.stx, base)
@@ -27359,11 +27418,39 @@ fn async_eval_tagged_template_computed_member_after_member(
   base: Value,
   member_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let is_super = matches!(&*member.object.stx, Expr::Super(_));
+
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+  if is_super {
+    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    key_scope.push_root(receiver)?;
+    match key {
+      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+    };
+
+    let base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    let reference = Reference::SuperProperty { base, key, receiver };
+    let callee_value = evaluator
+      .get_value_from_reference(&mut key_scope, &reference)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    return async_eval_tagged_template_with_callee(
+      evaluator,
+      &mut key_scope,
+      expr,
+      callee_value,
+      receiver,
+    );
+  }
 
   if !member.optional_chaining && is_nullish(base) {
     return Err(throw_type_error(

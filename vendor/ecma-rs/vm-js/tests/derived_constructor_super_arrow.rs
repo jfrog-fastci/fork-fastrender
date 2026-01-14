@@ -467,3 +467,80 @@ fn derived_constructor_async_arrow_super_assignment_proxy_receiver_is_instance_a
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_tagged_template_uses_initialized_this() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      class B {
+        tag(s, v) {
+          this._x = v;
+          return s[0] + String(v) + s[1];
+        }
+      }
+      class C extends B {
+        constructor() {
+          super();
+          this._x = 0;
+          this.f = async () => {
+            let a = super.tag`a${await Promise.resolve(1)}b`;
+            let b = super[await Promise.resolve("tag")]`c${await Promise.resolve(2)}d`;
+            return a + "," + b + ":" + String(this._x) + ":" + String(this instanceof C);
+          };
+        }
+      }
+      async function run() {
+        let o = new C();
+        return await o.f();
+      }
+      run().then(v => out = String(v));
+    "#,
+    "a1b,c2d:2:true",
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_async_arrow_super_tagged_template_before_super_throw_before_await(
+) -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      async function run() {
+        let log = '';
+        class B {
+          tag(s, v) { return s[0] + String(v) + s[1]; }
+        }
+
+        class C extends B {
+          constructor() {
+            let keyThenable = { get then() { log += 'K'; return (resolve) => resolve('tag'); } };
+            let subThenable = { get then() { log += 'S'; return (resolve) => resolve('x'); } };
+
+            // Before `super()`: must throw a ReferenceError before awaiting any substitution or
+            // computed-key expression.
+            let p1 = (async () => {
+              try { return super.tag`a${await subThenable}b`; } catch (e) { return e.name; }
+            })();
+            let p2 = (async () => {
+              try { return super[await keyThenable]`a${await subThenable}b`; } catch (e) { return e.name; }
+            })();
+
+            super();
+            this.p1 = p1;
+            this.p2 = p2;
+          }
+        }
+
+        let o = new C();
+        let r1 = await o.p1;
+        let r2 = await o.p2;
+        return r1 + ',' + r2 + ':' + log;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "ReferenceError,ReferenceError:",
+  )?;
+  Ok(())
+}
