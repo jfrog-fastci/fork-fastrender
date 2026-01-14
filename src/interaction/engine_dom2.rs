@@ -671,9 +671,8 @@ fn is_anchor_with_href(dom: &Document, node_id: NodeId) -> bool {
     return false;
   };
   let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return false;
-  }
+  // Match browser behavior: an explicit `href` attribute is a navigation target even when the value
+  // is empty/whitespace-only (`<a href="">`).
   // The browser UI doesn't execute JS, so `javascript:` URLs aren't meaningful navigation targets.
   if href
     .as_bytes()
@@ -875,6 +874,33 @@ fn text_delete_range_for_key(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn anchor_with_empty_href_is_focusable() {
+    let dom = crate::dom2::parse_html("<!doctype html><a id=a href=\"\">Reload</a>").unwrap();
+    let a = dom.get_element_by_id("a").unwrap();
+
+    assert!(is_anchor_with_href(&dom, a));
+    assert!(is_focusable_interactive_element(&dom, a));
+  }
+
+  #[test]
+  fn anchor_with_whitespace_href_is_focusable() {
+    let dom = crate::dom2::parse_html("<!doctype html><a id=a href=\"   \">Reload</a>").unwrap();
+    let a = dom.get_element_by_id("a").unwrap();
+
+    assert!(is_anchor_with_href(&dom, a));
+    assert!(is_focusable_interactive_element(&dom, a));
+  }
+
+  #[test]
+  fn anchor_with_javascript_href_is_not_focusable() {
+    let dom = crate::dom2::parse_html("<!doctype html><a id=a href=\"javascript:1\">JS</a>").unwrap();
+    let a = dom.get_element_by_id("a").unwrap();
+
+    assert!(!is_anchor_with_href(&dom, a));
+    assert!(!is_focusable_interactive_element(&dom, a));
+  }
 
   #[test]
   fn clicking_first_summary_toggles_details_open() {

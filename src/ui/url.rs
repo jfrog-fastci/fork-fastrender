@@ -220,13 +220,11 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
 ///
 /// This is intended for DOM-driven navigations like link clicks and context menu actions.
 ///
-/// Returns `None` when `href` is empty, cannot be resolved, or resolves to a `javascript:` URL (the
-/// browser UI does not execute JavaScript).
+/// - Empty/whitespace-only hrefs resolve to the base URL (`Url::join("")` semantics).
+/// - Returns `None` when `href` cannot be resolved or resolves to a `javascript:` URL (the browser
+///   UI does not execute JavaScript).
 pub fn resolve_link_url(base_url: &str, href: &str) -> Option<String> {
   let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return None;
-  }
 
   // Fast path: avoid parsing if this is clearly a `javascript:` URL (common in legacy pages).
   if href
@@ -244,6 +242,18 @@ pub fn resolve_link_url(base_url: &str, href: &str) -> Option<String> {
       }
       return Some(joined.to_string());
     }
+
+    // Empty hrefs are valid same-document navigations; if `Url::join` fails (e.g. for
+    // cannot-be-a-base URLs), still treat the base as the resolved URL.
+    if href.is_empty() && !base.scheme().eq_ignore_ascii_case("javascript") {
+      let mut base = base;
+      base.set_fragment(None);
+      return Some(base.to_string());
+    }
+  }
+
+  if href.is_empty() {
+    return None;
   }
 
   let absolute = Url::parse(href).ok()?;
@@ -898,6 +908,18 @@ mod tests {
     assert_eq!(
       resolve_link_url("https://example.com/dir/page.html", "#frag").as_deref(),
       Some("https://example.com/dir/page.html#frag")
+    );
+  }
+
+  #[test]
+  fn resolve_link_url_empty_href_resolves_to_base_url() {
+    assert_eq!(
+      resolve_link_url("https://example.com/dir/page.html", "").as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+    assert_eq!(
+      resolve_link_url("https://example.com/dir/page.html", "   ").as_deref(),
+      Some("https://example.com/dir/page.html")
     );
   }
 

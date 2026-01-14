@@ -491,9 +491,6 @@ fn canonical_visited_url_key(url: &str) -> Option<Arc<str>> {
 
 fn resolve_href_for_visited(base: Option<&url::Url>, href: &str) -> Option<url::Url> {
   let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return None;
-  }
 
   if href
     .as_bytes()
@@ -510,6 +507,18 @@ fn resolve_href_for_visited(base: Option<&url::Url>, href: &str) -> Option<url::
       }
       return Some(joined);
     }
+
+    // Empty hrefs are valid same-document navigations; if `Url::join` fails (e.g. for
+    // cannot-be-a-base URLs), still treat the base as the resolved URL.
+    if href.is_empty() && !base.scheme().eq_ignore_ascii_case("javascript") {
+      let mut base = base.clone();
+      base.set_fragment(None);
+      return Some(base);
+    }
+  }
+
+  if href.is_empty() {
+    return None;
   }
 
   let absolute = url::Url::parse(href).ok()?;

@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{KeyAction, NavigationReason, PointerButton, TabId, WorkerToUi};
+use fastrender::ui::messages::{
+  KeyAction, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -52,6 +54,28 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String
     WorkerToUi::NavigationFailed { url, error, .. } => {
       panic!("navigation failed for {url}: {error}");
     }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+}
+
+fn next_hovered_url(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Option<String> {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::HoverChanged { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for HoverChanged for tab {tab_id:?}"));
+  match msg {
+    WorkerToUi::HoverChanged { hovered_url, .. } => hovered_url,
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+}
+
+fn next_context_menu_link_url(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Option<String> {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ContextMenu { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
+  match msg {
+    WorkerToUi::ContextMenu { link_url, .. } => link_url,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 }
@@ -129,6 +153,40 @@ fn anchor_with_empty_href_is_focusable_and_navigable() {
   let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
 
   // ---------------------------------------------------------------------------
+  // Hover + context menu: empty href should still resolve to the current URL for UI metadata.
+  // ---------------------------------------------------------------------------
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
+    .expect("pointer move");
+  let hovered = next_hovered_url(&worker.ui_rx, tab_id);
+  assert_eq!(
+    hovered.as_deref(),
+    Some(url.as_str()),
+    "expected hover to resolve empty href to the base URL"
+  );
+
+  worker
+    .ui_tx
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("context menu request");
+  let link_url = next_context_menu_link_url(&worker.ui_rx, tab_id);
+  assert_eq!(
+    link_url.as_deref(),
+    Some(url.as_str()),
+    "expected context menu link_url to resolve empty href to the base URL"
+  );
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
+
+  // ---------------------------------------------------------------------------
   // Pointer activation: clicking `<a href=\"\">` should also navigate.
   // ---------------------------------------------------------------------------
   worker
@@ -156,4 +214,3 @@ fn anchor_with_empty_href_is_focusable_and_navigable() {
 
   worker.join().expect("worker join");
 }
-
