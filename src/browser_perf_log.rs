@@ -39,11 +39,19 @@ pub enum InputKind {
 pub enum BrowserPerfLogEventV2 {
   Frame {
     #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
     ui_frame_ms: Option<f64>,
     #[serde(default)]
     fps: Option<f64>,
   },
   Input {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
     #[serde(default)]
     input_kind: Option<InputKind>,
     #[serde(default)]
@@ -51,21 +59,41 @@ pub enum BrowserPerfLogEventV2 {
   },
   Resize {
     #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
     resize_to_present_ms: Option<f64>,
   },
   Ttfp {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
     #[serde(default)]
     ttfp_ms: Option<f64>,
   },
   CpuSummary {
     #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
     cpu_percent_recent: Option<f64>,
   },
   IdleSample {
     #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
     idle_fps: Option<f32>,
   },
   FrameUpload {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
     #[serde(default)]
     upload_last_ms: Option<f64>,
     #[serde(default)]
@@ -78,6 +106,10 @@ pub enum BrowserPerfLogEventV2 {
     uploaded_bytes: Option<u64>,
   },
   MemorySummary {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
     /// Resident set size in bytes (Linux-only in the browser; nullable elsewhere).
     #[serde(default)]
     rss_bytes: Option<u64>,
@@ -169,7 +201,9 @@ mod tests {
 
     let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
     match event {
-      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary { rss_bytes, rss_mb }) => {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary {
+        rss_bytes, rss_mb, ..
+      }) => {
         assert!(rss_bytes.is_none());
         assert!(rss_mb.is_none());
       }
@@ -190,7 +224,9 @@ mod tests {
 
     let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
     match event {
-      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary { rss_bytes, rss_mb }) => {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary {
+        rss_bytes, rss_mb, ..
+      }) => {
         assert_eq!(rss_bytes, Some(1048576));
         assert_eq!(rss_mb, Some(1.0));
       }

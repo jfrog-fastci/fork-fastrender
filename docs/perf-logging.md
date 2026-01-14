@@ -110,7 +110,7 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|resize|ttfp|idle_sample|cpu_summary`: summarize a single event type.
+- `--only-event frame|input|scroll|resize|ttfp|idle_sample|cpu_summary|memory_summary|frame_upload`: summarize a single event type.
   (`idle_summary` is accepted as a legacy alias.)
 
 ### Headless benchmark harness: `ui_perf_smoke`

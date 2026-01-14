@@ -5,7 +5,9 @@
 //! hard to compare without ad-hoc scripts; this tool provides stable percentile summaries.
 
 use clap::{ArgAction, Parser};
-use fastrender::browser_perf_log::{BrowserPerfLogEvent, BrowserPerfLogEventV2, InputKind};
+use fastrender::browser_perf_log::{
+  BrowserPerfLogEvent, BrowserPerfLogEventV1, BrowserPerfLogEventV2, InputKind,
+};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -22,9 +24,137 @@ struct Cli {
   #[arg(long, value_name = "PATH")]
   input: Option<PathBuf>,
 
+  /// Only include events at or after this timestamp (ms since process start).
+  #[arg(long, value_name = "MS")]
+  from_ms: Option<u64>,
+
+  /// Only include events at or before this timestamp (ms since process start).
+  #[arg(long, value_name = "MS")]
+  to_ms: Option<u64>,
+
+  /// Only include events of the given kind.
+  ///
+  /// Common values:
+  /// - `frame` (UI frame samples)
+  /// - `input` (keyboard + scroll latency)
+  /// - `scroll` (scroll latency only)
+  /// - `resize`
+  /// - `ttfp`
+  /// - `cpu_summary`
+  /// - `memory_summary`
+  /// - `frame_upload`
+  /// - `idle_sample` (legacy alias: `idle_summary`)
+  #[arg(long, value_name = "EVENT")]
+  only_event: Option<String>,
+
   /// Emit machine-readable JSON instead of the human-readable table.
   #[arg(long, action = ArgAction::SetTrue)]
   json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventFilter {
+  Frame,
+  Input,
+  Scroll,
+  Resize,
+  Ttfp,
+  CpuSummary,
+  MemorySummary,
+  FrameUpload,
+  IdleSample,
+  TabSwitch,
+}
+
+fn parse_event_filter(raw: &str) -> Result<EventFilter, String> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Err("--only-event must not be empty".to_string());
+  }
+  match raw.to_ascii_lowercase().as_str() {
+    "frame" => Ok(EventFilter::Frame),
+    "input" => Ok(EventFilter::Input),
+    "scroll" => Ok(EventFilter::Scroll),
+    "resize" => Ok(EventFilter::Resize),
+    "ttfp" => Ok(EventFilter::Ttfp),
+    "cpu_summary" | "cpu" => Ok(EventFilter::CpuSummary),
+    "memory_summary" | "memory" => Ok(EventFilter::MemorySummary),
+    "frame_upload" | "upload" => Ok(EventFilter::FrameUpload),
+    "idle_sample" | "idle_summary" => Ok(EventFilter::IdleSample),
+    "tab_switch" | "tabswitch" | "tab-switch" => Ok(EventFilter::TabSwitch),
+    other => Err(format!(
+      "unknown --only-event {other:?}; expected frame|input|scroll|resize|ttfp|cpu_summary|memory_summary|frame_upload|idle_sample|tab_switch"
+    )),
+  }
+}
+
+fn f64_timestamp_ms_to_u64(ts_ms: Option<f64>) -> Option<u64> {
+  let ts_ms = ts_ms?;
+  if !ts_ms.is_finite() || ts_ms < 0.0 {
+    return None;
+  }
+  let capped = ts_ms.min(u64::MAX as f64);
+  Some(capped as u64)
+}
+
+fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
+  match event {
+    BrowserPerfLogEvent::V2(event) => match event {
+      BrowserPerfLogEventV2::Frame { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Input { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Resize { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Ttfp { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::CpuSummary { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::IdleSample { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::FrameUpload { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
+      BrowserPerfLogEventV2::Unknown => None,
+    },
+    BrowserPerfLogEvent::V1(event) => match event {
+      BrowserPerfLogEventV1::UiFrameTime { ts_ms, .. }
+      | BrowserPerfLogEventV1::TimeToFirstPaint { ts_ms, .. }
+      | BrowserPerfLogEventV1::Latency { ts_ms, .. }
+      | BrowserPerfLogEventV1::ResourceSample { ts_ms, .. } => f64_timestamp_ms_to_u64(*ts_ms),
+      BrowserPerfLogEventV1::Unknown => None,
+    },
+    BrowserPerfLogEvent::Unknown(_) => None,
+  }
+}
+
+fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> bool {
+  match event {
+    BrowserPerfLogEvent::V2(event) => match event {
+      BrowserPerfLogEventV2::Frame { .. } => filter == EventFilter::Frame,
+      BrowserPerfLogEventV2::Input { input_kind, .. } => match filter {
+        EventFilter::Input => true,
+        EventFilter::Scroll => input_kind.unwrap_or(InputKind::Unknown) == InputKind::MouseWheel,
+        _ => false,
+      },
+      BrowserPerfLogEventV2::Resize { .. } => filter == EventFilter::Resize,
+      BrowserPerfLogEventV2::Ttfp { .. } => filter == EventFilter::Ttfp,
+      BrowserPerfLogEventV2::CpuSummary { .. } => filter == EventFilter::CpuSummary,
+      BrowserPerfLogEventV2::MemorySummary { .. } => filter == EventFilter::MemorySummary,
+      BrowserPerfLogEventV2::FrameUpload { .. } => filter == EventFilter::FrameUpload,
+      BrowserPerfLogEventV2::IdleSample { .. } => filter == EventFilter::IdleSample,
+      BrowserPerfLogEventV2::Unknown => false,
+    },
+    BrowserPerfLogEvent::V1(event) => match event {
+      BrowserPerfLogEventV1::UiFrameTime { .. } => filter == EventFilter::Frame,
+      BrowserPerfLogEventV1::TimeToFirstPaint { .. } => filter == EventFilter::Ttfp,
+      BrowserPerfLogEventV1::Latency { kind, .. } => match kind.to_ascii_lowercase().as_str() {
+        "scroll" => filter == EventFilter::Scroll,
+        "resize" => filter == EventFilter::Resize,
+        "input" => filter == EventFilter::Input,
+        "tab_switch" | "tabswitch" | "tab-switch" => filter == EventFilter::TabSwitch,
+        _ => false,
+      },
+      BrowserPerfLogEventV1::ResourceSample { .. } => {
+        matches!(filter, EventFilter::CpuSummary | EventFilter::MemorySummary)
+      }
+      BrowserPerfLogEventV1::Unknown => false,
+    },
+    BrowserPerfLogEvent::Unknown(_) => false,
+  }
 }
 
 #[derive(Debug, Default)]
@@ -250,6 +380,19 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+  if let (Some(from), Some(to)) = (cli.from_ms, cli.to_ms) {
+    if from > to {
+      return Err(format!(
+        "--from-ms ({from}) must be less than or equal to --to-ms ({to})"
+      ));
+    }
+  }
+
+  let only_event = match cli.only_event.as_deref() {
+    Some(raw) => Some(parse_event_filter(raw)?),
+    None => None,
+  };
+
   let mut input_reader: Box<dyn BufRead> = match cli.input {
     Some(path) if path.as_os_str() == "-" => Box::new(BufReader::new(io::stdin())),
     Some(path) => {
@@ -284,6 +427,23 @@ fn run(cli: Cli) -> Result<(), String> {
     match serde_json::from_str::<BrowserPerfLogEvent>(line) {
       Ok(event) => {
         events_parsed = events_parsed.saturating_add(1);
+
+        if let Some(filter) = only_event {
+          if !matches_event_filter(&event, filter) {
+            continue;
+          }
+        }
+        if cli.from_ms.is_some() || cli.to_ms.is_some() {
+          if let Some(ts_ms) = event_timestamp_ms(&event) {
+            if cli.from_ms.is_some_and(|from| ts_ms < from) {
+              continue;
+            }
+            if cli.to_ms.is_some_and(|to| ts_ms > to) {
+              continue;
+            }
+          }
+        }
+
         match event {
           BrowserPerfLogEvent::V2(event) => match event {
             BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
