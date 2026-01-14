@@ -412,6 +412,66 @@ fn compiled_script_top_level_await_compound_assignment_rejection_does_not_put_va
 }
 
 #[test]
+fn compiled_script_top_level_await_computed_member_assignment_rejection_does_not_put_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var obj = {};
+      obj[(log.push("key"), "k")] = await Promise.reject((log.push("rhs"), "boom"));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The assignment reference (including the computed key) and await argument should have been
+  // evaluated, but the assignment and subsequent statements should not have.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "key,rhs");
+
+  let before_k = rt.exec_script("obj.k")?;
+  assert_eq!(before_k, Value::Undefined);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(value_to_utf8(&rt, reason), "boom");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "key,rhs");
+
+  let after_k = rt.exec_script("obj.k")?;
+  assert_eq!(after_k, Value::Undefined);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_in_member_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
