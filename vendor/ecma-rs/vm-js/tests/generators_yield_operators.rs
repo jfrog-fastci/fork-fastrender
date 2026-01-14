@@ -638,3 +638,36 @@ fn generators_yield_in_array_literals() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_array_literals_gc_safety() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function churn() {
+          // Allocate enough garbage to very likely trigger a GC while the generator is suspended.
+          // If the partially-constructed array literal is not kept alive by the continuation, the
+          // resume step will fail or produce incorrect results.
+          for (let i = 0; i < 4000; i++) {
+            // Force per-iteration allocations without retaining references.
+            const s = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + i;
+            ({ s, i });
+          }
+        }
+
+        function* g() { return [1, (yield 2), 3]; }
+        const it = g();
+        const r1 = it.next();
+        churn();
+        const r2 = it.next(10);
+
+        r1.value === 2 && r1.done === false &&
+        Array.isArray(r2.value) && r2.value.length === 3 &&
+        r2.value[0] === 1 && r2.value[1] === 10 && r2.value[2] === 3 &&
+        r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
