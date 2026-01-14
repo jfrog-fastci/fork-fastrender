@@ -232,8 +232,16 @@ This gives each node a stable `(tab_id, generation, dom_node_id)` identity and e
 requests from a previous navigation can be ignored (generation mismatch).
 
 For compatibility, `fast_accesskit_actions` also accepts the tag-bit page ids produced by
-[`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs), but that encoding does not
-include a document generation so it cannot filter stale action requests across navigations.
+[`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs).
+
+Encoding (u128):
+
+- Bit 127 = `1` (page node tag)
+- Bits 64..=126 = `TabId` (63 bits; the high bit is masked off)
+- Bits 0..=63 = DOM pre-order node id (`usize` stored as `u64`)
+
+This encoding does not include a document generation so it cannot filter stale action requests
+across navigations.
 
 #### Wrapper nodes (window/chrome/page roots)
 
@@ -242,8 +250,6 @@ Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
 in the “non-page” namespace (upper 64 bits are `0`, so `decode_page_node_id` returns `None`).
 
 This guarantees that DOM node id `1` in any tab will never collide with wrapper/root ids like `1`/`2`/`3`.
-Note: [`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs) contains an alternative tag-bit
-encoding variant; the windowed browser UI currently uses `encode_page_node_id` for page subtree ids.
 
 ---
 
