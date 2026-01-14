@@ -694,11 +694,36 @@ fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) 
   }
 }
 
+fn operator_is_supported_assignment_for_hir_async_scripts(op: OperatorName) -> bool {
+  // The compiled async classic-script executor currently supports only plain (`=`) and arithmetic/
+  // bitwise compound assignment forms whose RHS is a direct `await <expr>`.
+  //
+  // Logical assignment operators (`&&=`, `||=`, `??=`) require control-flow short-circuiting across
+  // an `await` boundary and are not supported yet.
+  matches!(
+    op,
+    OperatorName::Assignment
+      | OperatorName::AssignmentAddition
+      | OperatorName::AssignmentSubtraction
+      | OperatorName::AssignmentMultiplication
+      | OperatorName::AssignmentDivision
+      | OperatorName::AssignmentRemainder
+      | OperatorName::AssignmentExponentiation
+      | OperatorName::AssignmentBitwiseLeftShift
+      | OperatorName::AssignmentBitwiseRightShift
+      | OperatorName::AssignmentBitwiseUnsignedRightShift
+      | OperatorName::AssignmentBitwiseOr
+      | OperatorName::AssignmentBitwiseAnd
+      | OperatorName::AssignmentBitwiseXor
+  )
+}
+
 fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> bool {
   match &*stmt.stx {
     // Supported async classic script forms for the compiled (HIR) executor:
     // - `await <expr>;`
     // - `x = await <expr>;`
+    // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for await (<head> of <rhs>) { ... }` where:
     //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
@@ -714,8 +739,11 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
       }
 
       if let Expr::Binary(binary) = &*expr.stx {
-        if binary.stx.operator == OperatorName::Assignment {
+        if binary.stx.operator.is_assignment() {
           if let Some(arg) = expr_direct_await_arg(&binary.stx.right) {
+            if !operator_is_supported_assignment_for_hir_async_scripts(binary.stx.operator) {
+              return true;
+            }
             if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
               return true;
             }

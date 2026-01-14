@@ -14,6 +14,13 @@ fn value_to_utf8(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn value_to_number(value: Value) -> f64 {
+  let Value::Number(n) = value else {
+    panic!("expected number, got {value:?}");
+  };
+  n
+}
+
 #[test]
 fn compiled_script_top_level_await_executes_via_hir_and_resumes_in_microtasks() -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -187,6 +194,100 @@ fn compiled_script_top_level_await_in_computed_member_assignment_preserves_eval_
 
   let after_k = rt.exec_script("obj.k")?;
   assert_eq!(value_to_utf8(&rt, after_k), "v");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_in_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var x = 1;
+      Promise.resolve().then(() => { x = 100; });
+      x += await Promise.resolve(2);
+      x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a compound assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // The compound assignment should not have executed yet (and the microtask that mutates `x` should
+  // not have run yet either).
+  let before = rt.exec_script("x")?;
+  assert_eq!(value_to_number(before), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // Spec: compound assignment reads the LHS value before evaluating the RHS. The microtask that
+  // mutates `x` runs before the await continuation resumes, but `x += await ...` must still use the
+  // original LHS value (1) rather than the updated value (100).
+  let after = rt.exec_script("x")?;
+  assert_eq!(value_to_number(after), 3.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_in_member_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var obj = { x: 1 };
+      Promise.resolve().then(() => { obj.x = 100; });
+      obj.x += await Promise.resolve(2);
+      obj.x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a member compound assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // The compound assignment should not have executed yet.
+  let before = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(before), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // `obj.x` is mutated by an earlier microtask before the await continuation resumes; the compound
+  // assignment must still use the original LHS value (1).
+  let after = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(after), 3.0);
 
   rt.heap_mut().remove_root(result_root);
   Ok(())

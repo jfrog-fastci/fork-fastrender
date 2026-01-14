@@ -27,14 +27,14 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
     "compiled_top_level_await_fallback.js",
     r#"
       var out = "";
-      out += await Promise.resolve("ok");
+      out ||= await Promise.resolve("ok");
       out
     "#,
   )?;
   assert!(script.contains_top_level_await);
   assert!(
     script.top_level_await_requires_ast_fallback,
-    "compound assignment with await is not supported by the HIR async classic-script executor"
+    "logical assignment with await is not supported by the HIR async classic-script executor"
   );
 
   let completion = rt.exec_compiled_script(script)?;
@@ -78,14 +78,14 @@ fn compiled_script_with_host_and_hooks_falls_back_for_top_level_await() -> Resul
     "compiled_top_level_await_fallback_with_hooks.js",
     r#"
       var out = "";
-      out += await Promise.resolve("ok");
+      out ||= await Promise.resolve("ok");
       out
     "#,
   )?;
   assert!(script.contains_top_level_await);
   assert!(
     script.top_level_await_requires_ast_fallback,
-    "compound assignment with await is not supported by the HIR async classic-script executor"
+    "logical assignment with await is not supported by the HIR async classic-script executor"
   );
   assert!(
     script.requires_ast_fallback,

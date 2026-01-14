@@ -6537,6 +6537,56 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
+  fn get_value_from_assignment_reference(
+    &mut self,
+    scope: &mut Scope<'_>,
+    reference: &AssignmentReference,
+  ) -> Result<Value, VmError> {
+    match reference {
+      AssignmentReference::Binding(reference) => {
+        self.get_value_from_resolved_binding(scope, reference.as_resolved_binding())
+      }
+      AssignmentReference::Property { base, key } => {
+        let mut get_scope = scope.reborrow();
+        self.root_assignment_reference(&mut get_scope, reference)?;
+        let obj = get_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, *base)?;
+        get_scope.push_root(Value::Object(obj))?;
+        let receiver = *base;
+        get_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          *key,
+          receiver,
+        )
+      }
+      AssignmentReference::SuperProperty {
+        super_base,
+        receiver,
+        key,
+      } => {
+        let mut get_scope = scope.reborrow();
+        self.root_assignment_reference(&mut get_scope, reference)?;
+        let Some(super_base_obj) = *super_base else {
+          return Err(throw_type_error(
+            self.vm,
+            &mut get_scope,
+            "Cannot read a super property from a null prototype",
+          )?);
+        };
+        get_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          super_base_obj,
+          *key,
+          *receiver,
+        )
+      }
+    }
+  }
+
   fn maybe_set_anonymous_function_name_for_assignment(
     &mut self,
     scope: &mut Scope<'_>,
@@ -15408,7 +15458,7 @@ enum HirAsyncResumePoint {
     declarator_index: usize,
   },
   /// Resume an assignment expression statement whose RHS was a direct `await` expression
-  /// (`x = await <expr>;`).
+  /// (`x = await <expr>;` / `x += await <expr>;`).
   Assignment { next_stmt_index: usize },
   /// Resume a top-level `for await..of` statement.
   ///
@@ -15438,12 +15488,16 @@ pub(crate) struct HirAsyncContinuation {
   awaited_promise_root: Option<RootId>,
   resume: HirAsyncResumePoint,
   for_await_of_state: Option<ForAwaitOfState>,
-  /// Assignment reference captured when suspending on `x = await <expr>;`.
+  /// Assignment reference captured when suspending on `x = await <expr>;` or `x += await <expr>;`.
   assign_reference: Option<AssignmentReference>,
+  /// Assignment operator to apply after resumption (compound assignments only).
+  assign_op: Option<hir_js::AssignOp>,
   /// Persistent root for the assignment reference base value (member/super assignments).
   assign_base_root: Option<RootId>,
   /// Persistent root for the assignment reference property key (member/super assignments).
   assign_key_root: Option<RootId>,
+  /// Persistent root for the pre-await LHS value for compound assignments.
+  assign_left_root: Option<RootId>,
   /// Rooted running completion value for statement-list evaluation (ECMA-262 `UpdateEmpty`).
   last_value_root: RootId,
   last_value_is_set: bool,
@@ -15469,6 +15523,9 @@ pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: H
   if let Some(root) = cont.assign_key_root.take() {
     scope.heap_mut().remove_root(root);
   }
+  if let Some(root) = cont.assign_left_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
 }
 
 #[derive(Debug)]
@@ -15479,6 +15536,8 @@ enum HirAsyncEvalResult {
     await_value: Value,
     resume: HirAsyncResumePoint,
     assign_reference: Option<AssignmentReference>,
+    assign_op: Option<hir_js::AssignOp>,
+    assign_left_value: Option<Value>,
     for_await_of_state: Option<ForAwaitOfState>,
   },
 }
@@ -15526,6 +15585,8 @@ fn hir_eval_stmt_list_until_await(
             next_stmt_index: i.saturating_add(1),
           },
           assign_reference: None,
+          assign_op: None,
+          assign_left_value: None,
           for_await_of_state: None,
         });
       }
@@ -15590,8 +15651,110 @@ fn hir_eval_stmt_list_until_await(
               next_stmt_index: i.saturating_add(1),
             },
             assign_reference: Some(reference),
+            assign_op: None,
+            assign_left_value: None,
             for_await_of_state: None,
           });
+        }
+      }
+
+      // Fast-path compound assignments where the RHS is a direct await expression (e.g.
+      // `x += await foo();`).
+      if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+        // Restrict to arithmetic/bitwise compound assignment operators; logical assignments require
+        // short-circuiting semantics that the compiled executor does not yet support across an
+        // `await` boundary.
+        if matches!(
+          op,
+          hir_js::AssignOp::AddAssign
+            | hir_js::AssignOp::SubAssign
+            | hir_js::AssignOp::MulAssign
+            | hir_js::AssignOp::DivAssign
+            | hir_js::AssignOp::RemAssign
+            | hir_js::AssignOp::ExponentAssign
+            | hir_js::AssignOp::ShiftLeftAssign
+            | hir_js::AssignOp::ShiftRightAssign
+            | hir_js::AssignOp::ShiftRightUnsignedAssign
+            | hir_js::AssignOp::BitOrAssign
+            | hir_js::AssignOp::BitAndAssign
+            | hir_js::AssignOp::BitXorAssign
+        ) {
+          let rhs = evaluator.get_expr(body, *value)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+            // Budget once for the statement and once for the await expression itself.
+            evaluator.vm.tick()?;
+            evaluator.vm.tick()?;
+
+            let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
+              Ok(r) => r,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+
+            let mut scope = scope.reborrow();
+            if let Err(err) = evaluator.root_assignment_reference(&mut scope, &reference) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+            let left = match evaluator.get_value_from_assignment_reference(&mut scope, &reference) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+            if let Err(err) = scope.push_root(left) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+
+            let await_value = match evaluator.eval_expr(&mut scope, body, awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+
+            return Ok(HirAsyncEvalResult::Await {
+              kind: crate::exec::AsyncSuspendKind::Await,
+              await_value,
+              resume: HirAsyncResumePoint::Assignment {
+                next_stmt_index: i.saturating_add(1),
+              },
+              assign_reference: Some(reference),
+              assign_op: Some(*op),
+              assign_left_value: Some(left),
+              for_await_of_state: None,
+            });
+          }
         }
       }
     }
@@ -15630,6 +15793,8 @@ fn hir_eval_stmt_list_until_await(
                 declarator_index: j,
               },
               assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
               for_await_of_state: None,
             });
           }
@@ -15769,6 +15934,8 @@ fn hir_eval_stmt_list_until_await(
               break_label: None,
             },
             assign_reference: None,
+            assign_op: None,
+            assign_left_value: None,
             for_await_of_state: Some(state),
           });
         }
@@ -16035,13 +16202,31 @@ fn run_compiled_script_async(
       await_value,
       resume,
       assign_reference,
+      assign_op,
+      assign_left_value,
       for_await_of_state,
     }) => {
       let mut for_await_of_state = for_await_of_state;
       // Root all captured values while we create persistent roots and schedule the resumption.
       let mut root_scope = scope.reborrow();
-      let push_res = match assign_reference.as_ref() {
-        Some(AssignmentReference::Property { base, key }) => {
+      let push_res = match (assign_reference.as_ref(), assign_left_value) {
+        (Some(AssignmentReference::Property { base, key }), Some(left)) => {
+          let key_value = match key {
+            PropertyKey::String(s) => Value::String(*s),
+            PropertyKey::Symbol(s) => Value::Symbol(*s),
+          };
+          root_scope.push_roots(&[
+            promise,
+            cap.resolve,
+            cap.reject,
+            global_this,
+            await_value,
+            *base,
+            key_value,
+            left,
+          ])
+        }
+        (Some(AssignmentReference::Property { base, key }), None) => {
           let key_value = match key {
             PropertyKey::String(s) => Value::String(*s),
             PropertyKey::Symbol(s) => Value::Symbol(*s),
@@ -16056,11 +16241,39 @@ fn run_compiled_script_async(
             key_value,
           ])
         }
-        Some(AssignmentReference::SuperProperty {
-          super_base,
-          receiver,
-          key,
-        }) => {
+        (
+          Some(AssignmentReference::SuperProperty {
+            super_base,
+            receiver,
+            key,
+          }),
+          Some(left),
+        ) => {
+          let key_value = match key {
+            PropertyKey::String(s) => Value::String(*s),
+            PropertyKey::Symbol(s) => Value::Symbol(*s),
+          };
+          let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+          root_scope.push_roots(&[
+            promise,
+            cap.resolve,
+            cap.reject,
+            global_this,
+            await_value,
+            base_value,
+            *receiver,
+            key_value,
+            left,
+          ])
+        }
+        (
+          Some(AssignmentReference::SuperProperty {
+            super_base,
+            receiver,
+            key,
+          }),
+          None,
+        ) => {
           let key_value = match key {
             PropertyKey::String(s) => Value::String(*s),
             PropertyKey::Symbol(s) => Value::Symbol(*s),
@@ -16077,7 +16290,8 @@ fn run_compiled_script_async(
             key_value,
           ])
         }
-        _ => root_scope.push_roots(&[promise, cap.resolve, cap.reject, global_this, await_value]),
+        (_, Some(left)) => root_scope.push_roots(&[promise, cap.resolve, cap.reject, global_this, await_value, left]),
+        (_, None) => root_scope.push_roots(&[promise, cap.resolve, cap.reject, global_this, await_value]),
       };
       if let Err(err) = push_res {
         if let Some(mut state) = for_await_of_state.take() {
@@ -16180,7 +16394,7 @@ fn run_compiled_script_async(
       let extra_root_count = match assign_reference.as_ref() {
         Some(AssignmentReference::Property { .. } | AssignmentReference::SuperProperty { .. }) => 2,
         _ => 0,
-      };
+      } + usize::from(assign_left_value.is_some());
       let required_capacity = match values.len().checked_add(extra_root_count) {
         Some(n) => n,
         None => {
@@ -16228,6 +16442,7 @@ fn run_compiled_script_async(
       // alive across the async boundary by registering persistent roots.
       let mut assign_base_root = None;
       let mut assign_key_root = None;
+      let mut assign_left_root = None;
       if let Some(reference) = assign_reference.as_ref() {
         match reference {
           AssignmentReference::Binding(_) => {}
@@ -16306,6 +16521,24 @@ fn run_compiled_script_async(
           }
         }
       }
+      if let Some(left) = assign_left_value {
+        let left_root = match root_scope.heap_mut().add_root(left) {
+          Ok(id) => id,
+          Err(err) => {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            if let Some(mut state) = for_await_of_state.take() {
+              state.teardown(root_scope.heap_mut());
+            }
+            root_scope.heap_mut().remove_root(last_value_root);
+            env.teardown(root_scope.heap_mut());
+            return Err(err);
+          }
+        };
+        assign_left_root = Some(left_root);
+        roots.push(left_root);
+      }
 
       if let Err(err) = vm.reserve_hir_async_continuations(1) {
         for id in roots.drain(..) {
@@ -16333,8 +16566,10 @@ fn run_compiled_script_async(
         resume,
         for_await_of_state,
         assign_reference,
+        assign_op,
         assign_base_root,
         assign_key_root,
+        assign_left_root,
         last_value_root,
         last_value_is_set,
       };
@@ -16613,6 +16848,8 @@ pub(crate) fn hir_async_resume_continuation(
                     declarator_index: j,
                   },
                   assign_reference: None,
+                  assign_op: None,
+                  assign_left_value: None,
                   for_await_of_state: None,
                 });
               }
@@ -16663,7 +16900,8 @@ pub(crate) fn hir_async_resume_continuation(
         }
         HirAsyncResumePoint::Assignment { next_stmt_index } => {
           let resumed = resume_value?;
-          // Complete the suspended assignment expression statement (`x = await <expr>;`).
+          // Complete the suspended assignment expression statement (`x = await <expr>;` /
+          // `x += await <expr>;`).
           let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
             "hir async assignment resume missing statement index",
           ))?;
@@ -16679,42 +16917,110 @@ pub(crate) fn hir_async_resume_continuation(
           let reference = cont.assign_reference.take().ok_or(VmError::InvariantViolation(
             "hir async assignment resume missing assignment reference",
           ))?;
-          {
+          let assign_op = cont.assign_op.take();
+
+          let assigned_value = if let Some(op) = assign_op {
+            // Compound assignment: apply the operator using the pre-await LHS value, then assign the
+            // result back into the same reference.
+            let left_root = cont.assign_left_root.ok_or(VmError::InvariantViolation(
+              "hir async compound assignment resume missing left value root",
+            ))?;
+            let left = scope
+              .heap()
+              .get_root(left_root)
+              .ok_or(VmError::InvariantViolation(
+                "hir async compound assignment missing left value root",
+              ))?;
+
             let mut assign_scope = scope.reborrow();
-            // Root the resumed value across anonymous function naming + PutValue operations.
-            assign_scope.push_root(resumed)?;
-            if let Err(err) =
-              evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, resumed)
+            if let Err(err) = assign_scope.push_roots(&[left, resumed]) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut assign_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+            let out = match evaluator.apply_compound_assignment_op(&mut assign_scope, op, left, resumed) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut assign_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+            if let Err(err) = assign_scope.push_root(out) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut assign_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+            if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, out) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut assign_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+
+            // The left value root is no longer needed after we compute + assign the result.
+            assign_scope.heap_mut().remove_root(left_root);
+            cont.assign_left_root = None;
+
+            out
+          } else {
+            // Simple assignment: assign the resumed value directly.
             {
-              return Err(finalize_throw_with_stack_at_source_offset(
-                &*evaluator.vm,
-                &mut assign_scope,
-                source.as_ref(),
-                stmt_offset,
-                err,
-              ));
+              let mut assign_scope = scope.reborrow();
+              // Root the resumed value across anonymous function naming + PutValue operations.
+              assign_scope.push_root(resumed)?;
+              if let Err(err) =
+                evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, resumed)
+              {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut assign_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ));
+              }
+              if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, resumed) {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut assign_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ));
+              }
             }
-            if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, resumed) {
-              return Err(finalize_throw_with_stack_at_source_offset(
-                &*evaluator.vm,
-                &mut assign_scope,
-                source.as_ref(),
-                stmt_offset,
-                err,
-              ));
-            }
-          }
+            resumed
+          };
 
           // The assignment expression evaluates to the assigned value and becomes the statement-list
           // completion value.
           cont.last_value_is_set = true;
-          scope.heap_mut().set_root(cont.last_value_root, resumed);
+          scope.heap_mut().set_root(cont.last_value_root, assigned_value);
 
           // The captured assignment base/key roots are no longer needed after PutValue completes.
           if let Some(root) = cont.assign_base_root.take() {
             scope.heap_mut().remove_root(root);
           }
           if let Some(root) = cont.assign_key_root.take() {
+            scope.heap_mut().remove_root(root);
+          }
+          if let Some(root) = cont.assign_left_root.take() {
             scope.heap_mut().remove_root(root);
           }
 
@@ -16757,6 +17063,8 @@ pub(crate) fn hir_async_resume_continuation(
                 break_label,
               },
               assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
               for_await_of_state: Some(state),
             }),
             Ok(ForAwaitOfPoll::Complete(flow)) => {
@@ -16842,10 +17150,13 @@ pub(crate) fn hir_async_resume_continuation(
         await_value,
         resume,
         assign_reference,
+        assign_op,
+        assign_left_value,
         for_await_of_state,
       }) => {
         cont.resume = resume;
         cont.assign_reference = assign_reference;
+        cont.assign_op = assign_op;
         if let Some(mut state) = cont.for_await_of_state.take() {
           state.teardown(scope.heap_mut());
         }
@@ -16858,21 +17169,49 @@ pub(crate) fn hir_async_resume_continuation(
         if let Some(root) = cont.assign_key_root.take() {
           scope.heap_mut().remove_root(root);
         }
+        if let Some(root) = cont.assign_left_root.take() {
+          scope.heap_mut().remove_root(root);
+        }
 
         let mut await_scope = scope.reborrow();
-        let push_res = match cont.assign_reference.as_ref() {
-          Some(AssignmentReference::Property { base, key }) => {
+        let push_res = match (cont.assign_reference.as_ref(), assign_left_value) {
+          (Some(AssignmentReference::Property { base, key }), Some(left)) => {
+            let key_value = match key {
+              PropertyKey::String(s) => Value::String(*s),
+              PropertyKey::Symbol(s) => Value::Symbol(*s),
+            };
+            await_scope.push_roots(&[await_value, *base, key_value, left])
+          }
+          (Some(AssignmentReference::Property { base, key }), None) => {
             let key_value = match key {
               PropertyKey::String(s) => Value::String(*s),
               PropertyKey::Symbol(s) => Value::Symbol(*s),
             };
             await_scope.push_roots(&[await_value, *base, key_value])
           }
-          Some(AssignmentReference::SuperProperty {
-            super_base,
-            receiver,
-            key,
-          }) => {
+          (
+            Some(AssignmentReference::SuperProperty {
+              super_base,
+              receiver,
+              key,
+            }),
+            Some(left),
+          ) => {
+            let key_value = match key {
+              PropertyKey::String(s) => Value::String(*s),
+              PropertyKey::Symbol(s) => Value::Symbol(*s),
+            };
+            let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+            await_scope.push_roots(&[await_value, base_value, *receiver, key_value, left])
+          }
+          (
+            Some(AssignmentReference::SuperProperty {
+              super_base,
+              receiver,
+              key,
+            }),
+            None,
+          ) => {
             let key_value = match key {
               PropertyKey::String(s) => Value::String(*s),
               PropertyKey::Symbol(s) => Value::Symbol(*s),
@@ -16880,7 +17219,8 @@ pub(crate) fn hir_async_resume_continuation(
             let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
             await_scope.push_roots(&[await_value, base_value, *receiver, key_value])
           }
-          _ => await_scope.push_root(await_value).map(|_| ()),
+          (_, Some(left)) => await_scope.push_roots(&[await_value, left]),
+          (_, None) => await_scope.push_root(await_value).map(|_| ()),
         };
         if let Err(err) = push_res {
           hir_async_teardown_continuation(&mut await_scope, cont);
@@ -16942,6 +17282,16 @@ pub(crate) fn hir_async_resume_continuation(
               cont.assign_key_root = Some(key_root);
             }
           }
+        }
+        if let Some(left) = assign_left_value {
+          let left_root = match await_scope.heap_mut().add_root(left) {
+            Ok(id) => id,
+            Err(err) => {
+              hir_async_teardown_continuation(&mut await_scope, cont);
+              return Err(err);
+            }
+          };
+          cont.assign_left_root = Some(left_root);
         }
 
         let awaited_promise_res: Result<Value, VmError> = match kind {
