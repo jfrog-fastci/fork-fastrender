@@ -691,7 +691,8 @@ fn to_uint16_f64(n: f64) -> u16 {
   int as u16
 }
 
-fn traversal_filter_node<Host: DomHost + 'static>(
+fn traversal_filter_node<Host: WindowRealmHost + DomHost + 'static>(
+  dispatch: &mut VmJsWebIdlBindingsHostDispatch<Host>,
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   dom_exception: DomExceptionClassVmJs,
@@ -716,7 +717,7 @@ fn traversal_filter_node<Host: DomHost + 'static>(
   }
 
   // Step 2: nodeType.
-  let node_type = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+  let node_type = dispatch.with_dom_host(vm, |host| {
     Ok(host.with_dom(|dom| {
       if node_id.index() >= dom.nodes_len() {
         return None;
@@ -789,7 +790,7 @@ fn traversal_filter_node<Host: DomHost + 'static>(
   )?;
 
   // Resolve the node wrapper to pass to the callback.
-  let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+  let primary = dispatch.with_dom_host(vm, |host| {
     Ok(host.with_dom(|dom| {
       if node_id.index() >= dom.nodes_len() {
         DomInterface::Node
@@ -1004,38 +1005,6 @@ fn require_dom_platform_mut(vm: &mut Vm) -> Result<&mut DomPlatform, VmError> {
   dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))
 }
 
-fn with_embedder_state_from_hooks<Host: 'static, R>(
-  vm: &mut Vm,
-  f: impl FnOnce(&mut Host) -> Result<R, VmError>,
-) -> Result<R, VmError> {
-  let Some(hooks_ptr) = vm.active_host_hooks_ptr() else {
-    return Err(VmError::TypeError(
-      "WebIDL DOM operation called without an active VmHostHooks payload",
-    ));
-  };
-  // SAFETY: the returned pointer is only exposed by `vm-js` while an embedder-owned `VmHostHooks`
-  // value is mutably borrowed for a single JS execution boundary.
-  let hooks = unsafe { &mut *hooks_ptr };
-
-  let Some(any) = hooks.as_any_mut() else {
-    return Err(VmError::TypeError(
-      "WebIDL DOM operation called without an Any-backed VmHostHooks payload",
-    ));
-  };
-
-  // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this block.
-  let any_ptr: *mut dyn std::any::Any = any;
-  let host = unsafe {
-    (&mut *any_ptr)
-      .downcast_mut::<VmJsHostHooksPayload>()
-      .and_then(|payload| payload.embedder_state_mut::<Host>())
-  }
-  .ok_or(VmError::TypeError(
-    "WebIDL DOM operation called without an embedder host state",
-  ))?;
-
-  f(host)
-}
 fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, VmError> {
   let Value::String(s) = value else {
     return Err(VmError::TypeError("expected string"));
@@ -3668,7 +3637,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("Node", "nodeType", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
-        let node_type = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let node_type = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node_id.index() >= dom.nodes_len() {
               return Err(DomError::NotFoundError);
@@ -3692,7 +3661,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("Node", "nodeName", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
-        let name = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let name = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node_id.index() >= dom.nodes_len() {
               return Err(DomError::NotFoundError);
@@ -3723,7 +3692,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let parent = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node_id.index() >= dom.nodes_len() {
               return Err(DomError::NotFoundError);
@@ -3742,7 +3711,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Some(parent_id) = parent else {
           return Ok(Value::Null);
         };
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if parent_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -3878,7 +3847,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let first = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let first = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let nodes = dom.nodes();
             let Some(node) = nodes.get(node_id.index()) else {
@@ -3904,7 +3873,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Some(first_id) = first else {
           return Ok(Value::Null);
         };
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if first_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -3923,7 +3892,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let last = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let last = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let nodes = dom.nodes();
             let Some(node) = nodes.get(node_id.index()) else {
@@ -3949,7 +3918,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Some(last_id) = last else {
           return Ok(Value::Null);
         };
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if last_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -3968,7 +3937,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let sib = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let nodes = dom.nodes();
             let Some(node) = nodes.get(node_id.index()) else {
@@ -4010,7 +3979,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Some(sib_id) = sib else {
           return Ok(Value::Null);
         };
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if sib_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -4029,7 +3998,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
         let node_id = handle.node_id;
         let document_id = handle.document_id;
-        let sib = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let sib = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let nodes = dom.nodes();
             let Some(node) = nodes.get(node_id.index()) else {
@@ -4071,7 +4040,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Some(sib_id) = sib else {
           return Ok(Value::Null);
         };
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if sib_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -4088,7 +4057,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("Node", "hasChildNodes", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
-        let has = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let has = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node_id.index() >= dom.nodes_len() {
               return Err(DomError::NotFoundError);
@@ -4127,7 +4096,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
         let other_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), other_value)?;
 
-        let contains = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let contains = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node_id.index() >= dom.nodes_len() || other_id.index() >= dom.nodes_len() {
               return Err(DomError::NotFoundError);
@@ -4313,7 +4282,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
 
         if args.is_empty() {
-          let data = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let data = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
               let Some(node) = dom.nodes().get(node_id.index()) else {
                 return Err(DomError::NotFoundError);
@@ -4341,7 +4310,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               .unwrap_or_default()
           };
 
-          let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let result = self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               let is_text_node = match dom.nodes().get(node_id.index()) {
                 Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
@@ -4363,7 +4332,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("CharacterData", "length", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
-        let len = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let len = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let Some(node) = dom.nodes().get(node_id.index()) else {
               return Err(DomError::NotFoundError);
@@ -4392,7 +4361,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
         let count = to_uint32_f64(scope.heap_mut().to_number(count_value)?) as usize;
 
-        let units = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let units = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let Some(node) = dom.nodes().get(node_id.index()) else {
               return Err(DomError::NotFoundError);
@@ -4433,7 +4402,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .unwrap_or_default()
         };
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let Some(node) = dom.nodes().get(node_id.index()) else {
               return (Err(DomError::NotFoundError), false);
@@ -4475,7 +4444,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .unwrap_or_default()
         };
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let is_text_node = match dom.nodes().get(node_id.index()) {
               Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
@@ -4503,7 +4472,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
         let count = to_uint32_f64(scope.heap_mut().to_number(count_value)?) as usize;
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let is_text_node = match dom.nodes().get(node_id.index()) {
               Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
@@ -4540,7 +4509,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .unwrap_or_default()
         };
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let is_text_node = match dom.nodes().get(node_id.index()) {
               Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
@@ -4568,7 +4537,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // DOM `Text.splitText(offset)` measures offsets in UTF-16 code units (WebIDL unsigned long).
         let offset_utf16 = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let parent_id = match dom.parent(node_id) {
               Ok(v) => v,
@@ -5054,14 +5023,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .document_id
         };
 
-        let root_id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let root_id = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| dom.node_iterator_root(iter_id)))
         })?;
         let Some(root_id) = root_id else {
           return Err(VmError::TypeError("Illegal invocation"));
         };
 
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if root_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -5092,14 +5061,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .document_id
         };
 
-        let reference_id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let reference_id = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| dom.node_iterator_reference(iter_id)))
         })?;
         let Some(reference_id) = reference_id else {
           return Err(VmError::TypeError("Illegal invocation"));
         };
 
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if reference_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -5116,7 +5085,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("NodeIterator", "pointerBeforeReferenceNode", 0) => {
         let _ = args;
         let (iter_id, _iter_obj) = require_node_iterator_receiver(scope, receiver)?;
-        let before = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let before = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| dom.node_iterator_pointer_before_reference(iter_id)))
         })?;
         let Some(before) = before else {
@@ -5164,7 +5133,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .document_id
         };
 
-        let state = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let state = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let root = dom.node_iterator_root(iter_id)?;
             let reference = dom.node_iterator_reference(iter_id)?;
@@ -5178,7 +5147,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         loop {
           if !before_node {
-            let next = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let next = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_following_in_subtree(dom, root, node)))
             })?;
             let Some(next) = next else {
@@ -5190,6 +5159,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
 
           let result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5206,14 +5176,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         // Persist the new iterator state.
-        with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             dom.set_node_iterator_reference_and_pointer(iter_id, node, before_node);
             ((), false)
           }))
         })?;
 
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -5249,7 +5219,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .document_id
         };
 
-        let state = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let state = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let root = dom.node_iterator_root(iter_id)?;
             let reference = dom.node_iterator_reference(iter_id)?;
@@ -5263,7 +5233,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         loop {
           if before_node {
-            let prev = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let prev = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_preceding_in_subtree(dom, root, node)))
             })?;
             let Some(prev) = prev else {
@@ -5275,6 +5245,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
 
           let result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5291,14 +5262,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         // Persist the new iterator state.
-        with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             dom.set_node_iterator_reference_and_pointer(iter_id, node, before_node);
             ((), false)
           }))
         })?;
 
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if node.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -5332,7 +5303,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let root_key = key_from_str(scope, TREE_WALKER_ROOT_SLOT)?;
         let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
-        let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let primary = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if root_id.index() >= dom.nodes_len() {
               DomInterface::Node
@@ -5382,7 +5353,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           };
 
           let current_id = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
-          let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let primary = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
               if current_id.index() >= dom.nodes_len() {
                 DomInterface::Node
@@ -5440,7 +5411,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
 
         while node != root_id {
-          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let parent = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
           })?;
           let Some(parent) = parent else {
@@ -5449,6 +5420,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           node = parent;
 
           let result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5465,7 +5437,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               current_key,
               data_property(Value::Number(node.index() as f64), true, false, false),
             )?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if node.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -5512,7 +5484,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let root_id = read_internal_node_id_slot(scope, walker_obj, &root_key)?;
         let start_current = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
 
-        let mut node = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let mut node = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             if is_first {
               tree_first_child(dom, start_current)
@@ -5524,6 +5496,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         while let Some(current) = node {
           let result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5540,7 +5513,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               current_key,
               data_property(Value::Number(current.index() as f64), true, false, false),
             )?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if current.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -5556,7 +5529,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
 
           if result == NODE_FILTER_SKIP {
-            let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let child = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if is_first {
                   tree_first_child(dom, current)
@@ -5574,7 +5547,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           // Walk to next sibling/ancestor sibling.
           let mut n = current;
           loop {
-            let sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let sibling = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if is_first {
                   tree_next_sibling(dom, n)
@@ -5588,7 +5561,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               break;
             }
 
-            let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let parent = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_parent_node(dom, n)))
             })?;
             if parent.is_none()
@@ -5636,7 +5609,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         loop {
-          let mut sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let mut sibling = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
               if is_next {
                 tree_next_sibling(dom, node)
@@ -5649,6 +5622,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           while let Some(sib) = sibling {
             node = sib;
             let result = traversal_filter_node::<Host>(
+              self,
               vm,
               scope,
               dom_exception,
@@ -5665,7 +5639,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 current_key,
                 data_property(Value::Number(node.index() as f64), true, false, false),
               )?;
-              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              let primary = self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| {
                   if node.index() >= dom.nodes_len() {
                     DomInterface::Node
@@ -5680,7 +5654,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               return Ok(Value::Object(wrapper));
             }
 
-            sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            sibling = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if is_next {
                   tree_first_child(dom, node)
@@ -5691,7 +5665,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             })?;
 
             if result == NODE_FILTER_REJECT || sibling.is_none() {
-              sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              sibling = self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| {
                   if is_next {
                     tree_next_sibling(dom, node)
@@ -5704,7 +5678,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
 
           // Ascend.
-          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let parent = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
           })?;
           let Some(parent) = parent else {
@@ -5715,6 +5689,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             return Ok(Value::Null);
           }
           if traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5759,13 +5734,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let mut node = read_internal_node_id_slot(scope, walker_obj, &current_key)?;
 
         while node != root_id {
-          let mut sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let mut sibling = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| tree_previous_sibling(dom, node)))
           })?;
 
           while let Some(sib) = sibling {
             node = sib;
             let mut result = traversal_filter_node::<Host>(
+              self,
               vm,
               scope,
               dom_exception,
@@ -5778,7 +5754,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             )?;
 
             while result != NODE_FILTER_REJECT {
-              let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              let child = self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| tree_last_child(dom, node)))
               })?;
               let Some(child) = child else {
@@ -5786,6 +5762,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               };
               node = child;
               result = traversal_filter_node::<Host>(
+                self,
                 vm,
                 scope,
                 dom_exception,
@@ -5804,7 +5781,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 current_key,
                 data_property(Value::Number(node.index() as f64), true, false, false),
               )?;
-              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              let primary = self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| {
                   if node.index() >= dom.nodes_len() {
                     DomInterface::Node
@@ -5819,12 +5796,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               return Ok(Value::Object(wrapper));
             }
 
-            sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            sibling = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_previous_sibling(dom, node)))
             })?;
           }
 
-          let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          let parent = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| tree_parent_node(dom, node)))
           })?;
           let Some(parent) = parent else {
@@ -5836,6 +5813,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           node = parent;
 
           let result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5852,7 +5830,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               current_key,
               data_property(Value::Number(node.index() as f64), true, false, false),
             )?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if node.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -5905,7 +5883,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             if result == NODE_FILTER_REJECT {
               break;
             }
-            let child = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let child = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_first_child(dom, node)))
             })?;
             let Some(child) = child else {
@@ -5913,6 +5891,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             };
             node = child;
             result = traversal_filter_node::<Host>(
+              self,
               vm,
               scope,
               dom_exception,
@@ -5929,7 +5908,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 current_key,
                 data_property(Value::Number(node.index() as f64), true, false, false),
               )?;
-              let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+              let primary = self.with_dom_host(vm, |host| {
                 Ok(host.with_dom(|dom| {
                   if node.index() >= dom.nodes_len() {
                     DomInterface::Node
@@ -5951,14 +5930,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             if temporary == root_id {
               return Ok(Value::Null);
             }
-            let sibling = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let sibling = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_next_sibling(dom, temporary)))
             })?;
             if let Some(sibling) = sibling {
               node = sibling;
               break;
             }
-            let parent = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let parent = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| tree_parent_node(dom, temporary)))
             })?;
             let Some(parent) = parent else {
@@ -5968,6 +5947,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
 
           result = traversal_filter_node::<Host>(
+            self,
             vm,
             scope,
             dom_exception,
@@ -5984,7 +5964,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               current_key,
               data_property(Value::Number(node.index() as f64), true, false, false),
             )?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if node.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -6623,7 +6603,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let iter_obj = scope.alloc_object_with_prototype(Some(proto))?;
         scope.push_root(Value::Object(iter_obj))?;
 
-        let id = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let id = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let id = dom.create_node_iterator(root_id);
             dom.register_node_iterator_wrapper(scope.heap(), id, iter_obj);
