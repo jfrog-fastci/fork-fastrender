@@ -3484,4 +3484,119 @@ mod bookmarks_bar_ui_tests {
       "expected focus to return to bookmark button after closing menu"
     );
   }
+
+  #[test]
+  fn bookmark_context_menu_focuses_move_right_when_move_left_disabled() {
+    let mut store = BookmarkStore::default();
+    let a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let _b = store
+      .add(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+      )
+      .unwrap();
+    let _c = store
+      .add(
+        "https://c.example/".to_string(),
+        Some("C".to_string()),
+        None,
+      )
+      .unwrap();
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: render once so button ids are registered.
+    let _ = render_bar(&ctx, &store);
+
+    let button_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(("test_bookmarks_bar_button_id", a.0))))
+      .expect("expected bookmark button id to be stored for tests");
+
+    // Frame 2: focus the first bookmark button.
+    ctx.memory_mut(|mem| mem.request_focus(button_id));
+    begin_frame(&ctx, Vec::new());
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(button_id)),
+      "expected bookmark button to have focus"
+    );
+
+    // Frame 3: inject Shift+F10 to open the menu via keyboard.
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.modifiers.shift = true;
+    raw.events = vec![egui::Event::Key {
+      key: egui::Key::F10,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }];
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let _ = ctx.end_frame();
+
+    let menu_open = ctx
+      .data(|d| d.get_temp::<bool>(egui::Id::new(("test_bookmarks_bar_context_menu_open", a.0))))
+      .unwrap_or(false);
+    assert!(
+      menu_open,
+      "expected bookmark context menu to be open after Shift+F10"
+    );
+
+    // Bookmark A is the first item, so "Move left" is disabled and focus should go to "Move right".
+    let move_right_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(("test_bookmarks_bar_move_right_id", a.0))))
+      .expect("expected move-right id to be stored");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(move_right_id)),
+      "expected Move right to have focus when Move left is disabled"
+    );
+
+    // Frame 4: Escape closes the menu and returns focus to the opener.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+      }],
+    );
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let _ = ctx.end_frame();
+
+    let menu_open = ctx
+      .data(|d| d.get_temp::<bool>(egui::Id::new(("test_bookmarks_bar_context_menu_open", a.0))))
+      .unwrap_or(false);
+    assert!(
+      !menu_open,
+      "expected bookmark context menu to close on Escape"
+    );
+    assert!(
+      ctx.memory(|mem| mem.has_focus(button_id)),
+      "expected focus to return to bookmark button after closing menu"
+    );
+  }
 }
