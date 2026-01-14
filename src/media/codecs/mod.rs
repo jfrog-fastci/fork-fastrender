@@ -43,7 +43,7 @@ pub mod opus {
   impl OpusHead {
     pub fn parse(_codec_private: &[u8]) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)".into(),
       ))
     }
   }
@@ -54,7 +54,7 @@ pub mod opus {
   impl OpusDecoder {
     pub fn new(_opus_head: &OpusHead) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)".into(),
       ))
     }
 
