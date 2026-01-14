@@ -94,6 +94,22 @@ mod tests {
   }
 
   #[test]
+  fn tab_search_open_is_noop() {
+    assert_eq!(
+      history_panel_escape_action(true, false, false, true, false),
+      PanelEscapeAction::Noop
+    );
+  }
+
+  #[test]
+  fn find_in_page_open_is_noop() {
+    assert_eq!(
+      history_panel_escape_action(true, false, false, false, true),
+      PanelEscapeAction::Noop
+    );
+  }
+
+  #[test]
   fn downloads_panel_escape_guard_blocks_global_chrome_inputs() {
     assert!(!downloads_panel_should_close_on_escape(true, false, false));
     assert!(!downloads_panel_should_close_on_escape(false, true, false));
