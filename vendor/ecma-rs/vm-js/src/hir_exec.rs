@@ -17032,7 +17032,7 @@ fn run_compiled_script_async(
         let stmt_index = match resume {
           HirAsyncResumePoint::ExprStmt { next_stmt_index }
           | HirAsyncResumePoint::Assignment { next_stmt_index }
-          | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+          | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
           HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
         };
         let stmt_id = *body
@@ -17489,7 +17489,7 @@ pub(crate) fn hir_async_resume_continuation(
           let stmt_index = match cont.resume {
             HirAsyncResumePoint::ExprStmt { next_stmt_index }
             | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
             HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
           };
           let stmt_id = *body
@@ -18109,7 +18109,7 @@ pub(crate) fn hir_async_resume_continuation(
           let stmt_index = match cont.resume {
             HirAsyncResumePoint::ExprStmt { next_stmt_index }
             | HirAsyncResumePoint::Assignment { next_stmt_index }
-            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
             HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
           };
           let stmt_id = *body
