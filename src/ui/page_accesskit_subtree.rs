@@ -16,6 +16,10 @@ fn role_from_fastr_role(role: &str) -> accesskit::Role {
     "heading" => accesskit::Role::Heading,
     "textbox" => accesskit::Role::TextField,
     "textbox-multiline" => accesskit::Role::TextField,
+    "searchbox" => accesskit::Role::SearchBox,
+    // AccessKit 0.11 does not have a dedicated combobox role; treat as a text field so screen
+    // readers can still query/set the current value.
+    "combobox" => accesskit::Role::TextField,
     "checkbox" => accesskit::Role::CheckBox,
     "radio" => accesskit::Role::RadioButton,
     "image" => accesskit::Role::Image,
@@ -71,11 +75,27 @@ fn build_subtree_nodes(
   if let Some(name) = node.name.as_deref().and_then(normalize_name) {
     builder.set_name(name);
   }
+  if let Some(role_description) = node.role_description.as_deref().and_then(normalize_name) {
+    builder.set_role_description(role_description);
+  }
+  if let Some(description) = node.description.as_deref().and_then(normalize_name) {
+    builder.set_description(description);
+  }
+
+  // For text inputs, preserve empty-string values (screen readers expect to query the current value
+  // even when empty). The JSON accessibility tree omits empty `value`s, so treat `None` as empty for
+  // editable controls.
+  if matches!(
+    node.role.as_str(),
+    "textbox" | "textbox-multiline" | "searchbox" | "combobox"
+  ) {
+    builder.set_value(node.value.clone().unwrap_or_default());
+  } else if let Some(value) = node.value.as_deref().and_then(normalize_name) {
+    builder.set_value(value);
+  }
   if !children_ids.is_empty() {
     builder.set_children(children_ids);
   }
-
-  // TODO: map more fields (value/checked/expanded/disabled, etc) as we wire up page actions.
 
   let built = builder.build(classes);
   nodes_out.push((id, built));
@@ -106,5 +126,64 @@ pub fn accesskit_subtree_for_page(
     root_id,
     nodes,
     focus_id,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use accesskit::Role;
+
+  fn first_node_by_role<'a>(
+    subtree: &'a PageAccessKitSubtree,
+    role: Role,
+  ) -> &'a accesskit::Node {
+    subtree
+      .nodes
+      .iter()
+      .find_map(|(_id, node)| (node.role() == role).then_some(node))
+      .expect("missing node")
+  }
+
+  #[test]
+  fn accesskit_subtree_exposes_text_input_value() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <input value="abc" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let subtree = accesskit_subtree_for_page(TabId(1), 1, &tree);
+    let node = first_node_by_role(&subtree, Role::TextField);
+    assert_eq!(node.value(), Some("abc"));
+  }
+
+  #[test]
+  fn accesskit_subtree_exposes_aria_describedby_as_description() {
+    let mut renderer = crate::FastRender::new().expect("renderer");
+    let html = r##"
+      <html>
+        <body>
+          <div id="d">Helpful hint</div>
+          <input aria-describedby="d" />
+        </body>
+      </html>
+    "##;
+    let dom = renderer.parse_html(html).expect("parse");
+    let tree = renderer
+      .accessibility_tree(&dom, 800, 600)
+      .expect("accessibility tree");
+
+    let subtree = accesskit_subtree_for_page(TabId(1), 1, &tree);
+    let node = first_node_by_role(&subtree, Role::TextField);
+    assert_eq!(node.description(), Some("Helpful hint"));
   }
 }

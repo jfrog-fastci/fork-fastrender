@@ -2201,7 +2201,11 @@ fn build_page_accesskit_subtree_for_tab(
   let a11y_tree =
     crate::accessibility::build_accessibility_tree(prepared.styled_tree(), interaction_state).ok()?;
 
-  Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
+  Some(page_accesskit_subtree::accesskit_subtree_for_page(
+    tab_id,
+    tab.document_generation,
+    &a11y_tree,
+  ))
 }
 
 fn scroll_anchoring_priority_candidate_for_find(
