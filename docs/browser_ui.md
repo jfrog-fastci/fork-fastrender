@@ -350,6 +350,9 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
     - `browser --perf-log` emits events to stdout (overrides `FASTR_PERF_LOG` and forces stdout even if `FASTR_PERF_LOG_OUT` is set).
     - `browser --perf-log-out <path>` writes events to a file instead of stdout (creates parent directories; overrides env vars).
   - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.
+- `browser --trace-out <path>` (or `FASTR_BROWSER_TRACE_OUT=...`; legacy alias: `FASTR_PERF_TRACE_OUT`) writes a
+  Perfetto/Chrome trace of the windowed browser UI event loop. The trace is written when the browser
+  process exits. Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap retained trace events.
 - `ui_perf_smoke` is a **headless** UI responsiveness harness.
   - Use it for quick local checks and for CI-style regression tests where you can’t (or don’t want
     to) open a real window/GPU-backed swapchain.
@@ -357,6 +360,7 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
 - `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
   tees the stdout JSONL stream to a file. Pass `--summary` to run `browser_perf_log_summary`
   automatically (human summary to stderr; JSON output suppressed so stdout stays JSONL-only).
+  - This script also supports `--trace-out <path>` to capture a browser UI trace alongside the perf log.
 - `scripts/profile_browser_samply.sh` records an interactive Linux CPU profile (Samply) for the
   windowed browser UI.
 
