@@ -528,13 +528,14 @@ impl BrowserSessionWindow {
           break;
         }
         let trimmed = tab.url.trim();
-        if trimmed.is_empty() {
+        let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_URL_BYTES).trim();
+        if truncated.is_empty() {
           continue;
         }
-        tab.url = trimmed.to_string();
-        if validate_user_navigation_url_scheme(&tab.url).is_err() {
+        if validate_user_navigation_url_scheme(truncated).is_err() {
           continue;
         }
+        tab.url = truncated.to_string();
         if let Some(title) = tab.title.as_mut() {
           if title.len() > MAX_TITLE_BYTES {
             *title = clamp_untrusted_utf8(title, MAX_TITLE_BYTES);
