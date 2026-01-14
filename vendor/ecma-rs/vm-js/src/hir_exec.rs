@@ -21470,7 +21470,7 @@ fn run_compiled_script_async(
           debug_assert!(
             matches!(await_value, Value::Object(obj) if root_scope.heap().is_promise_object(obj)),
             "AwaitResolved suspension must carry a Promise object"
-          );
+        );
           Ok(await_value)
         }
         crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
