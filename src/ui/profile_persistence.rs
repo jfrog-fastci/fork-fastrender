@@ -569,6 +569,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Completed,
       started_at_ms: Some(1),
       finished_at_ms: Some(2),
@@ -580,6 +581,7 @@ mod tests {
       url: "https://example.com/inprogress".to_string(),
       file_name: "inprogress.bin".to_string(),
       path: PathBuf::from("/tmp/inprogress.bin"),
+      path_display: "/tmp/inprogress.bin".to_string(),
       status: DownloadStatus::InProgress {
         received_bytes: 5,
         total_bytes: Some(10),
