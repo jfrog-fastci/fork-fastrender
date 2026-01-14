@@ -309,11 +309,8 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLSlotElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
   Object.setPrototypeOf(Comment.prototype, Node.prototype);
-  // Make NodeList-backed collections _array-like_ in the QuickJS shim. We intentionally do not
-  // use real JS Arrays for NodeLists (e.g. `childNodes`) so `Array.isArray(node.childNodes)` is
-  // false (matching browsers and WPT expectations), but inheriting from Array.prototype makes the
-  // minimal shim easier to work with (e.g. indexOf/slice in internal helpers).
-  Object.setPrototypeOf(NodeList.prototype, Array.prototype);
+  // NodeList-backed collections should be array-*like* (indexed + length + iterable), but they must
+  // not be real arrays (`Array.isArray(node.childNodes)` is false in browsers).
   Object.setPrototypeOf(MutationObserver.prototype, Object.prototype);
   Object.setPrototypeOf(MutationRecord.prototype, Object.prototype);
   Object.setPrototypeOf(HTMLOptionsCollection.prototype, HTMLCollection.prototype);
@@ -1950,7 +1947,7 @@ const DOM_SHIM: &str = r##"
   function nextElementSiblingForElement(el, dir) {
     var parent = el.parentNode;
     if (!parent) return null;
-    var nodes = parent.childNodes || [];
+    var nodes = ensureArray(parent, "childNodes");
     var idx = nodes.indexOf(el);
     if (idx < 0) return null;
     if (dir > 0) {
@@ -2274,7 +2271,7 @@ const DOM_SHIM: &str = r##"
     if (slotAssignment === "manual") {
       var manual = SLOT_MANUAL_ASSIGNMENTS.get(slotEl);
       if (manual !== undefined) return manual.slice();
-      return (slotEl.childNodes || []).slice();
+      return ensureArray(slotEl, "childNodes").slice();
     }
 
     var nameAttr = slotEl.getAttribute("name");
@@ -2282,10 +2279,10 @@ const DOM_SHIM: &str = r##"
 
     // Only the first slot with a given name participates in distribution.
     var first = firstSlotInShadowRoot(root, name);
-    if (first && first !== slotEl) return (slotEl.childNodes || []).slice();
+    if (first && first !== slotEl) return ensureArray(slotEl, "childNodes").slice();
 
     var host = root.host;
-    if (!(host instanceof Element)) return (slotEl.childNodes || []).slice();
+    if (!(host instanceof Element)) return ensureArray(slotEl, "childNodes").slice();
 
     var out = [];
     var nodes = host.childNodes || [];
@@ -2295,7 +2292,7 @@ const DOM_SHIM: &str = r##"
       if (n.slot === name) out.push(n);
     }
     if (out.length) return out;
-    return (slotEl.childNodes || []).slice();
+    return ensureArray(slotEl, "childNodes").slice();
   }
 
   function assignedNodesFlattened(slotEl, visited) {
@@ -3175,7 +3172,7 @@ const DOM_SHIM: &str = r##"
       nodeIdFromThis(this);
       var parent = this.parentNode;
       if (!parent) return null;
-      var siblings = parent.childNodes || [];
+      var siblings = ensureArray(parent, "childNodes");
       var idx = siblings.indexOf(this);
       if (idx <= 0) return null;
       return siblings[idx - 1] || null;
@@ -3188,7 +3185,7 @@ const DOM_SHIM: &str = r##"
       nodeIdFromThis(this);
       var parent = this.parentNode;
       if (!parent) return null;
-      var siblings = parent.childNodes || [];
+      var siblings = ensureArray(parent, "childNodes");
       var idx = siblings.indexOf(this);
       if (idx < 0 || idx >= siblings.length - 1) return null;
       return siblings[idx + 1] || null;
