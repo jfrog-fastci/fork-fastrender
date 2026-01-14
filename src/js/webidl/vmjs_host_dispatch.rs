@@ -8905,7 +8905,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           .document_id;
 
         enum ReplaceWithItem {
-          Node(NodeId),
+          Node(DomNodeKey),
           Text(String),
         }
 
@@ -8916,22 +8916,127 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // conversion.
         let mut items: Vec<ReplaceWithItem> = Vec::with_capacity(args.len());
         for &arg in args {
-          match require_dom_platform_mut(vm)?.require_node_id(scope.heap(), arg) {
-            Ok(id) => items.push(ReplaceWithItem::Node(id)),
-            Err(VmError::TypeError("Illegal invocation")) => {
-              let text = match arg {
-                Value::String(_) => js_string_to_rust_string(scope, arg)?,
-                other => {
-                  let s = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
-                    scope.to_string(vm, host, hooks, other)
-                  })?
-                  .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
-                  scope.heap().get_string(s)?.to_utf8_lossy()
-                }
-              };
-              items.push(ReplaceWithItem::Text(text));
+          if matches!(arg, Value::Object(_)) {
+            match require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), arg) {
+              Ok(handle) => {
+                items.push(ReplaceWithItem::Node(handle));
+                continue;
+              }
+              Err(VmError::TypeError("Illegal invocation")) => {}
+              Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
+          }
+
+          let text = match arg {
+            Value::String(_) => js_string_to_rust_string(scope, arg)?,
+            other => {
+              let s = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+                scope.to_string(vm, host, hooks, other)
+              })?
+              .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+              scope.heap().get_string(s)?.to_utf8_lossy()
+            }
+          };
+          items.push(ReplaceWithItem::Text(text));
+        }
+
+        // Snapshot insertion side effects that need post-mutation cache syncing + adoption.
+        //
+        // Note: use `DomNodeKey` for all node identities so cross-document moves don't collide on
+        // `NodeId` indices.
+        let (old_parents, fragments, adopt_roots): (Vec<DomNodeKey>, Vec<DomNodeKey>, Vec<DomNodeKey>) =
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let mut old_parents: Vec<DomNodeKey> = Vec::new();
+              let mut fragments: Vec<DomNodeKey> = Vec::new();
+              let mut adopt_roots: Vec<DomNodeKey> = Vec::new();
+
+              for item in &items {
+                let ReplaceWithItem::Node(handle) = item else {
+                  continue;
+                };
+                let node_id = handle.node_id;
+                if node_id.index() >= dom.nodes_len() {
+                  continue;
+                }
+
+                let kind = &dom.node(node_id).kind;
+                let is_fragment_like =
+                  matches!(kind, NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. });
+
+                if is_fragment_like {
+                  fragments.push(*handle);
+                  if handle.document_id != document_id {
+                    // Fragment insertion is transparent: adopt children, not the fragment itself.
+                    for &child in dom.node(node_id).children.iter() {
+                      if child.index() >= dom.nodes_len() {
+                        continue;
+                      }
+                      if dom.node(child).parent != Some(node_id) {
+                        continue;
+                      }
+                      adopt_roots.push(DomNodeKey::new(handle.document_id, child));
+                    }
+                  }
+                } else {
+                  if let Some(p) = dom.parent_node(node_id) {
+                    old_parents.push(DomNodeKey::new(handle.document_id, p));
+                  }
+                  if handle.document_id != document_id && !matches!(kind, NodeKind::Document { .. }) {
+                    adopt_roots.push(*handle);
+                  }
+                }
+              }
+
+              old_parents.sort_by_key(|h| (h.document_id, h.node_id.index()));
+              old_parents.dedup_by_key(|h| (h.document_id, h.node_id.index()));
+              fragments.sort_by_key(|h| (h.document_id, h.node_id.index()));
+              fragments.dedup_by_key(|h| (h.document_id, h.node_id.index()));
+              adopt_roots.sort_by_key(|h| (h.document_id, h.node_id.index()));
+              adopt_roots.dedup_by_key(|h| (h.document_id, h.node_id.index()));
+
+              (old_parents, fragments, adopt_roots)
+            }))
+          }
+        })?;
+
+        // Snapshot subtree mappings for adoption. Apply wrapper remaps only after the DOM mutation
+        // succeeds so failed `replaceWith` calls don't corrupt wrapper identity / `ownerDocument`.
+        let mut adopt_mappings: Vec<(DocumentId, HashMap<NodeId, NodeId>)> = Vec::new();
+        if !adopt_roots.is_empty() {
+          adopt_mappings.reserve(adopt_roots.len());
+          for handle in adopt_roots.iter().copied() {
+            let root_id = handle.node_id;
+            let mapping: HashMap<NodeId, NodeId> = self.with_dom_host(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+                let mut stack: Vec<NodeId> = vec![root_id];
+                let mut remaining = dom.nodes_len() + 1;
+                while let Some(id) = stack.pop() {
+                  if remaining == 0 {
+                    break;
+                  }
+                  remaining -= 1;
+
+                  if id.index() >= dom.nodes_len() {
+                    continue;
+                  }
+                  mapping.insert(id, id);
+                  let n = dom.node(id);
+                  for &child in n.children.iter().rev() {
+                    if child.index() >= dom.nodes_len() {
+                      continue;
+                    }
+                    if dom.node(child).parent != Some(id) {
+                      continue;
+                    }
+                    stack.push(child);
+                  }
+                }
+                mapping
+              }))
+            })?;
+            adopt_mappings.push((handle.document_id, mapping));
           }
         }
 
@@ -8943,65 +9048,33 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         //   - If receiver is still a child of `parent`, replace it.
         //   - Otherwise, insert before `viableNextSibling` (handles cases where receiver was moved
         //     during conversion, e.g. `el.replaceWith(el)`).
-        #[derive(Debug)]
-        struct ReplaceWithSyncTargets {
-          parent_id: NodeId,
-          old_parents: Vec<NodeId>,
-          fragments: Vec<NodeId>,
-        }
-
-        let result: Result<Option<ReplaceWithSyncTargets>, DomError> = self.with_dom_host(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let generation = dom.mutation_generation();
-            let result: Result<Option<ReplaceWithSyncTargets>, DomError> = (|| {
+            let result: Result<Option<NodeId>, DomError> = (|| {
               let Some(parent_id) = dom.parent(node_id)? else {
                 return Ok(None);
               };
 
-              // Capture old parents for any nodes that will be moved into the replacement fragment.
-              // This must happen after WebIDL conversion to avoid observing user-code mutations.
-              let mut old_parents: Vec<NodeId> = Vec::new();
-              let mut fragments: Vec<NodeId> = Vec::new();
-              for item in &items {
-                let ReplaceWithItem::Node(id) = item else {
-                  continue;
-                };
-                if id.index() >= dom.nodes_len() {
-                  continue;
-                }
-                let kind = &dom.node(*id).kind;
-                let is_fragment =
-                  matches!(kind, NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. });
-                if is_fragment {
-                  fragments.push(*id);
-                } else if let Some(p) = dom.parent_node(*id) {
-                  old_parents.push(p);
-                }
-              }
-
               // `viableNextSibling` is captured before conversion can move nodes out of the parent.
               let mut viable_next_sibling = dom.next_sibling(node_id);
               for item in &items {
-                if let ReplaceWithItem::Node(id) = item {
-                  if viable_next_sibling == Some(*id) {
-                    viable_next_sibling = dom.next_sibling(*id);
+                if let ReplaceWithItem::Node(handle) = item {
+                  if viable_next_sibling == Some(handle.node_id) {
+                    viable_next_sibling = dom.next_sibling(handle.node_id);
                   }
                 }
               }
 
               if items.is_empty() {
                 dom.remove_child(parent_id, node_id)?;
-                return Ok(Some(ReplaceWithSyncTargets {
-                  parent_id,
-                  old_parents,
-                  fragments,
-                }));
+                return Ok(Some(parent_id));
               }
 
               let fragment = dom.create_document_fragment();
               for item in &items {
                 let child_id = match item {
-                  ReplaceWithItem::Node(id) => *id,
+                  ReplaceWithItem::Node(handle) => handle.node_id,
                   ReplaceWithItem::Text(text) => dom.create_text(text),
                 };
                 let child_is_shadow_root = child_id.index() < dom.nodes_len()
@@ -9018,11 +9091,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               } else {
                 dom.insert_before(parent_id, fragment, viable_next_sibling)?;
               }
-              Ok(Some(ReplaceWithSyncTargets {
-                parent_id,
-                old_parents,
-                fragments,
-              }))
+              Ok(Some(parent_id))
             })();
 
             let changed = dom.mutation_generation() != generation;
@@ -9031,43 +9100,49 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(Some(targets)) => {
-            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-              .get_existing_wrapper_for_document_id(scope.heap(), document_id, targets.parent_id)
-            {
-              self.sync_cached_child_nodes_for_wrapper(
-                vm,
-                scope,
-                parent_wrapper,
-                targets.parent_id,
+          Ok(Some(parent_id)) => {
+            for (old_document_id, mapping) in adopt_mappings {
+              require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
+                scope.heap_mut(),
+                old_document_id,
                 document_id,
+                &mapping,
               )?;
             }
-            for old_parent in targets.old_parents {
-              if old_parent != targets.parent_id {
-                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent)
-                {
-                  self.sync_cached_child_nodes_for_wrapper(
-                    vm,
-                    scope,
-                    old_parent_wrapper,
-                    old_parent,
-                    document_id,
-                  )?;
-                }
+
+            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            {
+              self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, document_id)?;
+            }
+            for old_parent in old_parents {
+              // Only skip syncing when the old parent is *actually* the insertion parent (same
+              // document + same NodeId).
+              if old_parent.document_id == document_id && old_parent.node_id == parent_id {
+                continue;
+              }
+              if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                .get_existing_wrapper_for_document_id(scope.heap(), old_parent.document_id, old_parent.node_id)
+              {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  old_parent_wrapper,
+                  old_parent.node_id,
+                  old_parent.document_id,
+                )?;
               }
             }
-            for fragment_id in targets.fragments {
+            for fragment in fragments {
               if let Some(fragment_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), document_id, fragment_id)
+                .get_existing_wrapper_for_document_id(scope.heap(), fragment.document_id, fragment.node_id)
               {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
                   fragment_wrapper,
-                  fragment_id,
-                  document_id,
+                  fragment.node_id,
+                  fragment.document_id,
                 )?;
               }
             }
@@ -10054,6 +10129,96 @@ mod element_replace_with_tests {
             }
           });
           return document.getElementById('a') === null && root.innerHTML === '';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_adopts_foreign_nodes_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span></div>';
+          const root = document.getElementById('root');
+          const a = document.getElementById('a');
+          const doc2 = new DOMParser().parseFromString('<!doctype html><p>hi</p>', 'text/html');
+          const foreign = doc2.createElement('p');
+          foreign.appendChild(doc2.createTextNode('hello'));
+          if (foreign.ownerDocument !== doc2) return false;
+          a.replaceWith(foreign);
+          return document.getElementById('a') === null
+            && foreign.parentNode === root
+            && foreign.ownerDocument === document
+            && foreign.firstChild.ownerDocument === document;
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_adopts_foreign_fragment_children_but_not_fragment_itself_in_webidl_dom_backend(
+  ) -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span></div>';
+          const root = document.getElementById('root');
+          const a = document.getElementById('a');
+          const doc2 = new DOMParser().parseFromString('<!doctype html><p>hi</p>', 'text/html');
+          const frag = doc2.createDocumentFragment();
+          const list = frag.childNodes;
+          const foreign = doc2.createElement('p');
+          foreign.appendChild(doc2.createTextNode('hello'));
+          frag.appendChild(foreign);
+          if (frag.ownerDocument !== doc2) return false;
+          if (list.length !== 1 || list.item(0) !== foreign) return false;
+          a.replaceWith(frag);
+          return document.getElementById('a') === null
+            && foreign.parentNode === root
+            && foreign.ownerDocument === document
+            && foreign.firstChild.ownerDocument === document
+            && frag.ownerDocument === doc2
+            && frag.childNodes.length === 0
+            && list.length === 0;
         })()
       "#,
     )?;
