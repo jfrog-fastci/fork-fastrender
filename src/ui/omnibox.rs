@@ -884,15 +884,16 @@ fn match_score_url(
 
 fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
   let idx = find_ascii_case_insensitive(host, needle_lower)? as i64;
-
-  let domain_start = registrable_domain(host)
-    .and_then(|domain| host.len().checked_sub(domain.len()))
-    .unwrap_or(0) as i64;
-
-  let boundary_bonus = if idx == 0 || idx == domain_start {
+  let boundary_bonus = if idx == 0 {
     300
-  } else if idx > 0 && host.as_bytes().get(idx as usize - 1) == Some(&b'.') {
-    250
+  } else if host.as_bytes().get(idx as usize - 1) == Some(&b'.') {
+    // Only compute the registrable-domain boundary when the match starts at a host label boundary.
+    // For non-boundary matches, we cannot be at the domain boundary and the PSL lookup is wasted
+    // work.
+    let domain_start = registrable_domain(host)
+      .and_then(|domain| host.len().checked_sub(domain.len()))
+      .unwrap_or(0) as i64;
+    if idx == domain_start { 300 } else { 250 }
   } else {
     0
   };
