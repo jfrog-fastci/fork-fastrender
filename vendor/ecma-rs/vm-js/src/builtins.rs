@@ -3833,10 +3833,10 @@ fn typed_array_prototype_for_kind(intr: &crate::Intrinsics, kind: TypedArrayKind
     TypedArrayKind::Uint16 => intr.uint16_array_prototype(),
     TypedArrayKind::Int32 => intr.int32_array_prototype(),
     TypedArrayKind::Uint32 => intr.uint32_array_prototype(),
-    TypedArrayKind::Float32 => intr.float32_array_prototype(),
-    TypedArrayKind::Float64 => intr.float64_array_prototype(),
     TypedArrayKind::BigInt64 => intr.bigint64_array_prototype(),
     TypedArrayKind::BigUint64 => intr.biguint64_array_prototype(),
+    TypedArrayKind::Float32 => intr.float32_array_prototype(),
+    TypedArrayKind::Float64 => intr.float64_array_prototype(),
   }
 }
 
@@ -3913,7 +3913,7 @@ fn typed_array_constructor_construct_impl(
       .heap_mut()
       .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
 
-    let view = scope.alloc_typed_array(kind, ab, 0, length)?;
+    let view = scope.alloc_typed_array(kind, ab, 0, length, false)?;
     scope
       .heap_mut()
       .object_set_prototype(view, Some(prototype))?;
@@ -3992,16 +3992,26 @@ fn typed_array_constructor_construct_impl(
         .array_buffer_byte_length(buffer)
         .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?;
 
-      let length = match length_opt {
-        Some(n) => n,
+      let (length, length_tracking) = match length_opt {
+        Some(n) => (n, false),
         None => {
           let remaining = buf_len
             .checked_sub(byte_offset)
             .ok_or(VmError::TypeError("TypedArray view out of bounds"))?;
-          if remaining % bytes_per_element != 0 {
-            return Err(VmError::TypeError("TypedArray view out of bounds"));
+          let resizable = scope
+            .heap()
+            .array_buffer_is_resizable(buffer)
+            .map_err(|_| VmError::TypeError("TypedArray constructor expects an ArrayBuffer"))?;
+          if resizable {
+            // Length-tracking views over resizable buffers truncate down to a whole number of
+            // elements (they do not require exact divisibility).
+            (remaining / bytes_per_element, true)
+          } else {
+            if remaining % bytes_per_element != 0 {
+              return Err(VmError::TypeError("TypedArray view out of bounds"));
+            }
+            (remaining / bytes_per_element, false)
           }
-          remaining / bytes_per_element
         }
       };
 
@@ -4016,7 +4026,7 @@ fn typed_array_constructor_construct_impl(
       )?;
       scope.push_root(Value::Object(prototype))?;
 
-      let view = scope.alloc_typed_array(kind, buffer, byte_offset, length)?;
+      let view = scope.alloc_typed_array(kind, buffer, byte_offset, length, length_tracking)?;
       scope
         .heap_mut()
         .object_set_prototype(view, Some(prototype))?;
@@ -4738,7 +4748,7 @@ pub fn typed_array_prototype_subarray(
 
   // Root buffer across allocation.
   scope.push_root(Value::Object(buffer))?;
-  let view = scope.alloc_typed_array(kind, buffer, new_byte_offset, new_len)?;
+  let view = scope.alloc_typed_array(kind, buffer, new_byte_offset, new_len, false)?;
   scope
     .heap_mut()
     .object_set_prototype(view, Some(typed_array_prototype_for_kind(&intr, kind)))?;
@@ -4829,7 +4839,7 @@ pub fn typed_array_prototype_slice(
     .heap_mut()
     .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
 
-  let new_view = scope.alloc_typed_array(kind, ab, 0, end - start)?;
+  let new_view = scope.alloc_typed_array(kind, ab, 0, end - start, false)?;
   scope
     .heap_mut()
     .object_set_prototype(new_view, Some(typed_array_prototype_for_kind(&intr, kind)))?;
@@ -12157,7 +12167,21 @@ pub fn promise_any_reject_element_call(
 }
 
 fn string_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
-  let key_s = scope.alloc_string(s)?;
+  let key_s = match s {
+    "name" => scope.common_key_name()?,
+    "message" => scope.common_key_message()?,
+    "stack" => scope.common_key_stack()?,
+    "length" => scope.common_key_length()?,
+    "constructor" => scope.common_key_constructor()?,
+    "prototype" => scope.common_key_prototype()?,
+    "enumerable" => scope.common_key_enumerable()?,
+    "configurable" => scope.common_key_configurable()?,
+    "value" => scope.common_key_value()?,
+    "writable" => scope.common_key_writable()?,
+    "get" => scope.common_key_get()?,
+    "set" => scope.common_key_set()?,
+    _ => scope.alloc_string(s)?,
+  };
   scope.push_root(Value::String(key_s))?;
   Ok(PropertyKey::from_string(key_s))
 }
@@ -29741,6 +29765,156 @@ pub fn error_prototype_to_string(
   let out = concat_with_colon_space(name_units, message_units, || vm.tick())?;
   let s = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(s))
+}
+
+/// Non-standard `Error.stack` getter installed on thrown objects.
+///
+/// This is intentionally **not** installed on `Error.prototype`: `vm-js` currently only exposes
+/// `stack` for objects that were actually thrown/rejected.
+pub fn error_stack_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Error.stack getter called on non-object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let Some(sym) = scope.heap().internal_throw_stack_trace_symbol() else {
+    return Ok(Value::Undefined);
+  };
+  let internal_key = PropertyKey::from_symbol(sym);
+
+  let internal_desc = scope.heap().object_get_own_property(obj, &internal_key)?;
+  let Some(internal_desc) = internal_desc else {
+    return Ok(Value::Undefined);
+  };
+  let PropertyKind::Data { value, .. } = internal_desc.kind else {
+    return Ok(Value::Undefined);
+  };
+  let Value::Object(trace_obj) = value else {
+    return Ok(Value::Undefined);
+  };
+
+  let name_key_s = scope.common_key_name()?;
+  scope.push_root(Value::String(name_key_s))?;
+  let message_key_s = scope.common_key_message()?;
+  scope.push_root(Value::String(message_key_s))?;
+  let name_key = PropertyKey::from_string(name_key_s);
+  let message_key = PropertyKey::from_string(message_key_s);
+
+  let frames = scope.heap().stack_trace_frames(trace_obj)?;
+  let stack_string =
+    crate::error_object::format_stack_property_string_best_effort(scope.heap(), obj, frames, &name_key, &message_key);
+  if stack_string.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let Ok(stack_s) = scope.alloc_string(&stack_string) else {
+    // Best-effort: `Error.stack` must not crash the host under allocator pressure.
+    return Ok(Value::Undefined);
+  };
+  if scope.push_root(Value::String(stack_s)).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  let Ok(stack_key_s) = scope.common_key_stack() else {
+    return Ok(Value::String(stack_s));
+  };
+  if scope.push_root(Value::String(stack_key_s)).is_err() {
+    return Ok(Value::String(stack_s));
+  }
+  let stack_key = PropertyKey::from_string(stack_key_s);
+
+  // Best-effort cache: overwrite the accessor with a plain data property so subsequent reads are
+  // cheap, but never allow caching failure to change the value returned by this getter.
+  let cache_res = scope.define_property(
+    obj,
+    stack_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(stack_s),
+        writable: true,
+      },
+    },
+  );
+
+  // Drop the internal slot so the captured frames can be collected once the stack is materialized.
+  //
+  // Only do this after successfully caching the computed string: if caching fails (OOM, proxy trap
+  // error, etc), subsequent `e.stack` reads should still be able to materialize the stack string
+  // from the captured frames.
+  if cache_res.is_ok() {
+    let _ = scope.heap_mut().object_delete_own_property(obj, &internal_key);
+  }
+
+  Ok(Value::String(stack_s))
+}
+
+/// Non-standard `Error.stack` setter installed on thrown objects.
+pub fn error_stack_set(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Error.stack setter called on non-object"));
+  };
+
+  let assigned = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(obj), assigned])?;
+
+  let Ok(stack_key_s) = scope.common_key_stack() else {
+    return Ok(Value::Undefined);
+  };
+  if scope.push_root(Value::String(stack_key_s)).is_err() {
+    return Ok(Value::Undefined);
+  }
+  let stack_key = PropertyKey::from_string(stack_key_s);
+
+  // Best-effort: if we cannot replace the property, fall back to the default accessor semantics
+  // (assignment becomes a no-op).
+  let define_res = scope.define_property(
+    obj,
+    stack_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: assigned,
+        writable: true,
+      },
+    },
+  );
+
+  // If this error had a lazily-captured stack trace, drop it so we don't keep frames alive after
+  // user code overwrites `stack`.
+  //
+  // Only do this after successfully replacing the property; otherwise the assignment was a no-op
+  // and `e.stack` should continue to reflect the captured stack trace.
+  if define_res.is_ok() {
+    if let Some(sym) = scope.heap().internal_throw_stack_trace_symbol() {
+      let internal_key = PropertyKey::from_symbol(sym);
+      let _ = scope.heap_mut().object_delete_own_property(obj, &internal_key);
+    }
+  }
+
+  Ok(Value::Undefined)
 }
 
 fn json_syntax_error(vm: &mut Vm, scope: &mut Scope<'_>) -> VmError {

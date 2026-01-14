@@ -157,6 +157,10 @@ pub struct Intrinsics {
   async_disposable_stack: GcObject,
   async_disposable_stack_prototype: GcObject,
 
+  // Non-standard `Error.stack` getter/setter used for thrown exceptions.
+  error_stack_getter: GcObject,
+  error_stack_setter: GcObject,
+
   promise: GcObject,
   promise_prototype: GcObject,
   promise_prototype_then: GcObject,
@@ -181,6 +185,7 @@ struct CommonKeys {
   prototype: PropertyKey,
   name: PropertyKey,
   length: PropertyKey,
+  bytes_per_element: PropertyKey,
 }
 
 fn data_desc(
@@ -984,12 +989,15 @@ impl Intrinsics {
     scope.push_root(Value::String(name_key_s))?;
     let length_key_s = scope.alloc_string("length")?;
     scope.push_root(Value::String(length_key_s))?;
+    let bytes_per_element_key_s = scope.alloc_string("BYTES_PER_ELEMENT")?;
+    scope.push_root(Value::String(bytes_per_element_key_s))?;
 
     let common = CommonKeys {
       constructor: PropertyKey::from_string(constructor_key_s),
       prototype: PropertyKey::from_string(prototype_key_s),
       name: PropertyKey::from_string(name_key_s),
       length: PropertyKey::from_string(length_key_s),
+      bytes_per_element: PropertyKey::from_string(bytes_per_element_key_s),
     };
 
     // --- Prototype/native method call handlers ---
@@ -1262,6 +1270,8 @@ impl Intrinsics {
     let symbol_for = vm.register_native_call(builtins::symbol_for)?;
     let symbol_key_for = vm.register_native_call(builtins::symbol_key_for)?;
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
+    let error_stack_get = vm.register_native_call(builtins::error_stack_get)?;
+    let error_stack_set = vm.register_native_call(builtins::error_stack_set)?;
     let json_parse = vm.register_native_call(builtins::json_parse)?;
     let json_raw_json = vm.register_native_call(builtins::json_raw_json)?;
     let json_is_raw_json = vm.register_native_call(builtins::json_is_raw_json)?;
@@ -5982,6 +5992,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      uint8_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(1.0), false, false, false),
+    )?;
+    scope.define_property(
       uint8_array_prototype,
       common.constructor,
       data_desc(Value::Object(uint8_array), true, false, true),
@@ -6028,6 +6043,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      int8_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(1.0), false, false, false),
+    )?;
+    scope.define_property(
       int8_array_prototype,
       common.constructor,
       data_desc(Value::Object(int8_array), true, false, true),
@@ -6072,6 +6092,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      uint8_clamped_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(1.0), false, false, false),
+    )?;
+    scope.define_property(
       uint8_clamped_array_prototype,
       common.constructor,
       data_desc(Value::Object(uint8_clamped_array), true, false, true),
@@ -6108,6 +6133,11 @@ impl Intrinsics {
       int16_array,
       common.length,
       data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      int16_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(2.0), false, false, false),
     )?;
     scope.define_property(
       int16_array_prototype,
@@ -6148,6 +6178,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      uint16_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(2.0), false, false, false),
+    )?;
+    scope.define_property(
       uint16_array_prototype,
       common.constructor,
       data_desc(Value::Object(uint16_array), true, false, true),
@@ -6184,6 +6219,11 @@ impl Intrinsics {
       int32_array,
       common.length,
       data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      int32_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(4.0), false, false, false),
     )?;
     scope.define_property(
       int32_array_prototype,
@@ -6224,6 +6264,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      uint32_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(4.0), false, false, false),
+    )?;
+    scope.define_property(
       uint32_array_prototype,
       common.constructor,
       data_desc(Value::Object(uint32_array), true, false, true),
@@ -6262,6 +6307,11 @@ impl Intrinsics {
       data_desc(Value::Number(3.0), false, false, true),
     )?;
     scope.define_property(
+      float32_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(4.0), false, false, false),
+    )?;
+    scope.define_property(
       float32_array_prototype,
       common.constructor,
       data_desc(Value::Object(float32_array), true, false, true),
@@ -6298,6 +6348,11 @@ impl Intrinsics {
       float64_array,
       common.length,
       data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      float64_array,
+      common.bytes_per_element,
+      data_desc(Value::Number(8.0), false, false, false),
     )?;
     scope.define_property(
       float64_array_prototype,
@@ -7523,6 +7578,8 @@ impl Intrinsics {
       uint16_array_prototype,
       int32_array_prototype,
       uint32_array_prototype,
+      bigint64_array_prototype,
+      biguint64_array_prototype,
       float32_array_prototype,
       float64_array_prototype,
       bigint64_array_prototype,
@@ -7969,6 +8026,25 @@ impl Intrinsics {
         key,
         data_desc(Value::Object(func), true, false, true),
       )?;
+    }
+
+    // Non-standard `Error.stack` accessor functions used by thrown exceptions.
+    let error_stack_getter;
+    let error_stack_setter;
+    {
+      let get_name = scope.alloc_string("get stack")?;
+      let get = alloc_rooted_native_function(scope, roots, error_stack_get, None, get_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+      error_stack_getter = get;
+
+      let set_name = scope.alloc_string("set stack")?;
+      let set = alloc_rooted_native_function(scope, roots, error_stack_set, None, set_name, 1)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set, Some(function_prototype))?;
+      error_stack_setter = set;
     }
 
     let (type_error, type_error_prototype) = init_native_error(
@@ -8799,7 +8875,8 @@ impl Intrinsics {
       disposable_stack_prototype,
       async_disposable_stack,
       async_disposable_stack_prototype,
- 
+      error_stack_getter,
+      error_stack_setter,
       promise,
       promise_prototype,
       promise_prototype_then,
@@ -8973,20 +9050,20 @@ impl Intrinsics {
     self.uint32_array_prototype
   }
 
-  pub fn float32_array_prototype(&self) -> GcObject {
-    self.float32_array_prototype
-  }
-
-  pub fn float64_array_prototype(&self) -> GcObject {
-    self.float64_array_prototype
-  }
-
   pub fn bigint64_array_prototype(&self) -> GcObject {
     self.bigint64_array_prototype
   }
 
   pub fn biguint64_array_prototype(&self) -> GcObject {
     self.biguint64_array_prototype
+  }
+
+  pub fn float32_array_prototype(&self) -> GcObject {
+    self.float32_array_prototype
+  }
+
+  pub fn float64_array_prototype(&self) -> GcObject {
+    self.float64_array_prototype
   }
 
   pub fn data_view_prototype(&self) -> GcObject {
@@ -9105,20 +9182,20 @@ impl Intrinsics {
     self.uint32_array
   }
 
-  pub fn float32_array(&self) -> GcObject {
-    self.float32_array
-  }
-
-  pub fn float64_array(&self) -> GcObject {
-    self.float64_array
-  }
-
   pub fn bigint64_array(&self) -> GcObject {
     self.bigint64_array
   }
 
   pub fn biguint64_array(&self) -> GcObject {
     self.biguint64_array
+  }
+
+  pub fn float32_array(&self) -> GcObject {
+    self.float32_array
+  }
+
+  pub fn float64_array(&self) -> GcObject {
+    self.float64_array
   }
 
   pub fn data_view(&self) -> GcObject {
@@ -9287,6 +9364,14 @@ impl Intrinsics {
 
   pub fn async_disposable_stack_prototype(&self) -> GcObject {
     self.async_disposable_stack_prototype
+  }
+
+  pub(crate) fn error_stack_getter(&self) -> GcObject {
+    self.error_stack_getter
+  }
+
+  pub(crate) fn error_stack_setter(&self) -> GcObject {
+    self.error_stack_setter
   }
 
   pub fn promise(&self) -> GcObject {

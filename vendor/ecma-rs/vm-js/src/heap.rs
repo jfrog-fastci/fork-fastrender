@@ -8,6 +8,7 @@ use crate::meta_properties::MetaPropertyContext;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::promise::{PromiseReaction, PromiseReactionType, PromiseState};
 use crate::regexp::{RegExpFlags, RegExpProgram};
+use crate::source::StackFrame;
 use crate::bigint::JsBigInt;
 use crate::string::JsString;
 use crate::symbol::JsSymbol;
@@ -25,6 +26,7 @@ use core::num::NonZeroU32;
 use parse_js::ast::func::Func;
 use parse_js::ast::node::Node;
 use semantic_js::js::SymbolId;
+use rustc_hash::FxHashMap;
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use crate::tick;
@@ -104,6 +106,13 @@ struct InternalSymbols {
 
   // Async class evaluation: hidden storage for deferred static field initialization.
   class_static_init: Option<GcSymbol>,
+
+  // Non-standard `Error.stack` capture for thrown objects.
+  //
+  // This symbol is used as an internal-slot marker (`[[ThrowStackTrace]]`) to associate a thrown
+  // object with its captured stack frames without making the frames observable to user code (the
+  // symbol is filtered from key enumeration like `Reflect.ownKeys`).
+  throw_stack_trace: Option<GcSymbol>,
 }
 
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
@@ -112,6 +121,17 @@ struct InternalSymbols {
 /// about over-allocation.
 const MIN_VEC_CAPACITY: usize = 1;
 
+/// Maximum UTF-8 byte length for strings eligible for the identifier string cache.
+///
+/// This is intended for short ASCII property names / identifier-like strings that appear
+/// repeatedly in JS source (`Object`, `defineProperty`, `compareArray`, etc).
+const INTERNED_IDENTIFIER_STRING_MAX_LEN: usize = 32;
+
+/// Maximum number of entries to keep in [`Heap::interned_identifier_strings`].
+///
+/// The cache is best-effort: it is cleared when it grows beyond this size to bound memory usage
+/// and avoid attacker-controlled unbounded interning.
+const INTERNED_IDENTIFIER_STRING_CACHE_MAX_ENTRIES: usize = 2048;
 /// Maximum array index stored in the fast elements table for Array exotic objects.
 ///
 /// Larger indices are represented in the ordinary property table to avoid allocating enormous
@@ -322,11 +342,20 @@ pub struct Heap {
   well_known_symbols: Option<WellKnownSymbols>,
 
   // Commonly-used property key strings (interned for memory efficiency).
+  common_string_empty: Option<GcString>,
   common_key_name: Option<GcString>,
   common_key_message: Option<GcString>,
+  common_key_stack: Option<GcString>,
   common_key_length: Option<GcString>,
   common_key_constructor: Option<GcString>,
   common_key_prototype: Option<GcString>,
+  // Property descriptor field names used by `ToPropertyDescriptor` / `FromPropertyDescriptor`.
+  common_key_enumerable: Option<GcString>,
+  common_key_configurable: Option<GcString>,
+  common_key_value: Option<GcString>,
+  common_key_writable: Option<GcString>,
+  common_key_get: Option<GcString>,
+  common_key_set: Option<GcString>,
 
   /// Cached decimal string representations for small non-negative integers.
   ///
@@ -336,6 +365,18 @@ pub struct Heap {
   ///
   /// The cache is traced during GC so entries remain valid across collections.
   small_int_strings: Vec<Option<GcString>>,
+
+  /// Weak cache of frequently-used short ASCII identifier strings.
+  ///
+  /// This is a performance optimization to avoid repeated allocation of the same property-key
+  /// strings when evaluating JS source code (e.g. `Object.defineProperty`, `assert.compareArray`,
+  /// etc.). The interpreter currently allocates a fresh heap string for each `obj.prop` member
+  /// expression evaluation; caching avoids both the allocation and repeated UTF-16 comparisons in
+  /// property lookups.
+  ///
+  /// Entries are **not traced** during GC, so cached strings do not become immortal. Callers must
+  /// validate cached handles with `Heap::is_valid_string` before reusing them.
+  interned_identifier_strings: FxHashMap<Box<str>, GcString>,
 
   /// True if at least one `FinalizationRegistry` has pending cleanup work.
   ///
@@ -430,12 +471,21 @@ impl Heap {
       symbol_registry: Vec::new(),
       internal_symbols: InternalSymbols::default(),
       well_known_symbols: None,
+      common_string_empty: None,
       common_key_name: None,
       common_key_message: None,
+      common_key_stack: None,
       common_key_length: None,
       common_key_constructor: None,
       common_key_prototype: None,
+      common_key_enumerable: None,
+      common_key_configurable: None,
+      common_key_value: None,
+      common_key_writable: None,
+      common_key_get: None,
+      common_key_set: None,
       small_int_strings: vec![None; SMALL_INT_STRING_CACHE_SIZE],
+      interned_identifier_strings: FxHashMap::default(),
       finalization_registry_cleanup_jobs_pending: false,
     }
   }
@@ -742,20 +792,35 @@ impl Heap {
           // Validate internal-slot-like references stored in `ObjectKind` variants.
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
           let owner_kind = format_args!("Object(kind={:?})", obj.base.kind);
-          match &obj.base.kind {
-            ObjectKind::ModuleNamespace(ns) => {
-              self.debug_validate_heap_id_expected(
-                owner_kind,
-                owner_id,
-                format_args!("[[Exports]]"),
-                ns.exports.id(),
-                "live ModuleNamespaceExports",
-                debug_expected_is_module_namespace_exports,
-              );
+            match &obj.base.kind {
+              ObjectKind::ModuleNamespace(ns) => {
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("[[Exports]]"),
+                  ns.exports.id(),
+                  "live ModuleNamespaceExports",
+                  debug_expected_is_module_namespace_exports,
+                );
+              }
+              ObjectKind::Arguments(args) => {
+                if let Some(env) = args.parameter_env {
+                  self.debug_validate_heap_id_expected(
+                    owner_kind,
+                    owner_id,
+                    format_args!("[[ParameterEnv]]"),
+                    env.0,
+                    "live Env",
+                    debug_expected_is_env,
+                  );
+                }
+              }
+              ObjectKind::Array(_)
+              | ObjectKind::Ordinary
+              | ObjectKind::Date(_)
+              | ObjectKind::Error => {}
             }
-            ObjectKind::Array(_) | ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => {}
           }
-        }
         HeapObject::TypedArray(arr) => {
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
           let owner_kind = format_args!("TypedArray(kind={:?})", arr.kind);
@@ -1483,9 +1548,33 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         internal.async_disposable_stack_stack,
         internal.async_disposable_stack_dispose_promise,
         internal.class_static_init,
+        internal.throw_stack_trace,
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
+      }
+
+      // Cached common strings / property keys.
+      //
+      // These are treated as roots so cached entries remain valid across GC, avoiding repeated
+      // allocation churn in hot paths like the test262 harness (`ToPropertyDescriptor`).
+      let common_strings = [
+        self.common_string_empty,
+        self.common_key_name,
+        self.common_key_message,
+        self.common_key_stack,
+        self.common_key_length,
+        self.common_key_constructor,
+        self.common_key_prototype,
+        self.common_key_enumerable,
+        self.common_key_configurable,
+        self.common_key_value,
+        self.common_key_writable,
+        self.common_key_get,
+        self.common_key_set,
+      ];
+      for s in common_strings.into_iter().flatten() {
+        tracer.trace_value(Value::String(s));
       }
 
       // Cached small integer strings used for fast `Number` -> `String` conversions.
@@ -2004,6 +2093,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       self.get_heap_object(obj.0),
       Ok(
         HeapObject::Object(_)
+          | HeapObject::StackTrace(_)
           | HeapObject::DerivedConstructorState(_)
           | HeapObject::ArrayBuffer(_)
           | HeapObject::TypedArray(_)
@@ -2278,10 +2368,10 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         TypedArrayKind::Uint16 => "Uint16Array",
         TypedArrayKind::Int32 => "Int32Array",
         TypedArrayKind::Uint32 => "Uint32Array",
-        TypedArrayKind::Float32 => "Float32Array",
-        TypedArrayKind::Float64 => "Float64Array",
         TypedArrayKind::BigInt64 => "BigInt64Array",
         TypedArrayKind::BigUint64 => "BigUint64Array",
+        TypedArrayKind::Float32 => "Float32Array",
+        TypedArrayKind::Float64 => "Float64Array",
       }),
       Ok(_) | Err(_) => None,
     }
@@ -2350,16 +2440,81 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
+  pub(crate) fn stack_trace_frames(&self, obj: GcObject) -> Result<&[StackFrame], VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::StackTrace(st) => Ok(st.frames.as_slice()),
+      _ => Err(VmError::TypeError("expected StackTrace object")),
+    }
+  }
+
   /// Returns `true` if `obj` currently points to a live Arguments object allocation.
   ///
   /// This is the `[[ParameterMap]]` brand check used by `Object.prototype.toString` builtin-tag
-  /// selection. `vm-js` currently uses a minimal arguments object implementation (not mapped), but
-  /// it still must be branded for spec-correct `Object.prototype.toString`.
+  /// selection. `vm-js` supports both mapped and unmapped `arguments` objects, but all Arguments
+  /// exotic objects share the same brand check for spec-correct `Object.prototype.toString`.
   pub fn is_arguments_object(&self, obj: GcObject) -> bool {
     match self.get_heap_object(obj.0) {
-      Ok(HeapObject::Object(o)) => matches!(o.base.kind, ObjectKind::Arguments),
+      Ok(HeapObject::Object(o)) => matches!(o.base.kind, ObjectKind::Arguments(_)),
       Ok(_) | Err(_) => false,
     }
+  }
+
+  pub(crate) fn arguments_object_set_parameter_map(
+    &mut self,
+    obj: GcObject,
+    env: GcEnv,
+    parameter_map: Vec<Option<SymbolId>>,
+  ) -> Result<(), VmError> {
+    let base = self.get_object_base_mut(obj)?;
+    let ObjectKind::Arguments(args) = &mut base.kind else {
+      return Err(VmError::InvariantViolation(
+        "arguments_object_set_parameter_map called on non-Arguments object",
+      ));
+    };
+    args.parameter_env = Some(env);
+    args.parameter_map = parameter_map;
+    Ok(())
+  }
+
+  pub(crate) fn arguments_object_mapped_symbol(
+    &self,
+    obj: GcObject,
+    index: u32,
+  ) -> Result<Option<(GcEnv, SymbolId)>, VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::Arguments(args) = &base.kind else {
+      return Ok(None);
+    };
+    let Some(env) = args.parameter_env else {
+      return Ok(None);
+    };
+    let Some(sym) = args.parameter_map.get(index as usize).copied().flatten() else {
+      return Ok(None);
+    };
+    Ok(Some((env, sym)))
+  }
+
+  pub(crate) fn arguments_object_delete_mapping(
+    &mut self,
+    obj: GcObject,
+    index: u32,
+  ) -> Result<(), VmError> {
+    let base = self.get_object_base_mut(obj)?;
+    let ObjectKind::Arguments(args) = &mut base.kind else {
+      return Err(VmError::InvariantViolation(
+        "arguments_object_delete_mapping called on non-Arguments object",
+      ));
+    };
+    if let Some(entry) = args.parameter_map.get_mut(index as usize) {
+      *entry = None;
+    }
+    // If the map is now empty (or never existed), release the environment handle so the arguments
+    // object does not unnecessarily keep the function environment alive after mapping is broken.
+    if args.parameter_env.is_some() && args.parameter_map.iter().all(|e| e.is_none()) {
+      args.parameter_env = None;
+      args.parameter_map.clear();
+    }
+    Ok(())
   }
 
   /// Returns `true` if `obj` currently points to a live Date object allocation.
@@ -2755,13 +2910,26 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     let view = self.get_typed_array(obj)?;
     let buffer = view.viewed_array_buffer;
     let byte_offset = view.byte_offset;
-    let byte_length = view.byte_length()?;
-
     let buf = self.get_array_buffer(buffer)?;
     let data = buf
       .data
       .as_deref()
       .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+
+    let byte_length = if view.length_tracking {
+      if byte_offset > data.len() {
+        return Err(VmError::TypeError("TypedArray view out of bounds"));
+      }
+      let bytes_per_element = view.kind.bytes_per_element();
+      let available = data.len() - byte_offset;
+      // Truncate down to a whole number of elements.
+      let len = available / bytes_per_element;
+      len
+        .checked_mul(bytes_per_element)
+        .ok_or(VmError::OutOfMemory)?
+    } else {
+      view.fixed_byte_length()?
+    };
     let end = byte_offset
       .checked_add(byte_length)
       .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
@@ -2780,9 +2948,15 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     };
     let buf_len = data.len();
 
-    let byte_len = match view.length.checked_mul(view.kind.bytes_per_element()) {
-      Some(n) => n,
-      None => return Ok(true),
+    if view.length_tracking {
+      // Length-tracking typed arrays compute their `[[ByteLength]]` from the backing buffer's
+      // current length, so they are only out-of-bounds when their `[[ByteOffset]]` no longer fits.
+      return Ok(view.byte_offset > buf_len);
+    }
+
+    let byte_len = match view.fixed_byte_length() {
+      Ok(n) => n,
+      Err(_) => return Ok(true),
     };
     let end = match view.byte_offset.checked_add(byte_len) {
       Some(end) => end,
@@ -2806,7 +2980,15 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
-    Ok(view.length)
+    if !view.length_tracking {
+      return Ok(view.length);
+    }
+
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    let buf_len = buf.byte_length();
+    // `typed_array_view_is_out_of_bounds` ensures `byte_offset <= buf_len` here.
+    let available = buf_len.saturating_sub(view.byte_offset);
+    Ok(available / view.kind.bytes_per_element())
   }
 
   /// Returns the typed array `byteLength`.
@@ -2823,7 +3005,13 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(0);
     }
-    view.byte_length()
+    if view.length_tracking {
+      let len = self.typed_array_length(obj)?;
+      return len
+        .checked_mul(view.kind.bytes_per_element())
+        .ok_or(VmError::OutOfMemory);
+    }
+    view.fixed_byte_length()
   }
 
   /// Returns the typed array `byteOffset`.
@@ -2866,10 +3054,8 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     //
     // Spec: `IsValidIntegerIndex` returns false when `IsTypedArrayOutOfBounds` is true, which makes
     // element reads return `undefined`.
-    if self.typed_array_view_is_out_of_bounds(view)? {
-      return Ok(None);
-    }
-    if index >= view.length {
+    let len = self.typed_array_length(obj)?;
+    if index >= len {
       return Ok(None);
     }
     Ok(Some(self.typed_array_get_value(view, index)?))
@@ -2891,7 +3077,16 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     if self.typed_array_view_is_out_of_bounds(view)? {
       return Ok(None);
     }
-    if index >= view.length {
+    let len = if view.length_tracking {
+      let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+      let buf_len = buf.byte_length();
+      // `typed_array_view_is_out_of_bounds` ensures `byte_offset <= buf_len` here.
+      let available = buf_len.saturating_sub(view.byte_offset);
+      available / view.kind.bytes_per_element()
+    } else {
+      view.length
+    };
+    if index >= len {
       return Ok(None);
     }
 
@@ -3003,18 +3198,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   /// backing ArrayBuffer, or if the backing buffer is detached.
   pub(crate) fn typed_array_is_out_of_bounds(&self, obj: GcObject) -> Result<bool, VmError> {
     let view = self.get_typed_array(obj)?;
-    let buffer = view.viewed_array_buffer;
-    if self.is_detached_array_buffer(buffer)? {
-      return Ok(true);
-    }
-
-    let buf_len = self.array_buffer_byte_length(buffer)?;
-    let byte_length = view.byte_length()?;
-    let end = match view.byte_offset.checked_add(byte_length) {
-      Some(end) => end,
-      None => return Ok(true),
-    };
-    Ok(end > buf_len)
+    self.typed_array_view_is_out_of_bounds(view)
   }
 
   /// Returns a borrowed view of the bytes visible through a `Uint8Array` view.
@@ -3034,14 +3218,21 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       return Err(VmError::invalid_handle());
     }
     let start = view.byte_offset;
-    let end = start
-      .checked_add(view.byte_length()?)
-      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
     let buf = self.get_array_buffer(view.viewed_array_buffer)?;
     let data = buf
       .data
       .as_deref()
       .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let end = if view.length_tracking {
+      if start > data.len() {
+        return Err(VmError::TypeError("Uint8Array view out of bounds"));
+      }
+      data.len()
+    } else {
+      start
+        .checked_add(view.fixed_byte_length()?)
+        .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?
+    };
     data
       .get(start..end)
       .ok_or(VmError::TypeError("Uint8Array view out of bounds"))
@@ -3068,29 +3259,13 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   /// Returns an error if `obj` is not a live `Uint8Array` object.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
-    let (buffer, byte_offset, length) = {
+    let (buffer, byte_offset, fixed_length, length_tracking) = {
       let view = self.get_typed_array(obj)?;
       if view.kind != TypedArrayKind::Uint8 {
         return Err(VmError::invalid_handle());
       }
-      (view.viewed_array_buffer, view.byte_offset, view.length)
+      (view.viewed_array_buffer, view.byte_offset, view.length, view.length_tracking)
     };
-
-    if index >= length || bytes.is_empty() {
-      return Ok(0);
-    }
-    let max_write = bytes.len().min(length - index);
-
-    let view_end = byte_offset
-      .checked_add(length)
-      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
-
-    let abs_start = byte_offset
-      .checked_add(index)
-      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
-    let abs_end = abs_start
-      .checked_add(max_write)
-      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
     // Validate the view is in-bounds and the backing buffer is attached.
     let buf = self.get_array_buffer(buffer)?;
@@ -3098,10 +3273,35 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       return Ok(0);
     };
     let buf_len = data.len();
-    if view_end > buf_len {
-      // Out-of-bounds views behave like empty typed arrays for host byte writes.
+
+    let length = if length_tracking {
+      if byte_offset > buf_len {
+        // Out-of-bounds views behave like empty typed arrays for host byte writes.
+        return Ok(0);
+      }
+      buf_len - byte_offset
+    } else {
+      let view_end = byte_offset
+        .checked_add(fixed_length)
+        .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+      if view_end > buf_len {
+        // Out-of-bounds views behave like empty typed arrays for host byte writes.
+        return Ok(0);
+      }
+      fixed_length
+    };
+
+    if index >= length || bytes.is_empty() {
       return Ok(0);
     }
+    let max_write = bytes.len().min(length - index);
+
+    let abs_start = byte_offset
+      .checked_add(index)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+    let abs_end = abs_start
+      .checked_add(max_write)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
     let buf = self.get_array_buffer_mut(buffer)?;
     let Some(data) = buf.data.as_deref_mut() else {
@@ -4873,7 +5073,8 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
           }
 
           let idx = numeric_index as usize;
-          if idx < view.length {
+          let len = self.typed_array_length(obj)?;
+          if idx < len {
             // BigInt typed array element values require allocating fresh BigInt handles. Heap-level
             // `[[GetOwnProperty]]` is allocation-free, so defer materialization to the higher-level
             // `Scope` wrappers (similar to string exotic index properties).
@@ -4924,6 +5125,32 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
 
     let obj = self.get_object_base(obj)?;
 
+    // Arguments exotic objects (mapped `arguments`): indexed properties alias parameter environment
+    // bindings. The mapping is represented by an internal `parameter_map` table on the arguments
+    // object, which is consulted by `[[GetOwnProperty]]` to materialize the current binding value.
+    let mapped_arguments: Option<(GcEnv, SymbolId)> = if let ObjectKind::Arguments(args) = &obj.kind {
+      if let Some(env) = args.parameter_env {
+        if let PropertyKey::String(s) = key {
+          if let Some(index) = self.string_to_array_index(*s) {
+            args
+              .parameter_map
+              .get(index as usize)
+              .copied()
+              .flatten()
+              .map(|sym| (env, sym))
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
     // Array exotic objects store array-indexed properties in a separate dense table.
     if let ObjectKind::Array(arr) = &obj.kind {
       if let PropertyKey::String(s) = key {
@@ -4947,6 +5174,19 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         tick()?;
       }
       if self.property_key_eq(&prop.key, key) {
+        if let Some((env, sym)) = mapped_arguments {
+          // Only data descriptors participate in mapped arguments aliasing semantics. If user code
+          // redefines the property as an accessor, the mapping is deleted by
+          // `ArgumentsExoticObject.[[DefineOwnProperty]]` and this branch is no longer taken.
+          if let PropertyKind::Data { writable, .. } = prop.desc.kind {
+            let value = self.env_get_symbol_binding_value(env, sym)?;
+            return Ok(Some(PropertyDescriptor {
+              enumerable: prop.desc.enumerable,
+              configurable: prop.desc.configurable,
+              kind: PropertyKind::Data { value, writable },
+            }));
+          }
+        }
         return Ok(Some(prop.desc));
       }
     }
@@ -4961,6 +5201,10 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     let slot_idx = self
       .validate(obj.0)
       .ok_or_else(|| VmError::invalid_handle())?;
+    let key_array_index = match key {
+      PropertyKey::String(s) => self.string_to_array_index(*s),
+      PropertyKey::Symbol(_) => None,
+    };
 
     // Fast path for array-indexed properties stored in the array's dense elements table.
     if let PropertyKey::String(s) = key {
@@ -5327,7 +5571,22 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       return Err(VmError::invalid_handle());
     };
     match obj {
-      HeapObject::Object(obj) => obj.base.properties = properties,
+      HeapObject::Object(obj) => {
+        obj.base.properties = properties;
+        // If a mapped `arguments` indexed property was deleted, remove the mapping so future
+        // `arguments[i]` accesses no longer alias the corresponding parameter binding.
+        if let ObjectKind::Arguments(args) = &mut obj.base.kind {
+          if let Some(index) = key_array_index {
+            if let Some(entry) = args.parameter_map.get_mut(index as usize) {
+              *entry = None;
+            }
+            if args.parameter_env.is_some() && args.parameter_map.iter().all(|e| e.is_none()) {
+              args.parameter_env = None;
+              args.parameter_map.clear();
+            }
+          }
+        }
+      }
       HeapObject::RegExp(obj) => obj.base.properties = properties,
       HeapObject::ArrayBuffer(obj) => obj.base.properties = properties,
       HeapObject::TypedArray(obj) => obj.base.properties = properties,
@@ -6082,9 +6341,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(out)
   }
 
-  fn string_to_array_index(&self, s: GcString) -> Option<u32> {
-    let js = self.get_string(s).ok()?;
-    let units = js.as_code_units();
+  fn string_to_array_index_units(&self, units: &[u16]) -> Option<u32> {
     if units.is_empty() {
       return None;
     }
@@ -6109,6 +6366,11 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Some(n as u32)
   }
 
+  fn string_to_array_index(&self, s: GcString) -> Option<u32> {
+    let js = self.get_string(s).ok()?;
+    self.string_to_array_index_units(js.as_code_units())
+  }
+
   /// ECMA-262 `CanonicalNumericIndexString`.
   ///
   /// Returns `Some(numericIndex)` when `s` is a *canonical numeric string* (including the special
@@ -6117,6 +6379,17 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     let units = self.get_string(s)?.as_code_units();
     if units.len() == 2 && units[0] == b'-' as u16 && units[1] == b'0' as u16 {
       return Ok(Some(-0.0));
+    }
+
+    // Fast path: the overwhelming majority of CanonicalNumericIndexString uses come from indexed
+    // element access (`obj[0]`) and TypedArray `[[DefineOwnProperty]]` / `[[Get]]` / `[[Set]]`,
+    // where the property key is an array-index string.
+    //
+    // The spec requires checking `ToString(ToNumber(s)) === s`, but for canonical `uint32` strings
+    // (excluding `2^32-1`) we can compute the numeric value directly without going through the full
+    // `ToNumber` + `ToString` round trip.
+    if let Some(index) = self.string_to_array_index_units(units) {
+      return Ok(Some(index as f64));
     }
 
     let n = crate::ops::string_to_number(self, s)?;
@@ -6202,7 +6475,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   }
 
   fn typed_array_get_value(&self, view: &JsTypedArray, index: usize) -> Result<Value, VmError> {
-    debug_assert!(index < view.length);
+    debug_assert!(view.length_tracking || index < view.length);
 
     let bytes_per_element = view.kind.bytes_per_element();
     let rel = index
@@ -6314,9 +6587,8 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       return self.typed_array_set_element_u64_bits(view_obj, index, bits);
     }
 
-    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
-    //
     // Spec: `TypedArraySetElement` performs value conversion before checking `IsValidIntegerIndex`.
+    // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol/BigInt.
     let n = self.to_number(value)?;
     self.typed_array_set_element_number(view_obj, index, n)
   }
@@ -6344,9 +6616,15 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     bits: u64,
   ) -> Result<bool, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
-    let (buffer, byte_offset, length, kind) = {
+    let (buffer, byte_offset, fixed_length, kind, length_tracking) = {
       let view = self.get_typed_array(view_obj)?;
-      (view.viewed_array_buffer, view.byte_offset, view.length, view.kind)
+      (
+        view.viewed_array_buffer,
+        view.byte_offset,
+        view.length,
+        view.kind,
+        view.length_tracking,
+      )
     };
     if !kind.is_bigint() {
       return Err(VmError::TypeError(
@@ -6355,7 +6633,9 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
 
     // If the backing buffer is detached or the view is out-of-bounds, writes are a silent no-op.
-    {
+    //
+    // Spec: `TypedArraySetElement` (no effect when `IsValidIntegerIndex` is false).
+    let length = {
       let buf = self.get_array_buffer(buffer)?;
       if buf.is_immutable() {
         return Err(VmError::TypeError("ArrayBuffer is immutable"));
@@ -6364,19 +6644,28 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         return Ok(false);
       };
       let buf_len = data.len();
+      let bytes_per_element = kind.bytes_per_element();
 
-      let byte_len = match length.checked_mul(kind.bytes_per_element()) {
-        Some(n) => n,
-        None => return Ok(false),
-      };
-      let end = match byte_offset.checked_add(byte_len) {
-        Some(end) => end,
-        None => return Ok(false),
-      };
-      if end > buf_len {
-        return Ok(false);
+      if length_tracking {
+        if byte_offset > buf_len {
+          return Ok(false);
+        }
+        (buf_len - byte_offset) / bytes_per_element
+      } else {
+        let byte_len = match fixed_length.checked_mul(bytes_per_element) {
+          Some(n) => n,
+          None => return Ok(false),
+        };
+        let end = match byte_offset.checked_add(byte_len) {
+          Some(end) => end,
+          None => return Ok(false),
+        };
+        if end > buf_len {
+          return Ok(false);
+        }
+        fixed_length
       }
-    }
+    };
 
     if index >= length {
       return Ok(false);
@@ -6490,15 +6779,21 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     n: f64,
   ) -> Result<bool, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
-    let (buffer, byte_offset, length, kind) = {
+    let (buffer, byte_offset, fixed_length, kind, length_tracking) = {
       let view = self.get_typed_array(view_obj)?;
-      (view.viewed_array_buffer, view.byte_offset, view.length, view.kind)
+      (
+        view.viewed_array_buffer,
+        view.byte_offset,
+        view.length,
+        view.kind,
+        view.length_tracking,
+      )
     };
 
     // If the backing buffer is detached or the view is out-of-bounds, writes are a silent no-op.
     //
     // Spec: `TypedArraySetElement` (no effect when `IsValidIntegerIndex` is false).
-    {
+    let length = {
       let buf = self.get_array_buffer(buffer)?;
       if buf.is_immutable() {
         return Err(VmError::TypeError("ArrayBuffer is immutable"));
@@ -6507,19 +6802,28 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         return Ok(false);
       };
       let buf_len = data.len();
+      let bytes_per_element = kind.bytes_per_element();
 
-      let byte_len = match length.checked_mul(kind.bytes_per_element()) {
-        Some(n) => n,
-        None => return Ok(false),
-      };
-      let end = match byte_offset.checked_add(byte_len) {
-        Some(end) => end,
-        None => return Ok(false),
-      };
-      if end > buf_len {
-        return Ok(false);
+      if length_tracking {
+        if byte_offset > buf_len {
+          return Ok(false);
+        }
+        (buf_len - byte_offset) / bytes_per_element
+      } else {
+        let byte_len = match fixed_length.checked_mul(bytes_per_element) {
+          Some(n) => n,
+          None => return Ok(false),
+        };
+        let end = match byte_offset.checked_add(byte_len) {
+          Some(end) => end,
+          None => return Ok(false),
+        };
+        if end > buf_len {
+          return Ok(false);
+        }
+        fixed_length
       }
-    }
+    };
 
     if index >= length {
       return Ok(false);
@@ -6628,8 +6932,8 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         data[abs_start..abs_end].copy_from_slice(&n.to_bits().to_le_bytes());
       }
       TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
-        return Err(VmError::InvariantViolation(
-          "typed_array_set_element_number called on BigInt typed array",
+        return Err(VmError::TypeError(
+          "Cannot write a Number value to a BigInt typed array",
         ));
       }
     }
@@ -7737,6 +8041,18 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     )
   }
 
+  pub(crate) fn internal_throw_stack_trace_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.throw_stack_trace
+  }
+
+  pub(crate) fn ensure_internal_throw_stack_trace_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.ThrowStackTrace",
+      |s| s.throw_stack_trace,
+      |s, sym| s.throw_stack_trace = Some(sym),
+    )
+  }
+
   pub(crate) fn is_internal_symbol(&self, sym: GcSymbol) -> bool {
     match self.get_heap_object(sym.0) {
       Ok(HeapObject::Symbol(sym)) => sym.is_internal(),
@@ -7935,6 +8251,17 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         .find_binding_index(self, name)?
         .is_some(),
     )
+  }
+
+  pub(crate) fn env_find_symbol(&self, env: GcEnv, name: &str) -> Result<Option<SymbolId>, VmError> {
+    let rec = self.get_declarative_env(env)?;
+    let Some(idx) = rec.find_binding_index(self, name)? else {
+      return Ok(None);
+    };
+    let binding = rec.bindings.get(idx).ok_or(VmError::Unimplemented(
+      "environment record binding index out of bounds",
+    ))?;
+    Ok(Some(binding.symbol))
   }
 
   pub(crate) fn env_set_private_names(
@@ -9726,6 +10053,62 @@ impl<'a> Scope<'a> {
 
   /// Allocates a JavaScript string on the heap from UTF-8.
   pub fn alloc_string_from_utf8(&mut self, s: &str) -> Result<GcString, VmError> {
+    // Fast path for very common short strings to avoid repeated allocation/GC churn in hot paths
+    // like property access (`obj.length`) and test262 harness helpers.
+    if s.is_empty() {
+      if let Some(cached) = self.heap.common_string_empty {
+        if self.heap.is_valid_string(cached) {
+          return Ok(cached);
+        }
+      }
+    } else {
+      let cached = match s {
+        "name" => self.heap.common_key_name,
+        "message" => self.heap.common_key_message,
+        "stack" => self.heap.common_key_stack,
+        "length" => self.heap.common_key_length,
+        "constructor" => self.heap.common_key_constructor,
+        "prototype" => self.heap.common_key_prototype,
+        "enumerable" => self.heap.common_key_enumerable,
+        "configurable" => self.heap.common_key_configurable,
+        "value" => self.heap.common_key_value,
+        "writable" => self.heap.common_key_writable,
+        "get" => self.heap.common_key_get,
+        "set" => self.heap.common_key_set,
+        _ => None,
+      };
+      if let Some(cached) = cached {
+        if self.heap.is_valid_string(cached) {
+          return Ok(cached);
+        }
+      }
+    }
+
+    // Best-effort weak interning for short ASCII identifier-like strings.
+    //
+    // This avoids repeated allocations in hot interpreter paths like `obj.prop` member expressions,
+    // where `prop` is sourced from the AST and is therefore likely to repeat many times during
+    // execution.
+    let eligible_for_identifier_cache = {
+      let bytes = s.as_bytes();
+      !bytes.is_empty()
+        && bytes.len() <= INTERNED_IDENTIFIER_STRING_MAX_LEN
+        && s.is_ascii()
+        && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_' || bytes[0] == b'$')
+        && bytes
+          .iter()
+          .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$')
+    };
+    if eligible_for_identifier_cache {
+      if let Some(cached) = self.heap.interned_identifier_strings.get(s).copied() {
+        if self.heap.is_valid_string(cached) {
+          return Ok(cached);
+        }
+        // Stale entry (string was collected and the slot was reused).
+        self.heap.interned_identifier_strings.remove(s);
+      }
+    }
+
     let units_len = s.encode_utf16().count();
     let new_bytes = JsString::heap_size_bytes_for_len(units_len);
     self.heap.ensure_can_allocate(new_bytes)?;
@@ -9740,7 +10123,44 @@ impl<'a> Scope<'a> {
     let js = JsString::from_u16_vec(units)?;
     debug_assert_eq!(new_bytes, js.heap_size_bytes());
     let obj = HeapObject::String(js);
-    Ok(GcString(self.heap.alloc_unchecked(obj, new_bytes)?))
+    let out = GcString(self.heap.alloc_unchecked(obj, new_bytes)?);
+    if s.is_empty() {
+      self.heap.common_string_empty = Some(out);
+    } else {
+      match s {
+        "name" => self.heap.common_key_name = Some(out),
+        "message" => self.heap.common_key_message = Some(out),
+        "stack" => self.heap.common_key_stack = Some(out),
+        "length" => self.heap.common_key_length = Some(out),
+        "constructor" => self.heap.common_key_constructor = Some(out),
+        "prototype" => self.heap.common_key_prototype = Some(out),
+        "enumerable" => self.heap.common_key_enumerable = Some(out),
+        "configurable" => self.heap.common_key_configurable = Some(out),
+        "value" => self.heap.common_key_value = Some(out),
+        "writable" => self.heap.common_key_writable = Some(out),
+        "get" => self.heap.common_key_get = Some(out),
+        "set" => self.heap.common_key_set = Some(out),
+        _ => {}
+      }
+    }
+
+    if eligible_for_identifier_cache {
+      if self.heap.interned_identifier_strings.len() >= INTERNED_IDENTIFIER_STRING_CACHE_MAX_ENTRIES {
+        self.heap.interned_identifier_strings.clear();
+      }
+
+      if self.heap.interned_identifier_strings.try_reserve(1).is_ok() {
+        let mut owned = String::new();
+        if owned.try_reserve_exact(s.len()).is_ok() {
+          owned.push_str(s);
+          self
+            .heap
+            .interned_identifier_strings
+            .insert(owned.into_boxed_str(), out);
+        }
+      }
+    }
+    Ok(out)
   }
 
   /// Allocates a JavaScript string on the heap from UTF-16 code units.
@@ -9814,6 +10234,17 @@ impl<'a> Scope<'a> {
     Ok(s)
   }
 
+  pub(crate) fn common_key_stack(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_stack {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("stack")?;
+    self.heap.common_key_stack = Some(s);
+    Ok(s)
+  }
+
   pub(crate) fn common_key_length(&mut self) -> Result<GcString, VmError> {
     if let Some(s) = self.heap.common_key_length {
       if self.heap.is_valid_string(s) {
@@ -9844,6 +10275,72 @@ impl<'a> Scope<'a> {
     }
     let s = self.alloc_string("prototype")?;
     self.heap.common_key_prototype = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_enumerable(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_enumerable {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("enumerable")?;
+    self.heap.common_key_enumerable = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_configurable(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_configurable {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("configurable")?;
+    self.heap.common_key_configurable = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_value(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_value {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("value")?;
+    self.heap.common_key_value = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_writable(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_writable {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("writable")?;
+    self.heap.common_key_writable = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_get(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_get {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("get")?;
+    self.heap.common_key_get = Some(s);
+    Ok(s)
+  }
+
+  pub(crate) fn common_key_set(&mut self) -> Result<GcString, VmError> {
+    if let Some(s) = self.heap.common_key_set {
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
+    }
+    let s = self.alloc_string("set")?;
+    self.heap.common_key_set = Some(s);
     Ok(s)
   }
 
@@ -10265,6 +10762,14 @@ impl<'a> Scope<'a> {
     Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
   }
 
+  /// Allocates a non-standard internal stack-trace object used to lazily materialize `Error.stack`.
+  pub(crate) fn alloc_stack_trace(&mut self, frames: Vec<StackFrame>) -> Result<GcObject, VmError> {
+    let new_bytes = JsStackTrace::heap_size_bytes_for_frame_capacity(frames.capacity());
+    self.heap.ensure_can_allocate(new_bytes)?;
+    let obj = HeapObject::StackTrace(JsStackTrace::new(frames));
+    Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
   /// Allocates a JavaScript Arguments object on the heap.
   pub fn alloc_arguments_object(&mut self) -> Result<GcObject, VmError> {
     let new_bytes = JsObject::heap_size_bytes_for_property_count(0);
@@ -10275,7 +10780,10 @@ impl<'a> Scope<'a> {
         prototype: None,
         extensible: true,
         properties: Box::default(),
-        kind: ObjectKind::Arguments,
+        kind: ObjectKind::Arguments(ArgumentsObject {
+          parameter_env: None,
+          parameter_map: Vec::new(),
+        }),
       },
     };
     Ok(GcObject(self.heap.alloc_unchecked(HeapObject::Object(obj), new_bytes)?))
@@ -10755,6 +11263,7 @@ impl<'a> Scope<'a> {
     viewed_array_buffer: GcObject,
     byte_offset: usize,
     length: usize,
+    length_tracking: bool,
   ) -> Result<GcObject, VmError> {
     // Root the buffer during validation/allocation in case `alloc_unchecked` triggers a GC.
     let mut scope = self.reborrow();
@@ -10786,6 +11295,7 @@ impl<'a> Scope<'a> {
       viewed_array_buffer,
       byte_offset,
       length,
+      length_tracking,
     ));
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
@@ -10804,6 +11314,7 @@ impl<'a> Scope<'a> {
       viewed_array_buffer,
       byte_offset,
       length,
+      false,
     )
   }
 
@@ -11724,12 +12235,42 @@ pub(crate) struct DerivedConstructorState {
   pub(crate) this_value: Option<GcObject>,
 }
 
+/// Captured stack frames for the non-standard `Error.stack` property.
+///
+/// This is stored as an internal-slot-like heap object so thrown errors can expose a stack string
+/// to JavaScript (via an accessor) without eagerly allocating/formatting the stack string for every
+/// throw.
+#[derive(Debug)]
+struct JsStackTrace {
+  frames: Vec<StackFrame>,
+}
+
+impl JsStackTrace {
+  fn new(frames: Vec<StackFrame>) -> Self {
+    Self { frames }
+  }
+
+  fn heap_size_bytes(&self) -> usize {
+    Self::heap_size_bytes_for_frame_capacity(self.frames.capacity())
+  }
+
+  fn heap_size_bytes_for_frame_capacity(frame_capacity: usize) -> usize {
+    // Account for the `Vec` allocation (the `StackFrame` elements are stored inline in the vector
+    // buffer, and `StackFrame` itself is a small wrapper around `Arc<str>` handles).
+    let frame_bytes = frame_capacity
+      .checked_mul(mem::size_of::<StackFrame>())
+      .unwrap_or(usize::MAX);
+    mem::size_of::<Self>().saturating_add(frame_bytes)
+  }
+}
+
 #[derive(Debug)]
 enum HeapObject {
   String(JsString),
   Symbol(JsSymbol),
   BigInt(JsBigInt),
   Object(JsObject),
+  StackTrace(JsStackTrace),
   DerivedConstructorState(DerivedConstructorState),
   ModuleNamespaceExports(ModuleNamespaceExportsData),
   ArrayBuffer(JsArrayBuffer),
@@ -11757,6 +12298,7 @@ impl Trace for HeapObject {
       HeapObject::Symbol(s) => s.trace(tracer),
       HeapObject::BigInt(b) => b.trace(tracer),
       HeapObject::Object(o) => o.trace(tracer),
+      HeapObject::StackTrace(_) => {}
       HeapObject::DerivedConstructorState(s) => s.trace(tracer),
       HeapObject::ModuleNamespaceExports(ns) => ns.trace(tracer),
       HeapObject::ArrayBuffer(b) => b.trace(tracer),
@@ -11796,6 +12338,7 @@ impl HeapObject {
       HeapObject::Symbol(_) => "Symbol",
       HeapObject::BigInt(_) => "BigInt",
       HeapObject::Object(_) => "Object",
+      HeapObject::StackTrace(_) => "StackTrace",
       HeapObject::DerivedConstructorState(_) => "DerivedConstructorState",
       HeapObject::ModuleNamespaceExports(_) => "ModuleNamespaceExports",
       HeapObject::ArrayBuffer(_) => "ArrayBuffer",
@@ -11840,6 +12383,7 @@ fn debug_expected_is_object(obj: &HeapObject) -> bool {
   matches!(
     obj,
     HeapObject::Object(_)
+      | HeapObject::StackTrace(_)
       | HeapObject::ArrayBuffer(_)
       | HeapObject::TypedArray(_)
       | HeapObject::DataView(_)
@@ -12017,7 +12561,7 @@ impl ObjectBase {
       ObjectKind::Ordinary
       | ObjectKind::Date(_)
       | ObjectKind::Error
-      | ObjectKind::Arguments
+      | ObjectKind::Arguments(_)
       | ObjectKind::ModuleNamespace(_) => None,
     }
   }
@@ -12050,12 +12594,13 @@ impl Trace for ObjectBase {
       prop.trace(tracer);
     }
     match &self.kind {
-      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => {}
+      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error => {}
       ObjectKind::Array(a) => {
         for elem in a.elements.iter().flatten() {
           elem.trace(tracer);
         }
       }
+      ObjectKind::Arguments(a) => a.trace(tracer),
       ObjectKind::ModuleNamespace(ns) => ns.trace(tracer),
     }
   }
@@ -12201,10 +12746,10 @@ pub enum TypedArrayKind {
   Uint16,
   Int32,
   Uint32,
-  Float32,
-  Float64,
   BigInt64,
   BigUint64,
+  Float32,
+  Float64,
 }
 
 impl TypedArrayKind {
@@ -12231,6 +12776,11 @@ struct JsTypedArray {
   byte_offset: usize,
   /// Length in elements (not bytes).
   length: usize,
+  /// Whether this view is "length-tracking" for a resizable `ArrayBuffer`.
+  ///
+  /// For length-tracking typed arrays, the effective `length` and `byteLength` depend on the
+  /// backing buffer's current byte length and must shrink/grow as the buffer is resized.
+  length_tracking: bool,
 }
 
 impl JsTypedArray {
@@ -12240,6 +12790,7 @@ impl JsTypedArray {
     viewed_array_buffer: GcObject,
     byte_offset: usize,
     length: usize,
+    length_tracking: bool,
   ) -> Self {
     Self {
       base: ObjectBase::new(prototype),
@@ -12247,10 +12798,11 @@ impl JsTypedArray {
       viewed_array_buffer,
       byte_offset,
       length,
+      length_tracking,
     }
   }
 
-  fn byte_length(&self) -> Result<usize, VmError> {
+  fn fixed_byte_length(&self) -> Result<usize, VmError> {
     self
       .length
       .checked_mul(self.kind.bytes_per_element())
@@ -12908,7 +13460,7 @@ enum ObjectKind {
   Array(ArrayObject),
   Date(DateObject),
   Error,
-  Arguments,
+  Arguments(ArgumentsObject),
   ModuleNamespace(ModuleNamespaceObject),
 }
 
@@ -12928,6 +13480,31 @@ struct ArrayObject {
 #[derive(Debug)]
 struct DateObject {
   value: f64,
+}
+
+#[derive(Debug)]
+struct ArgumentsObject {
+  /// When present, this is a *mapped* `arguments` object: indexed properties alias bindings in this
+  /// environment record.
+  ///
+  /// When absent, this is an *unmapped* `arguments` object (e.g. strict mode or non-simple
+  /// parameters).
+  parameter_env: Option<GcEnv>,
+  /// Parameter map for indexed properties.
+  ///
+  /// When `parameter_env` is `Some`, a `Some(symbol)` entry at index `i` means
+  /// `arguments[i]` aliases the environment binding identified by `symbol` within `parameter_env`.
+  ///
+  /// `None` entries are unmapped indices. Indices beyond `parameter_map.len()` are also unmapped.
+  parameter_map: Vec<Option<SymbolId>>,
+}
+
+impl Trace for ArgumentsObject {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    if let Some(env) = self.parameter_env {
+      tracer.trace_env(env);
+    }
+  }
 }
 
 /// A Module Namespace Exotic Object's internal slots (ECMA-262 §9.4.6 / §26.3).
@@ -13881,7 +14458,7 @@ mod typed_array_helper_tests {
       TypedArrayKind::Int32,
       TypedArrayKind::Uint32,
     ] {
-      let view = scope.alloc_typed_array(kind, ab, 0, 1)?;
+      let view = scope.alloc_typed_array(kind, ab, 0, 1, false)?;
       scope.push_root(Value::Object(view))?;
       assert!(
         scope.heap().typed_array_is_integer_kind(view)?,
@@ -13890,7 +14467,7 @@ mod typed_array_helper_tests {
     }
 
     for kind in [TypedArrayKind::Float32, TypedArrayKind::Float64] {
-      let view = scope.alloc_typed_array(kind, ab, 0, 1)?;
+      let view = scope.alloc_typed_array(kind, ab, 0, 1, false)?;
       scope.push_root(Value::Object(view))?;
       assert!(
         !scope.heap().typed_array_is_integer_kind(view)?,
@@ -13909,7 +14486,7 @@ mod typed_array_helper_tests {
     let ab = scope.alloc_array_buffer(16)?;
     scope.push_root(Value::Object(ab))?;
 
-    let view = scope.alloc_typed_array(TypedArrayKind::Uint32, ab, 4, 2)?;
+    let view = scope.alloc_typed_array(TypedArrayKind::Uint32, ab, 4, 2, false)?;
     scope.push_root(Value::Object(view))?;
 
     let (buf, off, len) = scope.heap().typed_array_view_bytes(view)?;

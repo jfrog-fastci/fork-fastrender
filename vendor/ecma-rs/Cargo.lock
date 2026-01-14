@@ -2894,6 +2894,7 @@ dependencies = [
  "itoa",
  "libc",
  "parse-js",
+ "rustc-hash",
  "ryu",
  "semantic-js",
  "thiserror",

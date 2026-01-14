@@ -6313,6 +6313,7 @@ impl<'a> Evaluator<'a> {
         .unwrap_or(true);
       let use_mapped_arguments = !self.strict && simple_parameter_list && needs_mapping;
       let mut map_param_index: Vec<bool> = Vec::new();
+      let mut parameter_map: Vec<Option<_>> = Vec::new();
       if use_mapped_arguments {
         // Per spec, when the parameter list contains duplicates, only the last occurrence is
         // mapped. Build a bool table over parameter indices to reflect that.
@@ -6338,6 +6339,17 @@ impl<'a> Evaluator<'a> {
           mapped_names.insert(name);
           map_param_index[idx] = true;
         }
+
+        // Allocate the actual mapping table for the Arguments exotic object.
+        //
+        // Only indices that correspond to real parameters can be mapped. Extra call arguments are
+        // never mapped, and missing arguments are not present as properties on the `arguments`
+        // object.
+        let map_len = func.stx.parameters.len().min(args.len());
+        parameter_map
+          .try_reserve_exact(map_len)
+          .map_err(|_| VmError::OutOfMemory)?;
+        parameter_map.resize(map_len, None);
       }
 
       for (i, v) in args.iter().copied().enumerate() {
@@ -6347,79 +6359,38 @@ impl<'a> Evaluator<'a> {
         let mut idx_scope = scope.reborrow();
         idx_scope.push_root(v)?;
         let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
-        // Root the index string because we may allocate (and GC) while constructing mapped
-        // `arguments` accessors before we use it in `define_property`.
+        // Root the index string because `define_property` can allocate (and trigger GC).
         let key_s = idx_scope.alloc_u32_index_string(i_u32)?;
         idx_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
-        if use_mapped_arguments
-          && i < func.stx.parameters.len()
-          && *map_param_index
-            .get(i)
-            .ok_or(VmError::InvariantViolation(
-              "arguments mapping index out of bounds",
-            ))?
-        {
+        if use_mapped_arguments && i < parameter_map.len() && *map_param_index.get(i).ok_or(
+          VmError::InvariantViolation("arguments mapping index out of bounds"),
+        )? {
           let Pat::Id(id) = &*func.stx.parameters[i].stx.pattern.stx.pat.stx else {
             return Err(VmError::InvariantViolation(
               "simple parameter list contains non-identifier pattern",
             ));
           };
-
-          let getter_call_id = self.vm.arguments_param_map_getter_call_id()?;
-          let setter_call_id = self.vm.arguments_param_map_setter_call_id()?;
-          // Root the function name string because we allocate other strings before passing it into
-          // `alloc_native_function_with_slots_and_env`, which can trigger GC.
-          let name = idx_scope.alloc_string("")?;
-          idx_scope.push_root(Value::String(name))?;
-
-          let param_name_s = idx_scope.alloc_string(id.stx.name.as_str())?;
-          idx_scope.push_root(Value::String(param_name_s))?;
-          let slots = [Value::String(param_name_s)];
-
-          let getter = idx_scope.alloc_native_function_with_slots_and_env(
-            getter_call_id,
-            None,
-            name,
-            0,
-            &slots,
-            Some(env_rec),
-          )?;
-          idx_scope.push_root(Value::Object(getter))?;
-          let setter = idx_scope.alloc_native_function_with_slots_and_env(
-            setter_call_id,
-            None,
-            name,
-            1,
-            &slots,
-            Some(env_rec),
-          )?;
-          idx_scope.push_root(Value::Object(setter))?;
-
-          for func_obj in [getter, setter] {
-            idx_scope
-              .heap_mut()
-              .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
-            idx_scope
-              .heap_mut()
-              .set_function_realm(func_obj, self.env.global_object())?;
+          let sym = idx_scope
+            .heap()
+            .env_find_symbol(env_rec, id.stx.name.as_str())?
+            .ok_or(VmError::InvariantViolation(
+              "arguments mapping missing parameter binding",
+            ))?;
+          if let Some(slot) = parameter_map.get_mut(i) {
+            *slot = Some(sym);
           }
-
-          idx_scope.define_property(
-            args_obj,
-            key,
-            PropertyDescriptor {
-              enumerable: true,
-              configurable: true,
-              kind: PropertyKind::Accessor {
-                get: Value::Object(getter),
-                set: Value::Object(setter),
-              },
-            },
-          )?;
-        } else {
-          idx_scope.define_property(args_obj, key, global_var_desc(v))?;
         }
+
+        // Always define a real data property for indices. Mapped aliasing is implemented by the
+        // Arguments exotic object internal methods, not by per-index accessor closures.
+        idx_scope.define_property(args_obj, key, global_var_desc(v))?;
+      }
+
+      if use_mapped_arguments {
+        scope
+          .heap_mut()
+          .arguments_object_set_parameter_map(args_obj, env_rec, parameter_map)?;
       }
 
       // Strict-mode `arguments` objects have poison-pill `callee`/`caller` accessors.
@@ -9215,6 +9186,11 @@ impl<'a> Evaluator<'a> {
       _ => Err(VmError::Unimplemented("statement type")),
     };
 
+    let err = match res {
+      Ok(completion) => return Ok(completion),
+      Err(err) => err,
+    };
+
     // Treat internal `VmError::Throw*` as a JS throw completion so it is catchable by `try/catch`.
     //
     // This is also the central stack capture point for implicit throws (TDZ errors, TypeErrors,
@@ -9223,36 +9199,51 @@ impl<'a> Evaluator<'a> {
     // Note: some callers (e.g. `Vm::call` after `coerce_error_to_throw`) can surface a
     // `VmError::ThrowWithStack` before we reach this point; in that case we still want the top
     // frame to point at the statement location, not at the internal/native frame boundary.
-    let source = self.env.source();
-    let rel_start = stmt.loc.start_u32().saturating_sub(self.env.prefix_len());
-    let abs_offset = self.env.base_offset().saturating_add(rel_start);
-    let (line, col) = source.line_col(abs_offset);
+    //
+    // Performance: mapping statement spans to `(line, col)` can involve scanning source text for
+    // large scripts. Only do that work for throw-completions, not for the common successful case.
+    let mut cached_stmt_location: Option<(Arc<str>, u32, u32)> = None;
+    let mut stmt_location = || -> (Arc<str>, u32, u32) {
+      if let Some((name, line, col)) = &cached_stmt_location {
+        return (name.clone(), *line, *col);
+      }
+      let source = self.env.source();
+      let rel_start = stmt.loc.start_u32().saturating_sub(self.env.prefix_len());
+      let abs_offset = self.env.base_offset().saturating_add(rel_start);
+      let (line, col) = source.line_col(abs_offset);
+      let name = source.name.clone();
+      cached_stmt_location = Some((name.clone(), line, col));
+      (name, line, col)
+    };
 
-    let update_top_frame = |stack: &mut Vec<StackFrame>| {
+    let mut update_top_frame = |stack: &mut Vec<StackFrame>| {
+      let (name, line, col) = stmt_location();
       if let Some(top) = stack.first_mut() {
-        top.source = source.name.clone();
+        top.source = name;
         top.line = line;
         top.col = col;
       } else {
         stack.push(StackFrame {
           function: None,
-          source: source.name.clone(),
+          source: name,
           line,
           col,
         });
       }
     };
 
-    let thrown_at_stmt = |scope: &mut Scope<'_>, value: Value| {
+    let mut thrown_at_stmt = |scope: &mut Scope<'_>, value: Value| {
       let mut stack = self.vm.capture_stack();
       update_top_frame(&mut stack);
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      if let Some(intr) = self.vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+      }
       Thrown { value, stack }
     };
 
-    match res {
-      Err(VmError::Throw(value)) => Ok(Completion::Throw(thrown_at_stmt(scope, value))),
-      Err(VmError::ThrowWithStack { value, mut stack }) => {
+    match err {
+      VmError::Throw(value) => Ok(Completion::Throw(thrown_at_stmt(scope, value))),
+      VmError::ThrowWithStack { value, mut stack } => {
         // If the stack trace was captured while executing a native builtin, the top frame's
         // location will be `<native>:0:0`. Patch that frame to the current statement location so
         // callers see where the exception was triggered in user code.
@@ -9262,10 +9253,12 @@ impl<'a> Evaluator<'a> {
         if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
           update_top_frame(&mut stack);
         }
-        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+        if let Some(intr) = self.vm.intrinsics() {
+          crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+        }
         Ok(Completion::Throw(Thrown { value, stack }))
       }
-      Err(VmError::TypeError(message)) => {
+      VmError::TypeError(message) => {
         let intr = self
           .vm
           .intrinsics()
@@ -9273,7 +9266,7 @@ impl<'a> Evaluator<'a> {
         let err = new_error(scope, intr.type_error_prototype(), "TypeError", message)?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::RangeError(message)) => {
+      VmError::RangeError(message) => {
         let intr = self
           .vm
           .intrinsics()
@@ -9281,7 +9274,7 @@ impl<'a> Evaluator<'a> {
         let err = new_error(scope, intr.range_error_prototype(), "RangeError", message)?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::PrototypeCycle) => {
+      VmError::PrototypeCycle => {
         let intr = self
           .vm
           .intrinsics()
@@ -9294,7 +9287,7 @@ impl<'a> Evaluator<'a> {
         )?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::PrototypeChainTooDeep) => {
+      VmError::PrototypeChainTooDeep => {
         let intr = self
           .vm
           .intrinsics()
@@ -9307,7 +9300,7 @@ impl<'a> Evaluator<'a> {
         )?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::InvalidPropertyDescriptorPatch) => {
+      VmError::InvalidPropertyDescriptorPatch => {
         let intr = self
           .vm
           .intrinsics()
@@ -9320,7 +9313,7 @@ impl<'a> Evaluator<'a> {
         )?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::NotCallable) => {
+      VmError::NotCallable => {
         let intr = self
           .vm
           .intrinsics()
@@ -9333,7 +9326,7 @@ impl<'a> Evaluator<'a> {
         )?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      Err(VmError::NotConstructable) => {
+      VmError::NotConstructable => {
         let intr = self
           .vm
           .intrinsics()
@@ -9346,7 +9339,7 @@ impl<'a> Evaluator<'a> {
         )?;
         Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
-      other => other,
+      other => Err(other),
     }
   }
 
@@ -11259,7 +11252,9 @@ impl<'a> Evaluator<'a> {
       });
     }
 
-    crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+    if let Some(intr) = self.vm.intrinsics() {
+      crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+    }
     Ok(Completion::Throw(Thrown { value, stack }))
   }
 
@@ -11282,11 +11277,9 @@ impl<'a> Evaluator<'a> {
           Completion::Throw(thrown) => (thrown.value, thrown.stack),
           _ => return Err(VmError::Unimplemented("try/catch missing thrown value")),
         };
-        crate::error_object::attach_stack_property_for_throw(
-          &mut try_scope,
-          thrown_value,
-          &thrown_stack,
-        );
+        if let Some(intr) = self.vm.intrinsics() {
+          crate::error_object::attach_stack_property_for_throw(&mut try_scope, intr, thrown_value, &thrown_stack);
+        }
         result = self.eval_catch(&mut try_scope, &catch.stx, thrown_value)?;
       }
     }
@@ -20103,98 +20096,6 @@ fn async_handle_body_result(
   }
 }
 
-pub(crate) fn arguments_param_map_getter_call(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let env = scope
-    .heap()
-    .get_function_closure_env(callee)?
-    .ok_or(VmError::InvariantViolation(
-      "arguments parameter map getter missing closure env",
-    ))?;
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let name_s = match slots.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::String(s) => s,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "arguments parameter map getter missing parameter name",
-      ))
-    }
-  };
-
-  match scope.heap().env_get_binding_value_by_gc_string(env, name_s) {
-    Ok(v) => Ok(v),
-    // TDZ sentinel from `Heap::env_get_binding_value`.
-    Err(VmError::Throw(Value::Null)) => {
-      let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
-      let msg = crate::fallible_format::try_format_error_message(
-        "Cannot access '",
-        name.as_ref(),
-        "' before initialization",
-      )?;
-      Err(throw_reference_error(vm, scope, &msg)?)
-    }
-    Err(err) => Err(err),
-  }
-}
-
-pub(crate) fn arguments_param_map_setter_call(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let env = scope
-    .heap()
-    .get_function_closure_env(callee)?
-    .ok_or(VmError::InvariantViolation(
-      "arguments parameter map setter missing closure env",
-    ))?;
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let name_s = match slots.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::String(s) => s,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "arguments parameter map setter missing parameter name",
-      ))
-    }
-  };
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-
-  match scope
-    .heap_mut()
-    .env_set_mutable_binding_by_gc_string(env, name_s, value, false)
-  {
-    Ok(()) => Ok(Value::Undefined),
-    // TDZ sentinel from `Heap::env_set_mutable_binding`.
-    Err(VmError::Throw(Value::Null)) => {
-      let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
-      let msg = crate::fallible_format::try_format_error_message(
-        "Cannot access '",
-        name.as_ref(),
-        "' before initialization",
-      )?;
-      Err(throw_reference_error(vm, scope, &msg)?)
-    }
-    // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
-    Err(VmError::Throw(Value::Undefined)) => Err(throw_type_error(
-      vm,
-      scope,
-      "Assignment to constant variable.",
-    )?),
-    Err(err) => Err(err),
-  }
-}
-
 pub(crate) fn async_resume_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -22190,7 +22091,9 @@ fn finalize_thrown_for_stmt(
     patch_stack_top_frame_best_effort(&mut thrown.stack, source.name.clone(), line, col);
   }
 
-  crate::error_object::attach_stack_property_for_throw(scope, thrown.value, &thrown.stack);
+  if let Some(intr) = evaluator.vm.intrinsics() {
+    crate::error_object::attach_stack_property_for_throw(scope, intr, thrown.value, &thrown.stack);
+  }
   thrown
 }
 
@@ -22257,14 +22160,18 @@ fn finalize_throw_with_stack_at_source_offset_best_effort(
     VmError::Throw(value) => {
       let mut stack = vm.capture_stack();
       patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      if let Some(intr) = vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+      }
       VmError::ThrowWithStack { value, stack }
     }
     VmError::ThrowWithStack { value, mut stack } => {
       if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
         patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
       }
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      if let Some(intr) = vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+      }
       VmError::ThrowWithStack { value, stack }
     }
     other => other,
@@ -22320,7 +22227,9 @@ fn finalize_throw_value_for_expr_best_effort(
     patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
   }
 
-  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+  if let Some(intr) = evaluator.vm.intrinsics() {
+    crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+  }
   value
 }
 
@@ -22766,7 +22675,9 @@ fn async_try_after_wrapped(
           ));
         }
       };
-      crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
+      if let Some(intr) = evaluator.vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, thrown_value, &thrown_stack);
+      }
       match async_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
         AsyncEval::Complete(c) => result = c,
         AsyncEval::Suspend(mut suspend) => {
@@ -23013,7 +22924,9 @@ fn async_throw_completion(
     });
   }
 
-  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+  if let Some(intr) = evaluator.vm.intrinsics() {
+    crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+  }
   Completion::Throw(Thrown { value, stack })
 }
 
@@ -41083,7 +40996,9 @@ fn gen_try_after_wrapped(
         Completion::Throw(thrown) => (thrown.value, thrown.stack),
         _ => unreachable!(),
       };
-      crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
+      if let Some(intr) = evaluator.vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, thrown_value, &thrown_stack);
+      }
       match gen_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
         GenEval::Complete(c) => result = c,
         GenEval::Suspend(mut suspend) => {
@@ -43459,7 +43374,9 @@ fn gen_throw_completion(
     });
   }
 
-  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+  if let Some(intr) = evaluator.vm.intrinsics() {
+    crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+  }
   Completion::Throw(Thrown { value, stack })
 }
 

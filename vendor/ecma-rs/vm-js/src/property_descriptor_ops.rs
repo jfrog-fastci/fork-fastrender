@@ -11,29 +11,14 @@ pub fn to_property_descriptor_with_host_and_hooks(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(desc_obj))?;
 
-  let enumerable_s = scope.alloc_string("enumerable")?;
-  scope.push_root(Value::String(enumerable_s))?;
-  let enumerable_key = PropertyKey::from_string(enumerable_s);
-
-  let configurable_s = scope.alloc_string("configurable")?;
-  scope.push_root(Value::String(configurable_s))?;
-  let configurable_key = PropertyKey::from_string(configurable_s);
-
-  let value_s = scope.alloc_string("value")?;
-  scope.push_root(Value::String(value_s))?;
-  let value_key = PropertyKey::from_string(value_s);
-
-  let writable_s = scope.alloc_string("writable")?;
-  scope.push_root(Value::String(writable_s))?;
-  let writable_key = PropertyKey::from_string(writable_s);
-
-  let get_s = scope.alloc_string("get")?;
-  scope.push_root(Value::String(get_s))?;
-  let get_key = PropertyKey::from_string(get_s);
-
-  let set_s = scope.alloc_string("set")?;
-  scope.push_root(Value::String(set_s))?;
-  let set_key = PropertyKey::from_string(set_s);
+  // Use heap-cached property descriptor field name strings. These are treated as GC roots by the
+  // heap and therefore do not need to be re-rooted here.
+  let enumerable_key = PropertyKey::from_string(scope.common_key_enumerable()?);
+  let configurable_key = PropertyKey::from_string(scope.common_key_configurable()?);
+  let value_key = PropertyKey::from_string(scope.common_key_value()?);
+  let writable_key = PropertyKey::from_string(scope.common_key_writable()?);
+  let get_key = PropertyKey::from_string(scope.common_key_get()?);
+  let set_key = PropertyKey::from_string(scope.common_key_set()?);
 
   let mut desc = PropertyDescriptorPatch::default();
 
@@ -199,25 +184,25 @@ pub fn from_property_descriptor(scope: &mut Scope<'_>, desc: PropertyDescriptor)
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
 
-  let enumerable_key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
+  let enumerable_key = PropertyKey::from_string(scope.common_key_enumerable()?);
   scope.create_data_property_or_throw(obj, enumerable_key, Value::Bool(desc.enumerable))?;
 
-  let configurable_key = PropertyKey::from_string(scope.alloc_string("configurable")?);
+  let configurable_key = PropertyKey::from_string(scope.common_key_configurable()?);
   scope.create_data_property_or_throw(obj, configurable_key, Value::Bool(desc.configurable))?;
 
   match desc.kind {
     PropertyKind::Data { value, writable } => {
-      let value_key = PropertyKey::from_string(scope.alloc_string("value")?);
+      let value_key = PropertyKey::from_string(scope.common_key_value()?);
       scope.create_data_property_or_throw(obj, value_key, value)?;
 
-      let writable_key = PropertyKey::from_string(scope.alloc_string("writable")?);
+      let writable_key = PropertyKey::from_string(scope.common_key_writable()?);
       scope.create_data_property_or_throw(obj, writable_key, Value::Bool(writable))?;
     }
     PropertyKind::Accessor { get, set } => {
-      let get_key = PropertyKey::from_string(scope.alloc_string("get")?);
+      let get_key = PropertyKey::from_string(scope.common_key_get()?);
       scope.create_data_property_or_throw(obj, get_key, get)?;
 
-      let set_key = PropertyKey::from_string(scope.alloc_string("set")?);
+      let set_key = PropertyKey::from_string(scope.common_key_set()?);
       scope.create_data_property_or_throw(obj, set_key, set)?;
     }
   }
@@ -256,27 +241,27 @@ pub fn from_property_descriptor_patch(
   }
 
   if let Some(enumerable) = desc.enumerable {
-    let key = PropertyKey::from_string(scope.alloc_string("enumerable")?);
+    let key = PropertyKey::from_string(scope.common_key_enumerable()?);
     scope.create_data_property_or_throw(obj, key, Value::Bool(enumerable))?;
   }
   if let Some(configurable) = desc.configurable {
-    let key = PropertyKey::from_string(scope.alloc_string("configurable")?);
+    let key = PropertyKey::from_string(scope.common_key_configurable()?);
     scope.create_data_property_or_throw(obj, key, Value::Bool(configurable))?;
   }
   if let Some(value) = desc.value {
-    let key = PropertyKey::from_string(scope.alloc_string("value")?);
+    let key = PropertyKey::from_string(scope.common_key_value()?);
     scope.create_data_property_or_throw(obj, key, value)?;
   }
   if let Some(writable) = desc.writable {
-    let key = PropertyKey::from_string(scope.alloc_string("writable")?);
+    let key = PropertyKey::from_string(scope.common_key_writable()?);
     scope.create_data_property_or_throw(obj, key, Value::Bool(writable))?;
   }
   if let Some(get) = desc.get {
-    let key = PropertyKey::from_string(scope.alloc_string("get")?);
+    let key = PropertyKey::from_string(scope.common_key_get()?);
     scope.create_data_property_or_throw(obj, key, get)?;
   }
   if let Some(set) = desc.set {
-    let key = PropertyKey::from_string(scope.alloc_string("set")?);
+    let key = PropertyKey::from_string(scope.common_key_set()?);
     scope.create_data_property_or_throw(obj, key, set)?;
   }
 

@@ -187,3 +187,25 @@ opt-level = 3
 inherits = "release"
 debug = true
 strip = "none"
+
+[profile.dev.package.vm-js]
+# `test262-semantic` runs in the dev profile to keep iteration fast, but `vm-js` is a hot runtime
+# dependency. Leaving it completely unoptimized can cause individual test262 cases to hit the
+# per-test timeout (notably TypedArray/resizable-buffer tests which exercise the harness heavily).
+#
+# Keep most of the workspace in debug mode while lightly optimizing `vm-js` for usable execution
+# speed.
+opt-level = 3
+
+[profile.dev.package.parse-js]
+# Parsing dominates the runtime of many test262 cases because each case includes the harness +
+# helpers. Keep `parse-js` optimized so we don't burn the per-test timeout in the frontend.
+opt-level = 3
+
+[profile.dev.package.semantic-js]
+# `vm-js` builds HIR and runs semantic analysis for each test case; keep the pipeline optimized
+# similarly to `parse-js`.
+opt-level = 3
+
+[profile.dev.package.hir-js]
+opt-level = 3

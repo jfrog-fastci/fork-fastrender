@@ -1231,6 +1231,50 @@ impl<'a> Scope<'a> {
     validate_and_apply_property_descriptor(self, Some(obj), key, extensible, desc, current)
   }
 
+  /// ECMAScript `[[DefineOwnProperty]]` for Arguments exotic objects (mapped `arguments`).
+  ///
+  /// This mirrors `ArgumentsExoticObject.[[DefineOwnProperty]]` (ECMA-262 §10.4.4.2).
+  fn arguments_define_own_property(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<bool, VmError> {
+    // Snapshot whether this key is mapped *before* the definition is applied. If the definition is
+    // rejected, no observable state (including the mapping) must be changed.
+    let index = self.heap().array_index(&key);
+    let mapped = if let Some(idx) = index {
+      self.heap().arguments_object_mapped_symbol(obj, idx)?
+    } else {
+      None
+    };
+
+    let ok = self.ordinary_define_own_property(obj, key, desc)?;
+    if !ok {
+      return Ok(false);
+    }
+
+    let Some((env, sym)) = mapped else {
+      return Ok(true);
+    };
+
+    // If the descriptor includes a new value, propagate it to the mapped parameter binding.
+    if let Some(value) = desc.value {
+      self
+        .heap_mut()
+        .env_set_mutable_symbol_binding(env, sym, value)?;
+    }
+
+    // If the property is redefined as an accessor, or made non-writable, mapping must be broken.
+    if desc.is_accessor_descriptor() || desc.writable == Some(false) {
+      if let Some(idx) = index {
+        self.heap_mut().arguments_object_delete_mapping(obj, idx)?;
+      }
+    }
+
+    Ok(true)
+  }
+
   /// ECMAScript `[[DefineOwnProperty]]`.
   ///
   /// This dispatches to the appropriate exotic object's `[[DefineOwnProperty]]` algorithm.
@@ -1262,6 +1306,8 @@ impl<'a> Scope<'a> {
       self.string_define_own_property_index(obj, key, desc)
     } else if self.heap().is_typed_array_object(obj) {
       self.typed_array_define_own_property(obj, key, desc)
+    } else if self.heap().is_arguments_object(obj) {
+      self.arguments_define_own_property(obj, key, desc)
     } else {
       self.ordinary_define_own_property(obj, key, desc)
     }
@@ -3371,6 +3417,9 @@ impl<'a> Scope<'a> {
                 // - `ToNumber(Symbol)` / `ToNumber(BigInt)` throw for Number typed arrays, and
                 // - `ToBigInt(1)` throws for BigInt typed arrays.
                 //
+                // For BigInt typed arrays, the conversion is `ToBigInt(value)` instead of
+                // `ToNumber(value)`.
+                //
                 // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
                 let kind = scope.heap().typed_array_kind(current)?;
                 let index = if numeric_index.is_finite()
@@ -3574,6 +3623,9 @@ impl<'a> Scope<'a> {
               // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because:
               // - `ToNumber(Symbol)` / `ToNumber(BigInt)` throw for Number typed arrays, and
               // - `ToBigInt(1)` throws for BigInt typed arrays.
+              //
+              // For BigInt typed arrays, the conversion is `ToBigInt(value)` instead of
+              // `ToNumber(value)`.
               //
               // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
               let kind = self.heap().typed_array_kind(obj)?;

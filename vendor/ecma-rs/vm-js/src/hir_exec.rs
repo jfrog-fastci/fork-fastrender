@@ -471,14 +471,18 @@ fn finalize_throw_with_stack_at_source_offset(
     VmError::Throw(value) => {
       let mut stack = vm.capture_stack();
       patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      if let Some(intr) = vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+      }
       VmError::ThrowWithStack { value, stack }
     }
     VmError::ThrowWithStack { value, mut stack } => {
       if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
         patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
       }
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      if let Some(intr) = vm.intrinsics() {
+        crate::error_object::attach_stack_property_for_throw(scope, intr, value, &stack);
+      }
       VmError::ThrowWithStack { value, stack }
     }
     other => other,
