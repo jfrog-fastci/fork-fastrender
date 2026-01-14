@@ -28,9 +28,11 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
   resolve_calc_value: impl Fn(*const (), f32) -> f32,
   axis: AbsoluteAxis,
 ) -> (u16, u16) {
+  const MAX_EXPLICIT_TRACKS: u32 = i16::MAX as u32;
+
   #[inline]
-  fn clamp_u32_to_u16(value: u32) -> u16 {
-    value.min(u16::MAX as u32) as u16
+  fn clamp_u32_to_track_count(value: u32) -> u16 {
+    value.min(MAX_EXPLICIT_TRACKS) as u16
   }
 
   let template = match axis {
@@ -69,7 +71,7 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
       },
     })
     .fold(0u32, |acc, v| acc.saturating_add(v));
-  let non_auto_repeating_track_count = clamp_u32_to_u16(non_auto_repeating_track_count_u32);
+  let non_auto_repeating_track_count = clamp_u32_to_track_count(non_auto_repeating_track_count_u32);
 
   let auto_repetition_count: u16 = template
     .clone()
@@ -109,10 +111,12 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
     })
     .unwrap();
   let repetition_definition_iter = repetition_definition.tracks();
-  let repetition_track_count = repetition_definition_iter.len().min(u16::MAX as usize) as u16;
+  let repetition_track_count = repetition_definition_iter
+    .len()
+    .min(MAX_EXPLICIT_TRACKS as usize) as u16;
 
   // Determine the number of repetitions
-  let num_repetitions: u16 = match auto_fit_container_size {
+  let mut num_repetitions: u16 = match auto_fit_container_size {
     None => 1,
     Some(inner_container_size) => {
       let parent_size = Some(inner_container_size);
@@ -207,9 +211,20 @@ pub(crate) fn compute_explicit_grid_size_in_axis(
     }
   };
 
-  let grid_template_track_count_u32 = (non_auto_repeating_track_count as u32)
-    .saturating_add((repetition_track_count as u32).saturating_mul(num_repetitions as u32));
-  let grid_template_track_count = clamp_u32_to_u16(grid_template_track_count_u32);
+  // Ensure the repetition count respects the same UA-defined track count limit as the overall
+  // computed explicit track count.
+  if repetition_track_count > 0 {
+    let available_for_repeat = MAX_EXPLICIT_TRACKS.saturating_sub(non_auto_repeating_track_count as u32);
+    let max_repetitions = (available_for_repeat / repetition_track_count as u32)
+      .max(1)
+      .min(u16::MAX as u32) as u16;
+    num_repetitions = num_repetitions.min(max_repetitions);
+  }
+
+  let grid_template_track_count_u32 = (non_auto_repeating_track_count as u32).saturating_add(
+    (repetition_track_count as u32).saturating_mul(num_repetitions as u32),
+  );
+  let grid_template_track_count = clamp_u32_to_track_count(grid_template_track_count_u32);
   (num_repetitions, grid_template_track_count)
 }
 
@@ -779,7 +794,7 @@ mod test {
       AbsoluteAxis::Horizontal,
     );
     assert_eq!(auto_col_reps, 0);
-    assert_eq!(col_count, u16::MAX);
+    assert_eq!(col_count, i16::MAX as u16);
   }
 
   #[test]
@@ -798,8 +813,8 @@ mod test {
       |_, _| 42.42,
       AbsoluteAxis::Horizontal,
     );
-    assert_eq!(auto_col_reps, u16::MAX);
-    assert_eq!(col_count, u16::MAX);
+    assert_eq!(auto_col_reps, i16::MAX as u16);
+    assert_eq!(col_count, i16::MAX as u16);
   }
 
   #[test]

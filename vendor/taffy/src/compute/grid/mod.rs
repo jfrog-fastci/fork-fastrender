@@ -1563,8 +1563,14 @@ where
   let mut name_resolver =
     NamedLineResolver::new(&style, col_auto_repetition_count, row_auto_repetition_count);
 
-  let explicit_col_count = grid_template_col_count.max(name_resolver.area_column_count());
-  let explicit_row_count = grid_template_row_count.max(name_resolver.area_row_count());
+  // `OriginZeroLine` coordinates are represented as i16 and grid track vector indices are stored in
+  // `u16` (2 * tracks + 1 for gutters). Clamp explicit track counts so the grid remains representable
+  // and indexing does not wrap.
+  let max_explicit_tracks = i16::MAX as u16;
+  let explicit_col_count =
+    grid_template_col_count.max(name_resolver.area_column_count()).min(max_explicit_tracks);
+  let explicit_row_count =
+    grid_template_row_count.max(name_resolver.area_row_count()).min(max_explicit_tracks);
 
   name_resolver.set_explicit_column_count(explicit_col_count);
   name_resolver.set_explicit_row_count(explicit_row_count);

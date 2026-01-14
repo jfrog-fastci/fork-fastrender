@@ -239,7 +239,11 @@ fn child_min_line_max_line_span<S: CheapCloneStr>(
     (GP::Auto | GP::Span(_), GP::Auto | GP::Span(_)) => {
       let span = oz_line.indefinite_span();
       let implicit_limit = max_implicit_tracks_per_side();
-      let max_span = explicit_track_count.saturating_add(implicit_limit.saturating_mul(2));
+      // OriginZero line coordinates are i16 and GridTrackVec indices are stored in u16, so the total
+      // number of tracks in an axis must not exceed i16::MAX (32767) to remain representable.
+      let max_span = explicit_track_count
+        .saturating_add(implicit_limit.saturating_mul(2))
+        .min(i16::MAX as u16);
       span.min(max_span)
     }
     _ => 1,

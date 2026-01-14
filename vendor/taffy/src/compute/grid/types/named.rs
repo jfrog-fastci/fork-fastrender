@@ -15,6 +15,12 @@ use super::{GridLine, OriginZeroLine};
 // use alloc::fmt::format;
 use crate::sys::{format, single_value_vec, Map, Vec};
 
+// Taffy represents origin-zero grid line coordinates as i16 and stores track-vector indices in u16
+// (2 * tracks + 1 for gutters). Clamp explicit track counts / line indices so they remain
+// representable and avoid integer overflow in hostile inputs.
+const MAX_EXPLICIT_TRACKS: u16 = i16::MAX as u16;
+const MAX_EXPLICIT_LINE_INDEX: u16 = MAX_EXPLICIT_TRACKS + 1;
+
 /// Wrap an `AsRef<str>` type with a type which implements Hash by first
 /// deferring to the underlying `&str`'s implementation of Hash.
 #[derive(Debug, Clone)]
@@ -76,6 +82,7 @@ fn upsert_line_name_map<S: CheapCloneStr>(
   key: S,
   value: u16,
 ) {
+  let value = value.min(MAX_EXPLICIT_LINE_INDEX);
   map
     .entry(StrHasher(key))
     .and_modify(|lines| lines.push(value))
@@ -124,7 +131,11 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     explicit_column_count: u16,
   ) -> Self {
     let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
-    for (idx, names) in row_line_names.iter().enumerate() {
+    for (idx, names) in row_line_names
+      .iter()
+      .enumerate()
+      .take(MAX_EXPLICIT_LINE_INDEX as usize)
+    {
       let line_index = (idx as u16) + 1;
       for name in names {
         upsert_line_name_map(&mut row_lines, name.clone(), line_index);
@@ -132,7 +143,11 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     }
 
     let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
-    for (idx, names) in column_line_names.iter().enumerate() {
+    for (idx, names) in column_line_names
+      .iter()
+      .enumerate()
+      .take(MAX_EXPLICIT_LINE_INDEX as usize)
+    {
       let line_index = (idx as u16) + 1;
       for name in names {
         upsert_line_name_map(&mut column_lines, name.clone(), line_index);
@@ -151,8 +166,8 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     Self {
       area_column_count: 0,
       area_row_count: 0,
-      explicit_column_count,
-      explicit_row_count,
+      explicit_column_count: explicit_column_count.min(MAX_EXPLICIT_TRACKS),
+      explicit_row_count: explicit_row_count.min(MAX_EXPLICIT_TRACKS),
       areas: Map::default(),
       row_lines,
       column_lines,
@@ -189,39 +204,58 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
         upsert_line_name_map(&mut row_lines, row_end_name, area.row_end);
       }
     }
+    area_column_count = area_column_count.min(MAX_EXPLICIT_TRACKS);
+    area_row_count = area_row_count.min(MAX_EXPLICIT_TRACKS);
 
     // ---
 
-    let mut current_line = 0;
+    let max_line_index = MAX_EXPLICIT_LINE_INDEX as u32;
+    let mut current_line: u32 = 0;
     if let Some(mut column_tracks) = style.grid_template_columns() {
       if let Some(column_line_names_iter) = style.grid_template_column_names() {
+        let mut hit_line_limit = false;
         for line_names in column_line_names_iter {
+          if current_line >= max_line_index {
+            break;
+          }
           current_line += 1;
+          let current_line_u16 = current_line as u16;
           for line_name in line_names.into_iter() {
-            column_lines
-              .entry(StrHasher(line_name.clone()))
-              .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
-              .or_insert_with(|| single_value_vec(current_line));
+            upsert_line_name_map(&mut column_lines, line_name.clone(), current_line_u16);
           }
 
           if let Some(GenericGridTemplateComponent::Repeat(repeat)) = column_tracks.next() {
             let repeat_count = match repeat.count() {
               RepetitionCount::Count(count) => count,
               RepetitionCount::AutoFill | RepetitionCount::AutoFit => column_auto_repetitions,
-            };
+            }
+            .min(MAX_EXPLICIT_TRACKS);
 
             for _ in 0..repeat_count {
               for line_name_set in repeat.lines_names() {
+                let current_line_u16 = current_line.min(max_line_index) as u16;
                 for line_name in line_name_set {
-                  upsert_line_name_map(&mut column_lines, line_name.clone(), current_line);
+                  upsert_line_name_map(&mut column_lines, line_name.clone(), current_line_u16);
+                }
+                if current_line >= max_line_index {
+                  hit_line_limit = true;
+                  break;
                 }
                 current_line += 1;
               }
+              if hit_line_limit {
+                break;
+              }
               // Last line name set collapses with following line name set
-              current_line -= 1;
+              current_line = current_line.saturating_sub(1);
             }
-            // Last line name set collapses with following line name set
-            current_line -= 1;
+            if !hit_line_limit {
+              // Last line name set collapses with following line name set
+              current_line = current_line.saturating_sub(1);
+            }
+          }
+          if hit_line_limit {
+            break;
           }
         }
       }
@@ -232,36 +266,52 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       lines.dedup();
     }
 
-    let mut current_line = 0;
+    let mut current_line: u32 = 0;
     if let Some(mut row_tracks) = style.grid_template_rows() {
       if let Some(row_line_names_iter) = style.grid_template_row_names() {
+        let mut hit_line_limit = false;
         for line_names in row_line_names_iter {
+          if current_line >= max_line_index {
+            break;
+          }
           current_line += 1;
+          let current_line_u16 = current_line as u16;
           for line_name in line_names.into_iter() {
-            row_lines
-              .entry(StrHasher(line_name.clone()))
-              .and_modify(|lines: &mut Vec<u16>| lines.push(current_line))
-              .or_insert_with(|| single_value_vec(current_line));
+            upsert_line_name_map(&mut row_lines, line_name.clone(), current_line_u16);
           }
 
           if let Some(GenericGridTemplateComponent::Repeat(repeat)) = row_tracks.next() {
             let repeat_count = match repeat.count() {
               RepetitionCount::Count(count) => count,
               RepetitionCount::AutoFill | RepetitionCount::AutoFit => row_auto_repetitions,
-            };
+            }
+            .min(MAX_EXPLICIT_TRACKS);
 
             for _ in 0..repeat_count {
               for line_name_set in repeat.lines_names() {
+                let current_line_u16 = current_line.min(max_line_index) as u16;
                 for line_name in line_name_set {
-                  upsert_line_name_map(&mut row_lines, line_name.clone(), current_line);
+                  upsert_line_name_map(&mut row_lines, line_name.clone(), current_line_u16);
+                }
+                if current_line >= max_line_index {
+                  hit_line_limit = true;
+                  break;
                 }
                 current_line += 1;
               }
+              if hit_line_limit {
+                break;
+              }
               // Last line name set collapses with following line name set
-              current_line -= 1;
+              current_line = current_line.saturating_sub(1);
             }
-            // Last line name set collapses with following line name set
-            current_line -= 1;
+            if !hit_line_limit {
+              // Last line name set collapses with following line name set
+              current_line = current_line.saturating_sub(1);
+            }
+          }
+          if hit_line_limit {
+            break;
           }
         }
       }
@@ -598,12 +648,12 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
 
   /// Set the number of columns in the explicit grid
   pub(crate) fn set_explicit_column_count(&mut self, count: u16) {
-    self.explicit_column_count = count;
+    self.explicit_column_count = count.min(MAX_EXPLICIT_TRACKS);
   }
 
   /// Set the number of rows in the explicit grid
   pub(crate) fn set_explicit_row_count(&mut self, count: u16) {
-    self.explicit_row_count = count;
+    self.explicit_row_count = count.min(MAX_EXPLICIT_TRACKS);
   }
 
   pub(crate) fn expanded_row_line_names(&self) -> Vec<Vec<S>> {
