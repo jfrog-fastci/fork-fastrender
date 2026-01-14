@@ -1164,7 +1164,9 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     if expr_is_direct_await_without_nested_await(expr) {
       return true;
     }
-    allow_assignment && expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+    allow_assignment
+      && (expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+        || expr_is_logical_assignment_with_direct_await_rhs_without_nested_await(expr))
   }
 
   fn for_triple_stmt_supported(for_stmt: &Node<ForTripleStmt>) -> bool {

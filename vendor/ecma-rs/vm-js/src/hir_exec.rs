@@ -14805,11 +14805,17 @@ impl ForTripleAwaitState {
                           | hir_js::AssignOp::BitAndAssign
                           | hir_js::AssignOp::BitXorAssign
                       );
-                      if *op == hir_js::AssignOp::Assign || compound_op {
+                      let logical_op = matches!(
+                        op,
+                        hir_js::AssignOp::LogicalAndAssign
+                          | hir_js::AssignOp::LogicalOrAssign
+                          | hir_js::AssignOp::NullishAssign
+                      );
+                      if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
                         let rhs = evaluator.get_expr(body, *value)?;
                         if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-                          // Budget once for the init expression and once for the await expression node.
-                          evaluator.vm.tick()?;
+                          // Budget once for the init expression itself. We'll only budget the `await`
+                          // node when we actually evaluate it (logical assignment can short-circuit).
                           evaluator.vm.tick()?;
 
                           let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
@@ -14825,6 +14831,26 @@ impl ForTripleAwaitState {
                             await_scope.push_root(left)?;
                             left_root = Some(await_scope.heap_mut().add_root(left)?);
                           }
+
+                          if logical_op {
+                            let left =
+                              evaluator.get_value_from_assignment_reference(&mut await_scope, &reference)?;
+                            let should_assign = match *op {
+                              hir_js::AssignOp::LogicalAndAssign => await_scope.heap().to_boolean(left)?,
+                              hir_js::AssignOp::LogicalOrAssign => !await_scope.heap().to_boolean(left)?,
+                              hir_js::AssignOp::NullishAssign => matches!(left, Value::Null | Value::Undefined),
+                              _ => unreachable!(),
+                            };
+                            if !should_assign {
+                              // Short-circuit: do not evaluate the awaited operand.
+                              self.stage = ForTripleAwaitStage::Test;
+                              continue;
+                            }
+                          }
+
+                          // Budget once for the await expression node (the awaited subexpression itself
+                          // is budgeted by `eval_expr`).
+                          evaluator.vm.tick()?;
 
                           let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
                             Ok(v) => v,
@@ -15186,11 +15212,17 @@ impl ForTripleAwaitState {
                       | hir_js::AssignOp::BitAndAssign
                       | hir_js::AssignOp::BitXorAssign
                   );
-                  if *op == hir_js::AssignOp::Assign || compound_op {
+                  let logical_op = matches!(
+                    op,
+                    hir_js::AssignOp::LogicalAndAssign
+                      | hir_js::AssignOp::LogicalOrAssign
+                      | hir_js::AssignOp::NullishAssign
+                  );
+                  if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
                     let rhs = evaluator.get_expr(body, *value)?;
                     if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-                      // Budget once for the update expression and once for the await expression node.
-                      evaluator.vm.tick()?;
+                      // Budget once for the update expression itself. We'll only budget the `await`
+                      // node when we actually evaluate it (logical assignment can short-circuit).
                       evaluator.vm.tick()?;
 
                       let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
@@ -15206,6 +15238,26 @@ impl ForTripleAwaitState {
                         await_scope.push_root(left)?;
                         left_root = Some(await_scope.heap_mut().add_root(left)?);
                       }
+
+                      if logical_op {
+                        let left =
+                          evaluator.get_value_from_assignment_reference(&mut await_scope, &reference)?;
+                        let should_assign = match *op {
+                          hir_js::AssignOp::LogicalAndAssign => await_scope.heap().to_boolean(left)?,
+                          hir_js::AssignOp::LogicalOrAssign => !await_scope.heap().to_boolean(left)?,
+                          hir_js::AssignOp::NullishAssign => matches!(left, Value::Null | Value::Undefined),
+                          _ => unreachable!(),
+                        };
+                        if !should_assign {
+                          // Short-circuit: do not evaluate the awaited operand.
+                          self.stage = ForTripleAwaitStage::Test;
+                          continue;
+                        }
+                      }
+
+                      // Budget once for the await expression node (the awaited subexpression itself is
+                      // budgeted by `eval_expr`).
+                      evaluator.vm.tick()?;
 
                       let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
                         Ok(v) => v,
@@ -16691,7 +16743,13 @@ impl HirAsyncState {
                     | hir_js::AssignOp::BitAndAssign
                     | hir_js::AssignOp::BitXorAssign
                 );
-                if *op == hir_js::AssignOp::Assign || compound_op {
+                let logical_op = matches!(
+                  op,
+                  hir_js::AssignOp::LogicalAndAssign
+                    | hir_js::AssignOp::LogicalOrAssign
+                    | hir_js::AssignOp::NullishAssign
+                );
+                if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
                   let rhs = evaluator.get_expr(body, *value)?;
                   if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
                     has_await = true;
@@ -16745,7 +16803,13 @@ impl HirAsyncState {
                   | hir_js::AssignOp::BitAndAssign
                   | hir_js::AssignOp::BitXorAssign
               );
-              if *op == hir_js::AssignOp::Assign || compound_op {
+              let logical_op = matches!(
+                op,
+                hir_js::AssignOp::LogicalAndAssign
+                  | hir_js::AssignOp::LogicalOrAssign
+                  | hir_js::AssignOp::NullishAssign
+              );
+              if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
                 let rhs = evaluator.get_expr(body, *value)?;
                 if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
                   has_await = true;
