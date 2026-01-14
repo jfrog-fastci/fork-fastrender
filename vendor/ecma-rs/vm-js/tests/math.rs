@@ -313,6 +313,236 @@ fn clz32_and_imul_match_spec_int32_semantics() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn trunc_preserves_signed_zero_and_infinities() -> Result<(), VmError> {
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let trunc = get_data_property(&mut scope, math, "trunc")?.unwrap();
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(-0.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.trunc did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  // (-1, 0) truncation should produce -0 (test262: built-ins/Math/trunc/S15.8.2.20_A1.js).
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(-0.1)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.trunc did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(0.1)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.trunc did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(f64::INFINITY)],
+  )?;
+  assert_eq!(out, Value::Number(f64::INFINITY));
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(f64::NEG_INFINITY)],
+  )?;
+  assert_eq!(out, Value::Number(f64::NEG_INFINITY));
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    trunc,
+    Value::Object(math),
+    &[Value::Number(f64::NAN)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.trunc did not return number"));
+  };
+  assert!(n.is_nan());
+
+  Ok(())
+}
+
+#[test]
+fn fround_preserves_signed_zero_and_rounds_ties_to_even() -> Result<(), VmError> {
+  // test262: built-ins/Math/fround/S15.8.2.16_A1.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let fround = get_data_property(&mut scope, math, "fround")?.unwrap();
+
+  // Preserve negative zero.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    fround,
+    Value::Object(math),
+    &[Value::Number(-0.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.fround did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  // Underflow tie: 0.5 * minSubnormal(float32) must round to +0/-0 (ties-to-even).
+  let half_min_subnormal = (f32::from_bits(1) as f64) / 2.0;
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    fround,
+    Value::Object(math),
+    &[Value::Number(half_min_subnormal)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.fround did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    fround,
+    Value::Object(math),
+    &[Value::Number(-half_min_subnormal)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.fround did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  Ok(())
+}
+
+#[test]
+fn pow_handles_signed_zero_and_nan_exponentiation_edges() -> Result<(), VmError> {
+  // test262: built-ins/Math/pow/…
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let pow = get_data_property(&mut scope, math, "pow")?.unwrap();
+
+  // (-0) ** odd integer => -0.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(3.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.pow did not return number"));
+  };
+  assert_is_neg_zero(n);
+
+  // (-0) ** even integer => +0.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(2.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.pow did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  // (-0) ** negative odd integer => -Infinity.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(-3.0)],
+  )?;
+  assert_eq!(out, Value::Number(f64::NEG_INFINITY));
+
+  // (-0) ** negative even integer => +Infinity.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(-2.0)],
+  )?;
+  assert_eq!(out, Value::Number(f64::INFINITY));
+
+  // NaN ** ±0 => 1.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(f64::NAN), Value::Number(0.0)],
+  )?;
+  assert_eq!(out, Value::Number(1.0));
+
+  // |base| == 1 and exponent is ±Infinity => NaN.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    pow,
+    Value::Object(math),
+    &[Value::Number(-1.0), Value::Number(f64::INFINITY)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.pow did not return number"));
+  };
+  assert!(n.is_nan());
+
+  Ok(())
+}
+
+#[test]
+fn atan2_quadrants_for_signed_zero_match_spec() -> Result<(), VmError> {
+  // test262: built-ins/Math/atan2/S15.8.2.5_A8.js / A9.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let atan2 = get_data_property(&mut scope, math, "atan2")?.unwrap();
+
+  // atan2(+0, -0) === +PI.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    atan2,
+    Value::Object(math),
+    &[Value::Number(0.0), Value::Number(-0.0)],
+  )?;
+  assert_eq!(out, Value::Number(std::f64::consts::PI));
+
+  // atan2(-0, -0) === -PI.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    atan2,
+    Value::Object(math),
+    &[Value::Number(-0.0), Value::Number(-0.0)],
+  )?;
+  assert_eq!(out, Value::Number(-std::f64::consts::PI));
+
+  Ok(())
+}
+
 fn xorshift64star_next(state: &mut u64) -> u64 {
   if *state == 0 {
     *state = 0x243F_6A88_85A3_08D3;
