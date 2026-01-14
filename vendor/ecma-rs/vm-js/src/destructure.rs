@@ -1,7 +1,7 @@
 use crate::exec::{eval_expr, eval_expr_named, ResolvedBinding, RuntimeEnv};
 use crate::function::CallHandler;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
-use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, GcSymbol, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
 use parse_js::ast::expr::{ComputedMemberExpr, Expr, MemberExpr};
@@ -463,6 +463,129 @@ pub(crate) fn maybe_set_anonymous_function_name(
   Ok(())
 }
 
+pub(crate) fn maybe_set_anonymous_function_name_for_property_key(
+  scope: &mut Scope<'_>,
+  value: Value,
+  name: PropertyKey,
+) -> Result<(), VmError> {
+  let Value::Object(func_obj) = value else {
+    return Ok(());
+  };
+
+  // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
+  // they are not function objects and should not have their `name` mutated.
+  let is_native_non_constructable = match scope.heap().get_function(func_obj) {
+    Ok(f) => matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
+    Err(VmError::NotCallable) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  if is_native_non_constructable {
+    return Ok(());
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func_obj))?;
+
+  // Root the `"name"` key and inferred name key across `HasOwnProperty` + `SetFunctionName`, which
+  // can allocate.
+  let name_key_s = scope.common_key_name()?;
+  scope.push_root(Value::String(name_key_s))?;
+
+  // Spec-ish gating: only overwrite the default empty `"name"` property.
+  if let Some(existing) = scope
+    .heap()
+    .object_get_own_property(func_obj, &PropertyKey::String(name_key_s))?
+  {
+    let is_default_empty_name = match existing {
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(s),
+          writable: false,
+        },
+      } => scope.heap().get_string(s)?.as_code_units().is_empty(),
+      _ => false,
+    };
+    if !is_default_empty_name {
+      return Ok(());
+    }
+  }
+
+  root_property_key(&mut scope, name)?;
+  crate::function_properties::set_function_name(&mut scope, func_obj, name, None)?;
+  Ok(())
+}
+
+fn assign_to_private_member(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  base: Value,
+  sym: GcSymbol,
+  name: &str,
+  value: Value,
+) -> Result<(), VmError> {
+  let Value::Object(obj) = base else {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      "Cannot write private member to non-object",
+    )?);
+  };
+
+  let key = PropertyKey::from_symbol(sym);
+  let desc = if scope.heap().is_proxy_object(obj) {
+    scope.heap().proxy_internal_get_own_property(obj, &key)?
+  } else {
+    scope.heap().get_own_property(obj, key)?
+  };
+  let Some(desc) = desc else {
+    // Brand check failure.
+    let msg =
+      crate::fallible_format::try_format_error_message("Cannot write private member ", name, "")?;
+    return Err(throw_type_error(vm, scope, &msg)?);
+  };
+
+  match desc.kind {
+    PropertyKind::Data { writable, .. } => {
+      if !writable {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          "Cannot assign to read-only private member",
+        )?);
+      }
+      let mut set_scope = scope.reborrow();
+      set_scope.push_root(value)?;
+      if set_scope.heap().is_proxy_object(obj) {
+        set_scope
+          .heap_mut()
+          .proxy_internal_set_existing_data_property_value(obj, &key, value)?;
+      } else {
+        set_scope
+          .heap_mut()
+          .object_set_existing_data_property_value(obj, &key, value)?;
+      }
+      Ok(())
+    }
+    PropertyKind::Accessor { set, .. } => {
+      if set == Value::Undefined {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          "Cannot set private member (no setter)",
+        )?);
+      }
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[set, base, value])?;
+      vm.call_with_host_and_hooks(host, &mut call_scope, hooks, set, base, &[value])
+        .map(|_| ())
+    }
+  }
+}
+
 fn bind_object_pattern(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -533,6 +656,7 @@ fn bind_object_pattern(
     enum PropertyAssignmentTarget<'a> {
       Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
+      PrivateMember { base: Value, sym: GcSymbol, name: &'a str },
       ComputedMember { base: Value, key_value: Value },
       SuperMember {
         super_base: Option<GcObject>,
@@ -569,6 +693,11 @@ fn bind_object_pattern(
                 }
 
                 if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                  if member.stx.right.starts_with('#') {
+                    return Err(VmError::InvariantViolation(
+                      "super private member access is not valid (early errors should prevent this)",
+                    ));
+                  }
                   // `GetThisBinding` (and derived-constructor initialization checks) must happen
                   // before evaluating the source property (`GetV`).
                   let _ = get_super_receiver(
@@ -607,6 +736,17 @@ fn bind_object_pattern(
                   &member.stx.left,
                 )?;
                 let base = prop_scope.push_root(base)?;
+                if member.stx.right.starts_with('#') {
+                  let sym = prop_scope
+                    .heap()
+                    .resolve_private_name_symbol(env.lexical_env(), &member.stx.right)?
+                    .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+                  return Ok(Some(PropertyAssignmentTarget::PrivateMember {
+                    base,
+                    sym,
+                    name: &member.stx.right,
+                  }));
+                }
                 Ok(Some(PropertyAssignmentTarget::Member {
                   base,
                   key: &member.stx.right,
@@ -809,10 +949,14 @@ fn bind_object_pattern(
           env.set_resolved_binding(vm, host, hooks, &mut prop_scope, binding, prop_value, strict)
         }
         PropertyAssignmentTarget::Member { base, key } => {
+          maybe_set_anonymous_function_name(&mut prop_scope, prop_value, key)?;
           let key_s = prop_scope.alloc_string(key)?;
           prop_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
           assign_to_property_key(vm, host, hooks, &mut prop_scope, base, key, prop_value, strict)
+        }
+        PropertyAssignmentTarget::PrivateMember { base, sym, name } => {
+          assign_to_private_member(vm, host, hooks, &mut prop_scope, base, sym, name, prop_value)
         }
         PropertyAssignmentTarget::ComputedMember { base, key_value } => {
           let key = match prop_scope.to_property_key(vm, host, hooks, key_value) {
@@ -827,6 +971,7 @@ fn bind_object_pattern(
             Err(err) => return Err(err),
           };
           root_property_key(&mut prop_scope, key)?;
+          maybe_set_anonymous_function_name_for_property_key(&mut prop_scope, prop_value, key)?;
           assign_to_property_key(vm, host, hooks, &mut prop_scope, base, key, prop_value, strict)
         }
         PropertyAssignmentTarget::SuperMember { super_base, key } => assign_to_super_member(
@@ -893,6 +1038,7 @@ fn bind_object_pattern(
   enum RestAssignmentTarget<'a> {
     Binding(ResolvedBinding<'a>),
     Member { base: Value, key: &'a str },
+    PrivateMember { base: Value, sym: GcSymbol, name: &'a str },
     ComputedMember { base: Value, key_value: Value },
     SuperMember {
       super_base: Option<GcObject>,
@@ -926,6 +1072,11 @@ fn bind_object_pattern(
               }
 
               if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                if member.stx.right.starts_with('#') {
+                  return Err(VmError::InvariantViolation(
+                    "super private member access is not valid (early errors should prevent this)",
+                  ));
+                }
                 // `GetThisBinding` (and derived-constructor initialization checks) must happen
                 // before copying the rest properties (`CopyDataProperties`).
                 let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
@@ -958,6 +1109,17 @@ fn bind_object_pattern(
                 &member.stx.left,
               )?;
               let base = scope.push_root(base)?;
+              if member.stx.right.starts_with('#') {
+                let sym = scope
+                  .heap()
+                  .resolve_private_name_symbol(env.lexical_env(), &member.stx.right)?
+                  .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+                return Ok(Some(RestAssignmentTarget::PrivateMember {
+                  base,
+                  sym,
+                  name: &member.stx.right,
+                }));
+              }
               Ok(Some(RestAssignmentTarget::Member {
                 base,
                 key: &member.stx.right,
@@ -1070,6 +1232,16 @@ fn bind_object_pattern(
         let key = PropertyKey::from_string(key_s);
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_obj), strict)
       }
+      RestAssignmentTarget::PrivateMember { base, sym, name } => assign_to_private_member(
+        vm,
+        host,
+        hooks,
+        scope,
+        base,
+        sym,
+        name,
+        Value::Object(rest_obj),
+      ),
       RestAssignmentTarget::ComputedMember { base, key_value } => {
         let key = match scope.to_property_key(vm, host, hooks, key_value) {
           Ok(key) => key,
@@ -1203,6 +1375,7 @@ fn bind_array_pattern(
     enum ElementAssignmentTarget<'a> {
       Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
+      PrivateMember { base: Value, sym: GcSymbol, name: &'a str },
       ComputedMember { base: Value, key_value: Value },
       SuperMember {
         super_base: Option<GcObject>,
@@ -1251,6 +1424,11 @@ fn bind_array_pattern(
                 }
 
                 if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                  if member.stx.right.starts_with('#') {
+                    return Err(VmError::InvariantViolation(
+                      "super private member access is not valid (early errors should prevent this)",
+                    ));
+                  }
                   // `GetThisBinding` (and derived-constructor initialization checks) must happen
                   // before advancing the iterator.
                   let _ = get_super_receiver(
@@ -1289,6 +1467,17 @@ fn bind_array_pattern(
                   &member.stx.left,
                 )?;
                 let base = elem_scope.push_root(base)?;
+                if member.stx.right.starts_with('#') {
+                  let sym = elem_scope
+                    .heap()
+                    .resolve_private_name_symbol(env.lexical_env(), &member.stx.right)?
+                    .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+                  return Ok(Some(ElementAssignmentTarget::PrivateMember {
+                    base,
+                    sym,
+                    name: &member.stx.right,
+                  }));
+                }
                 Ok(Some(ElementAssignmentTarget::Member {
                   base,
                   key: &member.stx.right,
@@ -1539,6 +1728,9 @@ fn bind_array_pattern(
           env.set_resolved_binding(vm, host, hooks, &mut elem_scope, binding, item, strict)
         }
         ElementAssignmentTarget::Member { base, key } => {
+          if let Err(err) = maybe_set_anonymous_function_name(&mut elem_scope, item, key) {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          }
           let key_s = match elem_scope.alloc_string(key) {
             Ok(s) => s,
             Err(err) => {
@@ -1550,6 +1742,9 @@ fn bind_array_pattern(
           }
           let key = PropertyKey::from_string(key_s);
           assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
+        }
+        ElementAssignmentTarget::PrivateMember { base, sym, name } => {
+          assign_to_private_member(vm, host, hooks, &mut elem_scope, base, sym, name, item)
         }
         ElementAssignmentTarget::ComputedMember { base, key_value } => {
           let key = match elem_scope.to_property_key(vm, host, hooks, key_value) {
@@ -1573,6 +1768,11 @@ fn bind_array_pattern(
             }
           };
           if let Err(err) = root_property_key(&mut elem_scope, key) {
+            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          }
+          if let Err(err) =
+            maybe_set_anonymous_function_name_for_property_key(&mut elem_scope, item, key)
+          {
             return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
           }
           assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
@@ -1659,6 +1859,7 @@ fn bind_array_pattern(
   enum RestAssignmentTarget<'a> {
     Binding(ResolvedBinding<'a>),
     Member { base: Value, key: &'a str },
+    PrivateMember { base: Value, sym: GcSymbol, name: &'a str },
     ComputedMember { base: Value, key_value: Value },
     SuperMember {
       super_base: Option<GcObject>,
@@ -1696,6 +1897,11 @@ fn bind_array_pattern(
               }
 
               if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                if member.stx.right.starts_with('#') {
+                  return Err(VmError::InvariantViolation(
+                    "super private member access is not valid (early errors should prevent this)",
+                  ));
+                }
                 // `GetThisBinding` (and derived-constructor initialization checks) must happen
                 // before consuming the rest of the iterator.
                 let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
@@ -1728,6 +1934,17 @@ fn bind_array_pattern(
                 &member.stx.left,
               )?;
               let base = scope.push_root(base)?;
+              if member.stx.right.starts_with('#') {
+                let sym = scope
+                  .heap()
+                  .resolve_private_name_symbol(env.lexical_env(), &member.stx.right)?
+                  .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+                return Ok(Some(RestAssignmentTarget::PrivateMember {
+                  base,
+                  sym,
+                  name: &member.stx.right,
+                }));
+              }
               Ok(Some(RestAssignmentTarget::Member {
                 base,
                 key: &member.stx.right,
@@ -1886,6 +2103,9 @@ fn bind_array_pattern(
         }
         let key = PropertyKey::from_string(key_s);
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
+      }
+      RestAssignmentTarget::PrivateMember { base, sym, name } => {
+        assign_to_private_member(vm, host, hooks, scope, base, sym, name, Value::Object(rest_arr))
       }
       RestAssignmentTarget::ComputedMember { base, key_value } => {
         let key = match scope.to_property_key(vm, host, hooks, key_value) {
@@ -2200,6 +2420,11 @@ fn assign_to_member(
   }
 
   if matches!(&*member.left.stx, Expr::Super(_)) {
+    if member.right.starts_with('#') {
+      return Err(VmError::InvariantViolation(
+        "super private member access is not valid (early errors should prevent this)",
+      ));
+    }
     // `GetThisBinding` must happen before evaluating the property set (derived constructors throw
     // before any observable side effects).
     let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
@@ -2245,6 +2470,14 @@ fn assign_to_member(
   )?;
   // Root the base value across property-key allocation and `ToObject(base)` boxing.
   let base = rhs_scope.push_root(base)?;
+
+  if member.right.starts_with('#') {
+    let sym = rhs_scope
+      .heap()
+      .resolve_private_name_symbol(env.lexical_env(), &member.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    return assign_to_private_member(vm, host, hooks, &mut rhs_scope, base, sym, &member.right, value);
+  }
 
   let key_s = rhs_scope.alloc_string(&member.right)?;
   let key = PropertyKey::from_string(key_s);

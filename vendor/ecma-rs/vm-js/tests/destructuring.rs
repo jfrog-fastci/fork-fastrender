@@ -95,6 +95,72 @@ fn destructuring_assignment_infers_anonymous_function_name_for_computed_member_t
 }
 
 #[test]
+fn destructuring_assignment_to_private_member_assigns_private_field() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          class C {
+            #x = 0;
+            m() {
+              ({ a: this.#x } = { a: 7 });
+              return this.#x;
+            }
+          }
+          return new C().m() === 7;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_assignment_rest_to_private_member_assigns_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          class C {
+            #o = null;
+            m() {
+              ({ ...this.#o } = { a: 1, b: 2 });
+              return this.#o.a === 1 && this.#o.b === 2;
+            }
+          }
+          return new C().m();
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_destructuring_assignment_to_private_member_assigns_private_field() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          class C {
+            #x = 0;
+            m() {
+              [this.#x] = [9];
+              return this.#x;
+            }
+          }
+          return new C().m() === 9;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_destructuring_supports_rest() {
   let mut rt = new_runtime();
   let value = rt
