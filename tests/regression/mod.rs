@@ -19,6 +19,7 @@ mod content_visibility_nested_offset;
 mod content_visibility_vertical_writing_mode;
 mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
+mod form_control_text_input_nowrap_legacy;
 mod inline_abspos_padding_edge;
 mod pages;
 mod rayon_global_thread_pool;
