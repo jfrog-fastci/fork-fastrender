@@ -3586,6 +3586,7 @@ const RESIZE_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 //
 // Spec: https://dom.spec.whatwg.org/#traversal
 const TRAVERSAL_IS_ACTIVE_KEY: &str = "__fastrender_traversal_is_active";
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const TREE_WALKER_BRAND_KEY: &str = "__fastrender_tree_walker";
 const TREE_WALKER_ROOT_KEY: &str = "__fastrender_tree_walker_root";
 const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_node";
