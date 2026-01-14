@@ -11585,6 +11585,19 @@ frame={idx} repaint_after={:?}\n",
         "expected AccessKit name {expected:?} in tab context menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
       );
     }
+
+    // Frame 4: Escape should close the menu and restore focus to the invoking tab.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      app.chrome.open_tab_context_menu.is_none(),
+      "expected tab context menu to be closed after Escape"
+    );
+    assert!(
+      ctx.memory(|mem| mem.has_focus(tab_id)),
+      "expected focus to be restored to invoking tab after Escape"
+    );
   }
 
   #[test]
