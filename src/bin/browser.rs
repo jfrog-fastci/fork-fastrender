@@ -24127,8 +24127,6 @@ impl App {
       return false;
     };
 
-    let (events, primary_down) = ctx.input(|i| (i.events.clone(), i.pointer.primary_down()));
-
     let mut session_dirty = false;
     let mut action_urls: Vec<fastrender::ui::ChromeActionUrl> = Vec::new();
     egui::TopBottomPanel::top("renderer_chrome_tab_strip")
@@ -24154,44 +24152,49 @@ impl App {
         let mapping = fastrender::ui::InputMapping::new(rect, viewport_css);
 
         let mut outputs: Vec<fastrender::ui::chrome_frame::ChromeFrameOutput> = Vec::new();
-        for event in &events {
-          match event {
-            egui::Event::PointerButton {
-              pos,
-              button: egui::PointerButton::Primary,
-              pressed: true,
-              ..
-            } => {
-              if rect.contains(*pos) {
-                if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
-                  outputs.extend(doc.pointer_down(fastrender::ui::PointerButton::Primary, pos_css));
+        let primary_down = ui.input(|i| {
+          for event in &i.events {
+            match event {
+              egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                ..
+              } => {
+                if rect.contains(*pos) {
+                  if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
+                    outputs
+                      .extend(doc.pointer_down(fastrender::ui::PointerButton::Primary, pos_css));
+                  }
                 }
               }
-            }
-            egui::Event::PointerButton {
-              pos,
-              button: egui::PointerButton::Primary,
-              pressed: false,
-              ..
-            } => {
-              let pos_css = if rect.contains(*pos) {
-                mapping.pos_points_to_pos_css_clamped(*pos)
-              } else {
-                None
-              };
-              outputs.extend(doc.pointer_up(fastrender::ui::PointerButton::Primary, pos_css));
-            }
-            egui::Event::PointerMoved(pos) => {
-              if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
-                outputs.extend(doc.pointer_move(pos_css));
+              egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                ..
+              } => {
+                let pos_css = if rect.contains(*pos) {
+                  mapping.pos_points_to_pos_css_clamped(*pos)
+                } else {
+                  None
+                };
+                outputs.extend(doc.pointer_up(fastrender::ui::PointerButton::Primary, pos_css));
               }
+              egui::Event::PointerMoved(pos) => {
+                if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
+                  outputs.extend(doc.pointer_move(pos_css));
+                }
+              }
+              egui::Event::PointerGone => {
+                doc.cancel_drag();
+              }
+              _ => {}
             }
-            egui::Event::PointerGone => {
-              doc.cancel_drag();
-            }
-            _ => {}
           }
-        }
+
+          i.pointer.primary_down()
+        });
 
         // Ensure we don't keep drag state alive if egui loses track of the pointer/button state.
         if !primary_down {
