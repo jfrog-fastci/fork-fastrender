@@ -28,6 +28,58 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_ecma() {
 }
 
 #[test]
+fn arguments_identifier_reference_is_syntax_error_in_class_static_block_label_ecma() {
+  let src = r#"
+    class C {
+      static {
+        arguments: while (false) {}
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let err = parser
+    .parse_top_level()
+    .expect_err("parse unexpectedly succeeded");
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax(
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
+    )
+  );
+  assert_eq!(err.actual_token, None);
+}
+
+#[test]
+fn arguments_identifier_reference_is_syntax_error_in_class_static_block_object_shorthand_ecma() {
+  let src = r#"
+    class C {
+      static {
+        ({ arguments });
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let err = parser
+    .parse_top_level()
+    .expect_err("parse unexpectedly succeeded");
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax(
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
+    )
+  );
+  assert_eq!(err.actual_token, None);
+}
+
+#[test]
 fn arguments_identifier_reference_is_allowed_in_class_static_block_ts() {
   let src = r#"
     class C {
