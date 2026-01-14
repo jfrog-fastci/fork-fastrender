@@ -658,6 +658,45 @@ fn for_statement_head_let_destructuring_decl_conflicts_with_body_var_is_syntax_e
 }
 
 #[test]
+fn for_of_head_const_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (const x of [1]) { var x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_of_head_let_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (let x of [1]) { var x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_in_head_const_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (const x in { a: 1 }) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_in_head_let_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (let x in { a: 1 }) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_of_head_duplicate_destructuring_bound_names_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (let [a, a] of [[1,2]]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn async_function_param_name_conflicts_with_body_lexical_decl_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
