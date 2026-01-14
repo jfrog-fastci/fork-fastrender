@@ -181,6 +181,11 @@ status = "xfail"
 reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
 
 [[expectations]]
+id = "dom/traversal_template_inert.window.js"
+status = "xfail"
+reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
+
+[[expectations]]
 id = "dom/treewalker_methods.window.js"
 status = "xfail"
 reason = "TreeWalker traversal algorithms (navigation + filtering) not implemented yet"
