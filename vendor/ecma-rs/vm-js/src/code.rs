@@ -1185,6 +1185,79 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     has_await
   }
 
+  fn expr_is_object_destructuring_assignment_with_supported_await(expr: &Node<Expr>) -> bool {
+    // Supported shape:
+    //   `({ <object-pattern> } = <rhs>);`
+    //
+    // where any `await` appears only in:
+    // - computed keys (`{ [await p]: x }`), or
+    // - default values (`{ x = await p }`),
+    //
+    // and in both cases the `await` must be a direct `await <expr>` with no nested `await` inside
+    // `<expr>`.
+    //
+    // The object pattern must be "simple" (no rest, no nested patterns in property targets) so it
+    // can execute via the compiled async evaluator's `AsyncDestructuringAssignState`.
+    let Expr::Binary(binary) = &*expr.stx else {
+      return false;
+    };
+    if binary.stx.operator != OperatorName::Assignment {
+      return false;
+    }
+    // RHS is evaluated before destructuring and must be synchronous (no await).
+    if expr_contains_await(&binary.stx.right) {
+      return false;
+    }
+
+    let Expr::ObjPat(obj_pat) = &*binary.stx.left.stx else {
+      return false;
+    };
+    if obj_pat.stx.rest.is_some() {
+      // `AsyncDestructuringAssignState` does not support object rest patterns.
+      return false;
+    }
+
+    for prop in obj_pat.stx.properties.iter() {
+      // Computed key: allow either no await, or direct `await <expr>` with no nested await.
+      if let ClassOrObjKey::Computed(key_expr) = &prop.stx.key {
+        if let Some(arg) = expr_direct_await_arg(key_expr) {
+          if expr_contains_await(arg) {
+            return false;
+          }
+        } else if expr_contains_await(key_expr) {
+          return false;
+        }
+      }
+
+      // Property target must be a simple assignment target (identifier / member) without await.
+      match &*prop.stx.target.stx {
+        Pat::Id(_) => {}
+        Pat::AssignTarget(target_expr) => {
+          if !expr_is_supported_assignment_target_for_hir_async_scripts(target_expr) {
+            return false;
+          }
+          if expr_contains_await(target_expr) {
+            return false;
+          }
+        }
+        _ => return false,
+      }
+
+      // Default value: allow either no await, or direct `await <expr>` with no nested await.
+      if let Some(default_expr) = prop.stx.default_value.as_ref() {
+        if let Some(arg) = expr_direct_await_arg(default_expr) {
+          if expr_contains_await(arg) {
+            return false;
+          }
+        } else if expr_contains_await(default_expr) {
+          return false;
+        }
+      }
+    }
+
+    true
+  }
+
   for stmt in stmts {
     if !stmt_contains_await(stmt) {
       continue;
@@ -1198,11 +1271,13 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // - `x = await <expr>;`
       // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
       // - `({ ... } = await <expr>);` / `[ ... ] = await <expr>;` (destructuring assignment patterns)
+      // - `({ x = await <expr> } = obj);` (object destructuring assignment with await in defaults/computed keys)
       Stmt::Expr(expr_stmt) => {
         let expr = &expr_stmt.stx.expr;
         expr_is_direct_await_without_nested_await(expr)
           || expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
           || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr)
+          || expr_is_object_destructuring_assignment_with_supported_await(expr)
       }
 
       // `throw await <expr>;` as a standalone statement item.
