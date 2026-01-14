@@ -25058,8 +25058,9 @@ pub(crate) fn run_compiled_module(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
-  // Ensure the module environment is marked as a "this environment" so arrow functions created at
-  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  // Module environments provide the top-level lexical `this` binding (`undefined`) which arrow
+  // functions capture lexically. Mark the module environment as the current "this environment" so
+  // arrow functions created within it resolve the correct lexical `this` value.
   scope
     .heap_mut()
     .env_set_this_value(module_env, Some(Value::Undefined))?;
@@ -25364,8 +25365,9 @@ pub(crate) fn start_compiled_module_tla_evaluation(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<ModuleTlaStepResult, VmError> {
-  // Ensure the module environment is marked as a "this environment" so arrow functions created at
-  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  // Module environments provide the top-level lexical `this` binding (`undefined`) which arrow
+  // functions capture lexically. Mark the module environment as the current "this environment" so
+  // arrow functions created within it resolve the correct lexical `this` value.
   scope
     .heap_mut()
     .env_set_this_value(module_env, Some(Value::Undefined))?;
