@@ -72,7 +72,9 @@ impl ScrollBlitFallbackReason {
     match self {
       ScrollBlitFallbackReason::NonIntegerDevicePixelDelta => "NonIntegerDevicePixelDelta",
       ScrollBlitFallbackReason::FixedOrStickyPresent => "FixedOrStickyPresent",
-      ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll => "ScrollSnapAdjustedEffectiveScroll",
+      ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll => {
+        "ScrollSnapAdjustedEffectiveScroll"
+      }
       ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent => "ScrollDrivenAnimationsPresent",
       ScrollBlitFallbackReason::LegacyBackend => "LegacyBackend",
       ScrollBlitFallbackReason::FullPageMode => "FullPageMode",
@@ -185,12 +187,17 @@ fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
 }
 
 fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
-  let mut stack: Vec<&FragmentNode> = Vec::new();
-  stack.push(&tree.root);
-  for root in &tree.additional_fragments {
-    stack.push(root);
-  }
-  while let Some(node) = stack.pop() {
+  fn scan(node: &FragmentNode) -> bool {
+    match &node.content {
+      FragmentContent::RunningAnchor { snapshot, .. }
+      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
+        if scan(snapshot) {
+          return true;
+        }
+      }
+      _ => {}
+    }
+
     if node
       .style
       .as_deref()
@@ -202,8 +209,21 @@ fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
     {
       return true;
     }
+
     for child in node.children.iter() {
-      stack.push(child);
+      if scan(child) {
+        return true;
+      }
+    }
+    false
+  }
+
+  if scan(&tree.root) {
+    return true;
+  }
+  for root in &tree.additional_fragments {
+    if scan(root) {
+      return true;
     }
   }
   false
@@ -236,10 +256,10 @@ pub(crate) fn scroll_blit_plan(
   );
   let delta_device = Point::new(delta_css.x * dpr, delta_css.y * dpr);
 
-  let dx = approx_integer(delta_device.x)
-    .ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
-  let dy = approx_integer(delta_device.y)
-    .ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
+  let dx =
+    approx_integer(delta_device.x).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
+  let dy =
+    approx_integer(delta_device.y).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
 
   if fragment_tree_has_fixed_or_sticky(prepared.fragment_tree()) {
     return Err(ScrollBlitFallbackReason::FixedOrStickyPresent);
@@ -302,7 +322,9 @@ pub(crate) fn record_scroll_blit_fallback_reason(reason: ScrollBlitFallbackReaso
 #[cfg(any(test, feature = "browser_ui"))]
 pub(crate) fn last_scroll_blit_fallback_reason_for_test() -> Option<ScrollBlitFallbackReason> {
   let stored = LAST_SCROLL_BLIT_FALLBACK_REASON.load(Ordering::Relaxed);
-  stored.checked_sub(1).and_then(ScrollBlitFallbackReason::from_index)
+  stored
+    .checked_sub(1)
+    .and_then(ScrollBlitFallbackReason::from_index)
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -431,7 +453,10 @@ mod tests {
       // 70px should snap to 100px under mandatory snapping.
       let next = ScrollState::with_viewport(Point::new(0.0, 70.0));
       let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
-      assert_eq!(err, ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
+      assert_eq!(
+        err,
+        ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll
+      );
       record_scroll_blit_fallback_reason(err);
       assert_eq!(
         last_scroll_blit_fallback_reason_for_test(),
@@ -590,5 +615,35 @@ mod tests {
       let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
       assert_eq!(err, ScrollBlitFallbackReason::FixedOrStickyPresent);
     });
+  }
+
+  #[test]
+  fn scroll_blit_detects_scroll_driven_animations_in_running_anchor_snapshots() {
+    let snapshot_style = Arc::new(crate::ComputedStyle {
+      animation_names: vec![Some("a".into())],
+      animation_timelines: vec![crate::style::types::AnimationTimeline::Scroll(
+        Default::default(),
+      )],
+      ..crate::ComputedStyle::default()
+    });
+    let snapshot = FragmentNode::new_block_styled(
+      crate::geometry::Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      snapshot_style,
+    );
+    let running_anchor = FragmentNode::new_running_anchor(
+      crate::geometry::Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      "running".to_string(),
+      snapshot,
+    );
+    let root = FragmentNode::new_block(
+      crate::geometry::Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![running_anchor],
+    );
+    let tree = FragmentTree::with_viewport(root, crate::geometry::Size::new(10.0, 10.0));
+    assert!(
+      fragment_tree_has_scroll_driven_animations(&tree),
+      "expected scroll-driven animations inside running element snapshots to disable scroll blit"
+    );
   }
 }
