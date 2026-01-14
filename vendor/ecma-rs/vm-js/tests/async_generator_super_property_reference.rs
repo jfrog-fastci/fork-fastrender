@@ -111,3 +111,145 @@ fn async_generator_super_property_assignment_and_update_with_await_in_key() -> R
   Ok(())
 }
 
+#[test]
+fn async_generator_super_member_call_yield_in_args() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      class B { m(x) { return this.v + x; } }
+      class D extends B {
+        constructor() { super(); this.v = 1; }
+        async *gen() {
+          return super.m(yield 1);
+        }
+      }
+      async function f() {
+        const it = new D().gen();
+        const r1 = await it.next();
+        const r2 = await it.next(41);
+        return (
+          r1.value === 1 && r1.done === false &&
+          r2.value === 42 && r2.done === true
+        );
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_super_computed_member_call_yield_in_key_and_args() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      class B { m(x) { return this.v + x; } }
+      class D extends B {
+        constructor() { super(); this.v = 1; }
+        async *gen() {
+          return super[yield "m"](yield 1);
+        }
+      }
+      async function f() {
+        const it = new D().gen();
+        const r1 = await it.next();
+        const r2 = await it.next("m");
+        const r3 = await it.next(41);
+        return (
+          r1.value === "m" && r1.done === false &&
+          r2.value === 1 && r2.done === false &&
+          r3.value === 42 && r3.done === true
+        );
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_super_computed_member_assignment_yield_in_key_and_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      class B { set x(v) { this._x = v; } }
+      class D extends B {
+        async *gen() {
+          super[yield "x"] = yield 1;
+          return this._x;
+        }
+      }
+      async function f() {
+        const it = new D().gen();
+        const r1 = await it.next();
+        const r2 = await it.next("x");
+        const r3 = await it.next(42);
+        return (
+          r1.value === "x" && r1.done === false &&
+          r2.value === 1 && r2.done === false &&
+          r3.value === 42 && r3.done === true
+        );
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_super_computed_member_update_yield_in_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      class B {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class D extends B {
+        constructor() { super(); this._x = 1; }
+        async *gen() {
+          let a = super[yield "x"]++;
+          let b = ++super[yield "x"];
+          return String(a) + "," + String(b) + "," + String(this._x);
+        }
+      }
+      async function f() {
+        const it = new D().gen();
+        const r1 = await it.next();
+        const r2 = await it.next("x");
+        const r3 = await it.next("x");
+        return (
+          r1.value === "x" && r1.done === false &&
+          r2.value === "x" && r2.done === false &&
+          r3.value === "1,3,3" && r3.done === true
+        );
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
