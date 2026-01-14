@@ -3969,13 +3969,14 @@ fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
     return Ok(v.into_boxed_slice());
   }
 
+  if v.is_empty() {
+    return Ok(Box::<[T]>::default());
+  }
+
   let len = v.len();
   let cap = v.capacity();
 
-  // Special-case empty vectors: represent these without any allocation.
-  if len == 0 {
-    v = Vec::new();
-  } else if cap != len {
+  if cap != len {
     // Convert to an exact-length allocation without calling `Vec::shrink_to_fit` /
     // `Vec::into_boxed_slice`, which would reallocate infallibly and can abort the host process on
     // allocator OOM.
