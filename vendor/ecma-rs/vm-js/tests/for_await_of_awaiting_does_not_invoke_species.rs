@@ -122,3 +122,47 @@ fn for_await_of_constructor_getter_throw_rejects_async_promise() -> Result<(), V
   Ok(())
 }
 
+#[test]
+fn for_await_of_close_constructor_getter_runs_once() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // `AsyncIteratorClose` awaits the iterator `return()` result. That uses `Await`, which must perform
+  // `Get(promise, "constructor")` exactly once.
+  //
+  // Regression test: vm-js previously invoked the constructor getter twice (once during
+  // `AsyncIteratorClose` and again while scheduling the outer `await` suspension).
+  rt.exec_script(
+    r#"
+      globalThis.calls = 0;
+      globalThis.result = -1;
+
+      const p = Promise.resolve({});
+      Object.defineProperty(p, "constructor", {
+        get() { globalThis.calls++; return Promise; }
+      });
+
+      const iterable = {
+        [Symbol.asyncIterator]() {
+          let i = 0;
+          return {
+            next() {
+              if (i++ === 0) return Promise.resolve({ value: 1, done: false });
+              return Promise.resolve({ done: true });
+            },
+            return() { return p; },
+          };
+        }
+      };
+
+      (async function () {
+        for await (const _x of iterable) { break; }
+        globalThis.result = globalThis.calls;
+      })();
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.exec_script("result")?, Value::Number(1.0));
+  Ok(())
+}

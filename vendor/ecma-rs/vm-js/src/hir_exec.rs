@@ -10077,7 +10077,10 @@ fn typeof_name(heap: &crate::Heap, value: Value) -> Result<&'static str, VmError
 pub(crate) enum HirAsyncResult {
   CompleteOk(Value),
   CompleteThrow(Value),
-  Await { await_value: Value },
+  Await {
+    kind: crate::exec::AsyncSuspendKind,
+    await_value: Value,
+  },
 }
 
 #[derive(Debug)]
@@ -10214,7 +10217,10 @@ struct ForAwaitOfState {
 #[derive(Debug)]
 enum ForAwaitOfPoll {
   Complete(Flow),
-  Await(Value),
+  Await {
+    kind: crate::exec::AsyncSuspendKind,
+    await_value: Value,
+  },
 }
 
 impl ForAwaitOfState {
@@ -10366,7 +10372,10 @@ impl ForAwaitOfState {
         };
 
         self.stage = ForAwaitOfStage::AwaitNext;
-        Ok(ForAwaitOfPoll::Await(next_value))
+        Ok(ForAwaitOfPoll::Await {
+          kind: crate::exec::AsyncSuspendKind::Await,
+          await_value: next_value,
+        })
       }
 
       ForAwaitOfStage::AwaitNext => {
@@ -10531,7 +10540,10 @@ impl ForAwaitOfState {
               return Err(err);
             }
           };
-          return Ok(ForAwaitOfPoll::Await(next_value));
+          return Ok(ForAwaitOfPoll::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value: next_value,
+          });
         }
 
         unreachable!("match body_flow should either return or continue loop");
@@ -10743,7 +10755,10 @@ impl ForAwaitOfState {
     self.stage = ForAwaitOfStage::ClosingAwait {
       pending: Some(pending),
     };
-    Ok(ForAwaitOfPoll::Await(close_value))
+    Ok(ForAwaitOfPoll::Await {
+      kind: crate::exec::AsyncSuspendKind::AwaitResolved,
+      await_value: close_value,
+    })
   }
 }
 
@@ -10906,7 +10921,9 @@ impl HirAsyncState {
           HirAsyncActive::ForAwaitOf(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
-              Ok(ForAwaitOfPoll::Await(await_value)) => return Ok(HirAsyncResult::Await { await_value }),
+              Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+                return Ok(HirAsyncResult::Await { kind, await_value });
+              }
               Ok(ForAwaitOfPoll::Complete(flow)) => {
                 self.active = None;
                 match flow {
@@ -11098,7 +11115,10 @@ impl HirAsyncState {
                     declarator_index: j,
                   });
                   self.next_stmt_index = stmt_index;
-                  return Ok(HirAsyncResult::Await { await_value });
+                  return Ok(HirAsyncResult::Await {
+                    kind: crate::exec::AsyncSuspendKind::Await,
+                    await_value,
+                  });
                 }
               }
 
@@ -11175,7 +11195,10 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
-          return Ok(HirAsyncResult::Await { await_value });
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
         }
 
         let expr_res = evaluator.eval_expr(scope, body, *expr);
@@ -11253,7 +11276,10 @@ impl HirAsyncState {
           self.active = Some(HirAsyncActive::AwaitExprStmt {
             next_stmt_index: self.next_stmt_index.saturating_add(1),
           });
-          return Ok(HirAsyncResult::Await { await_value });
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
         }
       }
 
@@ -11276,7 +11302,10 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
-          return Ok(HirAsyncResult::Await { await_value });
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
         }
       }
 
@@ -11299,7 +11328,10 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitThrow);
-          return Ok(HirAsyncResult::Await { await_value });
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
         }
       }
 
@@ -11335,7 +11367,10 @@ impl HirAsyncState {
                 stmt_index: self.next_stmt_index,
                 declarator_index: j,
               });
-              return Ok(HirAsyncResult::Await { await_value });
+              return Ok(HirAsyncResult::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+              });
             }
           }
 
@@ -11453,7 +11488,7 @@ fn run_compiled_async_function(
       env.teardown(call_scope.heap_mut());
       res.map(|_| promise)
     }
-    HirAsyncResult::Await { await_value } => {
+    HirAsyncResult::Await { kind, await_value } => {
       let this_at_suspend = this;
       let new_target_at_suspend = new_target;
       let home_object_at_suspend = home_object
@@ -11476,13 +11511,20 @@ fn run_compiled_async_function(
         return Err(err);
       }
 
-      // Implement `Await`: PromiseResolve(%Promise%, value) while avoiding Promise species side effects
-      // for Promise objects (see `promise_resolve_for_await_with_host_and_hooks`).
-      let resolve_res =
-        crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(vm, &mut root_scope, host, hooks, await_value);
-      let resolve_res = resolve_res.map_err(|err| crate::vm::coerce_error_to_throw(&*vm, &mut root_scope, err));
+      let awaited_promise_res: Result<Value, VmError> = match kind {
+        crate::exec::AsyncSuspendKind::Await => {
+          // Implement `Await`: PromiseResolve(%Promise%, value) while avoiding Promise species side effects
+          // for Promise objects (see `promise_resolve_for_await_with_host_and_hooks`).
+          crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(vm, &mut root_scope, host, hooks, await_value)
+            .map_err(|err| crate::vm::coerce_error_to_throw(&*vm, &mut root_scope, err))
+        }
+        crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+        crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+          "unexpected async generator yield suspension in compiled async function",
+        )),
+      };
 
-      let awaited_promise = match resolve_res {
+      let awaited_promise = match awaited_promise_res {
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
           let reason = match err {

@@ -2843,8 +2843,7 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let await_value = suspend.await_value;
-          let frames = suspend.frames;
+          let AsyncSuspend { kind, await_value, frames } = suspend;
 
           // Root all GC-managed values while we create persistent roots and schedule the resumption.
           let mut root_scope = scope.reborrow();
@@ -2864,18 +2863,22 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut root_scope,
-            host,
-            &mut hooks,
-            await_value,
-          );
-          let resolve_res = resolve_res.map_err(|err| {
-            coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)
-          });
+          let awaited_promise_res: Result<Value, VmError> = match kind {
+            AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut root_scope,
+              host,
+              &mut hooks,
+              await_value,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)),
+            AsyncSuspendKind::AwaitResolved => Ok(await_value),
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+              "unexpected async generator yield suspension in async script evaluation",
+            )),
+          };
 
-          let awaited_promise = match resolve_res {
+          let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
             Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
               let reason = match root_scope.push_root(reason) {
@@ -3389,8 +3392,7 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let await_value = suspend.await_value;
-          let frames = suspend.frames;
+          let AsyncSuspend { kind, await_value, frames } = suspend;
 
           // Root all GC-managed values while we create persistent roots and schedule the resumption.
           let mut root_scope = scope.reborrow();
@@ -3410,18 +3412,22 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut root_scope,
-            host,
-            hooks,
-            await_value,
-          );
-          let resolve_res = resolve_res.map_err(|err| {
-            coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)
-          });
+          let awaited_promise_res: Result<Value, VmError> = match kind {
+            AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut root_scope,
+              host,
+              hooks,
+              await_value,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)),
+            AsyncSuspendKind::AwaitResolved => Ok(await_value),
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+              "unexpected async generator yield suspension in async script evaluation",
+            )),
+          };
 
-          let awaited_promise = match resolve_res {
+          let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
             Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
               let reason = match root_scope.push_root(reason) {
@@ -16035,9 +16041,18 @@ pub(crate) enum AsyncFrame {
 
 #[derive(Debug)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AsyncSuspendKind {
-  /// A suspension that should be resumed by awaiting `await_value` (Promise jobs / microtasks).
+pub(crate) enum AsyncSuspendKind {
+  /// A suspension that should be resumed by awaiting `await_value` using the spec's `Await`
+  /// semantics (`PromiseResolve(%Promise%, await_value)` + `PerformPromiseThen`).
   Await,
+  /// Like [`AsyncSuspendKind::Await`], but `await_value` is already the *Promise* returned from the
+  /// `Await` operation's internal `PromiseResolve` step.
+  ///
+  /// Some internal algorithms (notably `AsyncIteratorClose`) must perform the `PromiseResolve` step
+  /// themselves so they can apply ECMA-262 suppression rules for throw completions. In those cases,
+  /// the outer async suspension machinery must not `PromiseResolve` the value again, or it would
+  /// observe `promise.constructor` twice.
+  AwaitResolved,
   /// A suspension produced by `yield` / `yield*` in an async generator body.
   ///
   /// Async generator execution distinguishes these from internal `await` suspensions: the awaited
@@ -16953,11 +16968,11 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Ok(AsyncBodyResult::Await {
-      kind: _,
+      kind,
       await_value,
       frames,
     }) => {
-      // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
+      // Suspend again: `Await` (`PromiseResolve` + `PerformPromiseThen`).
       cont.frames = frames;
 
       let mut await_scope = scope.reborrow();
@@ -16965,25 +16980,33 @@ fn async_handle_body_result(
         async_teardown_continuation(&mut await_scope, cont);
         return Err(err);
       }
-      // `await` must not trigger Promise species side effects. In particular, coercing a Promise
-      // via `PromiseResolve(%Promise%, promise)` can (via thenable resolution jobs) call
-      // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
-      //
-      // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
-      // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
-      // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
-      // undefined)` is sufficient and avoids Promise species side effects.
-      let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-        vm,
-        &mut await_scope,
-        host,
-        hooks,
-        await_value,
-      );
-      let resolve_res =
-        resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
-      let awaited_promise = match resolve_res {
+      let awaited_promise_res: Result<Value, VmError> = match kind {
+        AsyncSuspendKind::Await => {
+          // `await` must not trigger Promise species side effects. In particular, coercing a Promise
+          // via `PromiseResolve(%Promise%, promise)` can (via thenable resolution jobs) call
+          // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
+          //
+          // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
+          // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
+          // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
+          // undefined)` is sufficient and avoids Promise species side effects.
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            await_value,
+          );
+          resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err))
+        }
+        AsyncSuspendKind::AwaitResolved => Ok(await_value),
+        AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+          "unexpected async generator yield suspension in async continuation",
+        )),
+      };
+
+      let awaited_promise = match awaited_promise_res {
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
           // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
@@ -22866,7 +22889,10 @@ fn async_for_await_of_close(
   .expect("async_frames_push should not fail after try_reserve");
 
   Ok(AsyncEval::Suspend(AsyncSuspend {
-    kind: AsyncSuspendKind::Await,
+    // `async_for_await_of_close` already performed the `Await` operation's `PromiseResolve` step
+    // (so it can implement AsyncIteratorClose suppression rules for throw completions). Avoid
+    // calling `PromiseResolve` a second time when scheduling the suspension.
+    kind: AsyncSuspendKind::AwaitResolved,
     await_value: close_value,
     frames,
   }))
@@ -28493,7 +28519,7 @@ fn async_resume_from_frames(
             resume_res,
           );
           match res {
-            Ok(crate::hir_exec::HirAsyncResult::Await { await_value }) => {
+            Ok(crate::hir_exec::HirAsyncResult::Await { kind, await_value }) => {
               if frames.try_reserve(1).is_err() {
                 hir_state.teardown(scope.heap_mut());
                 return Err(VmError::OutOfMemory);
@@ -28501,7 +28527,7 @@ fn async_resume_from_frames(
               frames.push_front(AsyncFrame::HirAsync { state: hir_state });
               let frames_out = mem::take(&mut frames);
               return Ok(AsyncBodyResult::Await {
-                kind: AsyncSuspendKind::Await,
+                kind,
                 await_value,
                 frames: frames_out,
               });
@@ -41772,7 +41798,11 @@ pub(crate) fn run_ecma_function(
         evaluator.env.teardown(call_scope.heap_mut());
         res.map(|_| (promise, evaluator.this))
       }
-      Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
+      Ok(AsyncBodyResult::Await {
+        kind,
+        await_value,
+        frames,
+      }) => {
         // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
         // (e.g. class static blocks). Capture their current values at the suspension point so the
         // continuation resumes with the correct execution context.
@@ -41798,17 +41828,22 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
-        let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-          evaluator.vm,
-          &mut root_scope,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          await_value,
-        );
-        let resolve_res = resolve_res
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
+        let awaited_promise_res: Result<Value, VmError> = match kind {
+          AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+            evaluator.vm,
+            &mut root_scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            await_value,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err)),
+          AsyncSuspendKind::AwaitResolved => Ok(await_value),
+          AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+            "unexpected async generator yield suspension in async function start",
+          )),
+        };
 
-        let awaited_promise = match resolve_res {
+        let awaited_promise = match awaited_promise_res {
           Ok(p) => p,
           Err(err) if err.is_throw_completion() => {
             // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
@@ -42363,7 +42398,12 @@ pub(crate) fn start_module_tla_evaluation(
     // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
     // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
     loop {
-      let AsyncBodyResult::Await { await_value, frames, .. } = next else {
+      let AsyncBodyResult::Await {
+        kind,
+        await_value,
+        frames,
+      } = next
+      else {
         env.teardown(scope.heap_mut());
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
@@ -42375,14 +42415,22 @@ pub(crate) fn start_module_tla_evaluation(
       let awaited_promise_res = {
         let mut promise_scope = scope.reborrow();
         promise_scope.push_root(await_value)?;
-        let res = promise_resolve_for_await_with_host_and_hooks(
-          evaluator.vm,
-          &mut promise_scope,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          await_value,
-        );
-        res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
+        match kind {
+          AsyncSuspendKind::Await => {
+            let res = promise_resolve_for_await_with_host_and_hooks(
+              evaluator.vm,
+              &mut promise_scope,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              await_value,
+            );
+            res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
+          }
+          AsyncSuspendKind::AwaitResolved => Ok(await_value),
+          AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+            "unexpected async generator yield suspension in module TLA",
+          )),
+        }
       };
 
       let awaited_promise = match awaited_promise_res {
@@ -42632,16 +42680,26 @@ pub(crate) fn resume_module_tla_evaluation(
           async_teardown_continuation(scope, cont);
           return Err(VmError::Throw(reason));
         }
-        Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
+        Ok(AsyncBodyResult::Await {
+          kind,
+          await_value,
+          frames,
+        }) => {
           // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
-          let awaited_promise_res = promise_resolve_for_await_with_host_and_hooks(
-            evaluator.vm,
-            scope,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            await_value,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+          let awaited_promise_res: Result<Value, VmError> = match kind {
+            AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+              evaluator.vm,
+              scope,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              await_value,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
+            AsyncSuspendKind::AwaitResolved => Ok(await_value),
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+              "unexpected async generator yield suspension in module evaluation",
+            )),
+          };
           match awaited_promise_res {
             Ok(awaited_promise) => {
               // Root the awaited promise across root creation.
@@ -42904,16 +42962,26 @@ pub(crate) fn run_module_async_start(
             .frames = suspend.frames;
 
           // `Await` uses `? PromiseResolve(%Promise%, value)`.
+          let kind = suspend.kind;
+          let await_value = suspend.await_value;
           let mut await_scope = scope.reborrow();
-          await_scope.push_root(suspend.await_value)?;
-          let awaited_promise = promise_resolve_for_await_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut await_scope,
-            host,
-            hooks,
-            suspend.await_value,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
+          await_scope.push_root(await_value)?;
+          let awaited_promise = match kind {
+            AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+              &mut *vm_frame,
+              &mut await_scope,
+              host,
+              hooks,
+              await_value,
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
+            AsyncSuspendKind::AwaitResolved => await_value,
+            AsyncSuspendKind::Yield => {
+              return Err(VmError::InvariantViolation(
+                "unexpected async generator yield suspension in module start",
+              ))
+            }
+          };
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
           cont
@@ -43047,7 +43115,11 @@ pub(crate) fn run_module_async_resume(
         Ok(ModuleAsyncStep::Completed)
       }
       AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
-      AsyncBodyResult::Await { await_value, frames, .. } => {
+      AsyncBodyResult::Await {
+        kind,
+        await_value,
+        frames,
+      } => {
         cont
           .as_mut()
           .expect("module async continuation missing")
@@ -43055,14 +43127,22 @@ pub(crate) fn run_module_async_resume(
 
         let mut await_scope = scope.reborrow();
         await_scope.push_root(await_value)?;
-        let awaited_promise = promise_resolve_for_await_with_host_and_hooks(
-          &mut *vm_frame,
-          &mut await_scope,
-          host,
-          hooks,
-          await_value,
-        )
-        .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
+        let awaited_promise = match kind {
+          AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut await_scope,
+            host,
+            hooks,
+            await_value,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
+          AsyncSuspendKind::AwaitResolved => await_value,
+          AsyncSuspendKind::Yield => {
+            return Err(VmError::InvariantViolation(
+              "unexpected async generator yield suspension in module resume",
+            ))
+          }
+        };
         await_scope.push_root(awaited_promise)?;
         let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
         cont

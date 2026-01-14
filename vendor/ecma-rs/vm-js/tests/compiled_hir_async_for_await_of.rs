@@ -332,3 +332,78 @@ fn compiled_async_for_await_of_close_does_not_invoke_species() -> Result<(), VmE
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn compiled_async_for_await_of_close_constructor_getter_runs_once() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "compiled_async_for_await_of_close_constructor_getter_once.js",
+    r#"
+      async function f() {
+        globalThis.calls = 0;
+        const p = Promise.resolve({});
+        Object.defineProperty(p, "constructor", {
+          get() { globalThis.calls++; return Promise; }
+        });
+
+        const iterable = {
+          [Symbol.asyncIterator]() {
+            let i = 0;
+            return {
+              next() {
+                if (i++ === 0) return Promise.resolve({ value: 1, done: false });
+                return Promise.resolve({ done: true });
+              },
+              return() { return p; },
+            };
+          }
+        };
+
+        for await (const _x of iterable) {
+          break;
+        }
+        return globalThis.calls;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let promise_root = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    let promise = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    scope.push_root(promise)?;
+    scope.heap_mut().add_root(promise)?
+  };
+
+  vm.perform_microtask_checkpoint(&mut heap)?;
+
+  let promise = heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvariantViolation("missing promise root"))?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected promise object, got {promise:?}");
+  };
+
+  assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = heap
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation("missing promise result"))?;
+  assert_eq!(result, Value::Number(1.0));
+
+  heap.remove_root(promise_root);
+  realm.teardown(&mut heap);
+  Ok(())
+}
