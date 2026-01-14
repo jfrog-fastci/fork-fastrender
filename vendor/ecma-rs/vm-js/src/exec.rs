@@ -40092,6 +40092,9 @@ fn gen_root_values_for_continuation(
       GenFrame::CallArgs { args, .. } => {
         needed = needed.saturating_add(2).saturating_add(args.len());
       }
+      GenFrame::NewArgs { args, .. } => {
+        needed = needed.saturating_add(1).saturating_add(args.len());
+      }
       GenFrame::AssignAfterRhs {
         base,
         key,
@@ -40104,6 +40107,12 @@ fn gen_root_values_for_continuation(
           .saturating_add(usize::from(receiver.is_some()));
       }
       GenFrame::AssignAddAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      }
+      | GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
@@ -40187,6 +40196,13 @@ fn gen_root_values_for_continuation(
         receiver,
         left,
         ..
+      }
+      | GenFrame::AssignExpAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
       } => {
         if let Some(base) = base {
           values.push(*base);
@@ -40221,39 +40237,9 @@ fn gen_root_values_for_continuation(
         values.push(*this);
         values.extend_from_slice(args);
       }
-      GenFrame::AssignAfterRhs {
-        base,
-        key,
-        receiver,
-        ..
-      } => {
-        if let Some(b) = base {
-          values.push(*b);
-        }
-        if let Some(k) = key {
-          values.push(*k);
-        }
-        if let Some(r) = receiver {
-          values.push(*r);
-        }
-      }
-      GenFrame::AssignAddAfterRhs {
-        base,
-        key,
-        receiver,
-        left,
-        ..
-      } => {
-        if let Some(b) = base {
-          values.push(*b);
-        }
-        if let Some(k) = key {
-          values.push(*k);
-        }
-        if let Some(r) = receiver {
-          values.push(*r);
-        }
-        values.push(*left);
+      GenFrame::NewArgs { callee, args, .. } => {
+        values.push(*callee);
+        values.extend_from_slice(args);
       }
       _ => {}
     }
