@@ -920,7 +920,11 @@ impl ResourceFetcher for RecordingFetcher {
     if cors_cache_partitioning_enabled()
       && matches!(
         req.destination,
-        FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors
+        FetchDestination::Font
+          | FetchDestination::ImageCors
+          | FetchDestination::VideoCors
+          | FetchDestination::AudioCors
+          | FetchDestination::StyleCors
       )
     {
       if let Some(manifest_key) = request_partitioned_resource_key_for_request(&req) {
@@ -4925,6 +4929,8 @@ mod tests {
       for (destination, url) in [
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
+        (FetchDestination::VideoCors, "https://example.com/video.mp4"),
+        (FetchDestination::AudioCors, "https://example.com/audio.mp3"),
       ] {
         let req_a =
           FetchRequest::new(url, destination).with_referrer_url("https://a.test/page.html");
@@ -4950,7 +4956,7 @@ mod tests {
 
       assert_eq!(
         inner.calls(),
-        4,
+        8,
         "expected RecordingFetcher to fetch separately per (destination, origin) when CORS enforcement is enabled"
       );
     });
@@ -4973,6 +4979,8 @@ mod tests {
       for (destination, url) in [
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
+        (FetchDestination::VideoCors, "https://example.com/video.mp4"),
+        (FetchDestination::AudioCors, "https://example.com/audio.mp3"),
       ] {
         let req_a =
           FetchRequest::new(url, destination).with_referrer_url("https://a.test/page.html");
@@ -4998,7 +5006,7 @@ mod tests {
 
       assert_eq!(
         inner.calls(),
-        4,
+        8,
         "expected RecordingFetcher to fetch separately per (destination, origin) even when CORS enforcement is disabled"
       );
     });
