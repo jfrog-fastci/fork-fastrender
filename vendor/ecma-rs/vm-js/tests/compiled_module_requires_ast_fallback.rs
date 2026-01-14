@@ -211,3 +211,98 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
 
   result
 }
+
+#[test]
+fn compiled_module_requires_ast_fallback_is_respected_by_evaluate_sync() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    // Compiled module that requires AST fallback (private names).
+    //
+    // Drop `record.ast` and `record.source` so the module graph must parse from `compiled.source`.
+    let src_a = SourceText::new_charged_arc(
+      &mut heap,
+      "a.js",
+      r#"
+        globalThis.__compiled_module_requires_ast_fallback_count =
+          (globalThis.__compiled_module_requires_ast_fallback_count || 0) + 1;
+        class C {
+          #x = 1;
+          getX() { return this.#x; }
+        }
+        export const v = (new C()).getX();
+      "#,
+    )?;
+    let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
+    assert!(
+      rec_a
+        .compiled
+        .as_ref()
+        .is_some_and(|c| c.requires_ast_fallback),
+      "expected private-name module to require AST fallback"
+    );
+    rec_a.ast = None;
+    rec_a.source = None;
+    let a = graph.add_module_with_specifier("a.js", rec_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import { v } from "a.js";
+          export const out = v;
+          export const c = globalThis.__compiled_module_requires_ast_fallback_count;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    // Link first so we can assert the AST is parsed/retained before evaluation.
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+    assert!(
+      graph.module(a).ast.is_some(),
+      "expected ModuleGraph::link to parse/retain an AST for a compiled module that requires AST fallback"
+    );
+
+    // Evaluate via the synchronous module evaluator API (exercises `eval_inner`).
+    graph.evaluate_sync(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let mut scope = heap.scope();
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "out")?,
+      Value::Number(1.0)
+    );
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "c")?,
+      Value::Number(1.0),
+      "module should not be evaluated twice (no partial HIR execution before AST fallback)"
+    );
+    drop(scope);
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
