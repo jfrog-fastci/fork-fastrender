@@ -2,12 +2,13 @@ use publicsuffix::{List, Psl};
 use std::sync::OnceLock;
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AddressBarSecurityState {
   Https,
   Http,
   File,
   About,
+  #[default]
   Other,
 }
 
