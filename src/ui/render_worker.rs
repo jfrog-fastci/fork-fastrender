@@ -1052,7 +1052,11 @@ impl TabState {
     }
   }
 
-  fn sync_js_viewport_state_for(js_tab: &mut Option<BrowserTab>, viewport_css: (u32, u32), dpr: f32) {
+  fn sync_js_viewport_state_for(
+    js_tab: &mut Option<BrowserTab>,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) {
     let Some(js_tab) = js_tab.as_mut() else {
       return;
     };

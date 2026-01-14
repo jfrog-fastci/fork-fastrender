@@ -122,7 +122,7 @@ media_webm = ["dep:matroska-demuxer"]
 codec_h264_openh264 = ["dep:openh264"]
 codec_vp9_libvpx = ["dep:libvpx-sys-bundled"]
 codec_aac = ["dep:symphonia-core", "dep:symphonia-codec-aac"]
-codec_opus = ["dep:opus"]
+codec_opus = ["dep:opus", "dep:audiopus_sys"]
 
 # CI-friendly "all features" umbrella.
 #
@@ -223,6 +223,8 @@ symphonia-codec-aac = { version = "0.5.5", optional = true }
 openh264 = { version = "0.6.5", optional = true }
 libvpx-sys-bundled = { path = "crates/libvpx-sys-bundled", optional = true }
 opus = { version = "0.3", optional = true }
+# Force bundled static libopus builds (no system libopus dependency).
+audiopus_sys = { version = "0.2.2", optional = true, default-features = false, features = ["static"] }
 # Use Rustls to avoid requiring system OpenSSL headers/libs in CI/agent environments.
 reqwest = { version = "0.12", default-features = false, optional = true, features = ["blocking", "cookies", "http2", "rustls-tls-webpki-roots"] }
 ureq = { version = "3.1", default-features = false, optional = true, features = ["rustls"] }

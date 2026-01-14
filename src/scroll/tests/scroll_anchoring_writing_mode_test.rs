@@ -25,7 +25,8 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
     vec![anchor_old],
     root_style.clone(),
   );
-  let prev_tree = FragmentTree::with_viewport(root_old, Size::new(100.0, 100.0));
+  let viewport = Size::new(100.0, 100.0);
+  let prev_tree = FragmentTree::with_viewport(root_old, viewport);
 
   let anchor_new = FragmentNode::new_block_with_id(anchor_new_bounds, 1, vec![]);
   let root_new = FragmentNode::new_block_styled(
@@ -33,13 +34,12 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
     vec![anchor_new],
     root_style,
   );
-  let next_tree = FragmentTree::with_viewport(root_new, Size::new(100.0, 100.0));
+  let next_tree = FragmentTree::with_viewport(root_new, viewport);
 
   // Non-zero scroll offset in the block axis (horizontal for `vertical-rl`).
   let scroll_state = ScrollState::with_viewport(Point::new(-20.0, 0.0));
 
-  let adjusted =
-    apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
+  let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
   // The scroll adjustment mirrors the movement of the anchor fragment in physical coordinates, but
   // must be converted back into a logical-start-relative scroll offset using the writing mode.

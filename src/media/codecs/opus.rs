@@ -26,14 +26,14 @@ impl OpusHead {
 
   pub fn parse(codec_private: &[u8]) -> MediaResult<Self> {
     if codec_private.len() < Self::BASE_LEN {
-      return Err(MediaError::Demux(format!(
+      return Err(MediaError::Decode(format!(
         "OpusHead too short: need at least {} bytes, got {}",
         Self::BASE_LEN,
         codec_private.len()
       )));
     }
     if &codec_private[..Self::MAGIC.len()] != Self::MAGIC {
-      return Err(MediaError::Demux("invalid OpusHead magic".to_string()));
+      return Err(MediaError::Decode("invalid OpusHead magic".to_string()));
     }
 
     let version = codec_private[8];
@@ -49,21 +49,29 @@ impl OpusHead {
     let channel_mapping_family = codec_private[18];
 
     if version != 1 {
-      return Err(MediaError::Unsupported("unsupported OpusHead version".into()));
+      return Err(MediaError::Unsupported(
+        format!("unsupported OpusHead version {version} (expected 1)").into(),
+      ));
     }
 
     // WebM only supports mapping family 0 (mono/stereo) today.
     // We implement only that subset for now.
     if channel_mapping_family != 0 {
       return Err(MediaError::Unsupported(
-        "unsupported Opus channel mapping family".into(),
+        format!(
+          "unsupported Opus channel mapping family {channel_mapping_family} (only family 0 (mono/stereo) is supported)"
+        )
+        .into(),
       ));
     }
 
     // Mapping family 0 is defined for mono/stereo only.
     if !(channel_count == 1 || channel_count == 2) {
       return Err(MediaError::Unsupported(
-        "unsupported Opus channel count for mapping family 0".into(),
+        format!(
+          "unsupported Opus channel count {channel_count} for mapping family {channel_mapping_family} (only mono/stereo is supported)"
+        )
+        .into(),
       ));
     }
 
@@ -134,10 +142,12 @@ impl OpusDecoder {
     let total_samples = decoded_samples_per_channel.saturating_mul(channels);
     pcm.truncate(total_samples);
 
+    let mut trimmed_this_packet = false;
     if self.pre_skip_remaining > 0 && decoded_samples_per_channel > 0 {
       let skip_frames = self.pre_skip_remaining.min(decoded_samples_per_channel);
       let skip_samples = skip_frames.saturating_mul(channels);
       if skip_samples > 0 {
+        trimmed_this_packet = true;
         pcm.copy_within(skip_samples.., 0);
         pcm.truncate(total_samples.saturating_sub(skip_samples));
       }
@@ -149,11 +159,15 @@ impl OpusDecoder {
     }
 
     let samples_per_channel = pcm.len() / channels;
-    let duration_ns = ((samples_per_channel as u128)
-      .saturating_mul(1_000_000_000u128)
-      .checked_div(OPUS_SAMPLE_RATE_HZ as u128)
-      .unwrap_or(0)
-      .min(u128::from(u64::MAX))) as u64;
+    let duration_ns = if packet.duration_ns != 0 && !trimmed_this_packet {
+      packet.duration_ns
+    } else {
+      ((samples_per_channel as u128)
+        .saturating_mul(1_000_000_000u128)
+        .checked_div(OPUS_SAMPLE_RATE_HZ as u128)
+        .unwrap_or(0)
+        .min(u128::from(u64::MAX))) as u64
+    };
 
     Ok(Some(DecodedAudioChunk {
       pts_ns: packet.pts_ns,
@@ -193,7 +207,7 @@ mod tests {
     let pcm = vec![0.0f32; samples_per_channel * channel_count];
     let mut out = vec![0u8; 4000];
     let len = encoder
-      .encode_float(&pcm, samples_per_channel, &mut out)
+      .encode_float(&pcm, &mut out)
       .expect("encode silence packet");
     let len: usize = len
       .try_into()
@@ -365,6 +379,8 @@ mod tests {
 
     let decoded = decoded.expect("expected at least one decoded Opus chunk");
     assert_eq!(decoded.sample_rate_hz, OPUS_SAMPLE_RATE_HZ);
+    assert!(decoded.channels > 0);
+    assert!(!decoded.samples.is_empty());
     assert_eq!(decoded.samples.len() % decoded.channels as usize, 0);
   }
 }
