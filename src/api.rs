@@ -3099,6 +3099,10 @@ impl PreparedDocument {
     &self.fragment_tree
   }
 
+  pub(crate) fn box_tree_and_fragment_tree_mut(&mut self) -> (&BoxTree, &mut FragmentTree) {
+    (&self.box_tree, &mut self.fragment_tree)
+  }
+
   /// Applies sticky offsets using an explicit scroll state that can include element scroll offsets.
   ///
   /// Layout produces fragment trees in a coordinate space that does not account for scroll-driven
@@ -26446,6 +26450,7 @@ mod tests {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   #[cfg(feature = "direct_network")]
   fn inline_stylesheet_http_403_records_fetch_error_status_and_url() {

@@ -2294,6 +2294,7 @@ fn display_item_name(item: &DisplayItem) -> &'static str {
     DisplayItem::StrokeRoundedRect(_) => "stroke_rounded_rect",
     DisplayItem::Text(_) => "text",
     DisplayItem::Image(_) => "image",
+    DisplayItem::RemoteFrameSlot(_) => "remote_frame_slot",
     DisplayItem::ImagePattern(_) => "image_pattern",
     DisplayItem::BoxShadow(_) => "box_shadow",
     DisplayItem::ListMarker(_) => "list_marker",

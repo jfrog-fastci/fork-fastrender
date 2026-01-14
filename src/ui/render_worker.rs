@@ -7053,7 +7053,9 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
-        tab.sync_js_scroll_state();
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          js_tab.set_scroll_state(tab.scroll_state.clone());
+        }
         scroll_changed = true;
         let _ = self
           .ui_tx
@@ -9471,7 +9473,9 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
-        tab.sync_js_scroll_state();
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          js_tab.set_scroll_state(tab.scroll_state.clone());
+        }
         scroll_changed = true;
         let _ = self
           .ui_tx

@@ -1184,34 +1184,36 @@ fn run_scroll_fixture(
   let warmup = SCROLL_WARMUP + run_config.warmup;
   let samples = run_config.iterations.unwrap_or(SCROLL_SAMPLES);
 
-  let measured = match collect_measured_samples(warmup, samples, || loop {
-    let mut target = scroll_y + direction * SCROLL_DELTA_CSS;
-    if target > bounds.max_y {
-      target = bounds.max_y;
-    }
-    if target < bounds.min_y {
-      target = bounds.min_y;
-    }
-    if (target - scroll_y).abs() < 0.5 {
-      direction *= -1.0;
-      continue;
-    }
+  let measured = match collect_measured_samples(warmup, samples, || -> Result<f64, WaitError> {
+    loop {
+      let mut target = scroll_y + direction * SCROLL_DELTA_CSS;
+      if target > bounds.max_y {
+        target = bounds.max_y;
+      }
+      if target < bounds.min_y {
+        target = bounds.min_y;
+      }
+      if (target - scroll_y).abs() < 0.5 {
+        direction *= -1.0;
+        continue;
+      }
 
-    let start = Instant::now();
-    tx.send(UiToWorker::ScrollTo {
-      tab_id,
-      pos_css: (0.0, target),
-    })
-    .map_err(|err| WaitError {
-      status: ScenarioStatus::Error,
-      message: format!("failed to send ScrollTo: {err}"),
-    })?;
+      let start = Instant::now();
+      tx.send(UiToWorker::ScrollTo {
+        tab_id,
+        pos_css: (0.0, target),
+      })
+      .map_err(|err| WaitError {
+        status: ScenarioStatus::Error,
+        message: format!("failed to send ScrollTo: {err}"),
+      })?;
 
-    let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
-    frame = next;
-    scroll_y = frame.scroll_css.1;
-    bounds = frame.scroll_bounds_css;
-    return Ok(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+      let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
+      frame = next;
+      scroll_y = frame.scroll_css.1;
+      bounds = frame.scroll_bounds_css;
+      break Ok(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+    }
   }) {
     Ok(measured) => measured,
     Err(err) => {
@@ -1298,7 +1300,7 @@ fn run_resize_fixture(
   let samples = run_config.iterations.unwrap_or(RESIZE_SAMPLES);
   let mut step = 0usize;
 
-  let measured = match collect_measured_samples(warmup, samples, || {
+  let measured = match collect_measured_samples(warmup, samples, || -> Result<f64, WaitError> {
     let idx = step;
     step += 1;
 

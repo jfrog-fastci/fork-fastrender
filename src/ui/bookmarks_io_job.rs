@@ -216,6 +216,7 @@ impl BookmarksIoJob {
           None
         }
         Err(mpsc::TryRecvError::Disconnected) => {
+          let path = path.clone();
           let err = "Bookmarks export job disconnected.".to_string();
           *self = Self::Error { error: err.clone() };
           Some(BookmarksIoJobUpdate::ExportFinished {
@@ -238,6 +239,7 @@ impl BookmarksIoJob {
           None
         }
         Err(mpsc::TryRecvError::Disconnected) => {
+          let path = path.clone();
           let err = "Bookmarks import job disconnected.".to_string();
           *self = Self::Error { error: err.clone() };
           Some(BookmarksIoJobUpdate::ImportFinished {
