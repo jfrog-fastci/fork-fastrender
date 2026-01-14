@@ -5329,7 +5329,7 @@ pub(crate) fn named_node_map_exotic_get(
   };
   scope.push_root(Value::Object(attr_proto))?;
 
-  let resolve_attr = |dom: &dom2::Document| -> Option<(String, String, bool)> {
+  let resolve_attr = |dom: &dom2::Document| -> Option<(dom2::Attribute, bool)> {
     let node_id = dom.node_id_from_index(node_index).ok()?;
     let (namespace, attrs) = match &dom.node(node_id).kind {
       NodeKind::Element {
@@ -5344,18 +5344,12 @@ pub(crate) fn named_node_map_exotic_get(
     } => (namespace.as_str(), attributes.as_slice()),
       _ => return None,
     };
-    let attr = attrs.get(idx)?;
+    let attr = attrs.get(idx)?.clone();
     let is_html = dom.is_html_case_insensitive_namespace(namespace);
-    let name = attr.qualified_name();
-    let name = if is_html {
-      name.as_ref().to_ascii_lowercase()
-    } else {
-      name.into_owned()
-    };
-    Some((name, attr.value.clone(), is_html))
+    Some((attr, is_html))
   };
 
-  let (name, value, _is_html) = if let Some(dom) = ctx.owned_dom2_documents.borrow().get(&document_id) {
+  let (attr, is_html) = if let Some(dom) = ctx.owned_dom2_documents.borrow().get(&document_id) {
     let dom = dom.as_ref();
     let Some(tuple) = resolve_attr(dom) else {
       return Ok(None);
@@ -5374,51 +5368,14 @@ pub(crate) fn named_node_map_exotic_get(
   };
 
   // Construct an Attr object that reflects the current attribute value.
-  let attr_obj = scope.alloc_object_with_prototype(Some(attr_proto))?;
-  scope.push_root(Value::Object(attr_obj))?;
-  scope.heap_mut().object_set_host_slots(
-    attr_obj,
-    HostSlots {
-      a: node_index as u64,
-      b: HOST_OBJECT_ATTR,
-    },
+  let attr_obj = make_attr_obj(
+    scope,
+    attr_proto,
+    node_index as u64,
+    &attr,
+    is_html,
+    Value::Object(owner_element),
   )?;
-
-  let name_key = alloc_key(scope, "name")?;
-  let local_name_key = alloc_key(scope, "localName")?;
-  let prefix_key = alloc_key(scope, "prefix")?;
-  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
-  let value_key = alloc_key(scope, "value")?;
-  let owner_element_key = alloc_key(scope, "ownerElement")?;
-  let specified_key = alloc_key(scope, "specified")?;
-
-  let name_s = scope.alloc_string(&name)?;
-  scope.push_root(Value::String(name_s))?;
-  let local_name_s = scope.alloc_string(&name)?;
-  scope.push_root(Value::String(local_name_s))?;
-  let value_s = scope.alloc_string(&value)?;
-  scope.push_root(Value::String(value_s))?;
-
-  scope.define_property(attr_obj, name_key, read_only_data_desc(Value::String(name_s)))?;
-  scope.define_property(
-    attr_obj,
-    local_name_key,
-    read_only_data_desc(Value::String(local_name_s)),
-  )?;
-  scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
-  scope.define_property(attr_obj, namespace_uri_key, read_only_data_desc(Value::Null))?;
-  scope.define_property(attr_obj, value_key, data_desc(Value::String(value_s)))?;
-  scope.define_property(
-    attr_obj,
-    owner_element_key,
-    read_only_data_desc(Value::Object(owner_element)),
-  )?;
-  scope.define_property(
-    attr_obj,
-    specified_key,
-    read_only_data_desc(Value::Bool(true)),
-  )?;
-
   Ok(Some(Value::Object(attr_obj)))
 }
 
@@ -45946,19 +45903,12 @@ fn element_get_attribute_node_native(
     _ => return Err(VmError::InvariantViolation("missing Attr prototype")),
   };
 
-  let name = attr.qualified_name();
-  let name = if is_html {
-    name.as_ref().to_ascii_lowercase()
-  } else {
-    name.into_owned()
-  };
-
   let attr_obj = make_attr_obj(
     scope,
     attr_proto,
     handle.node_id.index() as u64,
-    &name,
-    &attr.value,
+    attr,
+    is_html,
     Value::Object(wrapper_obj),
   )?;
   Ok(Value::Object(attr_obj))
@@ -45987,8 +45937,8 @@ fn element_get_attribute_node_ns_native(
     "Element.getAttributeNodeNS must be called on an element object",
   )?;
 
-  // `dom2` does not currently track attribute namespaces separately; mirror `Element.getAttributeNS`
-  // (and `NamedNodeMap.getNamedItemNS`) by performing a normal name lookup using `localName`.
+  // Delegate to `NamedNodeMap.getNamedItemNS` so `Element.getAttributeNodeNS` and
+  // `Element.attributes.getNamedItemNS` share the same namespace-aware matching rules.
   let map = element_attributes_get_native(
     vm,
     scope,
@@ -46238,8 +46188,8 @@ fn make_attr_obj(
   scope: &mut Scope<'_>,
   attr_proto: GcObject,
   node_index: u64,
-  name: &str,
-  value: &str,
+  attr: &dom2::Attribute,
+  is_html_element: bool,
   owner_element: Value,
 ) -> Result<GcObject, VmError> {
   let attr_obj = scope.alloc_object_with_prototype(Some(attr_proto))?;
@@ -46260,11 +46210,20 @@ fn make_attr_obj(
   let owner_element_key = alloc_key(scope, "ownerElement")?;
   let specified_key = alloc_key(scope, "specified")?;
 
-  let name_s = scope.alloc_string(name)?;
+  let ci = attr.namespace == dom2::NULL_NAMESPACE && is_html_element;
+
+  let mut name = attr.qualified_name().into_owned();
+  let mut local_name = attr.local_name.clone();
+  if ci {
+    name = name.to_ascii_lowercase();
+    local_name = local_name.to_ascii_lowercase();
+  }
+
+  let name_s = scope.alloc_string(&name)?;
   scope.push_root(Value::String(name_s))?;
-  let local_name_s = scope.alloc_string(name)?;
+  let local_name_s = scope.alloc_string(&local_name)?;
   scope.push_root(Value::String(local_name_s))?;
-  let value_s = scope.alloc_string(value)?;
+  let value_s = scope.alloc_string(&attr.value)?;
   scope.push_root(Value::String(value_s))?;
 
   scope.define_property(
@@ -46277,12 +46236,39 @@ fn make_attr_obj(
     local_name_key,
     read_only_data_desc(Value::String(local_name_s)),
   )?;
-  scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
-  scope.define_property(
-    attr_obj,
-    namespace_uri_key,
-    read_only_data_desc(Value::Null),
-  )?;
+
+  match attr.prefix.as_deref() {
+    Some(prefix) => {
+      let prefix_s = scope.alloc_string(prefix)?;
+      scope.push_root(Value::String(prefix_s))?;
+      scope.define_property(
+        attr_obj,
+        prefix_key,
+        read_only_data_desc(Value::String(prefix_s)),
+      )?;
+    }
+    None => {
+      scope.define_property(attr_obj, prefix_key, read_only_data_desc(Value::Null))?;
+    }
+  }
+
+  if attr.namespace == dom2::NULL_NAMESPACE {
+    scope.define_property(attr_obj, namespace_uri_key, read_only_data_desc(Value::Null))?;
+  } else {
+    let ns_exposed = if attr.namespace.is_empty() {
+      crate::dom::HTML_NAMESPACE
+    } else {
+      attr.namespace.as_str()
+    };
+    let namespace_s = scope.alloc_string(ns_exposed)?;
+    scope.push_root(Value::String(namespace_s))?;
+    scope.define_property(
+      attr_obj,
+      namespace_uri_key,
+      read_only_data_desc(Value::String(namespace_s)),
+    )?;
+  }
+
   scope.define_property(attr_obj, value_key, data_desc(Value::String(value_s)))?;
   scope.define_property(attr_obj, owner_element_key, read_only_data_desc(owner_element))?;
   scope.define_property(
@@ -46415,20 +46401,12 @@ fn named_node_map_item_native(
     return Ok(Value::Null);
   };
 
-  let is_html = dom.is_html_case_insensitive_namespace(namespace);
-  let name = attr.qualified_name();
-  let name = if is_html {
-    name.as_ref().to_ascii_lowercase()
-  } else {
-    name.into_owned()
-  };
-
   let attr_obj = make_attr_obj(
     scope,
     attr_proto,
     slots.a,
-    &name,
-    &attr.value,
+    attr,
+    dom.is_html_case_insensitive_namespace(namespace),
     Value::Object(owner_element),
   )?;
   Ok(Value::Object(attr_obj))
@@ -46488,19 +46466,13 @@ fn named_node_map_get_named_item_native(
   let Some(attr) = found else {
     return Ok(Value::Null);
   };
-  let name = attr.qualified_name();
-  let name = if is_html {
-    name.as_ref().to_ascii_lowercase()
-  } else {
-    name.into_owned()
-  };
 
   let attr_obj = make_attr_obj(
     scope,
     attr_proto,
     slots.a,
-    &name,
-    &attr.value,
+    attr,
+    is_html,
     Value::Object(owner_element),
   )?;
   Ok(Value::Object(attr_obj))
@@ -46511,14 +46483,82 @@ fn named_node_map_get_named_item_ns_native(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // `dom2` does not currently track attribute namespaces separately; mirror `Element.getAttributeNS`
-  // by looking up the provided `localName` using normal name matching rules.
-  let local_name = args.get(1).copied().unwrap_or(Value::Undefined);
-  named_node_map_get_named_item_native(vm, scope, host, hooks, callee, this, &[local_name])
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
+  let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let local_name_value = match local_name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let local_name = scope.heap().get_string(local_name_value)?.to_utf8_lossy();
+
+  let (element_ns, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(element_ns);
+  let ci = ns_for_dom2 == dom2::NULL_NAMESPACE && is_html;
+
+  let mut found: Option<&dom2::Attribute> = None;
+  for attr in attrs {
+    if attr.namespace != ns_for_dom2 {
+      continue;
+    }
+    let matches = if ci {
+      attr.local_name.eq_ignore_ascii_case(local_name.as_ref())
+    } else {
+      attr.local_name == local_name.as_ref()
+    };
+    if matches {
+      found = Some(attr);
+      break;
+    }
+  }
+
+  let Some(attr) = found else {
+    return Ok(Value::Null);
+  };
+
+  let attr_obj = make_attr_obj(
+    scope,
+    attr_proto,
+    slots.a,
+    attr,
+    is_html,
+    Value::Object(owner_element),
+  )?;
+  Ok(Value::Object(attr_obj))
 }
 
 fn named_node_map_set_named_item_native(
@@ -46589,7 +46629,7 @@ fn named_node_map_set_named_item_native(
   };
 
   let is_html = dom.is_html_case_insensitive_namespace(namespace);
-  let mut replaced: Option<(String, String)> = None;
+  let mut replaced: Option<dom2::Attribute> = None;
   for attr in attrs {
     let attr_name = attr.qualified_name();
     let matches = if is_html {
@@ -46598,12 +46638,7 @@ fn named_node_map_set_named_item_native(
       attr_name.as_ref() == name
     };
     if matches {
-      let old_name = if is_html {
-        attr_name.as_ref().to_ascii_lowercase()
-      } else {
-        attr_name.into_owned()
-      };
-      replaced = Some((old_name, attr.value.clone()));
+      replaced = Some(attr.clone());
       break;
     }
   }
@@ -46625,13 +46660,13 @@ fn named_node_map_set_named_item_native(
     &[Value::String(name_s), Value::String(value_s)],
   )?;
 
-  if let Some((old_name, old_value)) = replaced {
+  if let Some(old_attr) = replaced {
     let replaced_attr = make_attr_obj(
       scope,
       attr_proto,
       slots.a,
-      &old_name,
-      &old_value,
+      &old_attr,
+      is_html,
       Value::Null,
     )?;
     return Ok(Value::Object(replaced_attr));
@@ -46645,12 +46680,142 @@ fn named_node_map_set_named_item_ns_native(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // `dom2` does not currently track attribute namespaces separately; treat this as `setNamedItem`.
-  named_node_map_set_named_item_native(vm, scope, host, hooks, callee, this, args)
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let attr_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(attr_obj) = attr_value else {
+    return Err(VmError::TypeError(
+      "NamedNodeMap.setNamedItemNS must be called with an Attr object",
+    ));
+  };
+  if !is_attr_object(scope.heap(), attr_obj)? {
+    return Err(VmError::TypeError(
+      "NamedNodeMap.setNamedItemNS must be called with an Attr object",
+    ));
+  }
+  scope.push_root(Value::Object(attr_obj))?;
+
+  let name_key = alloc_key(scope, "name")?;
+  let value_key = alloc_key(scope, "value")?;
+  let namespace_uri_key = alloc_key(scope, "namespaceURI")?;
+
+  let name_val = scope
+    .heap()
+    .object_get_own_data_property_value(attr_obj, &name_key)?
+    .unwrap_or(Value::Undefined);
+  let name_val = scope.heap_mut().to_string(name_val)?;
+  let qualified_name = scope
+    .heap()
+    .get_string(name_val)
+    .map(|s| s.to_utf8_lossy().to_string())
+    .unwrap_or_default();
+
+  let value_val = scope
+    .heap()
+    .object_get_own_data_property_value(attr_obj, &value_key)?
+    .unwrap_or(Value::Undefined);
+  let value_val = scope.heap_mut().to_string(value_val)?;
+  let value = scope
+    .heap()
+    .get_string(value_val)
+    .map(|s| s.to_utf8_lossy().to_string())
+    .unwrap_or_default();
+
+  let namespace_value = scope
+    .heap()
+    .object_get_own_data_property_value(attr_obj, &namespace_uri_key)?
+    .unwrap_or(Value::Undefined);
+
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+  let dom2::ParsedQualifiedName { local_name, .. } =
+    match dom2::validate_and_extract_attribute(namespace.as_deref(), &qualified_name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    };
+
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
+  // Capture the existing attribute (if any) so we can return it. This is intentionally computed
+  // from the element's current attribute list (rather than retaining stable Attr identity).
+  let (element_ns, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(element_ns);
+  let ci = ns_for_dom2 == dom2::NULL_NAMESPACE && is_html;
+  let mut replaced: Option<dom2::Attribute> = None;
+  for attr in attrs {
+    if attr.namespace != ns_for_dom2 {
+      continue;
+    }
+    let matches = if ci {
+      attr.local_name.eq_ignore_ascii_case(&local_name)
+    } else {
+      attr.local_name == local_name
+    };
+    if matches {
+      replaced = Some(attr.clone());
+      break;
+    }
+  }
+
+  let qualified_name_s = scope.alloc_string(&qualified_name)?;
+  scope.push_root(Value::String(qualified_name_s))?;
+  let value_s = scope.alloc_string(&value)?;
+  scope.push_root(Value::String(value_s))?;
+
+  // Reuse Element.setAttributeNS so MutationObserver + dynamic script bookkeeping stays consistent.
+  let dummy_callee = scope.alloc_object()?;
+  element_set_attribute_ns_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    dummy_callee,
+    Value::Object(owner_element),
+    &[namespace_value, Value::String(qualified_name_s), Value::String(value_s)],
+  )?;
+
+  if let Some(old_attr) = replaced {
+    let replaced_attr = make_attr_obj(
+      scope,
+      attr_proto,
+      slots.a,
+      &old_attr,
+      is_html,
+      Value::Null,
+    )?;
+    return Ok(Value::Object(replaced_attr));
+  }
+
+  Ok(Value::Null)
 }
 
 fn named_node_map_remove_named_item_native(
@@ -46716,7 +46881,7 @@ fn named_node_map_remove_named_item_native(
   };
 
   // Return the removed Attr (with ownerElement null).
-  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, &name, &attr.value, Value::Null)?;
+  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, attr, is_html, Value::Null)?;
 
   let name_s = scope.alloc_string(&name)?;
   scope.push_root(Value::String(name_s))?;
@@ -46741,14 +46906,92 @@ fn named_node_map_remove_named_item_ns_native(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // `dom2` does not currently track attribute namespaces separately; mirror `Element.removeAttributeNS`
-  // by removing the attribute matched by `localName`.
-  let local_name = args.get(1).copied().unwrap_or(Value::Undefined);
-  named_node_map_remove_named_item_native(vm, scope, host, hooks, callee, this, &[local_name])
+  let (owner_element, handle, dom_ptr, attr_proto, slots) =
+    named_node_map_context(vm, scope, host, this, "Illegal invocation")?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
+  let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let local_name_value = match local_name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let local_name = scope.heap().get_string(local_name_value)?.to_utf8_lossy();
+
+  let (element_ns, attrs) = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace.as_str(), attributes.as_slice()),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let is_html = dom.is_html_case_insensitive_namespace(element_ns);
+  let ci = ns_for_dom2 == dom2::NULL_NAMESPACE && is_html;
+
+  let mut found: Option<&dom2::Attribute> = None;
+  for attr in attrs {
+    if attr.namespace != ns_for_dom2 {
+      continue;
+    }
+    let matches = if ci {
+      attr.local_name.eq_ignore_ascii_case(local_name.as_ref())
+    } else {
+      attr.local_name == local_name.as_ref()
+    };
+    if matches {
+      found = Some(attr);
+      break;
+    }
+  }
+
+  let Some(attr) = found else {
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
+  };
+
+  // Return the removed Attr (with ownerElement null).
+  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, attr, is_html, Value::Null)?;
+
+  let local_name_s = scope.alloc_string(local_name.as_ref())?;
+  scope.push_root(Value::String(local_name_s))?;
+
+  // Reuse Element.removeAttributeNS so MutationObserver + dynamic script bookkeeping stays consistent.
+  let dummy_callee = scope.alloc_object()?;
+  element_remove_attribute_ns_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    dummy_callee,
+    Value::Object(owner_element),
+    &[namespace_value, Value::String(local_name_s)],
+  )?;
+
+  Ok(Value::Object(removed_attr))
 }
 
 fn element_toggle_attribute_native(

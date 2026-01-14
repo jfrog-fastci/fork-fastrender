@@ -179,12 +179,6 @@ status = "xfail"
 reason = "Attribute namespace matching is incorrect: getAttributeNS must match by (namespace, localName)."
 
 [[expectations]]
-id = "dom/element_get_attribute_node.window.js"
-backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Element.getAttributeNode/getAttributeNodeNS are not implemented yet (Attr wrapper exposure incomplete)."
-
-[[expectations]]
 id = "dom/node_isEqualNode.window.js"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
