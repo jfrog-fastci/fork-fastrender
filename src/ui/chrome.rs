@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::debug::runtime::runtime_toggles;
-use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::AddressBarSecurityState;
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
