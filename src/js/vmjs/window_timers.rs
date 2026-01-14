@@ -3193,10 +3193,10 @@ mod tests {
         .expect_err("expected module-load error-object allocation to fail under tiny heap")
     };
     assert!(
-      matches!(err, VmError::OutOfMemory)
+      matches!(&err, VmError::OutOfMemory)
         || matches!(
-          err,
-          VmError::Termination(ref term) if term.reason == TerminationReason::OutOfMemory
+          &err,
+          VmError::Termination(term) if term.reason == TerminationReason::OutOfMemory
         ),
       "expected out-of-memory error, got {err:?}"
     );

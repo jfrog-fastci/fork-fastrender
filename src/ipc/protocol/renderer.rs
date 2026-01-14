@@ -461,6 +461,13 @@ pub enum BrowserToRenderer {
   /// (shared memory segment, pooled buffer, etc).
   FrameAck { frame_seq: u64 },
 
+  /// Release a shared frame buffer slot back to the renderer.
+  ///
+  /// Some multiprocess experiments use a fixed pool of shared buffers identified by `(generation,
+  /// buffer_index)` instead of per-frame FDs. In that mode the browser releases a buffer explicitly
+  /// once it has copied/uploaded the pixels.
+  ReleaseFrameBuffer { generation: u64, buffer_index: u32 },
+
   /// Close a tab (drop all associated renderer-side state).
   TabClosed { tab_id: u64 },
 
@@ -808,6 +815,10 @@ mod frame_flow_control {
         modifiers: 0,
       },
       BrowserToRenderer::FrameAck { frame_seq: 9 },
+      BrowserToRenderer::ReleaseFrameBuffer {
+        generation: 1,
+        buffer_index: 0,
+      },
       BrowserToRenderer::TabClosed { tab_id: 1 },
       BrowserToRenderer::Shutdown,
     ];

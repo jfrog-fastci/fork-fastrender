@@ -97,7 +97,9 @@ mod tests {
 
   #[test]
   fn decodes_first_packet_from_mp4_fixture() {
-    let fixture_path = crate::testing::fixture_path("fixtures/media/aac_stereo_48000.mp4");
+    // Reuse the shared deterministic MP4 fixture (H.264 + AAC). We only care about the AAC track
+    // here.
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
     let mp4_bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
 
     let cursor = std::io::Cursor::new(mp4_bytes);
