@@ -570,18 +570,6 @@ status = "xfail"
 reason = "vmjs-rendered executes HTML tests via the script runner; dynamic script loading/ordering (`async=false`) is not implemented yet and the test times out."
 
 [[expectations]]
-id = "observers_layout/intersection_observer_basic.window.js"
-backend = "vmjs-rendered"
-status = "xfail"
-reason = "IntersectionObserver geometry integration is incomplete (boundingClientRect/intersectionRect sizes are incorrect)."
-
-[[expectations]]
-id = "observers_layout/resize_observer_basic.window.js"
-backend = "vmjs-rendered"
-status = "xfail"
-reason = "Rendered-backend ResizeObserver geometry integration is incomplete (contentRect reports 0 sizes)."
-
-[[expectations]]
 id = "html_integration/dynamic_classic_script_error_event_fires.html"
 backend = "vmjs-rendered"
 status = "xfail"

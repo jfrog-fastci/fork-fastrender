@@ -20,6 +20,7 @@
 
 use crate::js::window_dom_rect;
 use crate::js::window_realm::WindowRealmUserData;
+use crate::{api::BrowserDocumentDom2, geometry::Rect};
 use vm_js::{
   GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
   Value, Vm, VmError, VmHost, VmHostHooks,
@@ -297,11 +298,59 @@ fn alloc_resize_observer_size_array(
   Ok(array)
 }
 
+fn compute_target_content_box_rects(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  pending_targets: GcObject,
+  len: usize,
+) -> Result<Option<Vec<Rect>>, VmError> {
+  let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+    return Ok(None);
+  };
+
+  // Ensure the renderer layout cache exists before reading fragment geometry.
+  let _ = document.ensure_layout_for_dom_query();
+  let Ok(ctx) = document.geometry_context() else {
+    return Ok(None);
+  };
+
+  // Root the pending array while we read its elements and allocate strings for indices.
+  scope.push_root(Value::Object(pending_targets))?;
+
+  let mut out = Vec::with_capacity(len);
+  for idx in 0..len {
+    let target = {
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_root(Value::Object(pending_targets))?;
+      let key = alloc_key(&mut iter_scope, &idx.to_string())?;
+      iter_scope
+        .heap()
+        .object_get_own_data_property_value(pending_targets, &key)?
+        .unwrap_or(Value::Undefined)
+    };
+
+    let node_id = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .and_then(|user_data| user_data.dom_platform_mut())
+      .and_then(|platform| platform.require_element_id(scope.heap(), target).ok());
+
+    let rect = node_id
+      .and_then(|node_id| ctx.content_box_in_viewport(node_id))
+      .unwrap_or(Rect::ZERO);
+
+    out.push(rect);
+  }
+
+  Ok(Some(out))
+}
+
 fn build_entries_from_pending_targets(
   vm: &Vm,
   scope: &mut Scope<'_>,
   global: Option<GcObject>,
   pending_targets: GcObject,
+  target_content_rects: Option<&[Rect]>,
 ) -> Result<GcObject, VmError> {
   // Root the pending array while we read elements and allocate entry objects/strings.
   scope.push_root(Value::Object(pending_targets))?;
@@ -342,15 +391,26 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
+    let mut rect = target_content_rects
+      .and_then(|rects| rects.get(idx).copied())
+      .unwrap_or(Rect::ZERO);
+    let mut inline_size = rect.width() as f64;
+    let mut block_size = rect.height() as f64;
+    if !(inline_size > 0.0 && block_size > 0.0) {
+      rect = Rect::ZERO;
+      inline_size = 0.0;
+      block_size = 0.0;
+    }
+
     // Spec-ish geometry shape: provide a `DOMRectReadOnly` instance for `contentRect`.
     let content_rect = if let Some(global) = global {
       window_dom_rect::alloc_dom_rect_read_only_from_global(
         &mut iter_scope,
         global,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
+        rect.x() as f64,
+        rect.y() as f64,
+        inline_size,
+        block_size,
       )?
     } else {
       // Fallback: should be unreachable in normal Window realms.
@@ -367,8 +427,8 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
-    // Provide spec-shaped size arrays (all zeros).
-    let border_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    // Provide spec-shaped size arrays (best-effort: use content box sizes).
+    let border_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, inline_size, block_size)?;
     iter_scope.push_root(Value::Object(border_box_size))?;
     set_own_data_prop(
       &mut iter_scope,
@@ -378,7 +438,7 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
-    let content_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    let content_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, inline_size, block_size)?;
     iter_scope.push_root(Value::Object(content_box_size))?;
     set_own_data_prop(
       &mut iter_scope,
@@ -388,7 +448,7 @@ fn build_entries_from_pending_targets(
       /* writable */ false,
     )?;
 
-    let device_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, 0.0, 0.0)?;
+    let device_box_size = alloc_resize_observer_size_array(vm, &mut iter_scope, inline_size, block_size)?;
     iter_scope.push_root(Value::Object(device_box_size))?;
     set_own_data_prop(
       &mut iter_scope,
@@ -497,7 +557,9 @@ fn deliver_pending_entries(
     Value::Object(obj) => Some(obj),
     _ => None,
   };
-  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
+  let target_rects = compute_target_content_box_rects(vm, scope, host, pending_targets, pending_len)?;
+  let entries =
+    build_entries_from_pending_targets(vm, scope, global, pending_targets, target_rects.as_deref())?;
   scope.push_root(Value::Object(entries))?;
 
   // Clear pending state before invoking the callback so re-entrancy behaves sensibly.
@@ -788,7 +850,12 @@ fn resize_observer_take_records_native(
     Value::Object(obj) => Some(obj),
     _ => None,
   };
-  let entries = build_entries_from_pending_targets(vm, scope, global, pending_targets)?;
+  // Best-effort geometry integration: if this realm is running against a renderer-backed document,
+  // populate the entry rects from the cached layout.
+  let len = array_length(scope, pending_targets)?;
+  let target_rects = compute_target_content_box_rects(vm, scope, _host, pending_targets, len)?;
+  let entries =
+    build_entries_from_pending_targets(vm, scope, global, pending_targets, target_rects.as_deref())?;
   clear_pending_targets(vm, scope, observer_obj)?;
   set_own_data_prop(
     scope,
