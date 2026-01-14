@@ -524,7 +524,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+N | New window |
 | F11 (Win/Linux); Ctrl+Cmd+F (macOS) | Toggle full screen |
 | Ctrl/Cmd+F | Find in page |
-| Ctrl+J (Win/Linux); Cmd+Shift+J (macOS) | Toggle downloads panel |
+| Ctrl+J (Win/Linux); Cmd+Shift+J (macOS) | Show downloads (Window → Show Downloads…) |
 | Ctrl/Cmd+T | New tab |
 | Ctrl/Cmd+Shift+T | Reopen last closed tab |
 | Ctrl/Cmd+Shift+A | Search tabs / quick switcher |
