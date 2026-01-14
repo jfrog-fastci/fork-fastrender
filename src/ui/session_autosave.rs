@@ -12,10 +12,11 @@
 
 use crate::ui::about_pages;
 use crate::ui::session::{load_session, save_session_atomic, BrowserSession};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(500);
 /// Maximum time the writer thread will wait before persisting a pending snapshot, even if new save
@@ -34,6 +35,9 @@ pub struct SessionAutosaveStatusSnapshot {
   pub consecutive_failures: usize,
   /// Most recent write error (set on the first failure; updated with later failures).
   pub last_error: Option<String>,
+  /// Most recent non-fatal warning from the autosave worker (e.g. failing to quarantine a corrupt
+  /// session file before overwriting it).
+  pub last_warning: Option<String>,
   /// Timestamp of the first failure in the current failure streak.
   pub failed_since: Option<Instant>,
   /// Timestamp of the most recent write attempt (success or failure).
@@ -46,6 +50,7 @@ pub struct SessionAutosaveStatusSnapshot {
 struct SessionAutosaveStatusInner {
   consecutive_failures: usize,
   last_error: Option<String>,
+  last_warning: Option<String>,
   failed_since: Option<Instant>,
   last_attempt_at: Option<Instant>,
   last_success_at: Option<Instant>,
@@ -83,6 +88,16 @@ impl SessionAutosaveStatusShared {
     self.revision.fetch_add(1, Ordering::Release);
   }
 
+  fn record_warning(&self, warning: impl Into<String>) {
+    let mut inner = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    inner.last_warning = Some(warning.into());
+    drop(inner);
+    self.revision.fetch_add(1, Ordering::Release);
+  }
+
   fn snapshot(&self) -> SessionAutosaveStatusSnapshot {
     let inner = self
       .inner
@@ -91,6 +106,7 @@ impl SessionAutosaveStatusShared {
     SessionAutosaveStatusSnapshot {
       consecutive_failures: inner.consecutive_failures,
       last_error: inner.last_error.clone(),
+      last_warning: inner.last_warning.clone(),
       failed_since: inner.failed_since,
       last_attempt_at: inner.last_attempt_at,
       last_success_at: inner.last_success_at,
@@ -137,6 +153,7 @@ impl SessionAutosaveStatusHandle {
     let snapshot = SessionAutosaveStatusSnapshot {
       consecutive_failures: inner.consecutive_failures,
       last_error: inner.last_error.clone(),
+      last_warning: inner.last_warning.clone(),
       failed_since: inner.failed_since,
       last_attempt_at: inner.last_attempt_at,
       last_success_at: inner.last_success_at,
@@ -304,6 +321,7 @@ struct SyncFallbackState {
   current_session: BrowserSession,
   pending_session: Option<BrowserSession>,
   last_write_result: Result<(), String>,
+  needs_corrupt_quarantine: bool,
 }
 
 /// Synchronous fallback path used when spawning the writer thread fails.
@@ -330,7 +348,13 @@ impl SyncFallback {
     // Preserve the crash-loop streak tracked at startup.
     to_write.unclean_exit_streak = state.current_session.unclean_exit_streak;
 
-    let result = (self.save_fn)(self.path.as_path(), &to_write);
+    let result = save_session_with_quarantine_if_needed(
+      self.path.as_path(),
+      &to_write,
+      &mut state.needs_corrupt_quarantine,
+      self.status.as_ref(),
+      &self.save_fn,
+    );
     self.status.record_attempt(&result, Instant::now());
     state.last_write_result = result;
 
@@ -352,7 +376,13 @@ impl SyncFallback {
     if let Some(mut session) = state.pending_session.take() {
       session.did_exit_cleanly = false;
       session.unclean_exit_streak = state.current_session.unclean_exit_streak;
-      let result = (self.save_fn)(self.path.as_path(), &session);
+      let result = save_session_with_quarantine_if_needed(
+        self.path.as_path(),
+        &session,
+        &mut state.needs_corrupt_quarantine,
+        self.status.as_ref(),
+        &self.save_fn,
+      );
       self.status.record_attempt(&result, Instant::now());
       state.last_write_result = result;
       if state.last_write_result.is_ok() {
@@ -365,12 +395,20 @@ impl SyncFallback {
     }
 
     if state.last_write_result.is_err() {
-      state.current_session.did_exit_cleanly = false;
-      let result = (self.save_fn)(self.path.as_path(), &state.current_session);
+      let mut to_write = state.current_session.clone();
+      to_write.did_exit_cleanly = false;
+      let result = save_session_with_quarantine_if_needed(
+        self.path.as_path(),
+        &to_write,
+        &mut state.needs_corrupt_quarantine,
+        self.status.as_ref(),
+        &self.save_fn,
+      );
       self.status.record_attempt(&result, Instant::now());
       state.last_write_result = result;
       if state.last_write_result.is_ok() {
         self.write_count.fetch_add(1, Ordering::Relaxed);
+        state.current_session = to_write;
       }
     }
 
@@ -390,7 +428,13 @@ impl SyncFallback {
     to_write.did_exit_cleanly = true;
     to_write.unclean_exit_streak = 0;
 
-    let result = (self.save_fn)(self.path.as_path(), &to_write);
+    let result = save_session_with_quarantine_if_needed(
+      self.path.as_path(),
+      &to_write,
+      &mut state.needs_corrupt_quarantine,
+      self.status.as_ref(),
+      &self.save_fn,
+    );
     self.status.record_attempt(&result, Instant::now());
     state.last_write_result = result.clone();
     if result.is_ok() {
@@ -595,7 +639,7 @@ impl SessionAutosave {
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
           .take();
-        let (current_session, last_write_result) = session_startup_unclean_marker(
+        let (current_session, last_write_result, needs_corrupt_quarantine) = session_startup_unclean_marker(
           &path_for_struct,
           initial_session,
           &write_count,
@@ -619,6 +663,7 @@ impl SessionAutosave {
               current_session,
               pending_session: None,
               last_write_result,
+              needs_corrupt_quarantine,
             }),
           }),
           write_count,
@@ -789,11 +834,24 @@ impl SessionAutosave {
     session.did_exit_cleanly = false;
 
     // Preserve the crash-loop streak managed by the autosave worker. UI snapshots do not track it.
-    if let Ok(Some(existing)) = load_session(&self.path) {
-      session.unclean_exit_streak = existing.unclean_exit_streak;
+    let mut needs_corrupt_quarantine = false;
+    match load_session(&self.path) {
+      Ok(Some(existing)) => {
+        session.unclean_exit_streak = existing.unclean_exit_streak;
+      }
+      Ok(None) => {}
+      Err(_) => {
+        needs_corrupt_quarantine = true;
+      }
     }
 
-    let result = (self.save_fn)(self.path.as_path(), &session);
+    let result = save_session_with_quarantine_if_needed(
+      self.path.as_path(),
+      &session,
+      &mut needs_corrupt_quarantine,
+      self.status.shared.as_ref(),
+      &self.save_fn,
+    );
     self.status.shared.record_attempt(&result, Instant::now());
     if result.is_ok() {
       self.write_count.fetch_add(1, Ordering::Relaxed);
@@ -841,6 +899,89 @@ impl Drop for SessionAutosave {
   }
 }
 
+fn quarantine_corrupt_session_file(path: &Path) -> Result<Option<PathBuf>, String> {
+  let parent_dir = path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+  let Some(file_name) = path.file_name() else {
+    return Err(format!(
+      "failed to quarantine corrupt session file: path {} has no file name",
+      path.display()
+    ));
+  };
+
+  let timestamp_ms = SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis();
+
+  for attempt in 0..100usize {
+    let mut quarantined_name = file_name.to_os_string();
+    quarantined_name.push(".corrupt.");
+    quarantined_name.push(format!("{timestamp_ms}"));
+    if attempt > 0 {
+      quarantined_name.push(format!(".{attempt}"));
+    }
+
+    let quarantined_path = parent_dir.join(&quarantined_name);
+    match std::fs::rename(path, &quarantined_path) {
+      Ok(()) => return Ok(Some(quarantined_path)),
+      Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+      Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+      Err(err) => {
+        return Err(format!(
+          "failed to quarantine corrupt session file {} by renaming to {}: {err}",
+          path.display(),
+          quarantined_path.display()
+        ))
+      }
+    }
+  }
+
+  Err(format!(
+    "failed to quarantine corrupt session file {}: too many filename collisions",
+    path.display()
+  ))
+}
+
+fn save_session_with_quarantine_if_needed(
+  path: &Path,
+  session: &BrowserSession,
+  needs_quarantine: &mut bool,
+  status: &SessionAutosaveStatusShared,
+  save_fn: &SaveSessionFn,
+) -> Result<(), String> {
+  let mut quarantined = false;
+
+  if *needs_quarantine {
+    match quarantine_corrupt_session_file(path) {
+      Ok(Some(_quarantined_path)) => {
+        quarantined = true;
+        *needs_quarantine = false;
+      }
+      Ok(None) => {
+        // File already missing, nothing left to quarantine.
+        *needs_quarantine = false;
+      }
+      Err(err) => {
+        status.record_warning(err);
+      }
+    }
+  }
+
+  let result = save_fn(path, session);
+
+  if result.is_ok() || quarantined {
+    // Either we successfully wrote a replacement session (so the corrupt bytes are gone anyway), or
+    // we successfully moved the corrupt file aside. In both cases, do not attempt to quarantine on
+    // subsequent writes.
+    *needs_quarantine = false;
+  }
+
+  result
+}
+
 fn session_writer_thread(
   path: PathBuf,
   debounce: Duration,
@@ -851,7 +992,8 @@ fn session_writer_thread(
   status: Arc<SessionAutosaveStatusShared>,
   save_fn: SaveSessionFn,
 ) {
-  let (mut current_session, mut last_write_result) = session_startup_unclean_marker(
+  let (mut current_session, mut last_write_result, mut needs_corrupt_quarantine) =
+    session_startup_unclean_marker(
     &path,
     initial_session,
     &write_count,
@@ -875,7 +1017,13 @@ fn session_writer_thread(
         // Preserve the crash-loop streak managed by this thread. Session snapshots produced by the
         // UI do not track it.
         to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-        last_write_result = save_fn(path.as_path(), &to_write);
+        last_write_result = save_session_with_quarantine_if_needed(
+          path.as_path(),
+          &to_write,
+          &mut needs_corrupt_quarantine,
+          status.as_ref(),
+          &save_fn,
+        );
         status.record_attempt(&last_write_result, Instant::now());
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -918,7 +1066,13 @@ fn session_writer_thread(
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-          last_write_result = save_fn(path.as_path(), &to_write);
+          last_write_result = save_session_with_quarantine_if_needed(
+            path.as_path(),
+            &to_write,
+            &mut needs_corrupt_quarantine,
+            status.as_ref(),
+            &save_fn,
+          );
           status.record_attempt(&last_write_result, Instant::now());
           if last_write_result.is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
@@ -933,7 +1087,13 @@ fn session_writer_thread(
           // retry persisting the current session even when there is no pending update.
           if last_write_result.is_err() {
             current_session.did_exit_cleanly = false;
-            last_write_result = save_fn(path.as_path(), &current_session);
+            last_write_result = save_session_with_quarantine_if_needed(
+              path.as_path(),
+              &current_session,
+              &mut needs_corrupt_quarantine,
+              status.as_ref(),
+              &save_fn,
+            );
             status.record_attempt(&last_write_result, Instant::now());
             if last_write_result.is_ok() {
               write_count.fetch_add(1, Ordering::Relaxed);
@@ -950,7 +1110,13 @@ fn session_writer_thread(
           .unwrap_or(current_session);
         to_write.did_exit_cleanly = true;
         to_write.unclean_exit_streak = 0;
-        last_write_result = save_fn(path.as_path(), &to_write);
+        last_write_result = save_session_with_quarantine_if_needed(
+          path.as_path(),
+          &to_write,
+          &mut needs_corrupt_quarantine,
+          status.as_ref(),
+          &save_fn,
+        );
         status.record_attempt(&last_write_result, Instant::now());
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -967,7 +1133,13 @@ fn session_writer_thread(
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
-          let result = save_fn(path.as_path(), &to_write);
+          let result = save_session_with_quarantine_if_needed(
+            path.as_path(),
+            &to_write,
+            &mut needs_corrupt_quarantine,
+            status.as_ref(),
+            &save_fn,
+          );
           status.record_attempt(&result, Instant::now());
           if result.is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
@@ -985,7 +1157,7 @@ fn session_startup_unclean_marker(
   write_count: &Arc<AtomicUsize>,
   status: &SessionAutosaveStatusShared,
   save_fn: &SaveSessionFn,
-) -> (BrowserSession, Result<(), String>) {
+) -> (BrowserSession, Result<(), String>, bool) {
   // On startup: best-effort mark the on-disk session as "unclean" so crash recovery can detect
   // abnormal exits.
   //
@@ -1019,14 +1191,14 @@ fn session_startup_unclean_marker(
       if !can_overwrite_on_startup {
         // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
         // our fallback session.
-        (session, Ok(()))
+        (session, Ok(()), true)
       } else {
         let result = save_fn(path, &session);
         status.record_attempt(&result, Instant::now());
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
-        (session, result)
+        (session, result, false)
       }
     }
     None => match load_session(path) {
@@ -1042,7 +1214,7 @@ fn session_startup_unclean_marker(
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
-        (session, result)
+        (session, result, false)
       }
       Ok(None) => {
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
@@ -1053,7 +1225,7 @@ fn session_startup_unclean_marker(
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
-        (session, result)
+        (session, result, false)
       }
       Err(_) => {
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
@@ -1061,7 +1233,7 @@ fn session_startup_unclean_marker(
         session.unclean_exit_streak = 1;
         // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
         // our fallback session.
-        (session, Ok(()))
+        (session, Ok(()), true)
       }
     },
   }
@@ -1400,6 +1572,54 @@ mod tests {
     // The corrupted file should be preserved until a real Save request is made.
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert_eq!(on_disk, corrupted);
+  }
+
+  #[test]
+  fn quarantines_corrupted_session_file_before_first_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let corrupted = b"this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    // Allow the writer thread to run its startup logic; `flush()` should be a no-op in this case.
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.windows[0].tabs[0].url, "about:blank");
+    assert!(
+      !session.did_exit_cleanly,
+      "expected running sessions to be marked unclean"
+    );
+
+    let mut quarantined_paths: Vec<PathBuf> = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .map(|entry| entry.path())
+      .filter(|p| {
+        p.file_name()
+          .and_then(|name| name.to_str())
+          .is_some_and(|name| name.starts_with("session.json.corrupt."))
+      })
+      .collect();
+    quarantined_paths.sort();
+
+    assert_eq!(
+      quarantined_paths.len(),
+      1,
+      "expected exactly one quarantined session file, found {:?}",
+      quarantined_paths
+    );
+
+    let quarantined_bytes = std::fs::read(&quarantined_paths[0]).unwrap();
+    assert_eq!(
+      quarantined_bytes, corrupted,
+      "expected quarantined file to preserve the original bytes"
+    );
   }
 
   #[test]
