@@ -4452,7 +4452,7 @@ impl From<accesskit_winit::ActionRequestEvent> for UserEvent {
   disable_help_subcommand = true,
   color = clap::ColorChoice::Never,
   term_width = 90,
-  after_help = "If URL is omitted, the browser attempts to restore the previous session; if none exists it opens `about:newtab`.\nUse `--restore` to try restoring even when a URL is provided, or `--no-restore` to disable session restore.\nThe URL value is resolved like the address bar: URL-like inputs are normalized (e.g. `example.com` → https), otherwise treated as a DuckDuckGo search (e.g. `cats` → https://duckduckgo.com/?q=cats).\nSupported schemes: http, https, file, about."
+  after_help = "If URL is omitted, the browser attempts to restore the previous session; if none exists it opens `about:newtab`.\nUse `--restore` to try restoring even when a URL is provided, or `--no-restore` to disable session restore.\nUse `--session-path` (or `FASTR_BROWSER_SESSION_PATH`) to run multiple isolated instances.\nThe URL value is resolved like the address bar: URL-like inputs are normalized (e.g. `example.com` → https), otherwise treated as a DuckDuckGo search (e.g. `cats` → https://duckduckgo.com/?q=cats).\nSupported schemes: http, https, file, about."
 )]
 struct BrowserCliArgs {
   /// Start URL (omit to restore previous session when available; otherwise `about:newtab`)
