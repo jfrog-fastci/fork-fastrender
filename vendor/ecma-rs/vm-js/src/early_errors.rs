@@ -1952,13 +1952,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     // Static initialization blocks introduce early-error boundaries:
     // - `return` is always invalid (they are not function bodies),
-    // - `await` is always invalid (ECMA-262 `ContainsAwait` early errors),
+    // - `await` is only valid when permitted by the surrounding context (async function / module /
+    //   async classic script). `vm-js` supports suspending class evaluation when a static block
+    //   contains `await`, so we allow it when the outer context would allow an `await` expression.
     // - `yield` is always invalid (even inside generator functions),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
+    let await_allowed = ctx.await_allowed;
     let saved = self.save_and_enter_function(
       ctx,
       /* strict */ true,
-      /* await_allowed */ false,
+      /* await_allowed */ await_allowed,
       /* yield_allowed */ false,
       /* await_is_reserved */ true,
       /* yield_is_reserved */ ctx.yield_is_reserved,

@@ -9306,9 +9306,6 @@ impl<'a> Evaluator<'a> {
     let saved_home_object = self.home_object;
     let saved_lex = self.env.lexical_env;
     let saved_var_env = self.env.var_env();
-    let saved_this_root = self
-      .this_root_idx
-      .map(|idx| block_scope.heap().root_stack[idx]);
     let saved_meta_property_context = self.env.meta_property_context();
 
     self.this = Value::Object(receiver);
@@ -9323,9 +9320,6 @@ impl<'a> Evaluator<'a> {
     self
       .env
       .set_meta_property_context(MetaPropertyContext::METHOD);
-    if let Some(idx) = self.this_root_idx {
-      block_scope.heap_mut().root_stack[idx] = self.this;
-    }
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
@@ -9347,9 +9341,6 @@ impl<'a> Evaluator<'a> {
     self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
     self.home_object = saved_home_object;
-    if let Some(idx) = self.this_root_idx {
-      block_scope.heap_mut().root_stack[idx] = saved_this_root.unwrap_or(Value::Undefined);
-    }
 
     match res? {
       Completion::Normal(_) => Ok(()),
@@ -9382,10 +9373,14 @@ impl<'a> Evaluator<'a> {
     field_scope.push_roots(&[Value::Object(receiver), Value::Symbol(sym)])?;
 
     let saved_this = self.this;
+    let saved_this_initialized = self.this_initialized;
     let saved_new_target = self.new_target;
     let saved_home_object = self.home_object;
     let saved_meta_property_context = self.env.meta_property_context();
     self.this = Value::Object(receiver);
+    // Static field initializers have their own initialized `this` binding (the class constructor),
+    // even if evaluated inside a derived constructor before `super()` returns.
+    self.this_initialized = true;
     self.new_target = Value::Undefined;
     self.home_object = Some(receiver);
     self
@@ -9416,6 +9411,7 @@ impl<'a> Evaluator<'a> {
     })();
 
     self.this = saved_this;
+    self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
     self.home_object = saved_home_object;
     self
