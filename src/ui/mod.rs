@@ -242,7 +242,7 @@ pub mod session_save_scheduler;
 #[cfg(any(test, feature = "browser_ui"))]
 pub mod scroll_autosave_debounce;
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub mod session_autosave;
 
 // CLI parsing and wgpu-adapter selection knobs for the `browser` binary.

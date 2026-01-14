@@ -7916,6 +7916,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut profile_autosave_flush_tracker =
     ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
 
+  // Poll session autosave write failures so we can surface them to the user even when the UI is
+  // otherwise idle (no redraws/input). The autosave worker runs on a background thread, so normal
+  // runtime write failures would otherwise only be noticed during explicit `flush`/`shutdown`.
+  let session_autosave_error_poll_interval = std::time::Duration::from_secs(1);
+  let mut next_session_autosave_error_poll = std::time::Instant::now();
+  let mut last_session_autosave_error: Option<String> = None;
+
   let mut perf_log_closed_frames_presented: u64 = 0;
   let mut perf_log_closed_input_events: u64 = 0;
   let mut perf_log_closed_idle_frames: u64 = 0;
@@ -10151,6 +10158,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       request_autosave(&windows, &window_order, active_window_id);
     }
 
+    // Poll for session autosave write failures and surface them to the user as a non-blocking toast.
+    if now >= next_session_autosave_error_poll {
+      next_session_autosave_error_poll = now + session_autosave_error_poll_interval;
+      let current_error = session_autosave.last_error();
+      if fastrender::ui::session_autosave::should_emit_session_autosave_error_toast(
+        last_session_autosave_error.as_deref(),
+        current_error.as_deref(),
+      ) {
+        let detail = current_error.as_deref().unwrap_or("").trim();
+        let toast_text = if detail.is_empty() {
+          "Session could not be saved".to_string()
+        } else {
+          format!("Session could not be saved\n{detail}")
+        };
+        let target_window_id = active_window_id.or_else(|| window_order.first().copied());
+        if let Some(id) = target_window_id {
+          if let Some(win) = windows.get_mut(&id) {
+            win
+              .app
+              .show_chrome_toast_kind(fastrender::ui::ToastKind::Error, toast_text);
+            win.app.window.request_redraw();
+          }
+        }
+      }
+      last_session_autosave_error = current_error;
+    }
+
     // Drive periodic worker ticks for documents with time-based effects and keep the event loop
     // armed for the next pending deadline (worker ticks, worker redraw coalescing, viewport
     // throttling, egui repaint scheduling, session autosave).
@@ -10198,7 +10232,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any, and to
-    // keep process-level CPU/RSS sampling armed even when no frames are being drawn.
+    // keep process-level CPU/RSS sampling and session-autosave error polling armed even when no
+    // frames are being drawn.
     let mut next_deadline = session_save_scheduler.next_deadline(now);
     if let Some(deadline) = pending_window_state_autosave_deadline {
       next_deadline = Some(match next_deadline {
@@ -10248,6 +10283,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => deadline,
       });
     }
+    next_deadline = Some(match next_deadline {
+      Some(existing) => existing.min(next_session_autosave_error_poll),
+      None => next_session_autosave_error_poll,
+    });
 
     if let Some(deadline) = next_deadline {
       *control_flow = match *control_flow {

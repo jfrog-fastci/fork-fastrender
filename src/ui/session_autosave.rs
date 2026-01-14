@@ -298,6 +298,20 @@ impl SessionAutosaveWarningUiState {
   }
 }
 
+/// Returns true when a session-autosave write error should be surfaced to the user as a one-shot
+/// toast/infobar.
+///
+/// This is intentionally a small pure function so the UI can unit test "emit only on error
+/// transitions" behaviour without spinning up threads or doing file I/O.
+pub fn should_emit_session_autosave_error_toast(
+  last_error: Option<&str>,
+  current_error: Option<&str>,
+) -> bool {
+  let last_error = last_error.map(str::trim).filter(|s| !s.is_empty());
+  let current_error = current_error.map(str::trim).filter(|s| !s.is_empty());
+  last_error.is_none() && current_error.is_some()
+}
+
 enum Command {
   Save(BrowserSession),
   Flush(mpsc::Sender<Result<(), String>>),
@@ -651,13 +665,14 @@ impl SessionAutosave {
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
           .take();
-        let (current_session, last_write_result, needs_corrupt_quarantine) = session_startup_unclean_marker(
-          &path_for_struct,
-          initial_session,
-          &write_count,
-          status.as_ref(),
-          &save_fn,
-        );
+        let (current_session, last_write_result, needs_corrupt_quarantine) =
+          session_startup_unclean_marker(
+            &path_for_struct,
+            initial_session,
+            write_count.as_ref(),
+            status.as_ref(),
+            &save_fn,
+          );
 
         let sync_fallback = SyncFallback {
           path: path_for_struct.clone(),
@@ -737,16 +752,25 @@ impl SessionAutosave {
   /// Block until the currently queued snapshot (if any) has been written.
   pub fn flush(&self, timeout: Duration) -> Result<(), String> {
     if let Some(sync) = self.sync_fallback.as_ref() {
+      // Synchronous fallback writes are executed immediately on the caller's thread; `flush()` can
+      // simply retry any pending write and return the most recent result.
       let _ = timeout;
       return sync.flush();
     }
+
+    if !self.is_background_thread_running() {
+      return Err("session autosave thread is not running".to_string());
+    };
+
     let Some(tx) = self.tx.as_ref() else {
       return Err("session autosave thread is not running".to_string());
     };
 
     let (done_tx, done_rx) = mpsc::channel::<Result<(), String>>();
-    tx.send(Command::Flush(done_tx))
-      .map_err(|_| "session autosave thread disconnected".to_string())?;
+    if tx.send(Command::Flush(done_tx)).is_err() {
+      self.disable_worker("session autosave thread disconnected");
+      return Err("session autosave thread disconnected".to_string());
+    }
 
     match done_rx.recv_timeout(timeout) {
       Ok(result) => result,
@@ -764,9 +788,12 @@ impl SessionAutosave {
   /// Best-effort: on timeout the writer thread may continue running in the background.
   pub fn shutdown(&mut self, timeout: Duration) -> Result<(), String> {
     if let Some(sync) = self.sync_fallback.take() {
-      let _ = timeout;
+      // No background thread exists: perform the final "mark clean" write synchronously so we don't
+      // lose a pending session snapshot in the fallback state.
+      self.worker_running.store(false, Ordering::Release);
       self.tx = None;
       self.join = None;
+      let _ = timeout;
       return sync.shutdown();
     }
 
@@ -1378,9 +1405,28 @@ fn session_startup_unclean_marker(
   }
 }
 
-#[cfg(all(test, feature = "browser_ui"))]
+#[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn emits_session_autosave_error_toast_only_on_transitions() {
+    assert!(!should_emit_session_autosave_error_toast(None, None));
+    assert!(!should_emit_session_autosave_error_toast(None, Some("   ")));
+    assert!(should_emit_session_autosave_error_toast(None, Some("disk full")));
+    assert!(
+      !should_emit_session_autosave_error_toast(Some("disk full"), Some("disk full")),
+      "should not re-emit while error persists"
+    );
+    assert!(
+      !should_emit_session_autosave_error_toast(Some("disk full"), None),
+      "should not emit on error clearing"
+    );
+    assert!(
+      should_emit_session_autosave_error_toast(None, Some("disk full again")),
+      "should emit when an error reappears after being cleared"
+    );
+  }
 
   #[test]
   fn startup_writes_provided_initial_snapshot_as_unclean() {
