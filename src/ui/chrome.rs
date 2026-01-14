@@ -5578,13 +5578,27 @@ mod tests {
 
     // Frame 0: render once so the chrome stores the Try HTTP button rect/id.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let try_http_rect = expect_temp_rect(&ctx, "chrome_try_http_button_rect");
 
     // Frame 1: click the button.
     begin_frame(&ctx, left_click_at(try_http_rect.center()));
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5674,7 +5688,14 @@ mod tests {
       .enumerate()
     {
       begin_frame_with_time(&ctx, time, Vec::new());
-      let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+      let _actions = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        None,
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let output = ctx.end_frame();
       repaint_after_by_frame.push(output.repaint_after);
 
@@ -5724,7 +5745,14 @@ Common causes:\n\
     // requesting repaints so the animation advances.
     for (idx, time) in [0.0_f64, 0.016, 0.032].into_iter().enumerate() {
       begin_frame_with_time(&ctx, time, Vec::new());
-      let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+      let _actions = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        None,
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let output = ctx.end_frame();
 
       // The first frame may do setup work; assert on subsequent frames.
@@ -5847,14 +5875,28 @@ frame={idx} repaint_after={:?}\n",
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let before = app.chrome.address_bar_text.clone();
 
     // Frame 2: copy via egui platform event.
     begin_frame(&ctx, vec![egui::Event::Copy]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     assert_eq!(output.platform_output.copied_text, "https://example.com/");
@@ -5876,12 +5918,26 @@ frame={idx} repaint_after={:?}\n",
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: cut via egui platform event.
     begin_frame(&ctx, vec![egui::Event::Cut]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     assert_eq!(output.platform_output.copied_text, "https://example.com/");
@@ -10206,7 +10262,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 1: focus the address bar so it is ready to accept input.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let address_bar_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
@@ -10231,7 +10294,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 2: paste should replace the selection and count as user input (open omnibox).
     begin_frame(&ctx, vec![egui::Event::Paste("example.com".to_string())]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "example.com");
@@ -10349,13 +10419,27 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the chrome stores test rects.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let address_bar_rect = expect_temp_rect(&ctx, "chrome_address_bar_rect");
 
     // Frame 1: right-click the address bar to open the context menu.
     begin_frame(&ctx, right_click_at(address_bar_rect.center()));
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       !app.chrome.address_bar_has_focus && !app.chrome.address_bar_editing,
@@ -10364,7 +10448,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 2: render again so the popup contents appear.
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     let copy_url_text_pos = find_text_pos(&output.shapes, "Copy URL").unwrap_or_else(|| {
@@ -10377,7 +10468,14 @@ frame={idx} repaint_after={:?}\n",
       &ctx,
       left_click_at(copy_url_text_pos + egui::vec2(1.0, 1.0)),
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     assert_eq!(output.platform_output.copied_text, url);
