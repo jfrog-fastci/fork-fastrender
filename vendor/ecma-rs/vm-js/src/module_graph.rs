@@ -3179,11 +3179,17 @@ impl ModuleGraph {
               .get(module_index(*b))
               .and_then(|s| s.async_evaluation_order.as_integer())
               .unwrap_or(u64::MAX);
-            a_order.cmp(&b_order).then_with(|| a.to_raw().cmp(&b.to_raw()))
+            // Sort in descending order so we can `pop()` the smallest element without shifting the
+            // entire vector (avoid O(n^2) behavior on large module graphs).
+            b_order
+              .cmp(&a_order)
+              .then_with(|| b.to_raw().cmp(&a.to_raw()))
           },
           || vm.tick(),
         )?;
-        let next = self.ready_scc_queue.remove(0);
+        let Some(next) = self.ready_scc_queue.pop() else {
+          break;
+        };
         self.execute_scc(vm, scope, next, host, hooks)?;
       }
       Ok(())
