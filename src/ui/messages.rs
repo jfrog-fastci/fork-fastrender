@@ -825,6 +825,14 @@ pub enum UiToWorker {
     tab_id: TabId,
     node_id: Option<usize>,
   },
+  /// Accessibility action: set the node's value (e.g. textbox contents).
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  A11ySetValue {
+    tab_id: TabId,
+    node_id: usize,
+    value: String,
+  },
   /// Send a user action to a media element (play/pause, seek, volume, mute).
   MediaCommand {
     tab_id: TabId,

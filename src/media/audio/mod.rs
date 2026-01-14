@@ -399,7 +399,17 @@ mod tests {
     // This should not panic in debug builds due to intermediate overflow.
     let start = Instant::now();
     for i in 0..5u32 {
-      raw.on_callback_end_at(start + Duration::from_millis(u64::from(i)), u32::MAX, None);
+      // Include an intentionally huge device timestamp once to exercise saturation paths.
+      let device_time_at_end = if i == 0 {
+        Some(Duration::new(u64::MAX, 0))
+      } else {
+        None
+      };
+      raw.on_callback_end_at(
+        start + Duration::from_millis(u64::from(i)),
+        u32::MAX,
+        device_time_at_end,
+      );
     }
 
     assert_eq!(clock.frames(), u64::from(u32::MAX) * 5);

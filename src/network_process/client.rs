@@ -719,15 +719,15 @@ mod tests {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
-            // Deliberately violate RFC6455 by returning a comma-separated protocol list even though
-            // the client requested a single protocol.
-            let _ws = tungstenite::accept_hdr(stream, |_req: &Request, mut resp: Response| {
-              resp
-                .headers_mut()
-                .insert("Sec-WebSocket-Protocol", "chat, superchat".parse().unwrap());
-              Ok(resp)
-            })
-            .expect("accept websocket");
+              // Deliberately violate RFC6455 by returning a comma-separated protocol list even though
+              // the client requested a single protocol.
+              let _ws = tungstenite::accept_hdr(stream, |_req: &Request, mut resp: Response| {
+                resp
+                  .headers_mut()
+                  .insert("Sec-WebSocket-Protocol", "chat, superchat".parse().unwrap());
+                Ok(resp)
+              })
+              .expect("accept websocket");
             break;
           }
           Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

@@ -7,6 +7,7 @@ use crate::ui::{
 };
 use std::fmt::Write;
 
+use super::ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID};
 use super::theme::chrome_theme_css;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
@@ -289,10 +290,14 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
 
   // Address bar.
   out.push_str("    <div id=\"address-bar-wrap\" class=\"address-bar-wrap\">\n");
+  out.push_str("      <form id=\"");
+  out.push_str(CHROME_ADDRESS_FORM_ID);
   out.push_str(
-    "      <form id=\"address-form\" class=\"address-bar-form\" action=\"chrome-action:navigate\" method=\"get\" autocomplete=\"off\">\n",
+    "\" class=\"address-bar-form\" action=\"chrome-action:navigate\" method=\"get\" autocomplete=\"off\">\n",
   );
-  out.push_str("        <input id=\"address-bar\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
+  out.push_str("        <input id=\"");
+  out.push_str(CHROME_ADDRESS_BAR_ID);
+  out.push_str("\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
   out.push_str(&escape_html(&app.chrome.address_bar_text));
   out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-expanded=\"");
   out.push_str(if omnibox_open { "true" } else { "false" });
@@ -318,7 +323,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  </div>\n");
 
   // Content frame placeholder.
-  out.push_str("  <div id=\"content-frame\" class=\"content-frame\"></div>\n");
+  out.push_str("  <div id=\"");
+  out.push_str(CHROME_CONTENT_FRAME_ID);
+  out.push_str("\" class=\"content-frame\"></div>\n");
 
   out.push_str("</body>\n");
   out.push_str("</html>\n");
