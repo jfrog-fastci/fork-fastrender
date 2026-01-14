@@ -662,6 +662,7 @@ fn score_suggestion(
   };
 
   let mut match_total = 0i64;
+  const MAX_TOKEN_MATCH_SCORE: i64 = 1_200;
   let parsed_url = suggestion
     .url
     .as_deref()
@@ -673,9 +674,17 @@ fn score_suggestion(
     if let Some(url) = suggestion.url.as_deref() {
       best_token_match =
         best_token_match.max(match_score_url(parsed_url.as_ref(), url, token_lower));
+      if best_token_match == Some(MAX_TOKEN_MATCH_SCORE) {
+        match_total += MAX_TOKEN_MATCH_SCORE;
+        continue;
+      }
     }
     if let Some(title) = suggestion.title.as_deref() {
       best_token_match = best_token_match.max(match_score(title, token_lower));
+      if best_token_match == Some(MAX_TOKEN_MATCH_SCORE) {
+        match_total += MAX_TOKEN_MATCH_SCORE;
+        continue;
+      }
     }
     // Search suggestions match against the query text.
     if let OmniboxAction::Search(query) = &suggestion.action {
