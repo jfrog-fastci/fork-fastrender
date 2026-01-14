@@ -39,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
+    "computed_at_commit": "fb5e28c9b5c6cd22c84fc23771efc72657ef40a2"
   },
   "hotspot": "paint",
   "failure_stage": null,

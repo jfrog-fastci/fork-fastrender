@@ -10141,8 +10141,7 @@ impl BrowserRuntime {
             let (dom_changed, next_action) =
               engine.key_activate(dom, key, document_url.as_str(), base_url.as_str());
             action = next_action;
-            (submitter, submitter_element_id) =
-              engine.take_last_form_submitter_with_element_id();
+            (submitter, submitter_element_id) = engine.take_last_form_submitter_with_element_id();
             focused = engine.focused_node_id();
             let (
               id,
