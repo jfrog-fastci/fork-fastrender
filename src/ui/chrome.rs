@@ -5338,7 +5338,7 @@ mod tests {
 
     // Frame 0: capture the AccessKit node id for the target suggestion.
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, true, |_| None);
     let output0 = ctx.end_frame();
     let update0 = accesskit_update(&output0);
     let (id0, _node0) = accesskit_node_by_name(update0, &target_label);
@@ -5356,7 +5356,7 @@ mod tests {
     );
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, true, |_| None);
     let output1 = ctx.end_frame();
     let update1 = accesskit_update(&output1);
     let (id1, _node1) = accesskit_node_by_name(update1, &target_label);
@@ -5403,7 +5403,7 @@ mod tests {
     // Frame 0: select index 0.
     app.chrome.omnibox.selected = Some(0);
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, true, |_| None);
     let output0 = ctx.end_frame();
     let update0 = accesskit_update(&output0);
     assert!(accesskit_node_selected(accesskit_node_by_name(update0, &label_a).1));
@@ -5412,7 +5412,7 @@ mod tests {
     // Frame 1: move selection to index 1.
     app.chrome.omnibox.selected = Some(1);
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, true, |_| None);
     let output1 = ctx.end_frame();
     let update1 = accesskit_update(&output1);
     assert!(!accesskit_node_selected(accesskit_node_by_name(update1, &label_a).1));
