@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::interaction::KeyAction;
+use fastrender::interaction::dom_index::DomIndex;
 use fastrender::ui::messages::{PointerButton, RepaintReason, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::BrowserTabController;
 use fastrender::Result;
@@ -18,6 +19,15 @@ fn has_scroll_update(messages: &[WorkerToUi]) -> bool {
   messages
     .iter()
     .any(|msg| matches!(msg, WorkerToUi::ScrollStateUpdated { .. }))
+}
+
+fn dom_preorder_id(dom: &fastrender::dom::DomNode, element_id: &str) -> usize {
+  let mut clone = dom.clone();
+  let index = DomIndex::build(&mut clone);
+  *index
+    .id_by_element_id
+    .get(element_id)
+    .unwrap_or_else(|| panic!("expected element with id={element_id:?}"))
 }
 
 #[test]
@@ -84,6 +94,120 @@ fn browser_tab_controller_tab_focus_scrolls_viewport_to_reveal_focused_element()
   assert!(
     scroll_y.is_finite() && scroll_y > 0.0,
     "expected scroll y > 0 after Tab focus scroll, got {scroll_y}"
+  );
+
+  let viewport_top = scroll_y;
+  let viewport_bottom = scroll_y + viewport_css.1 as f32;
+  let input_top = 1500.0;
+  let input_bottom = input_top + 30.0;
+  assert!(
+    viewport_top <= input_top && viewport_bottom >= input_bottom,
+    "expected focused input [{input_top}, {input_bottom}] to be visible in viewport [{viewport_top}, {viewport_bottom}]",
+  );
+
+  Ok(())
+}
+
+#[test]
+fn browser_tab_controller_tab_focus_scrolls_after_multiple_tabs() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId(1);
+  let viewport_css = (200, 200);
+
+  let html = r##"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          body { height: 2000px; background: rgb(0,0,0); position: relative; }
+          #first {
+            position: absolute;
+            left: 10px;
+            top: 20px;
+            width: 120px;
+            height: 30px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgb(0,255,0);
+          }
+          #second {
+            position: absolute;
+            left: 10px;
+            top: 1500px;
+            width: 120px;
+            height: 30px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgb(255,0,0);
+          }
+        </style>
+      </head>
+      <body>
+        <input id="first" value="first" />
+        <input id="second" value="second" />
+      </body>
+    </html>
+  "##;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    deterministic_renderer(),
+    tab_id,
+    html,
+    "https://example.com/",
+    viewport_css,
+    1.0,
+  )?;
+
+  // Ensure layout artifacts are ready and the initial scroll position is at the top.
+  let initial = controller.handle_message(request_repaint(tab_id, RepaintReason::Explicit))?;
+  assert!(extract_frame(initial).is_some(), "expected initial FrameReady");
+  assert!(
+    controller.scroll_state().viewport.y.abs() < 1e-3,
+    "expected initial scroll y to be at top (got {})",
+    controller.scroll_state().viewport.y
+  );
+
+  let first_node_id = dom_preorder_id(controller.document().dom(), "first");
+  let second_node_id = dom_preorder_id(controller.document().dom(), "second");
+
+  // First Tab focuses the on-screen element; it should not scroll the viewport.
+  let out = controller.handle_message(key_action(tab_id, KeyAction::Tab))?;
+  assert!(
+    !has_scroll_update(&out),
+    "expected first Tab focus to avoid scrolling when already visible"
+  );
+  assert_eq!(
+    controller.interaction_state().focused,
+    Some(first_node_id),
+    "expected first Tab to focus <input id=first>"
+  );
+  assert!(
+    controller.scroll_state().viewport.y.abs() < 1e-3,
+    "expected scroll y to remain at top after first Tab (got {})",
+    controller.scroll_state().viewport.y
+  );
+
+  // Second Tab focuses the offscreen element; it should scroll the viewport to reveal it.
+  let out = controller.handle_message(key_action(tab_id, KeyAction::Tab))?;
+  assert!(
+    has_scroll_update(&out),
+    "expected second Tab focus scroll to emit ScrollStateUpdated"
+  );
+  assert_eq!(
+    controller.interaction_state().focused,
+    Some(second_node_id),
+    "expected second Tab to focus <input id=second>"
+  );
+
+  let frame = extract_frame(out).expect("expected FrameReady after second Tab");
+  let scroll_y = frame.scroll_state.viewport.y;
+  assert!(
+    scroll_y.is_finite() && scroll_y > 0.0,
+    "expected scroll y > 0 after second Tab focus scroll, got {scroll_y}"
   );
 
   let viewport_top = scroll_y;
