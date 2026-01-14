@@ -17709,8 +17709,13 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let (_tab_id, msgs) =
+    let prev_active = self.browser_state.active_tab_id();
+    let (tab_id, msgs) =
       open_url_in_new_tab_state(&mut self.browser_state, &mut self.tab_cancel, url, reason);
+    if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+      let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+      tracker.start(prev, tab_id, had_cached_texture);
+    }
     self.apply_open_url_in_new_tab_messages(msgs);
     true
   }
@@ -17750,12 +17755,17 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let (_tab_id, msgs) = fastrender::ui::open_in_new_tab::open_request_in_new_tab_state(
+    let prev_active = self.browser_state.active_tab_id();
+    let (tab_id, msgs) = fastrender::ui::open_in_new_tab::open_request_in_new_tab_state(
       &mut self.browser_state,
       &mut self.tab_cancel,
       request,
       NavigationReason::LinkClick,
     );
+    if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+      let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+      tracker.start(prev, tab_id, had_cached_texture);
+    }
     self.apply_open_url_in_new_tab_messages(msgs);
 
     true
@@ -25871,6 +25881,7 @@ impl App {
         ChromeAction::NewTab => {
           session_dirty = true;
           open_tabs_snapshot_dirty = true;
+          let prev_active = self.browser_state.active_tab_id();
           let tab_id = fastrender::ui::TabId::new();
           let initial_url = "about:newtab".to_string();
           let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
@@ -25878,6 +25889,10 @@ impl App {
           self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = initial_url.clone();
+          if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+            let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+            tracker.start(prev, tab_id, had_cached_texture);
+          }
           self.clear_page_focus();
           self.viewport_cache_tab = None;
           self.pointer_captured = false;
@@ -25909,6 +25924,7 @@ impl App {
 
           session_dirty = true;
           open_tabs_snapshot_dirty = true;
+          let prev_active = self.browser_state.active_tab_id();
           let tab_id = fastrender::ui::TabId::new();
           let url = closed.url;
           let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
@@ -25923,6 +25939,10 @@ impl App {
           self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = url.clone();
+          if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+            let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+            tracker.start(prev, tab_id, had_cached_texture);
+          }
           self.viewport_cache_tab = None;
           self.pointer_captured = false;
           self.captured_button = fastrender::ui::PointerButton::None;
@@ -26213,6 +26233,12 @@ impl App {
           }
 
           if let Some(created_tab) = close_result.created_tab {
+            if was_active {
+              if let Some(tracker) = self.tab_switch_latency.as_mut() {
+                let had_cached_texture = self.tab_textures.contains_key(&created_tab);
+                tracker.start(tab_id, created_tab, had_cached_texture);
+              }
+            }
             let initial_url = "about:newtab".to_string();
             let cancel = self
               .browser_state
@@ -26239,6 +26265,12 @@ impl App {
             self.focus_address_bar_select_all();
             self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {
+            if was_active {
+              if let Some(tracker) = self.tab_switch_latency.as_mut() {
+                let had_cached_texture = self.tab_textures.contains_key(&new_active);
+                tracker.start(tab_id, new_active, had_cached_texture);
+              }
+            }
             let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
@@ -26288,6 +26320,10 @@ impl App {
           let new_active = self.browser_state.active_tab_id();
           if new_active != prev_active {
             if let Some(new_active) = new_active {
+              if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+                let had_cached_texture = self.tab_textures.contains_key(&new_active);
+                tracker.start(prev, new_active, had_cached_texture);
+              }
               self.viewport_cache_tab = None;
               self.last_page_upload_at = None;
               self.next_page_upload_redraw = None;
@@ -26343,6 +26379,10 @@ impl App {
           let new_active = self.browser_state.active_tab_id();
           if new_active != prev_active {
             if let Some(new_active) = new_active {
+              if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+                let had_cached_texture = self.tab_textures.contains_key(&new_active);
+                tracker.start(prev, new_active, had_cached_texture);
+              }
               self.viewport_cache_tab = None;
               self.last_page_upload_at = None;
               self.next_page_upload_redraw = None;
@@ -26403,6 +26443,7 @@ impl App {
             continue;
           };
           open_tabs_snapshot_dirty = true;
+          let prev_active = self.browser_state.active_tab_id();
           let url = source
             .committed_url
             .clone()
@@ -26421,6 +26462,10 @@ impl App {
           self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = url.clone();
+          if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+            let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+            tracker.start(prev, tab_id, had_cached_texture);
+          }
 
           // Match typical UX: duplicating a tab activates the new tab, but should not steal focus to
           // the address bar.
@@ -26480,14 +26525,19 @@ impl App {
           }
         }
         ChromeAction::OpenUrlInNewTab(raw) => {
+          let prev_active = self.browser_state.active_tab_id();
           // Resolve/normalize/validate the typed input (including fragment-only `#foo` joins)
           // consistently with `BrowserTabState::navigate_typed`.
           let result =
             open_typed_in_new_tab_state(&mut self.browser_state, &mut self.tab_cancel, &raw);
           match result {
-            Ok((_tab_id, msgs)) => {
+            Ok((tab_id, msgs)) => {
               session_dirty = true;
               open_tabs_snapshot_dirty = true;
+              if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+                let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+                tracker.start(prev, tab_id, had_cached_texture);
+              }
               self.apply_open_url_in_new_tab_messages(msgs);
             }
             Err(err) => {
