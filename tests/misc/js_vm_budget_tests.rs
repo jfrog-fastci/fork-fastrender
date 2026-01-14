@@ -37,7 +37,7 @@ fn exec_script(
 }
 
 #[test]
-fn exec_script_infinite_loop_is_terminated_by_instruction_budget() -> fastrender::Result<()> {
+fn exec_script_infinite_loop_is_terminated_by_fuel_budget() -> fastrender::Result<()> {
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
   let mut opts = JsExecutionOptions::default();
   opts.max_instruction_count = Some(50);
@@ -86,7 +86,7 @@ fn exec_script_deadline_budget_can_terminate_immediately() -> fastrender::Result
 }
 
 #[test]
-fn window_realm_exec_script_infinite_loop_is_terminated_by_instruction_budget() {
+fn window_realm_exec_script_infinite_loop_is_terminated_by_fuel_budget() {
   let mut opts = JsExecutionOptions::default();
   opts.max_instruction_count = Some(50);
   opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));

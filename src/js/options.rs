@@ -57,7 +57,7 @@ impl Default for ParseBudget {
 /// - OS/process limits (`scripts/run_limited.sh` in this repo).
 /// - Renderer-wide cooperative deadlines ([`crate::render_control::RenderDeadline`]).
 /// - Host event loop limits (task/microtask/timer queue caps + per-spin run limits).
-/// - VM limits (instruction count, heap budget, stack depth) enforced by the JS engine.
+/// - VM limits (fuel/"tick" budget, heap budget, stack depth) enforced by the JS engine.
 ///
 /// This struct is the single configuration surface for all of the above *JS-specific* limits. Some
 /// fields are host-enforced (event loop queue/run limits) while others are enforced by the active
@@ -149,7 +149,11 @@ pub struct JsExecutionOptions {
   /// VM budget: maximum number of VM "ticks" (fuel units) that may be executed before the VM
   /// terminates execution.
   ///
-  /// For the `vm-js` backend, this is mapped to [`vm_js::Budget::fuel`].
+  /// Despite the name, this is **not** a literal "instruction counter". It is an engine-defined
+  /// cooperative budget: every `vm-js` "tick" consumes some amount of fuel, but fuel units are not
+  /// guaranteed to correspond 1:1 with bytecode instructions or source-level operations.
+  ///
+  /// For the `vm-js` backend, this maps to [`vm_js::Budget::fuel`].
   pub max_instruction_count: Option<u64>,
 
   /// VM budget: hard upper bound for the VM heap, in bytes.
@@ -253,6 +257,12 @@ impl JsExecutionOptions {
   }
 
   /// Translate these execution options into a fresh `vm-js` execution budget for "now".
+  ///
+  /// For the `vm-js` backend this produces a [`vm_js::Budget`] with:
+  /// - [`vm_js::Budget::fuel`] = [`Self::max_instruction_count`]
+  /// - [`vm_js::Budget::deadline`] = the earliest of:
+  ///   - the per-spin wall-time limit ([`RunLimits::max_wall_time`]), and
+  ///   - the renderer-wide root deadline ([`crate::render_control::RenderDeadline`], when set)
   pub(crate) fn vm_js_budget_now(&self) -> VmJsBudget {
     const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
 

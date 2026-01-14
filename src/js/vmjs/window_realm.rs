@@ -64349,7 +64349,7 @@ mod tests {
   }
 
   #[test]
-  fn host_dom_event_dispatch_respects_max_instruction_count() -> Result<(), VmError> {
+  fn host_dom_event_dispatch_respects_vm_fuel_budget() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
 
@@ -64412,7 +64412,7 @@ mod tests {
       host.dom().events(),
       &mut invoker,
     )
-    .expect_err("expected host-driven dispatch to abort when max_instruction_count is exhausted");
+    .expect_err("expected host-driven dispatch to abort when the VM fuel budget is exhausted");
 
     assert!(
       err.to_string().to_lowercase().contains("fuel"),

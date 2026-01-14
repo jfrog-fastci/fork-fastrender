@@ -584,7 +584,10 @@ pub struct JsExecutionArgs {
   )]
   pub max_wall_time_per_spin_ms: Option<u64>,
 
-  /// Placeholder VM budget: maximum instruction count before VM interrupt.
+  /// VM budget: maximum `vm-js` fuel ("tick") units before execution is terminated.
+  ///
+  /// Note: This flag is named `--js-max-instructions` for historical reasons, but it does **not**
+  /// represent a literal instruction counter. It maps to `vm_js::Budget::fuel`.
   #[arg(long = "js-max-instructions", value_name = "N")]
   pub max_instruction_count: Option<u64>,
 

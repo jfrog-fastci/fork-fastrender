@@ -17515,7 +17515,7 @@ mod tests {
   }
 
   #[test]
-  fn fetch_completion_microtask_respects_max_instruction_count() -> crate::error::Result<()> {
+  fn fetch_completion_microtask_respects_vm_fuel_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
 

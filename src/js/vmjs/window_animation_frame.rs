@@ -957,7 +957,7 @@ mod tests {
   }
  
   #[test]
-  fn scheduled_animation_frame_respects_max_instruction_count() -> RenderResult<()> {
+  fn scheduled_animation_frame_respects_vm_fuel_budget() -> RenderResult<()> {
     let clock = Arc::new(VirtualClock::new());
     clock.set_now(Duration::from_millis(10));
     let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
@@ -1005,7 +1005,7 @@ mod tests {
 
     let err = event_loop
       .run_animation_frame(&mut host)
-      .expect_err("expected rAF callback to terminate due to instruction budget");
+      .expect_err("expected rAF callback to terminate due to fuel budget");
     let msg = err.to_string().to_ascii_lowercase();
     assert!(
       msg.contains("out of fuel"),

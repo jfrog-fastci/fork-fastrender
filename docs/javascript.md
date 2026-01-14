@@ -142,7 +142,7 @@ Fetch is a large spec; the goal is to stay spec-shaped and grow coverage, not to
 These are requirements, not optimizations:
 
 1. **Interrupts/budgets**: JS execution must be interruptible so `while(true){}` cannot hang the process.
-   Budgets can be instruction-count based, wall-time based, or both, but must be enforced predictably.
+   Budgets can be fuel/"tick" based, wall-time based, or both, but must be enforced predictably.
 2. **Bounded allocations**: DOM wrappers, strings, arrays/typed arrays, and caches must be bounded or governed
    by the renderer’s resource limits. Avoid unbounded growth from hostile scripts.
 3. **Deterministic tests**: conformance tests must be offline and stable; event loop time and scheduling must be controllable.

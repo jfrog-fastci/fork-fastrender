@@ -103,7 +103,8 @@ The following shared `JsExecutionArgs` flags are available on: `fetch_and_render
 - `--js-max-pending-tasks <N>`, `--js-max-pending-microtasks <N>`, `--js-max-pending-timers <N>`:
   caps on queued work to prevent unbounded memory growth.
 - `--js-max-instructions <N>`, `--js-max-vm-heap-bytes <BYTES>`, `--js-max-stack-depth <N>`: VM
-  budgeting knobs (instruction/heap/stack limits).
+  budgeting knobs (fuel/heap/stack limits). `--js-max-instructions` controls the `vm-js` fuel ("tick")
+  budget (`vm_js::Budget::fuel`); it does **not** represent a literal instruction count.
 
 Background and rationale: [`docs/js_execution_budgets.md`](js_execution_budgets.md).
 

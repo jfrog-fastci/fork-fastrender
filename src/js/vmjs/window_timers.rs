@@ -4903,7 +4903,7 @@ mod tests {
   }
 
   #[test]
-  fn scheduled_microtask_respects_max_instruction_count() -> crate::error::Result<()> {
+  fn scheduled_microtask_respects_vm_fuel_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut opts = JsExecutionOptions::default();
@@ -4951,7 +4951,7 @@ mod tests {
 
     let err = event_loop
       .run_until_idle(&mut host, RunLimits::unbounded())
-      .expect_err("expected microtask to terminate due to instruction budget");
+      .expect_err("expected microtask to terminate due to fuel budget");
     let msg = err.to_string().to_ascii_lowercase();
     assert!(
       msg.contains("out of fuel"),
@@ -4973,7 +4973,7 @@ mod tests {
   }
 
   #[test]
-  fn scheduled_timeout_respects_max_instruction_count() -> crate::error::Result<()> {
+  fn scheduled_timeout_respects_vm_fuel_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut opts = JsExecutionOptions::default();
@@ -5017,7 +5017,7 @@ mod tests {
 
     let err = event_loop
       .run_until_idle(&mut host, RunLimits::unbounded())
-      .expect_err("expected timeout callback to terminate due to instruction budget");
+      .expect_err("expected timeout callback to terminate due to fuel budget");
     let msg = err.to_string().to_ascii_lowercase();
     assert!(
       msg.contains("out of fuel"),
@@ -5039,7 +5039,7 @@ mod tests {
   }
 
   #[test]
-  fn scheduled_promise_job_respects_max_instruction_count() -> crate::error::Result<()> {
+  fn scheduled_promise_job_respects_vm_fuel_budget() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut opts = JsExecutionOptions::default();
@@ -5084,7 +5084,7 @@ mod tests {
 
     let err = event_loop
       .run_until_idle(&mut host, RunLimits::unbounded())
-      .expect_err("expected Promise job to terminate due to instruction budget");
+      .expect_err("expected Promise job to terminate due to fuel budget");
     let msg = err.to_string().to_ascii_lowercase();
     assert!(
       msg.contains("out of fuel"),

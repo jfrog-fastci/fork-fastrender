@@ -58,11 +58,11 @@ Unlike the unbounded helpers (`perform_microtask_checkpoint`, `run_next_task`), 
 variants stop with a [`fastrender::js::RunUntilIdleStopReason`] when budgets are exhausted **without
 dropping the next queued task/microtask** (limits are enforced before popping).
 
-## 4) VM budgets (instruction / heap / stack)
+## 4) VM budgets (fuel / deadline / heap / stack)
 
 Some limits must be enforced inside the JS VM:
 
-- instruction counting / interrupt checks
+- fuel ("tick") consumption / interrupt checks
 - VM heap size limits
 - stack depth limits
 
@@ -70,8 +70,8 @@ Some limits must be enforced inside the JS VM:
 `max_stack_depth`). When FastRender is built against the `vm-js` backend (such as
 `WindowHost`/`WindowRealm`), these are enforced:
 
-- `max_instruction_count` → per-run `vm_js::Budget::fuel`
-- per-run wall-time deadline → minimum of:
+- `max_instruction_count` → per-run `vm_js::Budget::fuel` (fuel/"ticks", not a literal instruction counter)
+- per-run `vm_js::Budget::deadline` → minimum of:
   - the remaining time in the active root [`crate::render_control::RenderDeadline`] (when configured)
   - `JsExecutionOptions.event_loop_run_limits.max_wall_time`
 - `max_vm_heap_bytes` → `vm_js::HeapLimits` (hard heap cap)
@@ -90,6 +90,6 @@ In a robust embedding:
 2. `RenderDeadline` ensures "the whole render" cannot run forever.
 3. Event loop queue + run limits ensure "JS-host scheduling" cannot grow without bound or spin
    forever in one `run_until_idle`.
-4. VM instruction/heap/stack limits ensure `while(true){}` cannot hang inside the VM.
+4. VM fuel/deadline/heap/stack limits ensure `while(true){}` cannot hang inside the VM.
 
 No single layer is sufficient by itself.
