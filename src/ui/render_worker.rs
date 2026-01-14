@@ -7507,13 +7507,16 @@ impl BrowserRuntime {
           );
         }
         if let Some(submitter_id) = form_submitter {
-          mirror_dom1_form_control_state_into_dom2(
-            js_tab,
-            mapping,
-            dom_snapshot,
-            submitter_id,
-            form_submitter_element_id.as_deref(),
-          );
+          // Avoid a redundant preorder walk when the click target and submitter are the same node.
+          if Some(submitter_id) != click_target {
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              mapping,
+              dom_snapshot,
+              submitter_id,
+              form_submitter_element_id.as_deref(),
+            );
+          }
         }
         // Keep the worker's cached JS mutation generation in sync with dom2 edits caused by
         // mirroring UI-driven form control state (dom1 → dom2). This prevents the paint pipeline
@@ -10022,22 +10025,29 @@ impl BrowserRuntime {
             );
           }
           if let Some(target_id) = click_target_id {
-            mirror_dom1_form_control_state_into_dom2(
-              js_tab,
-              mapping,
-              dom_snapshot,
-              target_id,
-              click_target_element_id,
-            );
+            // Avoid a redundant preorder walk when activation targets the focused element.
+            if Some(target_id) != focused {
+              mirror_dom1_form_control_state_into_dom2(
+                js_tab,
+                mapping,
+                dom_snapshot,
+                target_id,
+                click_target_element_id,
+              );
+            }
           }
           if let Some(source_id) = submit_source_id {
-            mirror_dom1_form_control_state_into_dom2(
-              js_tab,
-              mapping,
-              dom_snapshot,
-              source_id,
-              submit_source_element_id,
-            );
+            // Avoid redundant preorder walks when submit is dispatched from the same node as focus
+            // or activation.
+            if Some(source_id) != focused && Some(source_id) != click_target_id {
+              mirror_dom1_form_control_state_into_dom2(
+                js_tab,
+                mapping,
+                dom_snapshot,
+                source_id,
+                submit_source_element_id,
+              );
+            }
           }
           // Keep the worker's cached JS mutation generation in sync with dom2 edits caused by
           // mirroring UI-driven form control state (dom1 → dom2). This prevents the paint pipeline
