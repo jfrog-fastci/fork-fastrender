@@ -21125,14 +21125,22 @@ fn expr_contains_yield(expr: &Node<Expr>) -> bool {
 
     Expr::Class(class) => {
       class.stx.extends.as_ref().is_some_and(expr_contains_yield)
-        || class
-          .stx
-          .members
-          .iter()
-          .any(|member| match &member.stx.key {
+        || class.stx.members.iter().any(|member| {
+          let key_has_yield = match &member.stx.key {
             ClassOrObjKey::Direct(_) => false,
             ClassOrObjKey::Computed(expr) => expr_contains_yield(expr),
-          })
+          };
+          if key_has_yield {
+            return true;
+          }
+          match &member.stx.val {
+            // Static field initializers and static blocks execute during class definition evaluation.
+            ClassOrObjVal::Prop(Some(expr)) if member.stx.static_ => expr_contains_yield(expr),
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_yield),
+            // Function-valued members: the body is not evaluated at class creation time.
+            _ => false,
+          }
+        })
     }
 
     // TypeScript-only nodes: only the wrapped expression is evaluated.

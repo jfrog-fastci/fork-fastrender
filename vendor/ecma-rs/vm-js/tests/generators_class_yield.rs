@@ -156,6 +156,40 @@ fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_comput
 }
 
 #[test]
+fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_static_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        globalThis.v = null;
+        var obj = {
+          a: class {
+            static {
+              globalThis.saw = this.name;
+              globalThis.v = yield 1;
+            }
+          }
+        };
+        return obj.a;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(7);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "a" &&
+      globalThis.v === 7 &&
+      C.name === "a"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_var_decl_anonymous_class_inferred_name_across_yield_in_extends() {
   let mut rt = new_runtime();
   let value = rt
