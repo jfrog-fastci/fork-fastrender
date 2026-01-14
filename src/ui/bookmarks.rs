@@ -1849,9 +1849,19 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
 fn format_bookmark_widget_info_label(title: Option<&str>, url: &str) -> String {
   let url = url.trim();
   let title = title.map(str::trim).filter(|t| !t.is_empty());
-  match title {
-    Some(title) => format!("Bookmark: {title} — {url}"),
-    None => format!("Bookmark: {url}"),
+  if let Some(title) = title {
+    let mut out =
+      String::with_capacity("Bookmark: ".len() + title.len() + " — ".len() + url.len());
+    out.push_str("Bookmark: ");
+    out.push_str(title);
+    out.push_str(" — ");
+    out.push_str(url);
+    out
+  } else {
+    let mut out = String::with_capacity("Bookmark: ".len() + url.len());
+    out.push_str("Bookmark: ");
+    out.push_str(url);
+    out
   }
 }
 
