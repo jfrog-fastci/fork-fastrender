@@ -93,3 +93,27 @@ fn generator_update_expression_yield_in_base() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn generator_prefix_update_expression_yield_in_base() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      function* g(){
+        var obj = {a: 1};
+        var out = ++(yield obj).a;
+        return out === 2 && obj.a === 2;
+      }
+      var it = g();
+      var r1 = it.next();
+      var a1 = r1.value.a;
+      var r2 = it.next(r1.value);
+      r1.done === false &&
+      a1 === 1 &&
+      r2.done === true &&
+      r2.value === true &&
+      r1.value.a === 2
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
