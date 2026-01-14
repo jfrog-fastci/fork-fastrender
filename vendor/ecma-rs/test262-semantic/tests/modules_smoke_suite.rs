@@ -14,9 +14,17 @@ fn modules_smoke_suite_selects_module_tests_from_vendored_corpus() {
   let selected = select_tests(&suite, &discovered).unwrap();
   assert!(!selected.is_empty());
 
-  // A stable module test that should exist in any reasonably recent test262 checkout.
+  // Stable module tests that should exist in any reasonably recent test262 checkout.
   assert!(selected
     .iter()
     .any(|id| id == "language/module-code/early-export-unresolvable.js"));
-}
 
+  // Ensure we keep covering the standalone `language/import` + `language/export` directories (not
+  // just the `language/module-code` corpus).
+  assert!(selected
+    .iter()
+    .any(|id| id == "language/import/dup-bound-names.js"));
+  assert!(selected
+    .iter()
+    .any(|id| id == "language/export/escaped-default.js"));
+}
