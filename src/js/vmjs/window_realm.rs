@@ -367,6 +367,12 @@ pub(crate) struct WindowRealmUserData {
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
   media_master_clock: Arc<dyn crate::media::clock::MediaClock>,
   media_element_state_registry: MediaElementStateRegistry,
+  /// Monotonically increasing generation counter for host-side media element state changes.
+  ///
+  /// `BrowserTabHost` uses this to re-run media discovery when JS-driven playback state changes
+  /// (play/pause/load/seek) without requiring a DOM mutation (which would increment
+  /// `dom2::Document`'s mutation generation).
+  media_element_state_generation: u64,
   dom_platform: Option<DomPlatform>,
   /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
   ///
@@ -479,6 +485,10 @@ impl std::fmt::Debug for WindowRealmUserData {
         "media_element_state_registry_len",
         &self.media_element_state_registry.len(),
       )
+      .field(
+        "media_element_state_generation",
+        &self.media_element_state_generation,
+      )
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("crypto_rng_state", &self.crypto_rng_state)
       .field("has_window_obj", &self.window_obj.is_some())
@@ -564,6 +574,7 @@ impl WindowRealmUserData {
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       media_master_clock,
       media_element_state_registry: MediaElementStateRegistry::default(),
+      media_element_state_generation: 0,
       dom_platform: None,
       owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
       collection_registry: Rc::new(RefCell::new(CollectionRegistry::default())),
@@ -607,6 +618,14 @@ impl WindowRealmUserData {
 
   pub(crate) fn media_element_state_registry_mut(&mut self) -> &mut MediaElementStateRegistry {
     &mut self.media_element_state_registry
+  }
+
+  pub(crate) fn media_element_state_generation(&self) -> u64 {
+    self.media_element_state_generation
+  }
+
+  pub(crate) fn bump_media_element_state_generation(&mut self) {
+    self.media_element_state_generation = self.media_element_state_generation.wrapping_add(1);
   }
 
   pub(crate) fn media_element_state_mut(
@@ -40675,11 +40694,13 @@ fn html_media_element_fast_seek_native(
   }
   let time = seconds_f64_to_duration(time);
 
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-  let state = data.media_element_state_mut(key);
-  state.seek(time);
+  {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    data.media_element_state_mut(key).seek(time);
+    data.bump_media_element_state_generation();
+  }
 
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
   Ok(Value::Undefined)
@@ -42129,13 +42150,16 @@ fn html_media_element_ensure_loaded(
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::TypeError("Illegal invocation"));
       };
-      let state = data.media_element_state_mut(key);
-      state.network_state = NETWORK_LOADING;
-      state.ready_state = HAVE_METADATA;
-      if !state.duration.is_finite() {
-        // Stable, small duration so fixtures can seek to 0.5s deterministically.
-        state.duration = 1.0;
+      {
+        let state = data.media_element_state_mut(key);
+        state.network_state = NETWORK_LOADING;
+        state.ready_state = HAVE_METADATA;
+        if !state.duration.is_finite() {
+          // Stable, small duration so fixtures can seek to 0.5s deterministically.
+          state.duration = 1.0;
+        }
       }
+      data.bump_media_element_state_generation();
     }
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "loadedmetadata")?;
     ready_state = HAVE_METADATA;
@@ -42146,7 +42170,10 @@ fn html_media_element_ensure_loaded(
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::TypeError("Illegal invocation"));
       };
-      data.media_element_state_mut(key).ready_state = HAVE_CURRENT_DATA;
+      {
+        data.media_element_state_mut(key).ready_state = HAVE_CURRENT_DATA;
+      }
+      data.bump_media_element_state_generation();
     }
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "loadeddata")?;
     ready_state = HAVE_CURRENT_DATA;
@@ -42157,7 +42184,10 @@ fn html_media_element_ensure_loaded(
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::TypeError("Illegal invocation"));
       };
-      data.media_element_state_mut(key).ready_state = HAVE_FUTURE_DATA;
+      {
+        data.media_element_state_mut(key).ready_state = HAVE_FUTURE_DATA;
+      }
+      data.bump_media_element_state_generation();
     }
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "canplay")?;
     ready_state = HAVE_FUTURE_DATA;
@@ -42168,9 +42198,12 @@ fn html_media_element_ensure_loaded(
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::TypeError("Illegal invocation"));
       };
-      let state = data.media_element_state_mut(key);
-      state.ready_state = HAVE_ENOUGH_DATA;
-      state.network_state = NETWORK_IDLE;
+      {
+        let state = data.media_element_state_mut(key);
+        state.ready_state = HAVE_ENOUGH_DATA;
+        state.network_state = NETWORK_IDLE;
+      }
+      data.bump_media_element_state_generation();
     }
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "canplaythrough")?;
   }
@@ -42256,7 +42289,10 @@ fn html_media_element_current_time_set_native(
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
-    data.media_element_state_mut(key).seeking = true;
+    {
+      data.media_element_state_mut(key).seeking = true;
+    }
+    data.bump_media_element_state_generation();
   }
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "seeking")?;
 
@@ -42264,9 +42300,12 @@ fn html_media_element_current_time_set_native(
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
-    let state = data.media_element_state_mut(key);
-    state.seek(time);
-    state.seeking = false;
+    {
+      let state = data.media_element_state_mut(key);
+      state.seek(time);
+      state.seeking = false;
+    }
+    data.bump_media_element_state_generation();
   }
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "seeked")?;
 
@@ -42368,12 +42407,18 @@ fn html_media_element_muted_set_native(
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
     };
-    let state = data.media_element_state_mut(key);
-    let before = state.muted_effective(muted_attr);
-    // `muted` is not a reflected attribute; treat setting the IDL attribute as an override of the
-    // default mutedness (which may be derived from `<video muted>` until the property is written).
-    state.set_muted(muted);
-    before != muted
+    let changed = {
+      let state = data.media_element_state_mut(key);
+      let before = state.muted_effective(muted_attr);
+      // `muted` is not a reflected attribute; treat setting the IDL attribute as an override of the
+      // default mutedness (which may be derived from `<video muted>` until the property is written).
+      state.set_muted(muted);
+      before != muted
+    };
+    if changed {
+      data.bump_media_element_state_generation();
+    }
+    changed
   };
   if should_dispatch {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "volumechange")?;
@@ -42425,12 +42470,25 @@ fn html_media_element_volume_set_native(
   // Clamp to the Web-exposed range.
   volume = volume.clamp(0.0, 1.0);
 
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  let changed = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    };
+    let changed = {
+      let state = data.media_element_state_mut(key);
+      if state.volume() != volume {
+        state.set_volume(volume);
+        true
+      } else {
+        false
+      }
+    };
+    if changed {
+      data.bump_media_element_state_generation();
+    }
+    changed
   };
-  let state = data.media_element_state_mut(key);
-  if state.volume() != volume {
-    state.set_volume(volume);
+  if changed {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "volumechange")?;
   }
   Ok(Value::Undefined)
@@ -42478,14 +42536,23 @@ fn html_media_element_playback_rate_set_native(
     rate = 1.0;
   }
 
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  let changed = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    };
+    let changed = {
+      let state = data.media_element_state_mut(key);
+      let before = state.playback_rate();
+      state.set_playback_rate(rate);
+      let after = state.playback_rate();
+      before != after
+    };
+    if changed {
+      data.bump_media_element_state_generation();
+    }
+    changed
   };
-  let state = data.media_element_state_mut(key);
-  let before = state.playback_rate();
-  state.set_playback_rate(rate);
-  let after = state.playback_rate();
-  if before != after {
+  if changed {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "ratechange")?;
   }
   Ok(Value::Undefined)
@@ -42677,15 +42744,21 @@ fn html_media_element_play_native(
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
-    let state = data.media_element_state_mut(key);
-    let was_paused = state.paused();
+    let (was_paused, should_start_interval) = {
+      let state = data.media_element_state_mut(key);
+      let was_paused = state.paused();
+      if was_paused {
+        state.play();
+      }
+      (
+        was_paused,
+        hooks_have_event_loop(hooks) && state.timeupdate_interval_id().is_none(),
+      )
+    };
     if was_paused {
-      state.play();
+      data.bump_media_element_state_generation();
     }
-    (
-      was_paused,
-      hooks_have_event_loop(hooks) && state.timeupdate_interval_id().is_none(),
-    )
+    (was_paused, should_start_interval)
   };
 
   if was_paused {
@@ -42788,16 +42861,22 @@ fn html_media_element_pause_native(
     .ok_or(VmError::TypeError("Illegal invocation"))?
     .require_html_media_element_handle(scope.heap(), this)?;
 
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
   let (should_dispatch_pause, interval_id) = {
-    let state = data.media_element_state_mut(key);
-    let was_playing = !state.paused();
-    if was_playing {
-      state.pause();
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    let (should_dispatch_pause, interval_id) = {
+      let state = data.media_element_state_mut(key);
+      let was_playing = !state.paused();
+      if was_playing {
+        state.pause();
+      }
+      (was_playing, state.take_timeupdate_interval_id())
+    };
+    if should_dispatch_pause {
+      data.bump_media_element_state_generation();
     }
-    (was_playing, state.take_timeupdate_interval_id())
+    (should_dispatch_pause, interval_id)
   };
 
   if let Some(interval_id) = interval_id {

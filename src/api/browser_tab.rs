@@ -766,7 +766,7 @@ pub struct BrowserTabHost {
   #[cfg(test)]
   dynamic_script_full_scan_count: u64,
   last_image_load_discovery_generation: Option<u64>,
-  last_media_load_discovery_generation: Option<u64>,
+  last_media_load_discovery_generation: Option<(u64, u64)>,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
   streaming_parse_active: bool,
@@ -2878,7 +2878,21 @@ impl BrowserTabHost {
       return Ok(());
     }
 
-    let generation = self.document.dom_mutation_generation();
+    let dom_generation = self.document.dom_mutation_generation();
+    // Playback state changes (play/pause/load/seek) do not mutate the DOM tree, so the DOM mutation
+    // generation alone is not sufficient to drive media discovery. Include a per-realm media state
+    // generation that is bumped by HTMLMediaElement native bindings.
+    let media_state_generation = self
+      .executor
+      .window_realm_mut()
+      .and_then(|realm| {
+        realm
+          .vm_mut()
+          .user_data::<crate::js::window_realm::WindowRealmUserData>()
+          .map(|data| data.media_element_state_generation())
+      })
+      .unwrap_or(0);
+    let generation = (dom_generation, media_state_generation);
     if self
       .last_media_load_discovery_generation
       .is_some_and(|last| last == generation)
@@ -3003,7 +3017,7 @@ impl BrowserTabHost {
     let queued = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
       // Ensure the element still exists/is connected and the src hasn't been mutated since we queued
       // this task.
-      let (autoplay, muted, still_current) = {
+      let (autoplay, muted, preload_none, still_current) = {
         let dom = host.document.dom();
         if !dom.is_connected_for_scripting(node_id) {
           return Ok(());
@@ -3039,14 +3053,25 @@ impl BrowserTabHost {
         };
         let autoplay = dom.has_attribute(node_id, "autoplay").unwrap_or(false);
         let muted = dom.has_attribute(node_id, "muted").unwrap_or(false);
-        (autoplay, muted, current_src_key == src_key && resolved == url)
+        let preload_none = dom
+          .get_attribute(node_id, "preload")
+          .ok()
+          .flatten()
+          .map(super::trim_ascii_whitespace)
+          .is_some_and(|value| value.eq_ignore_ascii_case("none"));
+        (
+          autoplay,
+          muted,
+          preload_none,
+          current_src_key == src_key && resolved == url,
+        )
       };
       if !still_current {
         return Ok(());
       }
 
       // Compute the DomPlatform document id (WeakGcObject identity encoding).
-      let (document_id, should_load, should_autoplay, playback) = {
+      let (document_id, should_load, should_autoplay, playback, paused, src_changed) = {
         // Media element state lives on the vm-js host side (`WindowRealmUserData`).
         let Some(realm) = host.executor.window_realm_mut() else {
           return Ok(());
@@ -3084,28 +3109,42 @@ impl BrowserTabHost {
         }
 
         let should_load = src_changed || state.ready_state < HAVE_ENOUGH_DATA;
+        let paused = state.paused();
         let muted_effective = state.muted_effective(muted);
         let should_autoplay =
-          autoplay && muted_effective && state.paused() && !state.autoplay_attempted;
+          autoplay && muted_effective && paused && !state.autoplay_attempted;
         if autoplay && !state.autoplay_attempted {
           state.autoplay_attempted = true;
         }
         let playback = state.playback_control();
-        (document_id, should_load, should_autoplay, playback)
+        (document_id, should_load, should_autoplay, playback, paused, src_changed)
       };
 
       let key = DomNodeKey::new(document_id, node_id);
 
-      host.ensure_media_playback_worker(
-        node_id,
-        kind,
-        &src_key,
-        &url,
-        cors_mode,
-        referrer_policy,
-        playback,
-        event_loop,
-      )?;
+      let should_preload = !preload_none || should_autoplay || !paused;
+
+      // When the media `src` changes, tear down any existing worker immediately (even when we defer
+      // preloading via `preload="none"`). Otherwise, we'd keep decoding the previous resource after
+      // the element has been reset.
+      if src_changed {
+        if let Some(mut worker) = host.media_workers.remove(&node_id) {
+          worker.stop();
+        }
+      }
+
+      if should_preload {
+        host.ensure_media_playback_worker(
+          node_id,
+          kind,
+          &src_key,
+          &url,
+          cors_mode,
+          referrer_policy,
+          playback,
+          event_loop,
+        )?;
+      }
 
       let mut dispatch = |host: &mut BrowserTabHost,
                            event_loop: &mut EventLoop<BrowserTabHost>,
@@ -3129,7 +3168,7 @@ impl BrowserTabHost {
       };
 
       // Simulate load readiness events (no actual decode yet).
-      if should_load {
+      if should_preload && should_load {
         // loadedmetadata
         {
           let Some(realm) = host.executor.window_realm_mut() else {

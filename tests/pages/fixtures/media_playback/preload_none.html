@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>preload_none</title>
+<style>
+  body {
+    font: 14px system-ui, sans-serif;
+  }
+  .indicator {
+    display: inline-block;
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .indicator.fired {
+    background: #ffc;
+  }
+  .indicator.playing {
+    background: #cfc;
+  }
+</style>
+
+<div>
+  <div id="load-indicator" class="indicator">idle</div>
+  <div id="play-indicator" class="indicator">idle</div>
+</div>
+<button id="play">Play</button>
+
+<!-- preload=none: do not start loading until `play()` is called. -->
+<video id="v" src="assets/test_h264_aac.mp4" preload="none" muted></video>
+
+<script>
+  (() => {
+    const v = document.getElementById("v");
+    const loadIndicator = document.getElementById("load-indicator");
+    const playIndicator = document.getElementById("play-indicator");
+    const playButton = document.getElementById("play");
+
+    function markLoad(type) {
+      loadIndicator.textContent = `load:${type}`;
+      loadIndicator.className = "indicator fired";
+    }
+    ["loadedmetadata", "loadeddata", "canplay", "canplaythrough"].forEach((t) => {
+      v.addEventListener(t, () => markLoad(t));
+    });
+
+    function markPlay(type) {
+      playIndicator.textContent = `play:${type}`;
+      playIndicator.className = "indicator playing";
+    }
+    v.addEventListener("playing", () => markPlay("playing"));
+    v.addEventListener("timeupdate", () => markPlay("timeupdate"));
+
+    playButton.addEventListener("click", () => {
+      // Ignore the returned Promise; tests just need the side-effect events.
+      v.play();
+    });
+  })();
+</script>
+
