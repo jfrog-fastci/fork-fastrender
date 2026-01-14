@@ -2509,9 +2509,9 @@ fn class_or_obj_val_contains_top_level_await(
       None => Ok(false),
     },
     ClassOrObjVal::IndexSignature(_) => Ok(false),
-    // Class static blocks are not function boundaries; `await` inside them still counts as
-    // top-level await for module `[[HasTLA]]` detection.
-    ClassOrObjVal::StaticBlock(block) => stmt_list_contains_top_level_await(&block.stx.body, ctx),
+    // `await` is a syntax error inside class static blocks, so they cannot contribute to module
+    // `[[HasTLA]]` detection.
+    ClassOrObjVal::StaticBlock(_) => Ok(false),
   }
 }
 
