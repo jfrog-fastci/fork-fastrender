@@ -37503,7 +37503,6 @@ fn range_end_offset_get_native(
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::Number(offset as f64))
 }
-
 fn range_collapsed_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -53264,6 +53263,29 @@ fn init_window_globals(
       )?;
       let document_key = alloc_key(&mut scope, "Document")?;
       scope.define_property(global, document_key, data_desc(Value::Object(document_ctor)))?;
+
+      // `document.createRange()` is installed directly on the canonical `window.document` wrapper in
+      // the handwritten backend. Mirror the same function onto `Document.prototype` so:
+      // - `Document.prototype.createRange` exists (spec/WPT baseline),
+      // - `document.createRange === Document.prototype.createRange`.
+      let create_range_key = alloc_key(&mut scope, "createRange")?;
+      if scope
+        .heap()
+        .object_get_own_property(document_proto, &create_range_key)?
+        .is_none()
+      {
+        if let Some(Value::Object(create_range_func)) = scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &create_range_key)?
+        {
+          scope.push_root(Value::Object(create_range_func))?;
+          scope.define_property(
+            document_proto,
+            create_range_key,
+            data_desc(Value::Object(create_range_func)),
+          )?;
+        }
+      }
       document_ctor
     } else {
       // When using WebIDL bindings, `Document` is installed by the generated bindings runtime and
