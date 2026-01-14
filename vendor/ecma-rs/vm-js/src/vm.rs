@@ -4634,9 +4634,8 @@ impl Vm {
       // construction (regardless of whether `this` was initialized).
       Value::Object(o) => Ok(Value::Object(o)),
 
-      // `return;` / no explicit return / explicit `return undefined;`.
+      // `return;` / no explicit return / `return undefined;` -> return `this`.
       //
-      // Per ECMA-262, constructors fall back to returning `this` for an `undefined` return value.
       // Derived constructors are special only in that they may still have an uninitialized `this`
       // binding if `super()` was never called; in that case, returning `undefined` must throw a
       // ReferenceError.
@@ -4680,13 +4679,14 @@ impl Vm {
       // Derived constructors may only return an object or `undefined`. Any other explicit non-object
       // return value must throw a TypeError.
       _ if derived_constructor => Err(VmError::TypeError(
-        "Derived constructor returned non-object (only object or undefined is allowed)",
+        "Derived constructors may only return an object or undefined",
       )),
 
       // Base/ordinary constructors ignore explicit non-object return values.
       _ => {
-        let this_obj =
-          this_obj.ok_or(VmError::InvariantViolation("base constructor missing allocated this object"))?;
+        let this_obj = this_obj.ok_or(VmError::InvariantViolation(
+          "base constructor missing allocated this object",
+        ))?;
         Ok(Value::Object(this_obj))
       }
     }
@@ -4781,12 +4781,13 @@ impl Vm {
 
     let (return_value, final_this) = result?;
     // Constructors have special return-value semantics:
-    // - If the constructor returns an Object, that becomes the result.
-    // - Otherwise the result is determined by the constructor kind:
-    //   - Base constructors: ignore the return value and yield `this`.
-    //   - Derived constructors: only `undefined` is ignored; any other non-object return value must
-    //     throw a TypeError. (`undefined` means "use `this`", which is only available after
-    //     `super()`.)
+    // - If the constructor returns an Object, that becomes the result of construction.
+    // - Otherwise the result is `this`.
+    //
+    // Derived constructors have additional constraints:
+    // - If they return `undefined`, the result is `this` (which must have been initialized via
+    //   `super()`).
+    // - If they return any other non-object value (including `null`), it is a TypeError.
     if is_derived_class_ctor_body {
       match return_value {
         Value::Object(o) => Ok(Value::Object(o)),
@@ -4805,7 +4806,7 @@ impl Vm {
           }
         },
         _ => Err(VmError::TypeError(
-          "Derived constructor returned non-object (only object or undefined is allowed)",
+          "Derived constructors may only return an object or undefined",
         )),
       }
     } else {

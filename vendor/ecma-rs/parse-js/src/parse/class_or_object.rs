@@ -283,11 +283,13 @@ impl<'a> Parser<'a> {
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: !is_module,
-                await_expr_allowed: false,
+                // Static blocks use the `+Await` grammar parameter: parse `await` expressions and
+                // reserve the `await` identifier. Semantic validity (e.g. whether the static block
+                // is nested within an async context) is enforced by vm-js early errors.
+                await_expr_allowed: true,
                 yield_expr_allowed: false,
               });
-              let body = p
-                .with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
+              let body = p.stmts(block_ctx, TT::BraceClose);
               p.in_iteration = prev_in_iteration;
               p.in_switch = prev_in_switch;
               p.in_function = prev_in_function;
