@@ -19,9 +19,7 @@ use super::{
 use crate::debug::trace::TraceHandle;
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use crate::media::audio_clock::InterpolatedAudioClock;
-use crate::media::audio_engine::{
-  IdleBackend, IdleEngine, IdleEngineTelemetry, IdleStreamHandle,
-};
+use crate::media::audio_engine::{IdleBackend, IdleEngine, IdleEngineTelemetry, IdleStreamHandle};
 use cpal::traits::{HostTrait, StreamTrait};
 
 const AUDIO_TRACE_SAMPLE_N_ENV: &str = "FASTR_AUDIO_TRACE_SAMPLE_N";
@@ -828,7 +826,8 @@ impl MixerState {
   ///
   /// When no sinks are audible (all muted/empty), we can output silence without touching the per-sample
   /// mixing hot path. When outputting silence we still drain **fully muted** sinks so they don't
-  /// accumulate buffered audio.
+  /// accumulate buffered audio, and we arm fade-ins for empty sinks so the next audible segment does
+  /// not click when transitioning from silence.
   fn mix_for_callback(&self, output_samples: usize) -> MixerCallbackAction {
     let sinks = self.sinks.read();
     let mut has_sinks = false;
@@ -866,7 +865,12 @@ impl MixerState {
             continue;
           };
 
-          if !sink.is_paused() && sink.is_fully_muted() {
+          if sink.is_paused() {
+            continue;
+          }
+
+          // Fully muted sinks must be drained (mute semantics).
+          if sink.is_fully_muted() {
             sink.buffer.pop_discard(output_samples);
             sink.maybe_audible.store(false, Ordering::Relaxed);
             if sink.buffer.is_empty() {
@@ -876,6 +880,27 @@ impl MixerState {
                   .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
                 sink.force_ramp_to_zero();
               }
+              // Best-effort: if the engine is already torn down, ignore.
+              let _ = sink.activity.set_active(false);
+            }
+            continue;
+          }
+
+          // This callback is outputting silence because all sinks are currently inaudible.
+          //
+          // Ensure an empty sink is treated as a discontinuity boundary so the next non-empty
+          // segment fades in from 0 (avoiding a hard step from silence to a non-zero sample at
+          // the next callback).
+          if sink.buffer.buffered_samples() < channels {
+            sink.buffer.pop_discard(usize::MAX);
+            if sink.discontinuity_state.load(Ordering::Relaxed) != DISC_STATE_WAIT_DATA {
+              sink
+                .discontinuity_state
+                .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+              sink.force_ramp_to_zero();
+            }
+            sink.maybe_audible.store(false, Ordering::Relaxed);
+            if sink.buffer.is_empty() {
               // Best-effort: if the engine is already torn down, ignore.
               let _ = sink.activity.set_active(false);
             }
