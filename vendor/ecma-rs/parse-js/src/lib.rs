@@ -390,7 +390,17 @@ mod tests {
     // `arguments` binding.
     parse_with_options("class C { x = function () { return arguments; }; }", opts).unwrap();
     parse_with_options(
+      "class C { x = function(){ return arguments[0]; }; }",
+      opts,
+    )
+    .unwrap();
+    parse_with_options(
       "class C { x = function () { return () => arguments; }; }",
+      opts,
+    )
+    .unwrap();
+    parse_with_options(
+      "class C { x = function(){ return (() => arguments[0])(); }; }",
       opts,
     )
     .unwrap();
