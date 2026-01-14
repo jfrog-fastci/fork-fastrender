@@ -235,7 +235,8 @@ struct BookmarksFolderCache {
 impl BookmarksFolderCache {
   fn new(store: &BookmarkStore) -> Self {
     let folder_options = folder_options(store);
-    let mut folder_label_indices = FxHashMap::with_capacity(folder_options.len());
+    let mut folder_label_indices = FxHashMap::default();
+    folder_label_indices.reserve(folder_options.len());
     for (idx, (id, _)) in folder_options.iter().enumerate() {
       folder_label_indices.insert(*id, idx);
     }
@@ -253,7 +254,8 @@ impl BookmarksFolderCache {
     }
     self.folder_revision = revision;
     self.folder_options = folder_options(store);
-    let mut indices = FxHashMap::with_capacity(self.folder_options.len());
+    let mut indices = FxHashMap::default();
+    indices.reserve(self.folder_options.len());
     for (idx, (id, _)) in self.folder_options.iter().enumerate() {
       indices.insert(*id, idx);
     }
