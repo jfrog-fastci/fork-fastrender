@@ -236,8 +236,9 @@ fn object_literal_methods_and_accessors_set_home_object_ast() -> Result<(), VmEr
 
 #[test]
 fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmError> {
-  // Regression test (test262): computed `super[expr]` performs `GetSuperBase` before `ToPropertyKey`,
-  // so prototype mutation during key coercion does **not** affect the resolved super base.
+  // Regression test (test262: `prop-expr-getsuperbase-before-topropertykey-*`): computed `super[expr]`
+  // observes `GetSuperBase` before `ToPropertyKey`, so prototype mutation during key coercion does
+  // **not** affect the resolved super base for the current operation.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: "ok" };
@@ -257,15 +258,17 @@ fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmE
          }
         };
 
-       obj.m() === "ok";
+      obj.m() === "ok" &&
+        Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
 
 #[test]
 fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmError> {
-  // Regression test (test262): computed `super[expr]` performs `GetSuperBase` before `ToPropertyKey`,
-  // so prototype mutation during key coercion does **not** affect the resolved super base.
+  // Regression test (test262: `prop-expr-getsuperbase-before-topropertykey-*`): computed `super[expr]`
+  // observes `GetSuperBase` before `ToPropertyKey`, so prototype mutation during key coercion does
+  // **not** affect the resolved super base for the current operation.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var result;
@@ -296,8 +299,9 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmE
          }
        };
 
-       obj.m();
-       result === "ok";
+      obj.m();
+      result === "ok" &&
+        Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
@@ -305,8 +309,9 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmE
 #[test]
 fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -> Result<(), VmError>
 {
-  // Regression test (test262): computed `super[expr]` performs `GetSuperBase` before `ToPropertyKey`,
-  // so prototype mutation during key coercion does **not** affect the resolved super base.
+  // Regression test (test262: `prop-expr-getsuperbase-before-topropertykey-*`): computed `super[expr]`
+  // observes `GetSuperBase` before `ToPropertyKey`, so prototype mutation during key coercion does
+  // **not** affect the resolved super base for the current operation.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: 1 };
@@ -326,15 +331,18 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -
           }
         };
 
-       obj.m() === 2;
+      obj.m() === 2 &&
+        obj.p === 2 &&
+        Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
 
 #[test]
 fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Result<(), VmError> {
-  // Regression test (test262): computed `super[expr]` performs `GetSuperBase` before `ToPropertyKey`,
-  // so prototype mutation during key coercion does **not** affect the resolved super base.
+  // Regression test (test262: `prop-expr-getsuperbase-before-topropertykey-*`): computed `super[expr]`
+  // observes `GetSuperBase` before `ToPropertyKey`, so prototype mutation during key coercion does
+  // **not** affect the resolved super base for the current operation.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: 1 };
@@ -354,7 +362,9 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Resu
           }
         };
 
-       obj.m() === 2;
+      obj.m() === 2 &&
+        obj.p === 2 &&
+        Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }

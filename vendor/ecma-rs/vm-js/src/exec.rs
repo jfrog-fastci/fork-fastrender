@@ -11884,10 +11884,10 @@ impl<'a> Evaluator<'a> {
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
 
-      // Computed `super[expr]` evaluation order (ECMA-262):
+      // ECMA-262 `SuperProperty : super [ Expression ]`:
       // - `GetThisBinding` (handled above) must run before any key side effects,
       // - the key expression is evaluated to a value before `GetSuperBase`, and
-      // - `GetSuperBase` must be observed before `ToPropertyKey` so prototype mutation during key
+      // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
       //   coercion does not affect the resolved super base (test262:
       //   `prop-expr-getsuperbase-before-topropertykey-*`).
       let super_base = self.super_base(&mut key_scope)?;
