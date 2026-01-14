@@ -99,21 +99,21 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser
 ```
 
-### Native dialogs (file/color) (developer note)
+### Native dialogs (file) (developer note)
 
 The `browser_ui` feature includes an optional dependency on the
 [`rfd`](https://crates.io/crates/rfd) crate (pinned for MSRV) for native file/color dialogs.
 
 The windowed `browser` app uses native dialogs for a few surfaces today:
 
-- `<input type=file>` uses a native file picker (and respects `accept`/`multiple` when possible).
+- `<input type=file>` prefers a native file picker (and respects `accept`/`multiple` when possible).
 - Bookmarks Manager **Import/Export** can open native open/save dialogs to populate the path fields.
 - Page export actions (e.g. Save Page / Print) can use a native save dialog.
 
 Instead:
 
 - OS drag-and-drop onto `<input type=file>` is also supported.
-- `<input type=color>` does not have a picker UI yet.
+- `<input type=color>` uses an in-app color picker popup (native color dialogs are not wired up yet).
 
 On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature selection) so
 `--features browser_ui` stays **CI-friendly** and does **not** require GTK development packages
@@ -122,6 +122,10 @@ On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature
 Note: the portal backend requires an `xdg-desktop-portal` implementation to be running. If your
 environment doesn't provide one (common on minimal/headless setups), dialogs may fail to open at
 runtime, but the browser UI will still compile and run (including headless CI smoke tests).
+
+If you need deterministic behavior in CI/headless environments, set `FASTR_BROWSER_FORCE_IN_APP_DIALOGS=1`
+to force the browser to fall back to in-app dialogs instead of native OS dialogs (see
+[`env-vars.md`](env-vars.md)).
 
 When running the browser UI against arbitrary real-world pages, consider using the repo’s resource
 limit wrapper (especially on multi-agent hosts):
