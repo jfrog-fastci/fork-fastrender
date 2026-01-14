@@ -4,6 +4,7 @@ use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use smallvec::SmallVec;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::alloc::{alloc, Layout};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -76,6 +77,50 @@ fn task_source_name(source: TaskSource) -> &'static str {
 type Runnable<Host> = Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
 type ExternalRunnable<Host> =
   Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static>;
+
+/// Fallible `Box::new` that returns `None` on allocator OOM instead of aborting the process.
+///
+/// FastRender treats JavaScript input as untrusted and must avoid JS-triggerable aborts. Using
+/// `std::alloc::alloc` allows the allocation to fail gracefully without invoking Rust's OOM abort.
+#[inline]
+fn box_try_new<T>(value: T) -> Option<Box<T>> {
+  // `Box::new` for zero-sized types does not allocate and is therefore infallible.
+  if std::mem::size_of::<T>() == 0 {
+    return Some(Box::new(value));
+  }
+
+  let layout = Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM.
+  // We write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return None;
+    }
+    ptr.write(value);
+    Some(Box::from_raw(ptr))
+  }
+}
+
+#[inline]
+fn try_box_runnable<Host, F>(runnable: F) -> Result<Runnable<Host>>
+where
+  Host: 'static,
+  F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+{
+  let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
+  Ok(boxed as Runnable<Host>)
+}
+
+#[inline]
+fn try_box_external_runnable<Host, F>(runnable: F) -> Result<ExternalRunnable<Host>>
+where
+  Host: 'static,
+  F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
+{
+  let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
+  Ok(boxed as ExternalRunnable<Host>)
+}
 
 struct ExternalTask<Host: 'static> {
   source: TaskSource,
@@ -178,10 +223,11 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
           lock.max_pending_tasks
         )));
       }
-      lock.queue.push_back(ExternalTask {
-        source,
-        runnable: Box::new(runnable),
-      });
+      if lock.queue.try_reserve(1).is_err() {
+        return Err(Error::Other(String::new()));
+      }
+      let runnable = try_box_external_runnable(runnable)?;
+      lock.queue.push_back(ExternalTask { source, runnable });
       lock.wake.clone()
     };
 
@@ -820,7 +866,7 @@ impl<Host: 'static> EventLoop<Host> {
       let reserved_source_idx = source.as_usize();
       self.task_queues[reserved_source_idx]
         .try_reserve(1)
-        .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
+        .map_err(|_| Error::Other(String::new()))?;
 
       let task = {
         let mut lock = self
@@ -840,18 +886,15 @@ impl<Host: 'static> EventLoop<Host> {
       self.next_task_seq = self.next_task_seq.wrapping_add(1);
 
       let source = task.source;
-      let runnable = task.runnable;
-      // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
+      // `EventLoop::queue_task` does not require `Send`; erase `Send` from the boxed trait object
+      // without allocating.
+      let runnable: Runnable<Host> = task.runnable;
       debug_assert_eq!(
         source.as_usize(),
         reserved_source_idx,
         "external task queue front changed during drain"
       );
-      self.task_queues[reserved_source_idx].push_back(Task::new_with_seq(
-        source,
-        seq,
-        move |host, event_loop| runnable(host, event_loop),
-      ));
+      self.task_queues[reserved_source_idx].push_back(Task { source, seq, runnable });
       self.pending_tasks += 1;
     }
 
@@ -880,8 +923,9 @@ impl<Host: 'static> EventLoop<Host> {
     let queue = &mut self.task_queues[source.as_usize()];
     queue
       .try_reserve(1)
-      .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
-    queue.push_back(Task::new_with_seq(source, seq, runnable));
+      .map_err(|_| Error::Other(String::new()))?;
+    let runnable = try_box_runnable(runnable)?;
+    queue.push_back(Task { source, seq, runnable });
     self.pending_tasks += 1;
     Ok(())
   }
@@ -905,14 +949,15 @@ impl<Host: 'static> EventLoop<Host> {
     }
     let seq = self.next_task_seq;
     self.next_task_seq = self.next_task_seq.wrapping_add(1);
-    self.microtask_queue.try_reserve(1).map_err(|err| {
-      Error::Other(format!(
-        "EventLoop microtask queue allocation failed: {err}"
-      ))
-    })?;
-    self
-      .microtask_queue
-      .push_back(Task::new_with_seq(TaskSource::Microtask, seq, runnable));
+    if self.microtask_queue.try_reserve(1).is_err() {
+      return Err(Error::Other(String::new()));
+    }
+    let runnable = try_box_runnable(runnable)?;
+    self.microtask_queue.push_back(Task {
+      source: TaskSource::Microtask,
+      seq,
+      runnable,
+    });
     Ok(())
   }
 

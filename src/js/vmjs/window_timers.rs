@@ -1016,6 +1016,118 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     }
   }
 
+  fn host_enqueue_promise_job_fallible(
+    &mut self,
+    ctx: &mut dyn vm_js::VmJobContext,
+    job: Job,
+    realm: Option<RealmId>,
+  ) -> Result<(), VmError> {
+    fn map_event_loop_error(err: &crate::error::Error) -> VmError {
+      match err {
+        // On OOM, some paths intentionally return an empty `Error::Other` so we don't allocate
+        // while trying to report an allocation failure.
+        crate::error::Error::Other(msg) if msg.is_empty() => VmError::OutOfMemory,
+        crate::error::Error::Other(msg)
+          if msg.starts_with("EventLoop microtask queue allocation failed")
+            || msg.starts_with("EventLoop task queue allocation failed") =>
+        {
+          VmError::OutOfMemory
+        }
+        crate::error::Error::Other(msg) if msg.starts_with("EventLoop exceeded max pending microtasks") => {
+          VmError::LimitExceeded("EventLoop exceeded max pending microtasks")
+        }
+        crate::error::Error::Other(msg) if msg.starts_with("EventLoop exceeded max pending tasks") => {
+          VmError::LimitExceeded("EventLoop exceeded max pending tasks")
+        }
+        _ => VmError::InvariantViolation("EventLoop microtask enqueue failed"),
+      }
+    }
+
+    if let Some(err) = self.enqueue_error.as_ref() {
+      job.discard(ctx);
+      return Err(map_event_loop_error(err));
+    }
+
+    let Some(event_loop) = self.any.event_loop_mut::<EventLoop<Host>>() else {
+      job.discard(ctx);
+      return Err(VmError::InvariantViolation(
+        "vm-js Promise job enqueued without an active EventLoop",
+      ));
+    };
+
+    let mut job_cell = AutoDiscardJobCell {
+      job: Some(job),
+      heap_ptr: self.heap_ptr,
+      heap_alive: self.heap_alive.as_ref().map(Arc::clone),
+    };
+
+    let enqueue_result: crate::error::Result<()> = event_loop.queue_microtask(move |host, event_loop| {
+      let Some(job) = job_cell.take() else {
+        return Ok(());
+      };
+
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let budget = window_realm.vm_budget_now();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
+      let mut vm = vm.push_budget(budget);
+      let tick_result = vm.tick();
+
+      let job_result = match tick_result {
+        Ok(()) => {
+          let mut ctx = WindowRealmJobContext::new(&mut vm, heap, vm_host, realm);
+          job.run(&mut ctx, &mut hooks)
+        }
+        Err(err) => {
+          // If the VM is already out of budget (deadline exceeded, interrupted, out of fuel),
+          // we must still discard the job so any persistent roots it owns are cleaned up.
+          let mut ctx = WindowRealmJobContext::new(&mut vm, heap, vm_host, realm);
+          job.discard(&mut ctx);
+          Err(err)
+        }
+      };
+
+      let result: crate::error::Result<()> = job_result
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+        .map(|_| ());
+
+      let drain_result: crate::error::Result<()> = {
+        let drain_result = {
+          let mut scope = heap.scope();
+          crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
+            &mut vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+          )
+        };
+        drain_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      };
+
+      // If the job succeeded, propagate any failure to schedule mutation observer delivery.
+      // If the job already failed (or terminated), preserve the original error.
+      let result = match (result, drain_result) {
+        (Ok(()), Err(err)) => Err(err),
+        (other, _) => other,
+      };
+
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      result
+    });
+
+    match enqueue_result {
+      Ok(()) => Ok(()),
+      Err(err) => Err(map_event_loop_error(&err)),
+    }
+  }
+
   fn host_load_imported_module(
     &mut self,
     vm: &mut Vm,
