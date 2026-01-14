@@ -435,7 +435,16 @@ impl CpalAudioBackend {
               suspended = false;
               let now = Instant::now();
               manager.request_restart(now);
-              let _ = manager.tick(now);
+              let out = manager.tick(now);
+              if out.opened_stream {
+                // Reset stall watchdog state when resuming from an intentional idle suspend. The
+                // callback playhead does not advance while suspended, so without this we can
+                // immediately treat the long idle window as a "callback stall" and churn
+                // start/stop/restart the output stream.
+                last_progress_at = now;
+                last_frames_written = clock_for_fallback.frames_written();
+                awaiting_first_callback = true;
+              }
               let _ = reply.send(Ok(()));
             }
             StreamCommand::Stop => {}
