@@ -57,6 +57,9 @@ pub fn decode_page_node_id(id: accesskit::NodeId) -> Option<(TabId, usize)> {
 
   let dom_u64 = dom_bits as u64;
   let dom_usize = usize::try_from(dom_u64).ok()?;
+  if tab_bits == 0 || dom_usize == 0 {
+    return None;
+  }
 
   Some((TabId(tab_bits as u64), dom_usize))
 }
@@ -120,5 +123,16 @@ mod tests {
       assert_ne!(id.0.get(), 2);
       assert_ne!(id.0.get(), 3);
     }
+  }
+
+  #[test]
+  fn decode_rejects_zero_tab_id_or_dom_node_id() {
+    // Even though the tag bit is set, we treat (tab_id=0) and (dom_id=0) as invalid so they are
+    // never mistaken for a real page node.
+    let zero_tab = accesskit::NodeId(NonZeroU128::new(PAGE_NODE_ID_TAG | 1).unwrap());
+    assert_eq!(decode_page_node_id(zero_tab), None);
+
+    let zero_dom = accesskit::NodeId(NonZeroU128::new(PAGE_NODE_ID_TAG | (1u128 << 64)).unwrap());
+    assert_eq!(decode_page_node_id(zero_dom), None);
   }
 }

@@ -392,8 +392,11 @@ need to become FastRender interaction operations.
 The current shared helper is [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
 
 - `handle_accesskit_action_request(ctx, current_tab_id, current_document_generation, request)` decodes
-  the target `NodeId` into a FastRender DOM node id (see NodeId scheme above) and ignores requests
-  for other tabs or stale document generations.
+  the target `NodeId` into a FastRender DOM node id (see NodeId scheme above).
+  - With the canonical `encode_page_node_id` encoding, requests for other tabs or stale document
+    generations are ignored.
+  - With the tag-bit `page_accesskit_ids` encoding, only tab filtering is possible (no generation is
+    encoded).
 - It then translates a subset of AccessKit actions into `InteractionEngine` calls and marks
   `needs_redraw` when state changes.
 
