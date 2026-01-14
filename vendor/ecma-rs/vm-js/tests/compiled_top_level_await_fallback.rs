@@ -191,6 +191,70 @@ fn compiled_script_falls_back_for_top_level_for_await_of_with_nested_await() -> 
 }
 
 #[test]
+fn compiled_script_executes_top_level_for_await_of_with_await_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_for_await_of_await_rhs.js",
+    r#"
+      var out = "";
+      var iter = {
+        i: 0,
+        next: function () {
+          if (this.i++ === 0) return Promise.resolve({ value: "ok", done: false });
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      };
+      var iterable = {};
+      iterable[Symbol.asyncIterator] = function () { return iter; };
+
+      for await (var x of await Promise.resolve(iterable)) {
+        out = x;
+      }
+      out
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "for-await-of should be supported by the HIR async classic-script executor even when the RHS is a direct await expression"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "for-await-of with direct await RHS should not trigger a full AST fallback"
+  );
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // Loop body should not have executed until we run microtasks.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_string(&rt, result), "ok");
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_for_await_of_break_invokes_iterator_return() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

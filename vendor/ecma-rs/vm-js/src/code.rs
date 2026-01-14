@@ -700,7 +700,10 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `await <expr>;`
     // - `x = await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
-    // - `for await (<head> of <rhs>) { ... }` (no other `await` inside the head, RHS, or body)
+    // - `for await (<head> of <rhs>) { ... }` where:
+    //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
+    //     nested `await` inside `<expr>`, and
+    //   - the loop head + body contain no other `await`
     //
     // Any other `await` / `for await..of` form must fall back to the AST interpreter.
     Stmt::Expr(expr_stmt) => {
@@ -747,7 +750,13 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
       if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
         return true;
       }
-      if expr_contains_await(&for_of.stx.rhs) {
+      // `for await (x of await <expr>)` is supported because the loop state machine can suspend
+      // while evaluating the RHS expression.
+      if let Some(arg) = expr_direct_await_arg(&for_of.stx.rhs) {
+        if expr_contains_await(arg) {
+          return true;
+        }
+      } else if expr_contains_await(&for_of.stx.rhs) {
         return true;
       }
       if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
