@@ -1329,6 +1329,7 @@ impl TextItem {
     before_item.source_id = self.source_id;
     before_item.source_range = self.source_range.start..self.source_range.start + split_offset;
     before_item.emphasis_offset = self.emphasis_offset;
+    before_item.layout_shift = self.layout_shift;
 
     let mut after_item = TextItem::new(
       after_runs,
@@ -1363,6 +1364,7 @@ impl TextItem {
     after_item.source_id = self.source_id;
     after_item.source_range = self.source_range.start + split_offset..self.source_range.end;
     after_item.emphasis_offset = self.emphasis_offset;
+    after_item.layout_shift = self.layout_shift;
 
     if before_item.advance <= 0.0 || after_item.advance <= 0.0 {
       let before_runs = reshape_cache.shape(self, 0..split_offset, shaper, font_context)?;
@@ -1406,6 +1408,7 @@ impl TextItem {
       before_item.source_id = self.source_id;
       before_item.source_range = self.source_range.start..self.source_range.start + split_offset;
       before_item.emphasis_offset = self.emphasis_offset;
+      before_item.layout_shift = self.layout_shift;
 
       after_item = TextItem::new(
         after_runs,
@@ -1440,6 +1443,7 @@ impl TextItem {
       after_item.source_id = self.source_id;
       after_item.source_range = self.source_range.start + split_offset..self.source_range.end;
       after_item.emphasis_offset = self.emphasis_offset;
+      after_item.layout_shift = self.layout_shift;
     }
 
     if self.is_marker {

@@ -74,6 +74,37 @@ fn text_x_in_line(line: &FragmentNode, needle: &str) -> Option<f32> {
   None
 }
 
+fn inline_x_in_line_containing_text(line: &FragmentNode, needle: &str) -> Option<f32> {
+  fn contains_text(node: &FragmentNode, needle: &str) -> bool {
+    if let FragmentContent::Text { text, .. } = &node.content {
+      if text.as_ref() == needle {
+        return true;
+      }
+    }
+    node.children.iter().any(|child| contains_text(child, needle))
+  }
+
+  fn walk(node: &FragmentNode, needle: &str, offset_x: f32) -> Option<f32> {
+    let offset_x = offset_x + node.bounds.x();
+    if matches!(node.content, FragmentContent::Inline { .. }) && contains_text(node, needle) {
+      return Some(offset_x);
+    }
+    for child in node.children.iter() {
+      if let Some(found) = walk(child, needle, offset_x) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  for child in line.children.iter() {
+    if let Some(found) = walk(child, needle, 0.0) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn content_max_x_in_line(line: &FragmentNode) -> f32 {
   fn walk(node: &FragmentNode, offset_x: f32, max_x: &mut f32) {
     let offset_x = offset_x + node.bounds.x();
@@ -428,5 +459,44 @@ fn text_spacing_trim_trim_all_trims_mid_line_punctuation_within_span() {
   assert!(
     trim_all_open_x < space_open_x - 0.1,
     "expected trim-all to trim punctuation within a span (space-all x={space_open_x:.3} trim-all x={trim_all_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_does_not_shift_inline_box_fragment() {
+  // Trimming/hanging should affect the text fragment positioning but should not shift the
+  // containing inline box itself (e.g. its background/border positioning).
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span style=\"background: yellow\">「H</span>",
+  );
+  let trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-start;",
+    "<span style=\"background: yellow\">「H</span>",
+  );
+
+  let space_span_x =
+    inline_x_in_line_containing_text(&space_all[0], "「").expect("span x (space-all)");
+  let trim_span_x =
+    inline_x_in_line_containing_text(&trim_start[0], "「").expect("span x (trim-start)");
+
+  assert!(
+    (trim_span_x - space_span_x).abs() < 0.01,
+    "expected inline box fragment to remain anchored while trimming (space-all x={space_span_x:.3} trim-start x={trim_span_x:.3})"
+  );
+  assert!(
+    trim_span_x >= -0.01,
+    "expected inline box fragment not to hang into the start edge, got x={trim_span_x:.3}"
+  );
+
+  let space_punct_x = text_x_in_line(&space_all[0], "「").expect("punct x (space-all)");
+  let trim_punct_x = text_x_in_line(&trim_start[0], "「").expect("punct x (trim-start)");
+  assert!(
+    trim_punct_x < space_punct_x - 0.1,
+    "expected trim-start to shift the punctuation itself (space-all x={space_punct_x:.3} trim-start x={trim_punct_x:.3})"
+  );
+  assert!(
+    trim_punct_x < trim_span_x - 0.1,
+    "expected trimmed punctuation to hang outside the inline box fragment (span x={trim_span_x:.3} punct x={trim_punct_x:.3})"
   );
 }
