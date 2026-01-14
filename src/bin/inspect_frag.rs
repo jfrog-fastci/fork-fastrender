@@ -2081,7 +2081,6 @@ mod tests {
         text: Arc::<str>::from(needle),
         box_id: None,
         source_range: None,
-        document_selection: None,
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,
