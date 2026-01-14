@@ -8839,6 +8839,10 @@ impl<'a> Evaluator<'a> {
           PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
         };
 
+        // Keep the class constructor object accessible even in branches that bind `func_obj` for
+        // class element function objects.
+        let class_ctor = func_obj;
+
         match &member.stx.val {
           ClassOrObjVal::Method(method) => {
             let func_node = &method.stx.func;
@@ -22305,7 +22309,7 @@ fn async_eval_class(
       }
     }
 
-    // Create the class's private-name environment.
+    // Create the class's private-name environment (mirrors `Evaluator::eval_class`).
     //
     // `parse-js` represents private names as strings like `"#x"`. To enforce per-class privacy, we
     // allocate a fresh internal symbol for each declared private name and store the mapping on the
@@ -22318,6 +22322,7 @@ fn async_eval_class(
     let mut private_names: Vec<String> = Vec::new();
     let mut private_name_set: HashSet<&str> = HashSet::new();
     for member in members {
+      evaluator.tick()?;
       if let ClassOrObjKey::Direct(key) = &member.stx.key {
         if key.stx.tt == TT::PrivateMember {
           let name = key.stx.key.as_str();
@@ -22464,6 +22469,12 @@ fn async_eval_class_after_super(
   let mut class_scope = scope.reborrow();
   class_scope.push_root(super_value)?;
 
+  // Count instance elements stored in the class constructor's native slots so `[[Construct]]` can
+  // define them as own properties on each instance:
+  // - public/private instance fields, and
+  // - private instance methods (stored as per-instance hidden data properties).
+  let mut instance_field_count: usize = 0;
+
   // Find an explicit `constructor(...) { ... }` method, if present.
   let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
   for member in members {
@@ -22485,6 +22496,20 @@ fn async_eval_class_after_super(
     }
     if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
       return Err(VmError::Unimplemented("class member type annotations"));
+    }
+
+    if !member.stx.static_ {
+      let is_private_key = matches!(
+        &member.stx.key,
+        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+      );
+      if matches!(&member.stx.val, ClassOrObjVal::Prop(_))
+        || (is_private_key && matches!(&member.stx.val, ClassOrObjVal::Method(_)))
+      {
+        instance_field_count = instance_field_count
+          .checked_add(1)
+          .ok_or(VmError::OutOfMemory)?;
+      }
     }
 
     if member.stx.static_ {
@@ -22589,7 +22614,7 @@ fn async_eval_class_after_super(
     ctor_length,
     ctor_body_func,
     super_value,
-    /* instance_field_count */ 0,
+    instance_field_count,
   )?;
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
@@ -22916,7 +22941,9 @@ fn async_eval_class_members_from(
       async_define_class_member(
         evaluator,
         scope,
+        members,
         member,
+        idx,
         func_obj,
         prototype_obj,
         target_obj,
@@ -22924,8 +22951,9 @@ fn async_eval_class_members_from(
       )?;
     }
 
-    // Evaluate class static blocks in source order.
-    async_eval_class_static_blocks_from(evaluator, scope, members, 0, func_root)
+    // Evaluate class static initialization elements (static fields + static blocks) in source
+    // order.
+    async_eval_class_static_init_from(evaluator, scope, members, 0, func_root)
   })();
 
   match res {
@@ -22941,7 +22969,7 @@ fn async_eval_class_members_from(
   }
 }
 
-fn async_eval_class_static_blocks_from(
+fn async_eval_class_static_init_from(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   members: &Vec<Node<ClassMember>>,
@@ -22963,169 +22991,294 @@ fn async_eval_class_static_blocks_from(
   for (idx, member) in members.iter().enumerate().skip(start_index) {
     evaluator.tick()?;
 
-    let ClassOrObjVal::StaticBlock(block) = &member.stx.val else {
+    if !member.stx.static_ {
       continue;
-    };
+    }
 
-    // Static blocks are evaluated as strict-mode "method" bodies with:
-    // - `this` bound to the class constructor object, and
-    // - `new.target` set to `undefined`.
-    //
-    // We implement this by:
-    // - saving the current evaluator context (`this`, `new.target`, lexical env, var env),
-    // - creating a fresh var env whose outer is the class lexical env,
-    // - creating a function-body lexical env whose outer is that var env,
-    // - instantiating + evaluating the statement list (which may suspend if it contains `await`),
-    // - restoring the outer context afterwards.
-    let mut block_scope = scope.reborrow();
-    block_scope.push_root(Value::Object(func_obj))?;
-
-    let saved_this = evaluator.this;
-    let saved_new_target = evaluator.new_target;
-    let saved_home_object_value = evaluator
-      .home_object
-      .map(Value::Object)
-      .unwrap_or(Value::Undefined);
-    let saved_lex = evaluator.env.lexical_env;
-    let saved_var_env = evaluator.env.var_env();
-    let saved_meta_property_context = evaluator.env.meta_property_context();
-
-    // Root the saved values so they remain GC-safe even if we suspend (the async continuation's
-    // `this_root` / `new_target_root` / `home_object_root` will be updated to the block's
-    // overridden values).
-    block_scope.push_root(saved_this)?;
-    block_scope.push_root(saved_new_target)?;
-    block_scope.push_root(saved_home_object_value)?;
-    let saved_this_root = block_scope.heap_mut().add_root(saved_this)?;
-    let saved_new_target_root = block_scope.heap_mut().add_root(saved_new_target)?;
-    let saved_home_object_root = block_scope.heap_mut().add_root(saved_home_object_value)?;
-
-    evaluator.this = Value::Object(func_obj);
-    evaluator.new_target = Value::Undefined;
-    evaluator.home_object = Some(func_obj);
-    evaluator
-      .env
-      .set_meta_property_context(MetaPropertyContext::METHOD);
-
-    let var_env = block_scope.env_create(Some(saved_lex))?;
-    let body_lex = block_scope.env_create(Some(var_env))?;
-    evaluator.env.set_var_env(VarEnv::Env(var_env));
-    evaluator
-      .env
-      .set_lexical_env(block_scope.heap_mut(), body_lex);
-
-    // Hoist var/lexical/function declarations within the block before evaluating it.
-    evaluator.instantiate_stmt_list(&mut block_scope, &block.stx.body)?;
-
-    match async_eval_stmt_list(evaluator, &mut block_scope, &block.stx.body) {
-      Ok(AsyncEval::Complete(completion)) => {
-        // Restore outer context before continuing (static block execution is synchronous at the
-        // statement-list boundary regardless of completion type).
-        evaluator
-          .env
-          .set_lexical_env(block_scope.heap_mut(), saved_lex);
-        evaluator.env.set_var_env(saved_var_env);
-        evaluator
-          .env
-          .set_meta_property_context(saved_meta_property_context);
-        evaluator.this = saved_this;
-        evaluator.new_target = saved_new_target;
-        evaluator.home_object = match saved_home_object_value {
-          Value::Object(o) => Some(o),
-          _ => None,
-        };
-        block_scope.heap_mut().remove_root(saved_this_root);
-        block_scope.heap_mut().remove_root(saved_new_target_root);
-        block_scope.heap_mut().remove_root(saved_home_object_root);
-
-        match completion {
-          Completion::Normal(_) => continue,
-          Completion::Throw(thrown) => {
-            return Err(VmError::ThrowWithStack {
-              value: thrown.value,
-              stack: thrown.stack,
-            })
-          }
-          Completion::Return(_) => {
-            return Err(VmError::InvariantViolation(
-              "class static block produced Return completion (early errors should prevent this)",
-            ))
-          }
-          Completion::Break(..) => {
-            return Err(VmError::InvariantViolation(
-              "class static block produced Break completion (early errors should prevent this)",
-            ))
-          }
-          Completion::Continue(..) => {
-            return Err(VmError::InvariantViolation(
-              "class static block produced Continue completion (early errors should prevent this)",
-            ))
-          }
-        }
-      }
-      Ok(AsyncEval::Suspend(mut suspend)) => {
-        // Preserve the static-block execution context across suspension; restore + continue only
-        // after the statement list completes.
-        let push_res = async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::ClassAfterStaticBlock {
-            members: members as *const Vec<Node<ClassMember>>,
-            next_index: idx.saturating_add(1),
-            func_root,
-            saved_this_root,
-            saved_new_target_root,
-            saved_home_object_root,
-            saved_lex,
-            saved_var_env,
-            saved_meta_property_context,
+    // Static field initializers and static blocks are evaluated in source order after all class
+    // elements have been defined.
+    match &member.stx.val {
+      ClassOrObjVal::Prop(_) => {
+        // Static field initializer.
+        //
+        // Static field keys/initializer functions were computed during the element definition pass
+        // and stored in a hidden table on the class constructor to ensure they are not re-evaluated
+        // across `await` suspensions in static blocks.
+        let static_init_sym = scope
+          .heap_mut()
+          .ensure_internal_class_static_init_symbol()?;
+        let static_init_key = PropertyKey::from_symbol(static_init_sym);
+        let table_obj = match scope.heap().get_own_property(func_obj, static_init_key)? {
+          Some(desc) => match desc.kind {
+            PropertyKind::Data {
+              value: Value::Object(o),
+              ..
+            } => o,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "class static init table is not a data property holding an object",
+              ))
+            }
           },
-        );
-        if let Err(err) = push_res {
-          // Best-effort cleanup: tear down any rooted frames and restore the evaluator context so
-          // we don't leak roots or leave the evaluator in a mutated state when bubbling up OOM.
-          for mut frame in suspend.frames {
-            async_teardown_frame(block_scope.heap_mut(), &mut frame);
+          None => {
+            return Err(VmError::InvariantViolation(
+              "missing class static init table for static field",
+            ))
           }
-          evaluator
-            .env
-            .set_lexical_env(block_scope.heap_mut(), saved_lex);
-          evaluator.env.set_var_env(saved_var_env);
-          evaluator
-            .env
-            .set_meta_property_context(saved_meta_property_context);
-          evaluator.this = saved_this;
-          evaluator.new_target = saved_new_target;
-          evaluator.home_object = match saved_home_object_value {
-            Value::Object(o) => Some(o),
-            _ => None,
-          };
-          block_scope.heap_mut().remove_root(saved_this_root);
-          block_scope.heap_mut().remove_root(saved_new_target_root);
-          block_scope.heap_mut().remove_root(saved_home_object_root);
-          return Err(err);
-        }
-        return Ok(AsyncEval::Suspend(suspend));
-      }
-      Err(err) => {
-        // Fatal error: restore context and drop temporary roots before bubbling the error up.
-        evaluator
-          .env
-          .set_lexical_env(block_scope.heap_mut(), saved_lex);
-        evaluator.env.set_var_env(saved_var_env);
-        evaluator
-          .env
-          .set_meta_property_context(saved_meta_property_context);
-        evaluator.this = saved_this;
-        evaluator.new_target = saved_new_target;
-        evaluator.home_object = match saved_home_object_value {
-          Value::Object(o) => Some(o),
-          _ => None,
         };
-        block_scope.heap_mut().remove_root(saved_this_root);
-        block_scope.heap_mut().remove_root(saved_new_target_root);
-        block_scope.heap_mut().remove_root(saved_home_object_root);
-        return Err(err);
+
+        let is_private_key = matches!(
+          &member.stx.key,
+          ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+        );
+
+        let idx0 = idx.checked_mul(2).ok_or(VmError::OutOfMemory)?;
+        let idx1 = idx0.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        let idx0_u32 = u32::try_from(idx0).map_err(|_| VmError::OutOfMemory)?;
+        let idx1_u32 = u32::try_from(idx1).map_err(|_| VmError::OutOfMemory)?;
+
+        let (key_value, init_value) = {
+          let mut table_scope = scope.reborrow();
+          table_scope.push_roots(&[Value::Object(func_obj), Value::Object(table_obj)])?;
+
+          let key0 = table_scope.alloc_array_index_key(idx0_u32)?;
+          let key_value = table_scope
+            .heap()
+            .object_get_own_data_property_value(table_obj, &key0)?
+            .ok_or(VmError::InvariantViolation(
+              "missing static init key entry for class field",
+            ))?;
+          table_scope.push_root(key_value)?;
+
+          let key1 = table_scope.alloc_array_index_key(idx1_u32)?;
+          let init_value = table_scope
+            .heap()
+            .object_get_own_data_property_value(table_obj, &key1)?
+            .ok_or(VmError::InvariantViolation(
+              "missing static init initializer entry for class field",
+            ))?;
+          (key_value, init_value)
+        };
+
+        let key = match key_value {
+          Value::String(s) => PropertyKey::from_string(s),
+          Value::Symbol(s) => PropertyKey::from_symbol(s),
+          Value::Undefined => {
+            return Err(VmError::InvariantViolation("static field key is undefined"))
+          }
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "static field key is not a string or symbol",
+            ))
+          }
+        };
+
+        let value = match init_value {
+          Value::Object(func) => evaluator
+            .vm
+            .call_with_host_and_hooks(
+              &mut *evaluator.host,
+              scope,
+              &mut *evaluator.hooks,
+              Value::Object(func),
+              Value::Object(func_obj),
+              &[],
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?,
+          Value::Undefined => Value::Undefined,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "static field initializer is not a function or undefined",
+            ))
+          }
+        };
+
+        if is_private_key {
+          scope
+            .define_property_or_throw(
+              func_obj,
+              key,
+              PropertyDescriptorPatch {
+                value: Some(value),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(false),
+                ..Default::default()
+              },
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+        } else {
+          scope
+            .create_data_property_or_throw(func_obj, key, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+        }
+
+        continue;
       }
+      ClassOrObjVal::StaticBlock(block) => {
+        // Static blocks are evaluated as strict-mode "method" bodies with:
+        // - `this` bound to the class constructor object, and
+        // - `new.target` set to `undefined`.
+        //
+        // We implement this by:
+        // - saving the current evaluator context (`this`, `new.target`, `home_object`, lexical env,
+        //   var env),
+        // - creating a fresh var env whose outer is the class lexical env,
+        // - creating a function-body lexical env whose outer is that var env,
+        // - instantiating + evaluating the statement list (which may suspend if it contains `await`),
+        // - restoring the outer context afterwards.
+        let mut block_scope = scope.reborrow();
+        block_scope.push_root(Value::Object(func_obj))?;
+
+        let saved_this = evaluator.this;
+        let saved_new_target = evaluator.new_target;
+        let saved_home_object_value = evaluator
+          .home_object
+          .map(Value::Object)
+          .unwrap_or(Value::Undefined);
+        let saved_lex = evaluator.env.lexical_env;
+        let saved_var_env = evaluator.env.var_env();
+        let saved_meta_property_context = evaluator.env.meta_property_context();
+
+        // Root the saved values so they remain GC-safe even if we suspend (the async continuation's
+        // `this_root` / `new_target_root` / `home_object_root` will be updated to the block's
+        // overridden values).
+        block_scope.push_root(saved_this)?;
+        block_scope.push_root(saved_new_target)?;
+        block_scope.push_root(saved_home_object_value)?;
+        let saved_this_root = block_scope.heap_mut().add_root(saved_this)?;
+        let saved_new_target_root = block_scope.heap_mut().add_root(saved_new_target)?;
+        let saved_home_object_root = block_scope.heap_mut().add_root(saved_home_object_value)?;
+
+        evaluator.this = Value::Object(func_obj);
+        evaluator.new_target = Value::Undefined;
+        evaluator.home_object = Some(func_obj);
+        evaluator
+          .env
+          .set_meta_property_context(MetaPropertyContext::METHOD);
+
+        let var_env = block_scope.env_create(Some(saved_lex))?;
+        let body_lex = block_scope.env_create(Some(var_env))?;
+        evaluator.env.set_var_env(VarEnv::Env(var_env));
+        evaluator
+          .env
+          .set_lexical_env(block_scope.heap_mut(), body_lex);
+
+        // Hoist var/lexical/function declarations within the block before evaluating it.
+        evaluator.instantiate_stmt_list(&mut block_scope, &block.stx.body)?;
+
+        match async_eval_stmt_list(evaluator, &mut block_scope, &block.stx.body) {
+          Ok(AsyncEval::Complete(completion)) => {
+            // Restore outer context before continuing (static block execution is synchronous at the
+            // statement-list boundary regardless of completion type).
+            evaluator
+              .env
+              .set_lexical_env(block_scope.heap_mut(), saved_lex);
+            evaluator.env.set_var_env(saved_var_env);
+            evaluator
+              .env
+              .set_meta_property_context(saved_meta_property_context);
+            evaluator.this = saved_this;
+            evaluator.new_target = saved_new_target;
+            evaluator.home_object = match saved_home_object_value {
+              Value::Object(o) => Some(o),
+              _ => None,
+            };
+            block_scope.heap_mut().remove_root(saved_this_root);
+            block_scope.heap_mut().remove_root(saved_new_target_root);
+            block_scope.heap_mut().remove_root(saved_home_object_root);
+
+            match completion {
+              Completion::Normal(_) => continue,
+              Completion::Throw(thrown) => {
+                return Err(VmError::ThrowWithStack {
+                  value: thrown.value,
+                  stack: thrown.stack,
+                })
+              }
+              Completion::Return(_) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Return completion (early errors should prevent this)",
+                ))
+              }
+              Completion::Break(..) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Break completion (early errors should prevent this)",
+                ))
+              }
+              Completion::Continue(..) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Continue completion (early errors should prevent this)",
+                ))
+              }
+            }
+          }
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            // Preserve the static-block execution context across suspension; restore + continue only
+            // after the statement list completes.
+            let push_res = async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::ClassAfterStaticBlock {
+                members: members as *const Vec<Node<ClassMember>>,
+                next_index: idx.saturating_add(1),
+                func_root,
+                saved_this_root,
+                saved_new_target_root,
+                saved_home_object_root,
+                saved_lex,
+                saved_var_env,
+                saved_meta_property_context,
+              },
+            );
+            if let Err(err) = push_res {
+              // Best-effort cleanup: tear down any rooted frames and restore the evaluator context so
+              // we don't leak roots or leave the evaluator in a mutated state when bubbling up OOM.
+              for mut frame in suspend.frames {
+                async_teardown_frame(block_scope.heap_mut(), &mut frame);
+              }
+              evaluator
+                .env
+                .set_lexical_env(block_scope.heap_mut(), saved_lex);
+              evaluator.env.set_var_env(saved_var_env);
+              evaluator
+                .env
+                .set_meta_property_context(saved_meta_property_context);
+              evaluator.this = saved_this;
+              evaluator.new_target = saved_new_target;
+              evaluator.home_object = match saved_home_object_value {
+                Value::Object(o) => Some(o),
+                _ => None,
+              };
+              block_scope.heap_mut().remove_root(saved_this_root);
+              block_scope.heap_mut().remove_root(saved_new_target_root);
+              block_scope.heap_mut().remove_root(saved_home_object_root);
+              return Err(err);
+            }
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+          Err(err) => {
+            // Fatal error: restore context and drop temporary roots before bubbling the error up.
+            evaluator
+              .env
+              .set_lexical_env(block_scope.heap_mut(), saved_lex);
+            evaluator.env.set_var_env(saved_var_env);
+            evaluator
+              .env
+              .set_meta_property_context(saved_meta_property_context);
+            evaluator.this = saved_this;
+            evaluator.new_target = saved_new_target;
+            evaluator.home_object = match saved_home_object_value {
+              Value::Object(o) => Some(o),
+              _ => None,
+            };
+            block_scope.heap_mut().remove_root(saved_this_root);
+            block_scope.heap_mut().remove_root(saved_new_target_root);
+            block_scope.heap_mut().remove_root(saved_home_object_root);
+            return Err(err);
+          }
+        }
+      }
+      _ => continue,
     }
   }
 
@@ -23135,8 +23288,10 @@ fn async_eval_class_static_blocks_from(
 fn async_define_class_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
+  members: &Vec<Node<ClassMember>>,
   member: &Node<ClassMember>,
-  _func_obj: GcObject,
+  member_index: usize,
+  class_ctor: GcObject,
   _prototype_obj: GcObject,
   target_obj: GcObject,
   key: PropertyKey,
@@ -23149,6 +23304,46 @@ fn async_define_class_member(
   match key {
     PropertyKey::String(s) => member_scope.push_root(Value::String(s))?,
     PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
+  };
+
+  let is_private_key = matches!(
+    &member.stx.key,
+    ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+  );
+
+  // Compute the zero-based index of this instance element within the stored `(key, init)` pair list
+  // on the class constructor, by counting all prior instance elements in source order.
+  //
+  // This avoids having to persist the running field index across `await` suspensions.
+  let instance_element_index = || -> Result<usize, VmError> {
+    let mut idx: usize = 0;
+    for (i, m) in members.iter().enumerate() {
+      if i >= member_index {
+        break;
+      }
+      if m.stx.static_ {
+        continue;
+      }
+      // Skip the actual `constructor(...) { ... }` method: it's represented by the class
+      // constructor object itself (and its hidden body function).
+      let is_constructor_method = matches!(
+        (&m.stx.key, &m.stx.val),
+        (ClassOrObjKey::Direct(direct), ClassOrObjVal::Method(_)) if direct.stx.key == "constructor"
+      );
+      if is_constructor_method {
+        continue;
+      }
+      let is_private = matches!(
+        &m.stx.key,
+        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+      );
+      if matches!(&m.stx.val, ClassOrObjVal::Prop(_))
+        || (is_private && matches!(&m.stx.val, ClassOrObjVal::Method(_)))
+      {
+        idx = idx.checked_add(1).ok_or(VmError::OutOfMemory)?;
+      }
+    }
+    Ok(idx)
   };
 
   let member_loc_start = member.loc.start_u32();
@@ -23239,6 +23434,29 @@ fn async_define_class_member(
       if !matches!(key, PropertyKey::String(_)) {
         crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+      }
+
+      // Private instance methods are stored as per-instance hidden data properties. Record the
+      // method value in the class constructor's instance element list instead of defining a
+      // symbol-keyed property on the prototype (private member access never consults the prototype
+      // chain).
+      if is_private_key && !member.stx.static_ {
+        let idx = instance_element_index()?;
+        let key_value = match key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        };
+        let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+          .saturating_add(idx.saturating_mul(2));
+        member_scope
+          .heap_mut()
+          .set_function_native_slot(class_ctor, slot_base, key_value)?;
+        member_scope.heap_mut().set_function_native_slot(
+          class_ctor,
+          slot_base.saturating_add(1),
+          Value::Object(func_obj),
+        )?;
+        return Ok(());
       }
 
       member_scope
@@ -23433,8 +23651,159 @@ fn async_define_class_member(
         )
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
     }
-    ClassOrObjVal::Prop(_) => {
-      return Err(VmError::Unimplemented("class fields"));
+    ClassOrObjVal::Prop(initializer_expr) => {
+      // Class fields.
+      //
+      // - Instance fields (public/private) are stored as `(key, initializer)` pairs in the class
+      //   constructor's native slots, and are initialized per-instance during `[[Construct]]`.
+      // - Static fields (public/private) are initialized during the post-definition initialization
+      //   pass (after all methods have been defined), in source order relative to static blocks.
+      let key_value = match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      };
+
+      // Create a function object for `= <expr>` initializers so they can be evaluated later with
+      // the correct `this` value.
+      let init_value = match initializer_expr {
+        Some(expr_node) => {
+          let rel_start = expr_node
+            .loc
+            .start_u32()
+            .saturating_sub(evaluator.env.prefix_len());
+          let rel_end = expr_node
+            .loc
+            .end_u32()
+            .saturating_sub(evaluator.env.prefix_len());
+          let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+          let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+          let code = evaluator.vm.register_ecma_function(
+            evaluator.env.source(),
+            span_start,
+            span_end,
+            EcmaFunctionKind::ClassFieldInitializer,
+          )?;
+
+          // Field initializer functions are always strict mode and have `length = 0`.
+          let is_strict = true;
+          let this_mode = ThisMode::Strict;
+          let closure_env = Some(evaluator.env.lexical_env);
+
+          let name_string = member_scope.alloc_string("")?;
+          let init_func_obj = member_scope.alloc_ecma_function(
+            code,
+            /* is_constructable */ false,
+            name_string,
+            0,
+            this_mode,
+            is_strict,
+            closure_env,
+          )?;
+
+          let intr = evaluator
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          member_scope
+            .heap_mut()
+            .object_set_prototype(init_func_obj, Some(intr.function_prototype()))?;
+          member_scope
+            .heap_mut()
+            .set_function_realm(init_func_obj, evaluator.env.global_object())?;
+          if let Some(realm) = evaluator.vm.current_realm() {
+            member_scope
+              .heap_mut()
+              .set_function_job_realm(init_func_obj, realm)?;
+          }
+          if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+            let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+            member_scope
+              .heap_mut()
+              .set_function_script_or_module_token(init_func_obj, Some(token))?;
+          }
+          member_scope
+            .heap_mut()
+            .set_function_home_object(init_func_obj, Some(target_obj))?;
+          Value::Object(init_func_obj)
+        }
+        None => Value::Undefined,
+      };
+      // Keep the initializer function (if any) alive across subsequent allocations (e.g. creating
+      // the deferred static-init table).
+      member_scope.push_root(init_value)?;
+
+      if member.stx.static_ {
+        // Static field: defer initialization until after the element definition pass.
+        let static_init_sym = member_scope
+          .heap_mut()
+          .ensure_internal_class_static_init_symbol()?;
+        let static_init_key = PropertyKey::from_symbol(static_init_sym);
+        let table_obj = match member_scope.heap().get_own_property(class_ctor, static_init_key)? {
+          Some(desc) => match desc.kind {
+            PropertyKind::Data {
+              value: Value::Object(o),
+              ..
+            } => o,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "class static init table is not a data property holding an object",
+              ))
+            }
+          },
+          None => {
+            let table_len = members.len().checked_mul(2).ok_or(VmError::OutOfMemory)?;
+            let table = member_scope.alloc_array(table_len)?;
+            member_scope.push_root(Value::Object(table))?;
+            let intr = evaluator
+              .vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            member_scope
+              .heap_mut()
+              .object_set_prototype(table, Some(intr.array_prototype()))?;
+            member_scope.heap_mut().define_property_or_throw(
+              class_ctor,
+              static_init_key,
+              PropertyDescriptorPatch {
+                value: Some(Value::Object(table)),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                ..Default::default()
+              },
+            )?;
+            table
+          }
+        };
+
+        let idx0 = member_index.checked_mul(2).ok_or(VmError::OutOfMemory)?;
+        let idx1 = idx0.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        let idx0_u32 = u32::try_from(idx0).map_err(|_| VmError::OutOfMemory)?;
+        let idx1_u32 = u32::try_from(idx1).map_err(|_| VmError::OutOfMemory)?;
+        // Use `CreateDataProperty` so array element storage growth is correctly accounted against
+        // `HeapLimits`.
+        //
+        // Write each entry immediately after allocating its index key so the prior key becomes
+        // reachable from the table before any subsequent allocation can trigger GC.
+        let key0 = member_scope.alloc_array_index_key(idx0_u32)?;
+        member_scope.create_data_property_or_throw(table_obj, key0, key_value)?;
+        let key1 = member_scope.alloc_array_index_key(idx1_u32)?;
+        member_scope.create_data_property_or_throw(table_obj, key1, init_value)?;
+      } else {
+        // Instance field: store as `(key, initializer)` in the class constructor's native slots.
+        let idx = instance_element_index()?;
+        let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+          .saturating_add(idx.saturating_mul(2));
+        member_scope
+          .heap_mut()
+          .set_function_native_slot(class_ctor, slot_base, key_value)?;
+        member_scope.heap_mut().set_function_native_slot(
+          class_ctor,
+          slot_base.saturating_add(1),
+          init_value,
+        )?;
+      }
     }
     ClassOrObjVal::IndexSignature(_) => {
       return Err(VmError::Unimplemented("class index signature"));
@@ -23534,7 +23903,9 @@ fn async_class_after_computed_key(
     async_define_class_member(
       evaluator,
       scope,
+      members,
       member,
+      member_index,
       func_obj,
       prototype_obj,
       target_obj,
@@ -32547,7 +32918,7 @@ fn async_resume_from_frames(
           scope.heap_mut().remove_root(saved_home_object_root);
 
           match completion {
-            Completion::Normal(_) => match async_eval_class_static_blocks_from(
+            Completion::Normal(_) => match async_eval_class_static_init_from(
               evaluator, scope, members, next_index, func_root,
             ) {
               Ok(AsyncEval::Complete(v)) => {

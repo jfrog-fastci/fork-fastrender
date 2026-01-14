@@ -95,6 +95,8 @@ struct InternalSymbols {
   disposable_stack_stack: Option<GcSymbol>,
   async_disposable_stack_state: Option<GcSymbol>,
   async_disposable_stack_stack: Option<GcSymbol>,
+  // Async class evaluation: hidden storage for deferred static field initialization.
+  class_static_init: Option<GcSymbol>,
 }
 
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
@@ -1465,6 +1467,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         internal.disposable_stack_stack,
         internal.async_disposable_stack_state,
         internal.async_disposable_stack_stack,
+        internal.class_static_init,
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
@@ -7573,6 +7576,14 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       "vm-js.internal.AsyncDisposableStackStack",
       |s| s.async_disposable_stack_stack,
       |s, sym| s.async_disposable_stack_stack = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_class_static_init_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.ClassStaticInit",
+      |s| s.class_static_init,
+      |s, sym| s.class_static_init = Some(sym),
     )
   }
 

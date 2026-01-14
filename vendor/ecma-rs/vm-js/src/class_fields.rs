@@ -1,4 +1,6 @@
-use crate::{function::CallHandler, GcObject, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{
+  function::CallHandler, GcObject, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+};
 
 fn define_internal_symbol_property_or_throw(
   scope: &mut Scope<'_>,
