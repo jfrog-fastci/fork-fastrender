@@ -645,6 +645,54 @@ mod tests {
   }
 
   #[test]
+  fn string_object_prefers_domstring_over_dictionary_overload() {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads: f(MyDict) vs f(DOMString)
+    let overloads = vec![
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::Named(NamedType {
+            name: "MyDict".into(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::String(StringType::DomString),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 1);
+
+    let [ConvertedArgument::Value(WebIdlValue::String(v))] = out.values.as_slice() else {
+      panic!("expected exactly one converted DOMString argument");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
   fn string_object_union_prefers_domstring_over_sequence_without_probing_iterator() {
     let mut rt = VmJsRuntime::new();
 
