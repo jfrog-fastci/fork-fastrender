@@ -15191,6 +15191,10 @@ mod hir_async_await_eval_order_compiled_tests {
     let mut rt = JsRuntime::new(vm, heap)?;
 
     let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "await evaluation order regression tests must execute via compiled HIR (not full AST fallback)"
+    );
     let promise = rt.exec_compiled_script(script)?;
     let promise_root = rt.heap.add_root(promise)?;
 
