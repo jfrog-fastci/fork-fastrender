@@ -1882,6 +1882,7 @@ fn remove_first(items: &mut Vec<BookmarkId>, needle: BookmarkId) -> bool {
 mod bookmarks_bar_ui {
   use super::{BookmarkId, BookmarkNode, BookmarkStore};
   use egui::{Pos2, Rect, Stroke};
+  use std::borrow::Cow;
 
   #[derive(Debug, Default)]
   pub struct BookmarksBarOutput {
@@ -2028,13 +2029,14 @@ mod bookmarks_bar_ui {
               .as_deref()
               .map(str::trim)
               .filter(|t| !t.is_empty());
-            let label = title
-              .map(str::to_string)
-              .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
+            let label: Cow<'_, str> = match title {
+              Some(title) => Cow::Borrowed(title),
+              None => crate::ui::url_display::truncate_url_middle_cow(url, 36),
+            };
 
             let a11y_label = super::format_bookmark_widget_info_label(title, url);
 
-            let button = egui::Button::new(label)
+            let button = egui::Button::new(label.as_ref())
               .small()
               .sense(egui::Sense::click_and_drag());
             let response = ui
