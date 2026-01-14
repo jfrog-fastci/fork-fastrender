@@ -596,6 +596,14 @@ struct HirEvaluator<'vm> {
   /// duration of the constructor body.
   this_root_idx: Option<usize>,
   new_target: Value,
+  /// Whether direct eval code is permitted to contain the `new.target` meta property.
+  ///
+  /// Per ECMAScript, `new.target` is only syntactically valid in direct eval when the direct eval
+  /// call occurs in **non-arrow** function code.
+  ///
+  /// This is separate from the runtime `new_target` value: even if an arrow function captures a
+  /// lexical `new.target`, `eval("new.target")` must still throw a SyntaxError.
+  allow_new_target_in_eval: bool,
   home_object: Option<GcObject>,
   script: Arc<CompiledScript>,
 }
@@ -9088,6 +9096,7 @@ impl<'vm> HirEvaluator<'vm> {
             self.this,
             self.new_target,
             self.home_object,
+            self.allow_new_target_in_eval,
             s,
           )?,
           other => other,
@@ -10878,6 +10887,7 @@ impl HirAsyncActive {
 pub(crate) struct HirAsyncState {
   script: Arc<CompiledScript>,
   body_id: hir_js::BodyId,
+  allow_new_target_in_eval: bool,
   body_kind: HirAsyncBodyKind,
   next_stmt_index: usize,
   active: Option<HirAsyncActive>,
@@ -10892,6 +10902,7 @@ impl HirAsyncState {
     let Some(func_meta) = body.function.as_ref() else {
       return Err(VmError::InvariantViolation("function body missing metadata"));
     };
+    let allow_new_target_in_eval = !func_meta.is_arrow;
     let body_kind = match &func_meta.body {
       hir_js::FunctionBody::Block(stmts) => {
         let mut cloned: Vec<hir_js::StmtId> = Vec::new();
@@ -10908,6 +10919,7 @@ impl HirAsyncState {
     Ok(Self {
       script,
       body_id,
+      allow_new_target_in_eval,
       body_kind,
       next_stmt_index: 0,
       active: None,
@@ -10944,6 +10956,7 @@ impl HirAsyncState {
       derived_constructor: false,
       this_root_idx: None,
       new_target,
+      allow_new_target_in_eval: self.allow_new_target_in_eval,
       home_object,
       script: self.script.clone(),
     };
@@ -10975,6 +10988,7 @@ impl HirAsyncState {
       derived_constructor: false,
       this_root_idx: None,
       new_target,
+      allow_new_target_in_eval: self.allow_new_target_in_eval,
       home_object,
       script: self.script.clone(),
     };
@@ -11812,11 +11826,13 @@ fn run_compiled_async_function(
       frames
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
+      let allow_new_target_in_eval = state.allow_new_target_in_eval;
       frames.push_back(crate::exec::AsyncFrame::HirAsync { state });
 
       let cont = AsyncContinuation {
         env: env.clone(),
         strict,
+        allow_new_target_in_eval,
         exec_ctx: None,
         script_ast: None,
         script_ast_memory: None,
@@ -11940,6 +11956,7 @@ pub(crate) fn run_compiled_function(
   let Some(func_meta) = body.function.as_ref() else {
     return Err(VmError::InvariantViolation("function body missing metadata"));
   };
+  let allow_new_target_in_eval = !func_meta.is_arrow;
   if func_meta.generator {
     return Err(VmError::Unimplemented(if func_meta.async_ {
       "async generator functions"
@@ -11963,6 +11980,7 @@ pub(crate) fn run_compiled_function(
         derived_constructor,
         this_root_idx,
         new_target,
+        allow_new_target_in_eval,
         home_object,
         script: func.script.clone(),
       };
@@ -12002,6 +12020,7 @@ pub(crate) fn run_compiled_function(
     derived_constructor,
     this_root_idx,
     new_target,
+    allow_new_target_in_eval,
     home_object,
     script: func.script.clone(),
   };
@@ -12068,6 +12087,7 @@ pub(crate) fn run_compiled_script(
     derived_constructor: false,
     this_root_idx: None,
     new_target: Value::Undefined,
+    allow_new_target_in_eval: false,
     home_object: None,
     script: script.clone(),
   };
@@ -12166,6 +12186,7 @@ pub(crate) fn run_compiled_module(
         derived_constructor: false,
         this_root_idx: None,
         new_target: Value::Undefined,
+        allow_new_target_in_eval: false,
         home_object: None,
         script: script.clone(),
       };
@@ -12291,6 +12312,7 @@ fn instantiate_compiled_module_decls_inner(
       derived_constructor: false,
       this_root_idx: None,
       new_target: Value::Undefined,
+      allow_new_target_in_eval: false,
       home_object: None,
       script: script.clone(),
     };
@@ -13058,6 +13080,7 @@ fn run_compiled_script_async(
       derived_constructor: false,
       this_root_idx: None,
       new_target: Value::Undefined,
+      allow_new_target_in_eval: false,
       home_object: None,
       script: script.clone(),
     };
@@ -13548,6 +13571,7 @@ pub(crate) fn hir_async_resume_call(
       derived_constructor: false,
       this_root_idx: None,
       new_target,
+      allow_new_target_in_eval: false,
       home_object: None,
       script: cont.script.clone(),
     };

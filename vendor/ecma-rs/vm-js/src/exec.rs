@@ -402,6 +402,7 @@ pub(crate) fn perform_indirect_eval(
     strict,
     this: Value::Object(global_object),
     new_target: Value::Undefined,
+    allow_new_target_in_eval: false,
     home_object: None,
     class_constructor: None,
     derived_constructor: false,
@@ -467,6 +468,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   this: Value,
   new_target: Value,
   home_object: Option<GcObject>,
+  allow_new_target: bool,
   source_string: GcString,
 ) -> Result<Value, VmError> {
   // Root the global object, the input string, and caller `this` / `new.target` across allocations
@@ -500,13 +502,12 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     dialect: Dialect::Ecma,
     source_type: SourceType::Script,
   };
-  let meta_property_context = env.meta_property_context();
+  let mut meta_property_context = env.meta_property_context();
+  if !allow_new_target {
+    meta_property_context = meta_property_context.with_new_target(false);
+  }
   // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-  let top = match vm.parse_top_level_with_budget_with_meta_property_context(
-    &source.text,
-    opts,
-    meta_property_context,
-  ) {
+  let top = match vm.parse_top_level_with_budget_with_meta_property_context(&source.text, opts, meta_property_context) {
     Ok(top) => top,
     Err(VmError::Syntax(diags)) => {
       let intr = vm
@@ -618,6 +619,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
       strict,
       this,
       new_target,
+      allow_new_target_in_eval: allow_new_target,
       home_object,
       class_constructor: None,
       derived_constructor: false,
@@ -803,6 +805,7 @@ pub fn eval_script_with_host_and_hooks(
         strict,
         this: global_this,
         new_target: Value::Undefined,
+        allow_new_target_in_eval: false,
         home_object: None,
         class_constructor: None,
         derived_constructor: false,
@@ -2696,6 +2699,7 @@ impl JsRuntime {
                 strict,
                 this: global_this,
                 new_target: Value::Undefined,
+                allow_new_target_in_eval: false,
                 home_object: None,
                 class_constructor: None,
                 derived_constructor: false,
@@ -2755,6 +2759,7 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          allow_new_target_in_eval: false,
           home_object: None,
           class_constructor: None,
           derived_constructor: false,
@@ -3004,6 +3009,7 @@ impl JsRuntime {
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
+            allow_new_target_in_eval: false,
             exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
             script_ast_memory,
@@ -3245,6 +3251,7 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          allow_new_target_in_eval: false,
           home_object: None,
           class_constructor: None,
           derived_constructor: false,
@@ -3304,6 +3311,7 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          allow_new_target_in_eval: false,
           home_object: None,
           class_constructor: None,
           derived_constructor: false,
@@ -3552,6 +3560,7 @@ impl JsRuntime {
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
+            allow_new_target_in_eval: false,
             exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
             script_ast_memory,
@@ -4329,6 +4338,14 @@ struct Evaluator<'a> {
   strict: bool,
   this: Value,
   new_target: Value,
+  /// Whether direct eval code is permitted to contain the `new.target` meta property.
+  ///
+  /// Per ECMAScript, `new.target` is only syntactically valid in direct eval when the direct eval
+  /// call occurs in **non-arrow** function code.
+  ///
+  /// This is separate from the runtime `new_target` value: even if an arrow function captures a
+  /// lexical `new.target`, `eval("new.target")` must still throw a SyntaxError.
+  allow_new_target_in_eval: bool,
   /// The current lexical `[[HomeObject]]`, used for `super` property references and inherited by
   /// arrow functions.
   home_object: Option<GcObject>,
@@ -14104,6 +14121,7 @@ impl<'a> Evaluator<'a> {
       self.this,
       self.new_target,
       self.home_object,
+      self.allow_new_target_in_eval,
       source_string,
     )
   }
@@ -17142,6 +17160,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
 pub(crate) struct AsyncContinuation {
   pub(crate) env: RuntimeEnv,
   pub(crate) strict: bool,
+  pub(crate) allow_new_target_in_eval: bool,
   /// Optional execution context to install while resuming the async continuation.
   ///
   /// This is primarily used for top-level await in modules: module evaluation must provide an
@@ -17506,6 +17525,7 @@ pub(crate) fn async_resume_call(
         strict: cont.strict,
         this,
         new_target,
+        allow_new_target_in_eval: cont.allow_new_target_in_eval,
         home_object,
         class_constructor: None,
         derived_constructor: false,
@@ -17520,6 +17540,7 @@ pub(crate) fn async_resume_call(
       // evaluation forces strict mode). Persist the current strictness into the continuation so it
       // is restored correctly across subsequent `await` suspensions.
       cont.strict = evaluator.strict;
+      cont.allow_new_target_in_eval = evaluator.allow_new_target_in_eval;
       // `this` / `new.target` can also be overridden temporarily by nested constructs that can
       // suspend (e.g. class static blocks). Persist them so resumed execution observes the correct
       // values.
@@ -17557,6 +17578,7 @@ pub(crate) fn async_resume_call(
     strict: cont.strict,
     this,
     new_target,
+    allow_new_target_in_eval: cont.allow_new_target_in_eval,
     home_object,
     class_constructor: None,
     derived_constructor: false,
@@ -17569,6 +17591,7 @@ pub(crate) fn async_resume_call(
   let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
   // Persist strictness across suspensions (see comment in the exec_ctx branch above).
   cont.strict = evaluator.strict;
+  cont.allow_new_target_in_eval = evaluator.allow_new_target_in_eval;
   // Persist `this` / `new.target` across suspensions (see comment in the exec_ctx branch above).
   scope.heap_mut().set_root(cont.this_root, evaluator.this);
   scope
@@ -41818,6 +41841,7 @@ pub(crate) fn generator_resume(
             strict: cont.strict,
             this,
             new_target,
+            allow_new_target_in_eval: !func.stx.arrow,
             home_object: cont.home_object,
             class_constructor: None,
             derived_constructor: false,
@@ -41908,6 +41932,7 @@ pub(crate) fn generator_resume(
       };
 
       let result = {
+        let allow_new_target_in_eval = !cont.func.stx.arrow;
         let mut evaluator = Evaluator {
           vm,
           host,
@@ -41916,6 +41941,7 @@ pub(crate) fn generator_resume(
           strict: cont.strict,
           this,
           new_target,
+          allow_new_target_in_eval,
           home_object: cont.home_object,
           class_constructor: None,
           derived_constructor: false,
@@ -42119,6 +42145,7 @@ pub(crate) fn run_ecma_function(
     strict,
     this: this_value,
     new_target,
+    allow_new_target_in_eval: !func.stx.arrow,
     home_object,
     class_constructor,
     derived_constructor,
@@ -42327,6 +42354,7 @@ pub(crate) fn run_ecma_function(
           // evaluation forces strict mode). Capture the current strictness so resumption continues
           // with the correct runtime semantics.
           strict: evaluator.strict,
+          allow_new_target_in_eval: evaluator.allow_new_target_in_eval,
           exec_ctx: None,
           script_ast: None,
           script_ast_memory: None,
@@ -42538,6 +42566,7 @@ pub(crate) fn instantiate_module_decls(
         strict: true,
         this: Value::Undefined,
         new_target: Value::Undefined,
+        allow_new_target_in_eval: false,
         home_object: None,
         class_constructor: None,
         derived_constructor: false,
@@ -42575,6 +42604,7 @@ pub(crate) fn instantiate_module_decls(
       strict: true,
       this: Value::Undefined,
       new_target: Value::Undefined,
+      allow_new_target_in_eval: false,
       home_object: None,
       class_constructor: None,
       derived_constructor: false,
@@ -42632,6 +42662,7 @@ pub(crate) fn run_module(
         // Per ECMA-262, module top-level `this` is `undefined`.
         this: Value::Undefined,
         new_target: Value::Undefined,
+        allow_new_target_in_eval: false,
         home_object: None,
         class_constructor: None,
         derived_constructor: false,
@@ -42740,6 +42771,7 @@ pub(crate) fn start_module_tla_evaluation(
       // Per ECMA-262, module top-level `this` is `undefined`.
       this: Value::Undefined,
       new_target: Value::Undefined,
+      allow_new_target_in_eval: false,
       home_object: None,
       class_constructor: None,
       derived_constructor: false,
@@ -42894,6 +42926,7 @@ pub(crate) fn start_module_tla_evaluation(
       let cont = AsyncContinuation {
         env: env.clone(),
         strict: true,
+        allow_new_target_in_eval: false,
         exec_ctx: Some(exec_ctx),
         script_ast: None,
         script_ast_memory: None,
@@ -43040,6 +43073,7 @@ pub(crate) fn resume_module_tla_evaluation(
       strict: true,
       this,
       new_target,
+      allow_new_target_in_eval: false,
       home_object,
       class_constructor: None,
       derived_constructor: false,
@@ -43299,6 +43333,7 @@ pub(crate) fn run_module_async_start(
           // Per ECMA-262, module top-level `this` is `undefined`.
           this: Value::Undefined,
           new_target: Value::Undefined,
+          allow_new_target_in_eval: false,
           home_object: None,
           class_constructor: None,
           derived_constructor: false,
@@ -43487,6 +43522,7 @@ pub(crate) fn run_module_async_resume(
         strict: true,
         this,
         new_target,
+        allow_new_target_in_eval: false,
         home_object: None,
         class_constructor: None,
         derived_constructor: false,
@@ -43602,6 +43638,7 @@ pub(crate) fn eval_expr(
     strict,
     this,
     new_target: Value::Undefined,
+    allow_new_target_in_eval: false,
     home_object: None,
     class_constructor: None,
     derived_constructor: false,
@@ -44013,6 +44050,7 @@ mod tests {
       strict: false,
       this: Value::Undefined,
       new_target: Value::Undefined,
+      allow_new_target_in_eval: false,
       home_object: None,
       class_constructor: None,
       derived_constructor: false,
@@ -44451,6 +44489,125 @@ mod tests {
       })()
     "#,
     )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_new_target_in_global_code_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        try {
+          eval("new.target");
+          return false;
+        } catch (e) {
+          return typeof e === "object" && e !== null && e.constructor === SyntaxError;
+        }
+      })()
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_new_target_in_non_arrow_function_observes_caller_new_target() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        var newTarget = null;
+        function getNewTarget() {
+          newTarget = eval("new.target;");
+        }
+
+        getNewTarget();
+        if (newTarget !== undefined) return false;
+
+        new getNewTarget();
+        return newTarget === getNewTarget;
+      })()
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_new_target_in_arrow_function_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        let caught = null;
+        const f = () => eval("new.target;");
+        try {
+          f();
+        } catch (e) {
+          caught = e;
+        }
+        return typeof caught === "object" && caught !== null && caught.constructor === SyntaxError;
+      })()
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_new_target_in_functions_and_arrows_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      (() => {
+        // Global direct eval must not allow `new.target`.
+        let caught1 = null;
+        try {
+          eval("new.target;");
+        } catch (e) {
+          caught1 = e;
+        }
+        if (!(typeof caught1 === "object" && caught1 !== null && caught1.constructor === SyntaxError)) {
+          return false;
+        }
+
+        // Direct eval from non-arrow function code may contain `new.target` and observes the
+        // caller's `new.target` value.
+        let newTarget = null;
+        function getNewTarget() {
+          newTarget = eval("new.target;");
+        }
+        getNewTarget();
+        if (newTarget !== undefined) return false;
+        new getNewTarget();
+        if (newTarget !== getNewTarget) return false;
+
+        // Direct eval from arrow function code must not allow `new.target`.
+        let caught2 = null;
+        const f = () => eval("new.target;");
+        try {
+          f();
+        } catch (e) {
+          caught2 = e;
+        }
+        if (!(typeof caught2 === "object" && caught2 !== null && caught2.constructor === SyntaxError)) {
+          return false;
+        }
+
+        return true;
+      })()
+    "#;
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
     assert!(matches!(value, Value::Bool(true)));
     Ok(())
   }
