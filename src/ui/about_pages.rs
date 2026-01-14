@@ -610,7 +610,11 @@ pub fn set_gpu_info(
 pub const ABOUT_BASE_URL: &str = ABOUT_BLANK;
 
 pub fn is_about_url(url: &str) -> bool {
-  url.trim_start().to_ascii_lowercase().starts_with("about:")
+  url
+    .trim_start()
+    .as_bytes()
+    .get(.."about:".len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(b"about:"))
 }
 
 /// Return known `about:` pages that match a user-typed prefix (case-insensitive).
@@ -618,19 +622,32 @@ pub fn is_about_url(url: &str) -> bool {
 /// This is intended to be used by omnibox/autocomplete code and is deliberately independent of any
 /// visited-history state.
 pub fn suggest_about_pages(prefix: &str) -> Vec<&'static str> {
-  let query = prefix.trim().to_ascii_lowercase();
-  if query.is_empty() {
+  let prefix = prefix.trim();
+  if prefix.is_empty() {
     return Vec::new();
   }
+
   // Avoid suggesting `about:` pages unless the user is clearly heading in that direction.
-  if !query.starts_with("about") {
-    return Vec::new();
+  if prefix.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+    let query = prefix.to_ascii_lowercase();
+    if !query.starts_with("about") {
+      return Vec::new();
+    }
+    ABOUT_PAGE_URLS
+      .iter()
+      .copied()
+      .filter(|url| url.starts_with(&query))
+      .collect()
+  } else {
+    if !prefix.starts_with("about") {
+      return Vec::new();
+    }
+    ABOUT_PAGE_URLS
+      .iter()
+      .copied()
+      .filter(|url| url.starts_with(prefix))
+      .collect()
   }
-  ABOUT_PAGE_URLS
-    .iter()
-    .copied()
-    .filter(|url| url.starts_with(&query))
-    .collect()
 }
 
 pub fn html_for_about_url(url: &str) -> Option<String> {
