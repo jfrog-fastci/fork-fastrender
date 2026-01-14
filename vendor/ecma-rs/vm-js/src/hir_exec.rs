@@ -1450,10 +1450,60 @@ impl<'vm> HirEvaluator<'vm> {
             return Ok(false);
           }
 
-          // The compiled async evaluator currently evaluates the loop body synchronously.
-          // Ensure the body contains no nested awaits.
+          // The compiled async evaluator evaluates the loop body synchronously for most statement
+          // forms. Allow a narrow subset where the body is a single compound assignment statement
+          // with a direct `await` RHS: `out += await <expr>;`.
           if evaluator.hir_stmt_contains_await_for_async_analysis(script, body, inner, steps)? {
-            return Ok(false);
+            let stmt = evaluator.get_stmt(body, inner)?;
+            let maybe_expr_id: Option<hir_js::ExprId> = match &stmt.kind {
+              hir_js::StmtKind::Expr(expr_id) => Some(*expr_id),
+              hir_js::StmtKind::Block(stmts) if stmts.len() == 1 => {
+                let inner_stmt = evaluator.get_stmt(body, stmts[0])?;
+                match inner_stmt.kind {
+                  hir_js::StmtKind::Expr(expr_id) => Some(expr_id),
+                  _ => None,
+                }
+              }
+              _ => None,
+            };
+
+            let Some(expr_id) = maybe_expr_id else {
+              return Ok(false);
+            };
+            let expr = evaluator.get_expr(body, expr_id)?;
+            let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind else {
+              return Ok(false);
+            };
+
+            if !compound_assign_op_supported(*op) {
+              return Ok(false);
+            }
+
+            // Target must be a binding assignment (the async loop body support only handles binding
+            // references).
+            let target_pat = evaluator.get_pat(body, *target)?;
+            match &target_pat.kind {
+              hir_js::PatKind::Ident(_) => {}
+              hir_js::PatKind::AssignTarget(expr_id) => {
+                let target_expr = evaluator.get_expr(body, *expr_id)?;
+                if !matches!(target_expr.kind, hir_js::ExprKind::Ident(_)) {
+                  return Ok(false);
+                }
+              }
+              _ => return Ok(false),
+            }
+
+            if evaluator.hir_pat_contains_await_for_async_analysis(script, body, *target, steps)? {
+              return Ok(false);
+            }
+
+            let rhs = evaluator.get_expr(body, *value)?;
+            let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind else {
+              return Ok(false);
+            };
+            if !direct_await_operand_has_no_await(evaluator, script, body, awaited_expr, steps)? {
+              return Ok(false);
+            }
           }
 
           Ok(true)
@@ -1471,8 +1521,13 @@ impl<'vm> HirEvaluator<'vm> {
           if !for_head_allows_direct_object_pat_awaits(evaluator, script, body, left, steps)? {
             return Ok(false);
           }
-          // RHS + body are evaluated synchronously.
-          if evaluator.hir_expr_contains_await_for_async_analysis(script, body, right, steps)? {
+          // Support direct `await` in the RHS expression (`for (x of await <expr>) {}`).
+          let rhs_expr = evaluator.get_expr(body, right)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs_expr.kind {
+            if !direct_await_operand_has_no_await(evaluator, script, body, awaited_expr, steps)? {
+              return Ok(false);
+            }
+          } else if evaluator.hir_expr_contains_await_for_async_analysis(script, body, right, steps)? {
             return Ok(false);
           }
           if evaluator.hir_stmt_contains_await_for_async_analysis(script, body, inner, steps)? {
@@ -2246,6 +2301,54 @@ impl<'vm> HirEvaluator<'vm> {
                 return Ok(false);
               }
             }
+            hir_js::StmtKind::ForIn {
+              left,
+              right,
+              body: inner,
+              is_for_of: false,
+              await_: false,
+            } => {
+              // Support top-level `for..in` loops that can suspend while evaluating the RHS
+              // expression (`for (k in await <expr>) {}`).
+              match left {
+                hir_js::ForHead::Pat(pat) => {
+                  if self.hir_pat_contains_await_for_async_analysis(script, body, *pat, &mut steps)? {
+                    return Ok(false);
+                  }
+                }
+                hir_js::ForHead::Var(decl) => {
+                  for declarator in &decl.declarators {
+                    if self.hir_pat_contains_await_for_async_analysis(
+                      script,
+                      body,
+                      declarator.pat,
+                      &mut steps,
+                    )? {
+                      return Ok(false);
+                    }
+                    if let Some(init_id) = declarator.init {
+                      if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
+                        return Ok(false);
+                      }
+                    }
+                  }
+                }
+              }
+
+              let rhs_expr = self.get_expr(body, *right)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs_expr.kind {
+                if !direct_await_operand_has_no_await(self, script, body, awaited_expr, &mut steps)? {
+                  return Ok(false);
+                }
+              } else if self.hir_expr_contains_await_for_async_analysis(script, body, *right, &mut steps)? {
+                return Ok(false);
+              }
+
+              // Loop bodies are still evaluated synchronously; reject nested awaits.
+              if self.hir_stmt_contains_await_for_async_analysis(script, body, *inner, &mut steps)? {
+                return Ok(false);
+              }
+            }
             hir_js::StmtKind::Try {
               block,
               catch,
@@ -2496,6 +2599,7 @@ impl<'vm> HirEvaluator<'vm> {
                 return Ok(false);
               }
             }
+
             // Any other statement containing await is not supported by the compiled async executor
             // yet.
             _ => {
@@ -14035,6 +14139,7 @@ enum ForAwaitOfStage {
   AwaitRhs,
   AwaitNext,
   AwaitHeadBind { iter_env_created: bool },
+  AwaitBodyAssign { iter_env_created: bool },
   ClosingAwait { pending: Option<RootedPending> },
 }
 
@@ -14049,6 +14154,7 @@ struct ForAwaitOfState {
   iterator_root: Option<RootId>,
   next_method_root: Option<RootId>,
   head_binding_state: Option<AsyncObjectPatternBindingState>,
+  body_assign: Option<ForAwaitOfBodyAssign>,
   stage: ForAwaitOfStage,
 }
 
@@ -14064,6 +14170,21 @@ enum ForAwaitOfPoll {
     /// and the caller should fall back to the surrounding statement offset.
     await_offset: u32,
   },
+}
+
+#[derive(Debug)]
+struct ForAwaitOfBodyAssign {
+  op: hir_js::AssignOp,
+  reference: AssignmentReference,
+  left_root: RootId,
+}
+
+impl ForAwaitOfBodyAssign {
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    if heap.get_root(self.left_root).is_some() {
+      heap.remove_root(self.left_root);
+    }
+  }
 }
 
 impl ForAwaitOfState {
@@ -14172,6 +14293,7 @@ impl ForAwaitOfState {
       iterator_root: None,
       next_method_root: None,
       head_binding_state: None,
+      body_assign: None,
       stage: ForAwaitOfStage::Init,
     })
   }
@@ -14199,6 +14321,9 @@ impl ForAwaitOfState {
   fn cleanup_roots(&mut self, heap: &mut crate::Heap) {
     if let Some(mut bind_state) = self.head_binding_state.take() {
       bind_state.teardown(heap);
+    }
+    if let Some(mut assign) = self.body_assign.take() {
+      assign.teardown(heap);
     }
     if let Some(id) = self.v_root.take() {
       if heap.get_root(id).is_some() {
@@ -14521,6 +14646,133 @@ impl ForAwaitOfState {
           }
         }
 
+        // --- Body evaluation ---
+        //
+        // The synchronous evaluator does not support `await` nested inside expressions. Support a
+        // minimal subset needed by regression tests: a single compound assignment expression
+        // statement whose RHS is a direct `await` expression (`out += await <expr>`).
+        //
+        // Note: this intentionally does not attempt to be a fully general async evaluator for loop
+        // bodies.
+        let body_stmt = evaluator.get_stmt(body, self.body_stmt)?;
+        let maybe_expr_id_and_ticks: Option<(hir_js::ExprId, usize)> = match &body_stmt.kind {
+          hir_js::StmtKind::Expr(expr_id) => Some((*expr_id, 1)),
+          hir_js::StmtKind::Block(stmts) if stmts.len() == 1 => {
+            let inner_stmt = evaluator.get_stmt(body, stmts[0])?;
+            match inner_stmt.kind {
+              hir_js::StmtKind::Expr(expr_id) => Some((expr_id, 2)),
+              _ => None,
+            }
+          }
+          _ => None,
+        };
+
+        if let Some((expr_id, stmt_tick_count)) = maybe_expr_id_and_ticks {
+          let expr = evaluator.get_expr(body, expr_id)?;
+          if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+            if matches!(
+              op,
+              hir_js::AssignOp::AddAssign
+                | hir_js::AssignOp::SubAssign
+                | hir_js::AssignOp::MulAssign
+                | hir_js::AssignOp::DivAssign
+                | hir_js::AssignOp::RemAssign
+                | hir_js::AssignOp::ExponentAssign
+                | hir_js::AssignOp::ShiftLeftAssign
+                | hir_js::AssignOp::ShiftRightAssign
+                | hir_js::AssignOp::ShiftRightUnsignedAssign
+                | hir_js::AssignOp::BitOrAssign
+                | hir_js::AssignOp::BitAndAssign
+                | hir_js::AssignOp::BitXorAssign
+            ) {
+              let rhs_expr = evaluator.get_expr(body, *value)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs_expr.kind {
+                // Budget once per statement evaluation (block + expression statement) and once for
+                // the await expression itself.
+                for _ in 0..stmt_tick_count {
+                  evaluator.vm.tick()?;
+                }
+                evaluator.vm.tick()?;
+
+                let reference = match evaluator.eval_assignment_reference(&mut iter_scope, body, *target) {
+                  Ok(r) => r,
+                  Err(err) => {
+                    if iter_env_created {
+                      evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                    }
+                    let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                    return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                  }
+                };
+
+                let left = match &reference {
+                  AssignmentReference::Binding(binding_ref) => match evaluator.get_value_from_resolved_binding(
+                    &mut iter_scope,
+                    binding_ref.as_resolved_binding(),
+                  ) {
+                    Ok(v) => v,
+                    Err(err) => {
+                      if iter_env_created {
+                        evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                      }
+                      let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                      return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                    }
+                  },
+                  _ => {
+                    if iter_env_created {
+                      evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                    }
+                    let err = crate::vm::coerce_error_to_throw(
+                      &*evaluator.vm,
+                      &mut iter_scope,
+                      VmError::Unimplemented(
+                        "await in for-await-of compound assignment non-binding reference (hir-js compiled async path)",
+                      ),
+                    );
+                    return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                  }
+                };
+
+                let left_root = match iter_scope.heap_mut().add_root(left) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    if iter_env_created {
+                      evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                    }
+                    self.cleanup_roots(iter_scope.heap_mut());
+                    return Err(err);
+                  }
+                };
+
+                let await_value = match evaluator.eval_expr(&mut iter_scope, body, *awaited_expr) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    iter_scope.heap_mut().remove_root(left_root);
+                    if iter_env_created {
+                      evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                    }
+                    let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                    return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                  }
+                };
+
+                self.body_assign = Some(ForAwaitOfBodyAssign {
+                  op: *op,
+                  reference,
+                  left_root,
+                });
+                self.stage = ForAwaitOfStage::AwaitBodyAssign { iter_env_created };
+                return Ok(ForAwaitOfPoll::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
+                  await_value,
+                  await_offset: rhs_expr.span.start,
+                });
+              }
+            }
+          }
+        }
+
         let body_flow = match evaluator.eval_stmt(&mut iter_scope, body, self.body_stmt) {
           Ok(flow) => flow,
           Err(err) => {
@@ -14646,6 +14898,126 @@ impl ForAwaitOfState {
             // Binding finished; run the loop body and proceed to the next iteration.
             let mut iter_scope = scope.reborrow();
  
+            // See `AwaitNext` for notes on the minimal body-await support here.
+            let body_stmt = evaluator.get_stmt(body, self.body_stmt)?;
+            let maybe_expr_id_and_ticks: Option<(hir_js::ExprId, usize)> = match &body_stmt.kind {
+              hir_js::StmtKind::Expr(expr_id) => Some((*expr_id, 1)),
+              hir_js::StmtKind::Block(stmts) if stmts.len() == 1 => {
+                let inner_stmt = evaluator.get_stmt(body, stmts[0])?;
+                match inner_stmt.kind {
+                  hir_js::StmtKind::Expr(expr_id) => Some((expr_id, 2)),
+                  _ => None,
+                }
+              }
+              _ => None,
+            };
+
+            if let Some((expr_id, stmt_tick_count)) = maybe_expr_id_and_ticks {
+              let expr = evaluator.get_expr(body, expr_id)?;
+              if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+                if matches!(
+                  op,
+                  hir_js::AssignOp::AddAssign
+                    | hir_js::AssignOp::SubAssign
+                    | hir_js::AssignOp::MulAssign
+                    | hir_js::AssignOp::DivAssign
+                    | hir_js::AssignOp::RemAssign
+                    | hir_js::AssignOp::ExponentAssign
+                    | hir_js::AssignOp::ShiftLeftAssign
+                    | hir_js::AssignOp::ShiftRightAssign
+                    | hir_js::AssignOp::ShiftRightUnsignedAssign
+                    | hir_js::AssignOp::BitOrAssign
+                    | hir_js::AssignOp::BitAndAssign
+                    | hir_js::AssignOp::BitXorAssign
+                ) {
+                  let rhs_expr = evaluator.get_expr(body, *value)?;
+                  if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs_expr.kind {
+                    for _ in 0..stmt_tick_count {
+                      evaluator.vm.tick()?;
+                    }
+                    evaluator.vm.tick()?;
+
+                    let reference = match evaluator.eval_assignment_reference(&mut iter_scope, body, *target) {
+                      Ok(r) => r,
+                      Err(err) => {
+                        if *iter_env_created {
+                          evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                        }
+                        let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                        return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                      }
+                    };
+
+                    let left = match &reference {
+                      AssignmentReference::Binding(binding_ref) => match evaluator.get_value_from_resolved_binding(
+                        &mut iter_scope,
+                        binding_ref.as_resolved_binding(),
+                      ) {
+                        Ok(v) => v,
+                        Err(err) => {
+                          if *iter_env_created {
+                            evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                          }
+                          let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                          return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                        }
+                      },
+                      _ => {
+                        if *iter_env_created {
+                          evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                        }
+                        let err = crate::vm::coerce_error_to_throw(
+                          &*evaluator.vm,
+                          &mut iter_scope,
+                          VmError::Unimplemented(
+                            "await in for-await-of compound assignment non-binding reference (hir-js compiled async path)",
+                          ),
+                        );
+                        return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                      }
+                    };
+
+                    let left_root = match iter_scope.heap_mut().add_root(left) {
+                      Ok(id) => id,
+                      Err(err) => {
+                        if *iter_env_created {
+                          evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                        }
+                        self.cleanup_roots(iter_scope.heap_mut());
+                        return Err(err);
+                      }
+                    };
+
+                    let await_value = match evaluator.eval_expr(&mut iter_scope, body, *awaited_expr) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        iter_scope.heap_mut().remove_root(left_root);
+                        if *iter_env_created {
+                          evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                        }
+                        let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+                        return self.start_close_from_error(evaluator, &mut iter_scope, err);
+                      }
+                    };
+
+                    self.body_assign = Some(ForAwaitOfBodyAssign {
+                      op: *op,
+                      reference,
+                      left_root,
+                    });
+                    self.stage = ForAwaitOfStage::AwaitBodyAssign {
+                      iter_env_created: *iter_env_created,
+                    };
+                    return Ok(ForAwaitOfPoll::Await {
+                      kind: crate::exec::AsyncSuspendKind::Await,
+                      await_value,
+                      await_offset: rhs_expr.span.start,
+                    });
+                  }
+                }
+              }
+            }
+
             let body_flow = match evaluator.eval_stmt(&mut iter_scope, body, self.body_stmt) {
               Ok(flow) => flow,
               Err(err) => {
@@ -14740,6 +15112,120 @@ impl ForAwaitOfState {
             return self.start_close_from_error(evaluator, scope, err);
           }
         }
+      }
+
+      ForAwaitOfStage::AwaitBodyAssign { iter_env_created } => {
+        let Some(resume_value) = resume_value else {
+          return Err(VmError::InvariantViolation(
+            "for-await-of body assignment await missing resume value",
+          ));
+        };
+
+        let outer_lex = self
+          .outer_lex
+          .ok_or(VmError::InvariantViolation("missing for-await-of outer lex env"))?;
+        let v_root = self
+          .v_root
+          .ok_or(VmError::InvariantViolation("missing for-await-of loop value root"))?;
+
+        let Some(mut pending) = self.body_assign.take() else {
+          return Err(VmError::InvariantViolation(
+            "for-await-of awaiting body assignment missing pending state",
+          ));
+        };
+
+        let resumed = match resume_value {
+          Ok(v) => v,
+          Err(err) => {
+            // Pending root is no longer needed once the await settles.
+            pending.teardown(scope.heap_mut());
+            if *iter_env_created {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+            }
+            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+            return self.start_close_from_error(evaluator, scope, err);
+          }
+        };
+
+        let left = scope
+          .heap()
+          .get_root(pending.left_root)
+          .ok_or(VmError::InvariantViolation(
+            "hir async for-await-of body assignment missing left root",
+          ))?;
+
+        let mut assign_scope = scope.reborrow();
+        if let Err(err) = assign_scope.push_roots(&[left, resumed]) {
+          pending.teardown(assign_scope.heap_mut());
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(assign_scope.heap_mut(), outer_lex);
+          }
+          return Err(err);
+        }
+
+        let out = match evaluator.apply_compound_assignment_op(&mut assign_scope, pending.op, left, resumed) {
+          Ok(v) => v,
+          Err(err) => {
+            pending.teardown(assign_scope.heap_mut());
+            if *iter_env_created {
+              evaluator.env.set_lexical_env(assign_scope.heap_mut(), outer_lex);
+            }
+            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut assign_scope, err);
+            return self.start_close_from_error(evaluator, &mut assign_scope, err);
+          }
+        };
+
+        // Root result across assignment, since `PutValue` may allocate and trigger GC.
+        if let Err(err) = assign_scope.push_root(out) {
+          pending.teardown(assign_scope.heap_mut());
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(assign_scope.heap_mut(), outer_lex);
+          }
+          return Err(err);
+        }
+        if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out) {
+          pending.teardown(assign_scope.heap_mut());
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(assign_scope.heap_mut(), outer_lex);
+          }
+          let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut assign_scope, err);
+          return self.start_close_from_error(evaluator, &mut assign_scope, err);
+        }
+
+        // Assignment finished; pending roots can be released.
+        pending.teardown(assign_scope.heap_mut());
+
+        // Body completion value is the assignment result.
+        assign_scope.heap_mut().set_root(v_root, out);
+
+        if *iter_env_created {
+          evaluator.env.set_lexical_env(assign_scope.heap_mut(), outer_lex);
+        }
+
+        evaluator.vm.tick()?;
+        let record = self.iterator_record(assign_scope.heap())?;
+        let next_value = match iterator::async_iterator_next(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut assign_scope,
+          &record,
+        ) {
+          Ok(v) => v,
+          Err(err) => {
+            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut assign_scope, err);
+            self.cleanup_roots(assign_scope.heap_mut());
+            return Err(err);
+          }
+        };
+
+        // Awaiting the next() promise resumes in the normal AwaitNext stage.
+        self.stage = ForAwaitOfStage::AwaitNext;
+        Ok(ForAwaitOfPoll::Await {
+          kind: crate::exec::AsyncSuspendKind::Await,
+          await_value: next_value,
+          await_offset: 0,
+        })
       }
 
       ForAwaitOfStage::ClosingAwait { pending } => {
@@ -16904,6 +17390,7 @@ impl HirAsyncClassDeclState {
 #[derive(Debug)]
 enum ForOfStage {
   Init,
+  AwaitRhs,
   Iterate,
   AwaitHeadBind { iter_env_created: bool },
 }
@@ -17020,6 +17507,73 @@ impl ForOfState {
           let outer_lex = evaluator.env.lexical_env();
           self.outer_lex = Some(outer_lex);
 
+          let rhs = evaluator.get_expr(body, self.right)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+            // The compiled synchronous evaluator does not yet support `await` expressions. However,
+            // `for..of` must still be able to suspend while evaluating the RHS expression.
+            //
+            // Evaluate the await argument under the same TDZ environment semantics as normal
+            // `ForIn/OfHeadEvaluation`, but *do not* restore the outer lexical environment until the
+            // await has resolved: the continuation after `await` is still part of RHS evaluation.
+            let old_lex = evaluator.env.lexical_env();
+            let mut tdz_env_created = false;
+            if let hir_js::ForHead::Var(var_decl) = &self.left {
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Let
+                  | hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing
+              ) {
+                let tdz_env = scope.env_create(Some(old_lex))?;
+                for declarator in &var_decl.declarators {
+                  evaluator.vm.tick()?;
+                  let mut names: Vec<hir_js::NameId> = Vec::new();
+                  evaluator.collect_pat_idents(body, declarator.pat, &mut names)?;
+                  for name_id in names {
+                    let name = evaluator.resolve_name(name_id)?;
+                    if scope.heap().env_has_binding(tdz_env, name.as_str())? {
+                      continue;
+                    }
+                    match var_decl.kind {
+                      hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(tdz_env, name.as_str())?,
+                      hir_js::VarDeclKind::Const
+                      | hir_js::VarDeclKind::Using
+                      | hir_js::VarDeclKind::AwaitUsing => {
+                        scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                      }
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "unexpected VarDeclKind in for-of head TDZ environment creation",
+                        ));
+                      }
+                    }
+                  }
+                }
+                evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+                tdz_env_created = true;
+              }
+            }
+
+            // Evaluate the await argument value. If this throws, the loop has not acquired an
+            // iterator yet, so we can propagate the error directly.
+            let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                if tdz_env_created {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+                }
+                return Err(err);
+              }
+            };
+
+            self.stage = ForOfStage::AwaitRhs;
+            return Ok(ForOfPoll::Await {
+              await_value,
+              await_offset: rhs.span.start,
+            });
+          }
+
           // Evaluate RHS with TDZ env semantics for lexical loop heads.
           let iterable = evaluator.eval_for_in_of_rhs_with_tdz_env(scope, body, &self.left, self.right)?;
 
@@ -17059,6 +17613,59 @@ impl ForOfState {
                 return Err(err);
               }
             };
+            (v_root, iterator_root, next_method_root)
+          };
+
+          self.v_root = Some(v_root);
+          self.v = Value::Undefined;
+          self.iterator_root = Some(iterator_root);
+          self.next_method_root = Some(next_method_root);
+          self.iterator_done = iterator_record.done;
+
+          self.stage = ForOfStage::Iterate;
+          continue;
+        }
+
+        ForOfStage::AwaitRhs => {
+          let Some(resume_value) = resume_value.take() else {
+            return Err(VmError::InvariantViolation("for-of awaiting rhs missing resume value"));
+          };
+
+          let outer_lex = self
+            .outer_lex
+            .ok_or(VmError::InvariantViolation("missing for-of outer lex env"))?;
+
+          // Once the await has resolved (or rejected), RHS evaluation is complete and the TDZ env
+          // should be popped before iterator acquisition.
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+
+          let iterable = match resume_value {
+            Ok(v) => v,
+            Err(err) => return Err(err),
+          };
+
+          // Root iterable during iterator acquisition.
+          let mut iter_scope = scope.reborrow();
+          iter_scope.push_root(iterable)?;
+
+          let iterator_record = iterator::get_iterator(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut iter_scope,
+            iterable,
+          )?;
+
+          let iterator_value = iterator_record.iterator;
+          let next_method_value = iterator_record.next_method;
+
+          // Root iterator + next method while registering persistent roots.
+          let (v_root, iterator_root, next_method_root) = {
+            let mut root_scope = iter_scope.reborrow();
+            root_scope.push_roots(&[iterator_value, next_method_value])?;
+            let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
+            let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
+            let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
             (v_root, iterator_root, next_method_root)
           };
 
@@ -17614,6 +18221,291 @@ impl ForOfState {
               return Ok(ForOfPoll::Complete(Flow::Return(v)));
             }
           }
+        }
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+enum ForInStage {
+  Init,
+  AwaitRhs,
+}
+
+#[derive(Debug)]
+struct ForInState {
+  left: hir_js::ForHead,
+  right: hir_js::ExprId,
+  body_stmt: hir_js::StmtId,
+  label_set: Box<[hir_js::NameId]>,
+  outer_lex: Option<GcEnv>,
+  stage: ForInStage,
+}
+
+#[derive(Debug)]
+enum ForInPoll {
+  Complete(Flow),
+  Await { await_value: Value },
+}
+
+impl ForInState {
+  fn new(
+    left: hir_js::ForHead,
+    right: hir_js::ExprId,
+    body_stmt: hir_js::StmtId,
+    label_set: &[hir_js::NameId],
+  ) -> Result<Self, VmError> {
+    let mut labels: Vec<hir_js::NameId> = Vec::new();
+    labels
+      .try_reserve_exact(label_set.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    labels.extend_from_slice(label_set);
+    Ok(Self {
+      left,
+      right,
+      body_stmt,
+      label_set: labels.into_boxed_slice(),
+      outer_lex: None,
+      stage: ForInStage::Init,
+    })
+  }
+
+  fn teardown(&mut self, _heap: &mut crate::Heap) {}
+
+  fn eval_body_with_rhs_value(
+    &self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    rhs_value: Value,
+  ) -> Result<Flow, VmError> {
+    // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+    // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw) and the
+    // statement's completion value is `undefined` (not empty).
+    if matches!(rhs_value, Value::Null | Value::Undefined) {
+      return Ok(Flow::normal(Value::Undefined));
+    }
+
+    // Root the RHS while converting to object; `ToObject` can allocate/GC and the RHS might not be
+    // reachable from any heap object.
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(rhs_value)?;
+    let object = iter_scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, rhs_value)?;
+
+    // Root the base object while enumerating keys and executing the loop body.
+    iter_scope.push_root(Value::Object(object))?;
+
+    let mut enumerator = ForInEnumerator::new(object);
+
+    // Root the current key value across binding + body evaluation.
+    let key_value_root_idx = iter_scope.heap().root_stack.len();
+    iter_scope.push_root(Value::Undefined)?;
+
+    // ECMA-262 `LoopEvaluation` running completion value `V`.
+    let v_root_idx = iter_scope.heap().root_stack.len();
+    iter_scope.push_root(Value::Undefined)?;
+    let mut v = Value::Undefined;
+
+    // Per-iteration lexical environments for lexical head declarations
+    // (`let`/`const`/`using`/`await using`).
+    let outer_lex: GcEnv = evaluator.env.lexical_env();
+
+    loop {
+      let next_key = enumerator.next_key(
+        evaluator.vm,
+        &mut iter_scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+      )?;
+      let Some(key_s) = next_key else {
+        break;
+      };
+
+      // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
+      evaluator.vm.tick()?;
+
+      let iter_value = Value::String(key_s);
+      iter_scope.heap_mut().root_stack[key_value_root_idx] = iter_value;
+
+      let mut iter_env: Option<GcEnv> = None;
+      if let hir_js::ForHead::Var(var_decl) = &self.left {
+        if matches!(
+          var_decl.kind,
+          hir_js::VarDeclKind::Let
+            | hir_js::VarDeclKind::Const
+            | hir_js::VarDeclKind::Using
+            | hir_js::VarDeclKind::AwaitUsing
+        ) {
+          let env = iter_scope.env_create(Some(outer_lex))?;
+          evaluator.env.set_lexical_env(iter_scope.heap_mut(), env);
+          iter_env = Some(env);
+          // Per spec, `for..in` with lexical declarations creates a fresh binding per iteration.
+          // Create the binding in TDZ, then initialize it during binding initialization.
+          if let Err(err) = evaluator.instantiate_lexical_decl(&mut iter_scope, body, var_decl, env) {
+            evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+            return Err(err);
+          }
+        } else if !matches!(var_decl.kind, hir_js::VarDeclKind::Var) {
+          return Err(VmError::Unimplemented(
+            "for-in loop variable declaration kind (hir-js compiled async path)",
+          ));
+        }
+      }
+
+      if let Err(err) = evaluator.bind_for_in_of_head(&mut iter_scope, body, &self.left, iter_value) {
+        if iter_env.is_some() {
+          evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+        }
+        return Err(err);
+      }
+
+      let flow = match evaluator.eval_stmt(&mut iter_scope, body, self.body_stmt) {
+        Ok(f) => f,
+        Err(err) => {
+          if iter_env.is_some() {
+            evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+          }
+          return Err(err);
+        }
+      };
+
+      if iter_env.is_some() {
+        evaluator.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+      }
+
+      match flow {
+        Flow::Normal(value) => {
+          if let Some(value) = value {
+            v = value;
+            iter_scope.heap_mut().root_stack[v_root_idx] = value;
+          }
+        }
+        Flow::Continue(None, value) => {
+          if let Some(value) = value {
+            v = value;
+            iter_scope.heap_mut().root_stack[v_root_idx] = value;
+          }
+        }
+        Flow::Continue(Some(label), value) if self.label_set.iter().any(|l| *l == label) => {
+          if let Some(value) = value {
+            v = value;
+            iter_scope.heap_mut().root_stack[v_root_idx] = value;
+          }
+        }
+        Flow::Continue(Some(label), value) => {
+          return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+        }
+        Flow::Break(None, break_value) => {
+          let out = break_value.unwrap_or(v);
+          return Ok(Flow::Normal(Some(out)));
+        }
+        Flow::Break(Some(label), break_value) => {
+          return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+        }
+        Flow::Return(v) => return Ok(Flow::Return(v)),
+      }
+    }
+
+    Ok(Flow::Normal(Some(v)))
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<ForInPoll, VmError> {
+    loop {
+      match self.stage {
+        ForInStage::Init => {
+          if resume_value.is_some() {
+            return Err(VmError::InvariantViolation("for-in init received resume value"));
+          }
+
+          let outer_lex = evaluator.env.lexical_env();
+          self.outer_lex = Some(outer_lex);
+
+          let rhs = evaluator.get_expr(body, self.right)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+            // Suspend while evaluating the RHS expression (`for (k in await <expr>) {}`).
+            let old_lex = evaluator.env.lexical_env();
+            let mut tdz_env_created = false;
+            if let hir_js::ForHead::Var(var_decl) = &self.left {
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Let
+                  | hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing
+              ) {
+                let tdz_env = scope.env_create(Some(old_lex))?;
+                for declarator in &var_decl.declarators {
+                  evaluator.vm.tick()?;
+                  let mut names: Vec<hir_js::NameId> = Vec::new();
+                  evaluator.collect_pat_idents(body, declarator.pat, &mut names)?;
+                  for name_id in names {
+                    let name = evaluator.resolve_name(name_id)?;
+                    if scope.heap().env_has_binding(tdz_env, name.as_str())? {
+                      continue;
+                    }
+                    match var_decl.kind {
+                      hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(tdz_env, name.as_str())?,
+                      hir_js::VarDeclKind::Const
+                      | hir_js::VarDeclKind::Using
+                      | hir_js::VarDeclKind::AwaitUsing => {
+                        scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                      }
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "unexpected VarDeclKind in for-in head TDZ environment creation",
+                        ));
+                      }
+                    }
+                  }
+                }
+                evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+                tdz_env_created = true;
+              }
+            }
+
+            let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                if tdz_env_created {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+                }
+                return Err(err);
+              }
+            };
+
+            self.stage = ForInStage::AwaitRhs;
+            return Ok(ForInPoll::Await { await_value });
+          }
+
+          let rhs_value = evaluator.eval_for_in_of_rhs_with_tdz_env(scope, body, &self.left, self.right)?;
+          let flow = self.eval_body_with_rhs_value(evaluator, scope, body, rhs_value)?;
+          return Ok(ForInPoll::Complete(flow));
+        }
+
+        ForInStage::AwaitRhs => {
+          let Some(resume_value) = resume_value.take() else {
+            return Err(VmError::InvariantViolation("for-in awaiting rhs missing resume value"));
+          };
+
+          let outer_lex = self
+            .outer_lex
+            .ok_or(VmError::InvariantViolation("missing for-in outer lex env"))?;
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+
+          let rhs_value = match resume_value {
+            Ok(v) => v,
+            Err(err) => return Err(err),
+          };
+
+          let flow = self.eval_body_with_rhs_value(evaluator, scope, body, rhs_value)?;
+          return Ok(ForInPoll::Complete(flow));
         }
       }
     }
@@ -20160,6 +21052,7 @@ enum HirAsyncActive {
   TryForAwaitOfCatch(TryForAwaitOfCatchState),
   ForAwaitOf(ForAwaitOfState),
   ForOf(ForOfState),
+  ForIn(ForInState),
   ForTriple(ForTripleAwaitState),
   Try(TryState),
   TryStmt(TryStmtState),
@@ -20210,6 +21103,7 @@ impl HirAsyncActive {
       HirAsyncActive::TryForAwaitOfCatch(state) => state.teardown(heap),
       HirAsyncActive::ForAwaitOf(state) => state.teardown(heap),
       HirAsyncActive::ForOf(state) => state.teardown(heap),
+      HirAsyncActive::ForIn(state) => state.teardown(heap),
       HirAsyncActive::ForTriple(state) => state.teardown(heap),
       HirAsyncActive::Try(state) => state.teardown(heap),
       HirAsyncActive::TryStmt(state) => state.teardown(heap),
@@ -20953,6 +21847,66 @@ impl HirAsyncState {
               Ok(TryStmtPoll::Complete(flow)) => {
                 // Defensive: ensure roots cannot leak if the try state machine changes.
                 state.teardown(scope.heap_mut());
+                self.active = None;
+                match flow {
+                  Flow::Normal(_) => {
+                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                    continue;
+                  }
+                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Break(..) | Flow::Continue(..) => {
+                    return Err(VmError::InvariantViolation(
+                      "async compiled function body produced break/continue completion",
+                    ))
+                  }
+                }
+              }
+              Err(err) => {
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::ForIn(state) => {
+            let poll = state.poll(evaluator, scope, body, resume_value.take());
+            match poll {
+              Ok(ForInPoll::Await { await_value }) => {
+                return Ok(HirAsyncResult::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
+                  await_value,
+                });
+              }
+              Ok(ForInPoll::Complete(flow)) => {
+                // Defensive: ensure roots cannot leak if the loop state machine changes.
+                state.teardown(scope.heap_mut());
+                let flow = match flow {
+                  Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                    Flow::Normal(value)
+                  }
+                  other => other,
+                };
                 self.active = None;
                 match flow {
                   Flow::Normal(_) => {
@@ -22445,8 +23399,9 @@ impl HirAsyncState {
         }
       }
 
-      // Async-aware `for..of` evaluation is required when the loop head pattern contains `await`
-      // expressions (e.g. `for (const {x = await p} of xs) {}`).
+      // Async-aware `for..of` evaluation is required when:
+      // - the loop head pattern contains `await` expressions (e.g. `for (const {x = await p} of xs) {}`), or
+      // - the RHS expression itself is a direct `await` (e.g. `for (const x of await xs) {}`).
       if let hir_js::StmtKind::ForIn {
         left,
         right,
@@ -22455,7 +23410,10 @@ impl HirAsyncState {
         await_: false,
       } = &stmt.kind
       {
-        if for_of_head_has_await(evaluator, body, left)? {
+        let rhs_expr = evaluator.get_expr(body, *right)?;
+        let has_await_in_rhs = matches!(rhs_expr.kind, hir_js::ExprKind::Await { .. });
+
+        if for_of_head_has_await(evaluator, body, left)? || has_await_in_rhs {
           // Budget once for the statement entry (matching `eval_stmt_labelled`).
           evaluator.vm.tick()?;
           self.active = Some(HirAsyncActive::ForOf(ForOfState::new(
@@ -22530,6 +23488,35 @@ impl HirAsyncState {
             )?));
             continue;
           }
+        }
+      }
+
+      // Async-aware `for..in` evaluation is required when the RHS is a direct `await` (e.g.
+      // `for (const k in await obj) {}`).
+      if let hir_js::StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        is_for_of: false,
+        await_: false,
+      } = &stmt.kind
+      {
+        let rhs_expr = evaluator.get_expr(body, *right)?;
+        if matches!(rhs_expr.kind, hir_js::ExprKind::Await { .. }) {
+          // Budget once per bypassed label statement (if any) and once for the loop statement entry,
+          // matching the synchronous evaluator's statement-entry ticks.
+          for _ in 0..label_tick_count {
+            evaluator.vm.tick()?;
+          }
+          evaluator.vm.tick()?;
+
+          self.active = Some(HirAsyncActive::ForIn(ForInState::new(
+            left.clone(),
+            *right,
+            *inner,
+            &[],
+          )?));
+          continue;
         }
       }
 
@@ -25796,6 +26783,177 @@ mod async_function_ast_fallback_tests {
       Some(Value::Number(1.0))
     );
     rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod hir_async_loop_rhs_await_regression_tests {
+  use crate::function::{CallHandler, FunctionData};
+  use crate::{CompiledScript, GcObject, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> Result<JsRuntime, VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap)
+  }
+
+  fn compile_and_get_function(rt: &mut JsRuntime, source: &str) -> Result<GcObject, VmError> {
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "expected loop RHS await regression tests to run via compiled HIR script path"
+    );
+    let value = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = value else {
+      panic!("expected script to evaluate to a function object, got {value:?}");
+    };
+    Ok(func_obj)
+  }
+
+  fn assert_compiled_hir_async_function(rt: &JsRuntime, func_obj: GcObject) -> Result<(), VmError> {
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected async function to execute via compiled HIR async evaluator, got {func_data:?}"
+    );
+    Ok(())
+  }
+
+  fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Value, VmError> {
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    let state = rt.heap.promise_state(promise_obj)?;
+    assert_eq!(
+      state,
+      PromiseState::Fulfilled,
+      "expected Promise to be fulfilled, got {state:?} with result {:?}",
+      rt.heap.promise_result(promise_obj)?
+    );
+    let result = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise missing result");
+
+    rt.heap.remove_root(promise_root);
+    Ok(result)
+  }
+
+  fn assert_value_string(rt: &JsRuntime, value: Value, expected: &str) -> Result<(), VmError> {
+    let Value::String(s) = value else {
+      panic!("expected string result {expected:?}, got {value:?}");
+    };
+    assert_eq!(rt.heap.get_string(s)?.to_utf8_lossy(), expected);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_for_of_with_await_in_rhs() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+    let func_obj = compile_and_get_function(
+      &mut rt,
+      r#"
+        async function f(){
+          let out='';
+          for (const x of await Promise.resolve([1,2])) {
+            out += x;
+          }
+          return out;
+        }
+        f
+      "#,
+    )?;
+    assert_compiled_hir_async_function(&rt, func_obj)?;
+    let result = call_and_await_promise(&mut rt, func_obj)?;
+    assert_value_string(&rt, result, "12")?;
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_for_in_with_await_in_rhs() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+    let func_obj = compile_and_get_function(
+      &mut rt,
+      r#"
+        async function f(){
+          let out='';
+          for (const k in await Promise.resolve({a:1,b:2})) {
+            out += k;
+          }
+          // order is not guaranteed; sort
+          return out.split('').sort().join('');
+        }
+        f
+      "#,
+    )?;
+    assert_compiled_hir_async_function(&rt, func_obj)?;
+    let result = call_and_await_promise(&mut rt, func_obj)?;
+    assert_value_string(&rt, result, "ab")?;
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_for_await_of_with_await_in_rhs() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+    let func_obj = compile_and_get_function(
+      &mut rt,
+      r#"
+        async function f(){
+          let out='';
+          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
+            out += x;
+          }
+          return out;
+        }
+        f
+      "#,
+    )?;
+    assert_compiled_hir_async_function(&rt, func_obj)?;
+    let result = call_and_await_promise(&mut rt, func_obj)?;
+    assert_value_string(&rt, result, "12")?;
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_for_await_of_with_await_in_rhs_and_body() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+    let func_obj = compile_and_get_function(
+      &mut rt,
+      r#"
+        async function f(){
+          let out='';
+          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
+            out += await Promise.resolve(x);
+          }
+          return out;
+        }
+        f
+      "#,
+    )?;
+    assert_compiled_hir_async_function(&rt, func_obj)?;
+    let result = call_and_await_promise(&mut rt, func_obj)?;
+    assert_value_string(&rt, result, "12")?;
     Ok(())
   }
 }
