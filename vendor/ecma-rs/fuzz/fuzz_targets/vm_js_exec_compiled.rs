@@ -166,7 +166,14 @@ impl HostHooks for FuzzHostHooks {
     //
     // Ignore errors here: the fuzz harness is primarily interested in panics and invariant
     // violations. VM termination/OOM are expected outcomes under tight budgets/heap limits.
-    if let Err(err) = agent.perform_microtask_checkpoint() {
+    //
+    // Important: apply a fresh per-checkpoint budget. Promise jobs can enqueue more Promise jobs,
+    // so a hostile input can create an infinite microtask chain. The VM is cooperative, so
+    // fuel+deadline limits are what prevent fuzzing from hanging.
+    let prev_budget = agent.vm_mut().swap_budget_state(make_budget());
+    let checkpoint = agent.perform_microtask_checkpoint();
+    agent.vm_mut().restore_budget_state(prev_budget);
+    if let Err(err) = checkpoint {
       panic_on_vm_bug(err);
     }
     Ok(())

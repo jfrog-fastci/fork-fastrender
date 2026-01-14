@@ -2119,6 +2119,15 @@ impl<'vm> HirEvaluator<'vm> {
       | hir_js::ExprKind::Yield { .. }
       | hir_js::ExprKind::ImportMeta
       | hir_js::ExprKind::NewTarget => Ok(false),
+
+      // `hir-js` can be built with additional expression kinds (for example the `semantic-ops`
+      // feature enables dedicated nodes like `AwaitExpr`, `PromiseAll`, and array pipeline ops).
+      //
+      // This helper is used to conservatively detect suspension points (await/for-await) in a body.
+      // When new expression kinds are introduced, treating them as *potentially* suspending avoids
+      // incorrectly classifying an async body as "trivial" and helps compiled-script execution fall
+      // back to the AST interpreter rather than risking missed suspension.
+      _ => Ok(true),
     }
   }
 

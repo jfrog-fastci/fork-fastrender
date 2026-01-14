@@ -1181,6 +1181,12 @@ jobs:
             exit 1
           fi
 
+      - name: Cache ecma-rs fuzz target dir
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/fuzz/target
+          key: ${{ runner.os }}-ecma-rs-fuzz-target-${{ steps.nightly_toolchain.outputs.rustc_hash }}-${{ hashFiles('Cargo.lock', 'vendor/ecma-rs/fuzz/Cargo.toml') }}
+
       - name: "CI guardrails: no merge conflict markers (Rust sources)"
         shell: bash
         run: bash scripts/check_no_conflict_markers.sh
@@ -1205,12 +1211,24 @@ jobs:
           cp ../tests/fixtures/fonts/colrv1-test.ttf /tmp/fuzz_color_fonts_corpus/
           cargo fuzz run color_fonts /tmp/fuzz_color_fonts_corpus -- -max_total_time=5 -runs=64 -timeout=5 -rss_limit_mb=4096
 
+      - name: Run ecma-rs vm-js fuzz smoke tests
+        working-directory: vendor/ecma-rs/fuzz
+        run: |
+          set -euo pipefail
+          export ASAN_OPTIONS=detect_leaks=0
+          # Deterministic, short runs that exercise the checked-in vm-js regression corpus.
+          mkdir -p /tmp/ecma_rs_vm_js_exec_corpus /tmp/ecma_rs_vm_js_exec_compiled_corpus
+          cargo fuzz run vm_js_exec /tmp/ecma_rs_vm_js_exec_corpus ../vm-js/fuzz/corpus/vm_js_exec -- -max_total_time=5 -runs=128 -timeout=5 -seed=1
+          cargo fuzz run vm_js_exec_compiled /tmp/ecma_rs_vm_js_exec_compiled_corpus ../vm-js/fuzz/corpus/vm_js_exec_compiled -- -max_total_time=5 -runs=128 -timeout=5 -seed=1
+
       - name: Upload fuzz artifacts (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz_smoke_artifacts
-          path: fuzz/artifacts
+          path: |
+            fuzz/artifacts
+            vendor/ecma-rs/fuzz/artifacts
           if-no-files-found: ignore
 
       - name: Fuzz smoke step summary
@@ -1230,13 +1248,20 @@ jobs:
             echo "- svg_filters: -max_total_time=5 -runs=128"
             echo "- animation_properties: -max_total_time=5 -runs=128"
             echo "- color_fonts: -max_total_time=5 -runs=64 -timeout=5 -rss_limit_mb=4096"
+            echo "- vm_js_exec (vendor/ecma-rs): -max_total_time=5 -runs=128 -timeout=5 -seed=1"
+            echo "- vm_js_exec_compiled (vendor/ecma-rs): -max_total_time=5 -runs=128 -timeout=5 -seed=1"
             echo
-            if [ -d fuzz/artifacts ]; then
-              echo "Artifacts directory (fuzz/artifacts) exists; contents:"
-              echo
-              echo '```'
-              find fuzz/artifacts -maxdepth 2 -type f -print | head -n 50 || true
-              echo '```'
+            if [ -d fuzz/artifacts ] || [ -d vendor/ecma-rs/fuzz/artifacts ]; then
+              for dir in fuzz/artifacts vendor/ecma-rs/fuzz/artifacts; do
+                if [ -d "${dir}" ]; then
+                  echo "Artifacts directory (${dir}) exists; contents:"
+                  echo
+                  echo '```'
+                  find "${dir}" -maxdepth 2 -type f -print | head -n 50 || true
+                  echo '```'
+                  echo
+                fi
+              done
             else
               echo "No fuzz artifacts directory was created."
             fi
