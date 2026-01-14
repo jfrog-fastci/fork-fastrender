@@ -41188,12 +41188,12 @@ fn gen_eval_assignment_apply_reference(
         GenEval::Suspend(mut suspend) => {
           let (base, key, receiver) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, receiver: _, key } => {
+            Reference::Property { base, receiver, key } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
               };
-              (Some(base), Some(key_value), None)
+              (Some(base), Some(key_value), Some(receiver))
             }
             Reference::SuperProperty {
               base,
