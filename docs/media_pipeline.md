@@ -26,7 +26,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering; rejects encrypted/compressed `ContentEncodings`) |
 | MP4 demux (`Mp4ParseDemuxer`) | ✅ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (feature: `media_mp4`/`media`; used by [`NativeBackend`](../src/media/backends/native.rs) via [`MediaDemuxer`](../src/media/demuxer.rs); H.264/VP9 video + AAC audio; rejects encrypted/protected tracks; mp4parse sample-table DTS/PTS/duration; seek-by-PTS threshold (no keyframe backtracking yet)) |
 | MP4 demux + packetizer (`Mp4PacketDemuxer`, mp4 crate) | ⚠️ (in-tree; not used by `NativeBackend`) | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; `mp4` crate + mp4parse metadata; yields packets ordered by DTS (decode order) with best-effort DTS/PTS/duration + keyframe seek; sample-table caps; falls back to mp4 crate timestamps when mp4parse tables are unavailable) |
-| MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ (not wired) | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently used by `NativeBackend`/`MediaDecodePipeline`) |
+| MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ (not wired) | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; exposes `avcC` bytes for H.264 + `esds`→AAC ASC; not currently used by `NativeBackend`/`MediaDecodePipeline`) |
 | MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; safety caps on sample-table sizes + per-sample bytes; currently separate from `Mp4ParseDemuxer`/`Mp4PacketDemuxer`) |
 | AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
 | Opus decoder | ✅ | [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`/`media`; `opus` crate / libopus; mapping family 0 mono/stereo only today) |
@@ -175,15 +175,7 @@ Current behavior:
 
 Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
 
-- **H.264**: a minimal custom format derived from `avcC`, used by `decoder::H264Decoder`:
-
-  ```text
-  u8  nal_length_size
-  u8  sps_count
-  [sps_count] { u16be len, [len] bytes }
-  u8  pps_count
-  [pps_count] { u16be len, [len] bytes }
-  ```
+- **H.264**: raw `avcC` bytes (`AVCDecoderConfigurationRecord`), parsed by `decoder::H264Decoder`.
 
 - **AAC**: `esds`/decoder-specific bytes extracted via mp4parse (an `AudioSpecificConfig` blob).
 - **VP9**: a compact subset of `vpcC` (bit depth / primaries / subsampling + `codec_init` bytes).
@@ -223,8 +215,7 @@ Other MP4 demuxers in-tree:
   - reads the full file into an `Arc<[u8]>`,
   - emits `MediaPacket` with `MediaData::Shared` ranges,
   - computes both `dts_ns` and `pts_ns` (including `ctts`) and a non-monotonic-PTS seek index, and
-  - parses `avcC` into the custom H.264 extradata format expected by `decoder::H264Decoder`, plus
-    `esds`→AAC `AudioSpecificConfig`.
+  - extracts `avcC` bytes for H.264 codec metadata, plus `esds`→AAC `AudioSpecificConfig`.
 
 ## Codec decode backends
 
@@ -262,8 +253,7 @@ Implementation: [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `cod
 
 Input contract:
 
-- `MediaTrackInfo.codec_private` must be in the custom `avcC`-derived format documented in
-  `parse_h264_codec_private(...)` (see source for the exact layout).
+- `MediaTrackInfo.codec_private` must contain MP4 `avcC` bytes (`AVCDecoderConfigurationRecord`).
 - `MediaPacket.data` is expected to contain MP4/AVC **length-prefixed** NAL units (not Annex B start
   codes). The decoder converts packets to Annex B and prepends SPS/PPS before the first decode.
 

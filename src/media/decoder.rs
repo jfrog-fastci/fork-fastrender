@@ -1,9 +1,9 @@
+#[cfg(feature = "codec_h264_openh264")]
+use super::yuv::yuv420p_to_rgba;
 use super::{
   DecodedAudioChunk, DecodedVideoFrame, MediaCodec, MediaError, MediaPacket, MediaResult,
   MediaTrackInfo,
 };
-#[cfg(feature = "codec_h264_openh264")]
-use super::yuv::yuv420p_to_rgba;
 #[cfg(feature = "codec_h264_openh264")]
 use openh264::formats::YUVSource;
 
@@ -58,7 +58,9 @@ pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Video
     MediaCodec::H264 => {
       #[cfg(feature = "codec_h264_openh264")]
       {
-        Ok(Box::new(H264Decoder::from_codec_private(&track.codec_private)?))
+        Ok(Box::new(H264Decoder::from_codec_private(
+          &track.codec_private,
+        )?))
       }
       #[cfg(not(feature = "codec_h264_openh264"))]
       {
@@ -105,14 +107,11 @@ fn vp9_decode_threads_from_env() -> u32 {
 pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn AudioDecoder>> {
   match &track.codec {
     MediaCodec::Aac => {
-      let info = track
-        .audio
-        .ok_or(MediaError::Unsupported("AAC track missing audio info".into()))?;
-      let decoder = super::codecs::aac::AacDecoder::new(
-        &track.codec_private,
-        info.sample_rate,
-        info.channels,
-      )?;
+      let info = track.audio.ok_or(MediaError::Unsupported(
+        "AAC track missing audio info".into(),
+      ))?;
+      let decoder =
+        super::codecs::aac::AacDecoder::new(&track.codec_private, info.sample_rate, info.channels)?;
       Ok(Box::new(decoder))
     }
     MediaCodec::Opus => Ok(Box::new(
@@ -302,7 +301,8 @@ impl VideoDecoder for H264Decoder {
 
 /// Parses H264 codec-private data (extradata) into SPS/PPS + NAL length size.
 ///
-/// We currently encode this in a minimal custom format produced by the MP4 demuxer:
+/// The preferred format is the raw MP4 `avcC` bytes (`AVCDecoderConfigurationRecord` per
+/// ISO/IEC 14496-15). For backwards compatibility, we also accept a legacy minimal format:
 ///
 /// ```text
 /// u8  nal_length_size
@@ -313,56 +313,176 @@ impl VideoDecoder for H264Decoder {
 /// ```
 #[cfg(feature = "codec_h264_openh264")]
 fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
-  let mut i = 0usize;
-  let read_u8 = |data: &[u8], i: &mut usize| -> MediaResult<u8> {
+  fn read_u8(data: &[u8], i: &mut usize) -> MediaResult<u8> {
     let v = *data
       .get(*i)
       .ok_or(MediaError::Decode("h264 extradata truncated".into()))?;
     *i += 1;
     Ok(v)
-  };
-  let read_u16be = |data: &[u8], i: &mut usize| -> MediaResult<u16> {
+  }
+  fn read_u16be(data: &[u8], i: &mut usize) -> MediaResult<u16> {
     let hi = read_u8(data, i)?;
     let lo = read_u8(data, i)?;
     Ok(u16::from_be_bytes([hi, lo]))
-  };
-
-  let nal_length_size = read_u8(data, &mut i)?;
-  if nal_length_size == 0 || nal_length_size > 4 {
-    return Err(MediaError::Decode(format!(
-      "h264: invalid NAL length size: {nal_length_size}"
-    )));
   }
 
-  let sps_count = read_u8(data, &mut i)? as usize;
-  let mut sps = Vec::with_capacity(sps_count);
-  for _ in 0..sps_count {
-    let len = read_u16be(data, &mut i)? as usize;
-    let end = i.saturating_add(len);
-    if end > data.len() {
-      return Err(MediaError::Decode("h264 extradata truncated (sps)".into()));
+  fn looks_like_avcc(data: &[u8]) -> bool {
+    // avcC signature: configurationVersion=1 and reserved bits set in bytes 4/5.
+    data.len() >= 7
+      && data[0] == 1
+      && (data[4] & 0b1111_1100) == 0b1111_1100
+      && (data[5] & 0b1110_0000) == 0b1110_0000
+  }
+
+  fn parse_avcc(data: &[u8]) -> MediaResult<H264CodecConfig> {
+    if data.len() < 7 {
+      return Err(MediaError::Decode("h264 avcC extradata truncated".into()));
     }
-    sps.push(data[i..end].to_vec());
-    i = end;
-  }
-
-  let pps_count = read_u8(data, &mut i)? as usize;
-  let mut pps = Vec::with_capacity(pps_count);
-  for _ in 0..pps_count {
-    let len = read_u16be(data, &mut i)? as usize;
-    let end = i.saturating_add(len);
-    if end > data.len() {
-      return Err(MediaError::Decode("h264 extradata truncated (pps)".into()));
+    if data[0] != 1 {
+      return Err(MediaError::Decode(
+        "h264 avcC extradata: unsupported configurationVersion".into(),
+      ));
     }
-    pps.push(data[i..end].to_vec());
-    i = end;
+    if (data[4] & 0b1111_1100) != 0b1111_1100 {
+      return Err(MediaError::Decode(
+        "h264 avcC extradata: reserved bits not set".into(),
+      ));
+    }
+    if (data[5] & 0b1110_0000) != 0b1110_0000 {
+      return Err(MediaError::Decode(
+        "h264 avcC extradata: reserved bits not set".into(),
+      ));
+    }
+
+    // Layout (AVCDecoderConfigurationRecord):
+    // 0: configurationVersion
+    // 1: AVCProfileIndication
+    // 2: profile_compatibility
+    // 3: AVCLevelIndication
+    // 4: reserved (6 bits) + lengthSizeMinusOne (2 bits)
+    // 5: reserved (3 bits) + numOfSequenceParameterSets (5 bits)
+    let length_size_minus_one = data[4] & 0b11;
+    let nal_length_size = length_size_minus_one + 1;
+    if nal_length_size == 0 || nal_length_size > 4 {
+      return Err(MediaError::Decode(format!(
+        "h264: invalid avcC NAL length size: {nal_length_size}"
+      )));
+    }
+
+    let sps_count = (data[5] & 0b1_1111) as usize;
+    if sps_count == 0 {
+      return Err(MediaError::Decode(
+        "h264 avcC extradata: expected at least one SPS".into(),
+      ));
+    }
+
+    let mut i = 6usize;
+    let mut sps = Vec::with_capacity(sps_count);
+    for _ in 0..sps_count {
+      let len = u16::from_be_bytes([
+        *data.get(i).ok_or(MediaError::Decode(
+          "h264 avcC extradata truncated (sps len)".into(),
+        ))?,
+        *data.get(i + 1).ok_or(MediaError::Decode(
+          "h264 avcC extradata truncated (sps len)".into(),
+        ))?,
+      ]) as usize;
+      i += 2;
+      let end = i.saturating_add(len);
+      if end > data.len() {
+        return Err(MediaError::Decode(
+          "h264 avcC extradata truncated (sps bytes)".into(),
+        ));
+      }
+      sps.push(data[i..end].to_vec());
+      i = end;
+    }
+
+    let pps_count = *data.get(i).ok_or(MediaError::Decode(
+      "h264 avcC extradata truncated (pps count)".into(),
+    ))? as usize;
+    i += 1;
+    if pps_count == 0 {
+      return Err(MediaError::Decode(
+        "h264 avcC extradata: expected at least one PPS".into(),
+      ));
+    }
+    let mut pps = Vec::with_capacity(pps_count);
+    for _ in 0..pps_count {
+      let len = u16::from_be_bytes([
+        *data.get(i).ok_or(MediaError::Decode(
+          "h264 avcC extradata truncated (pps len)".into(),
+        ))?,
+        *data.get(i + 1).ok_or(MediaError::Decode(
+          "h264 avcC extradata truncated (pps len)".into(),
+        ))?,
+      ]) as usize;
+      i += 2;
+      let end = i.saturating_add(len);
+      if end > data.len() {
+        return Err(MediaError::Decode(
+          "h264 avcC extradata truncated (pps bytes)".into(),
+        ));
+      }
+      pps.push(data[i..end].to_vec());
+      i = end;
+    }
+
+    Ok(H264CodecConfig {
+      nal_length_size,
+      sps,
+      pps,
+    })
   }
 
-  Ok(H264CodecConfig {
-    nal_length_size,
-    sps,
-    pps,
-  })
+  fn parse_legacy_minimal(data: &[u8]) -> MediaResult<H264CodecConfig> {
+    let mut i = 0usize;
+    let nal_length_size = read_u8(data, &mut i)?;
+    if nal_length_size == 0 || nal_length_size > 4 {
+      return Err(MediaError::Decode(format!(
+        "h264: invalid NAL length size: {nal_length_size}"
+      )));
+    }
+
+    let sps_count = read_u8(data, &mut i)? as usize;
+    let mut sps = Vec::with_capacity(sps_count);
+    for _ in 0..sps_count {
+      let len = read_u16be(data, &mut i)? as usize;
+      let end = i.saturating_add(len);
+      if end > data.len() {
+        return Err(MediaError::Decode("h264 extradata truncated (sps)".into()));
+      }
+      sps.push(data[i..end].to_vec());
+      i = end;
+    }
+
+    let pps_count = read_u8(data, &mut i)? as usize;
+    let mut pps = Vec::with_capacity(pps_count);
+    for _ in 0..pps_count {
+      let len = read_u16be(data, &mut i)? as usize;
+      let end = i.saturating_add(len);
+      if end > data.len() {
+        return Err(MediaError::Decode("h264 extradata truncated (pps)".into()));
+      }
+      pps.push(data[i..end].to_vec());
+      i = end;
+    }
+
+    Ok(H264CodecConfig {
+      nal_length_size,
+      sps,
+      pps,
+    })
+  }
+
+  if looks_like_avcc(data) {
+    if let Ok(cfg) = parse_avcc(data) {
+      return Ok(cfg);
+    }
+    // Fall through to legacy parsing for robustness in case of mis-detection.
+  }
+
+  parse_legacy_minimal(data)
 }
 #[cfg(test)]
 mod tests {

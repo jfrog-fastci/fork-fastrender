@@ -663,12 +663,9 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
 
       if matches!(codec, MediaCodec::H264) {
         // mp4parse provides raw avcC bytes (`AVCDecoderConfigurationRecord`) via
-        // `VideoCodecSpecific::AVCConfig`. Convert to the small custom format expected by
-        // `decoder::H264Decoder`.
+        // `VideoCodecSpecific::AVCConfig`.
         if let mp4parse::VideoCodecSpecific::AVCConfig(avcc) = &video.codec_specific {
-          if let Some(out) = parse_avcc_for_h264_codec_private(&avcc[..]) {
-            codec_private = out;
-          }
+          codec_private = avcc.iter().copied().collect();
         }
       } else if matches!(codec, MediaCodec::Vp9) {
         // Mirror the compact vpcC-derived extradata format used by `Mp4PacketDemuxer`.
@@ -690,96 +687,6 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
   }
 
   (codec, codec_private)
-}
-
-fn parse_avcc_for_h264_codec_private(avcc: &[u8]) -> Option<Vec<u8>> {
-  // AVCDecoderConfigurationRecord (avcC) layout (ISO/IEC 14496-15):
-  //
-  // 1  configurationVersion (must be 1)
-  // 1  AVCProfileIndication
-  // 1  profile_compatibility
-  // 1  AVCLevelIndication
-  // 1  reserved (6 bits = 1) + lengthSizeMinusOne (2 bits)
-  // 1  reserved (3 bits = 1) + numOfSequenceParameterSets (5 bits)
-  //   [SPS...]
-  // 1  numOfPictureParameterSets
-  //   [PPS...]
-  //
-  // We convert this to the small custom format expected by `decoder::H264Decoder`:
-  //
-  //   u8  nal_length_size
-  //   u8  sps_count
-  //   [sps_count] { u16be len, [len] bytes }
-  //   u8  pps_count
-  //   [pps_count] { u16be len, [len] bytes }
-  if avcc.len() < 7 {
-    return None;
-  }
-  let mut i = 0usize;
-
-  let configuration_version = avcc[i];
-  i += 1;
-  if configuration_version != 1 {
-    return None;
-  }
-
-  // Skip profile/compat/level.
-  i += 3;
-
-  let length_size_minus_one = avcc[i] & 0b11;
-  i += 1;
-  let nal_length_size = length_size_minus_one + 1;
-  if nal_length_size == 0 || nal_length_size > 4 {
-    return None;
-  }
-
-  let num_sps = avcc[i] & 0b1_1111;
-  i += 1;
-  let sps_count = num_sps as usize;
-
-  let mut out = Vec::new();
-  out.push(nal_length_size);
-  out.push(num_sps);
-
-  for _ in 0..sps_count {
-    if i + 2 > avcc.len() {
-      return None;
-    }
-    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
-    i += 2;
-    let end = i.checked_add(len)?;
-    if end > avcc.len() {
-      return None;
-    }
-    out.extend_from_slice(&(len as u16).to_be_bytes());
-    out.extend_from_slice(&avcc[i..end]);
-    i = end;
-  }
-
-  if i >= avcc.len() {
-    return None;
-  }
-  let num_pps = avcc[i];
-  i += 1;
-  let pps_count = num_pps as usize;
-
-  out.push(num_pps);
-  for _ in 0..pps_count {
-    if i + 2 > avcc.len() {
-      return None;
-    }
-    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
-    i += 2;
-    let end = i.checked_add(len)?;
-    if end > avcc.len() {
-      return None;
-    }
-    out.extend_from_slice(&(len as u16).to_be_bytes());
-    out.extend_from_slice(&avcc[i..end]);
-    i = end;
-  }
-
-  Some(out)
 }
 
 fn video_dimensions(track: &mp4parse::Track) -> (Option<u16>, Option<u16>) {
@@ -1017,7 +924,8 @@ mod tests {
       .expect("cap-sized sample_count should be allowed");
 
     let sample_count = MAX_MP4_SAMPLES_PER_TRACK + 1;
-    let err = check_mp4_track_sample_count(7, sample_count).expect_err("expected sample_count error");
+    let err =
+      check_mp4_track_sample_count(7, sample_count).expect_err("expected sample_count error");
     let MediaError::Demux(msg) = err else {
       panic!("expected demux error, got {err:?}");
     };
