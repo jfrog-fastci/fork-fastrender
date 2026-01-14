@@ -434,7 +434,7 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
 - [ ] Reopen Closed Tab works (Ctrl/Cmd+Shift+T).
 - [ ] History panel toggle works:
   - Win/Linux: Ctrl+H
-  - macOS: Cmd+Y (and optionally Cmd+Shift+H, Firefox-style)
+  - macOS: Cmd+Y
 - [ ] History panel behaviour (when open):
   - [ ] Shows recent visits after navigating across a few non-`about:` pages.
   - [ ] Search filters results (and can be cleared).
