@@ -380,6 +380,27 @@ fn optional_chaining_on_super_call_is_syntax_error() {
 }
 
 #[test]
+fn super_property_access_outside_method_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("super.x;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn new_target_outside_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("new.target;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn new_target_in_arrow_function_without_enclosing_new_target_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("(() => new.target)();").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn super_call_outside_derived_constructor_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
@@ -538,6 +559,24 @@ fn strict_mode_delete_unqualified_identifier_is_syntax_error() {
 fn strict_mode_assignment_to_arguments_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; arguments = 1;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_destructuring_assignment_to_eval_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; ({ eval } = {});"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_destructuring_assignment_to_arguments_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; ({ arguments } = {});"#)
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
