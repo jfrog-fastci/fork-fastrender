@@ -726,6 +726,16 @@ fn super_property_in_async_function_expression_body_is_syntax_error() {
 }
 
 #[test]
+fn super_property_in_async_function_expression_formals_is_syntax_error() {
+  let mut rt = new_runtime();
+  // Mirrors test262 `language/expressions/async-function/early-errors-expression-formals-contains-super-property.js`.
+  let err = rt
+    .exec_script("(async function foo (foo = super.foo) { var bar; });")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn super_call_in_async_function_expression_formals_is_syntax_error() {
   let mut rt = new_runtime();
   // Mirrors test262 `language/expressions/async-function/early-errors-expression-formals-contains-super-call.js`.
@@ -748,6 +758,14 @@ fn super_property_in_async_arrow_function_body_is_syntax_error() {
   let mut rt = new_runtime();
   // Mirrors test262 `language/expressions/async-arrow-function/early-errors-arrow-body-contains-super-property.js`.
   let err = rt.exec_script("async(foo) => { super.prop };").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_property_in_async_arrow_function_formals_is_syntax_error() {
+  let mut rt = new_runtime();
+  // Mirrors test262 `language/expressions/async-arrow-function/early-errors-arrow-formals-contains-super-property.js`.
+  let err = rt.exec_script("async (foo = super.foo) => { }").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 

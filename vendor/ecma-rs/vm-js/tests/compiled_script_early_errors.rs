@@ -241,6 +241,37 @@ fn compiled_script_rejects_super_property_in_async_arrow_function() {
 }
 
 #[test]
+fn compiled_script_rejects_super_property_in_async_arrow_function_formals() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Mirrors test262 `language/expressions/async-arrow-function/early-errors-arrow-formals-contains-super-property.js`.
+  let err =
+    CompiledScript::compile_script(&mut heap, "test.js", "async (foo = super.foo) => { }")
+      .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_script_rejects_super_property_in_async_function_expression_formals() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Mirrors test262 `language/expressions/async-function/early-errors-expression-formals-contains-super-property.js`.
+  let err = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    "(async function foo (foo = super.foo) { var bar; });",
+  )
+  .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_script_rejects_super_call_at_script_top_level() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   // Mirrors test262 `language/global-code/super-call.js`.
