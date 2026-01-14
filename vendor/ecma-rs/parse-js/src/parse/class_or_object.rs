@@ -283,10 +283,7 @@ impl<'a> Parser<'a> {
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: !is_module,
-                // Static blocks treat `await` as a keyword (it can start an AwaitExpression), but
-                // `await` expressions are still rejected as early errors by vm-js until async-eval
-                // support lands.
-                await_expr_allowed: true,
+                await_expr_allowed: false,
                 yield_expr_allowed: false,
               });
               let body = p
