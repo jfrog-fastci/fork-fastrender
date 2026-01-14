@@ -273,7 +273,8 @@ impl<'a> Parser<'a> {
               p.super_call_allowed = 0;
               // Static blocks have their own `Await` / `Yield` context:
               // - `await` is reserved as an identifier (even in scripts),
-              // - `await` expressions (and `for await..of`) are never permitted,
+              // - `await` expressions (and `for await..of`) are never permitted
+              //   (ClassStaticBlockStatementList is `~Await`),
               // - `yield` expressions are never permitted (ClassStaticBlockStatementList is `~Yield`),
               // - `return` statements are never permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
