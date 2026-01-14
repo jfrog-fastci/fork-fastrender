@@ -365,3 +365,74 @@ fn generator_yield_star_in_mul_assignment_rhs_captures_private_field_old_value()
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_old_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 5;
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7;
+        }
+        function* g() { return x += (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+        x = 100; // mutate after first delegated yield
+        var r2 = it.next();
+        x = 200; // mutate after second delegated yield
+        var r3 = it.next();
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === 12 && r3.done === true &&
+        x === 12
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_property_reference_and_old_value_with_strings() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: "hi" };
+        var o2 = { a: "no" };
+        var o = o1;
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return "!";
+        }
+
+        function* g() { return o.a += (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+
+        // Mutate the original target and also rebind `o` after the first delegated yield.
+        o1.a = "bye";
+        o = o2;
+
+        var r2 = it.next();
+
+        // Mutate again after the second delegated yield.
+        o1.a = "ciao";
+        o = o2;
+
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === "hi!" && r3.done === true &&
+        o1.a === "hi!" && o2.a === "no"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
