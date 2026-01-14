@@ -197,6 +197,7 @@ pub fn interaction_state_for_autofocus(doc: &Document) -> Option<InteractionStat
 #[cfg(test)]
 mod tests {
   use super::*;
+  use selectors::context::QuirksMode;
 
   #[test]
   fn autofocus_matches_attribute_name_case_insensitively_in_html_namespace() {
@@ -277,5 +278,19 @@ mod tests {
 
     assert_eq!(autofocus_target_node_id(&doc), None);
     assert!(interaction_state_for_autofocus(&doc).is_none());
+  }
+
+  #[test]
+  fn node_attr_helpers_match_html_case_insensitively() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let el = doc.create_element("div", "");
+    doc.append_child(doc.root(), el).unwrap();
+    doc.set_attribute(el, "DATA-TEST", "ok").unwrap();
+
+    let node = doc.node(el);
+    assert!(node_has_attr(&doc, node, "data-test"));
+    assert!(node_has_attr(&doc, node, "DATA-TEST"));
+    assert_eq!(node_get_attr(&doc, node, "data-test"), Some("ok"));
+    assert_eq!(node_get_attr(&doc, node, "Data-Test"), Some("ok"));
   }
 }
