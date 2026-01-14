@@ -1753,7 +1753,8 @@ mod tests {
 
     // Corrupt the on-disk session so the writer thread doesn't attempt a startup write; we want the
     // test-controlled save attempt below to be the first write.
-    std::fs::write(&path, "not valid json\n").unwrap();
+    let corrupted = "not valid json\n";
+    std::fs::write(&path, corrupted).unwrap();
 
     let save_fn: SaveSessionFn = Arc::new(|_path, _session| Err("disk full".to_string()));
     let autosave =
@@ -1761,6 +1762,21 @@ mod tests {
 
     autosave.request_save(BrowserSession::single("about:blank".to_string()));
     assert!(autosave.flush(Duration::from_secs(2)).is_err());
+
+    // Save failed: the corrupt session should still be present at the original path and should not
+    // be left quarantined.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, corrupted);
+    let quarantine_exists = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .any(|entry| {
+        entry
+          .file_name()
+          .to_str()
+          .is_some_and(|name| name.starts_with("session.json.corrupt."))
+      });
+    assert!(!quarantine_exists, "expected no quarantine file on failed save");
 
     let status = autosave.status_handle().snapshot();
     assert_eq!(status.consecutive_failures, 1);
