@@ -7458,7 +7458,7 @@ impl<'vm> HirEvaluator<'vm> {
           // Root base across key evaluation / boxing / property access.
           scope.push_root(base)?;
 
-          let key = self.eval_object_key(&mut scope, body, &member.property)?;
+          let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
           root_property_key(&mut scope, key)?;
 
           let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
@@ -7787,7 +7787,7 @@ impl<'vm> HirEvaluator<'vm> {
             let mut del_scope = scope.reborrow();
             del_scope.push_root(base)?;
 
-            let key = self.eval_object_key(&mut del_scope, body, &member.property)?;
+            let key = self.eval_member_key(&mut del_scope, body, base, &member.property)?;
             root_property_key(&mut del_scope, key)?;
 
             let object = del_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
@@ -8071,7 +8071,7 @@ impl<'vm> HirEvaluator<'vm> {
         // Root the original base across `ToObject`, key allocation, `[[Get]]` and `[[Set]]`.
         update_scope.push_root(base)?;
 
-        let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
+        let key = self.eval_member_key(&mut update_scope, body, base, &member.property)?;
         root_property_key(&mut update_scope, key)?;
 
         let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
@@ -9257,7 +9257,7 @@ impl<'vm> HirEvaluator<'vm> {
     let mut scope = scope.reborrow();
     // Root the base across key evaluation: `ToPropertyKey` can invoke user code and allocate.
     scope.push_root(base)?;
-    let key = self.eval_object_key(&mut scope, body, &member.property)?;
+    let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
     root_property_key(&mut scope, key)?;
 
     // `RequireObjectCoercible(base)` happens during reference evaluation, *before* the RHS is
@@ -9701,7 +9701,7 @@ impl<'vm> HirEvaluator<'vm> {
             // assignment evaluates the property reference once and then performs both a get and set.
             scope.push_root(base)?;
 
-            let key = self.eval_object_key(&mut scope, body, &member.property)?;
+            let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
             root_property_key(&mut scope, key)?;
 
             let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
@@ -9970,7 +9970,7 @@ impl<'vm> HirEvaluator<'vm> {
             let mut scope = scope.reborrow();
             scope.push_root(base)?;
 
-            let key = self.eval_object_key(&mut scope, body, &member.property)?;
+            let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
             root_property_key(&mut scope, key)?;
 
             let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
@@ -11665,7 +11665,7 @@ impl<'vm> HirEvaluator<'vm> {
     // allocates / triggers GC.
     scope.push_root(base)?;
 
-    let key = self.eval_object_key(&mut scope, body, &member.property)?;
+    let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
     root_property_key(&mut scope, key)?;
 
     // `GetValue` for property references: ToObject(base) then `[[Get]](key, Receiver=base)`.
@@ -11795,7 +11795,7 @@ impl<'vm> HirEvaluator<'vm> {
     // accessors/proxy traps and allocate).
     scope.push_roots(&[base, value])?;
 
-    let key = self.eval_object_key(&mut scope, body, &member.property)?;
+    let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
     root_property_key(&mut scope, key)?;
 
     // `PutValue` for property references: ToObject(base) then `[[Set]](key, value, Receiver=base)`.
@@ -11826,6 +11826,37 @@ impl<'vm> HirEvaluator<'vm> {
     } else {
       // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
       Ok(())
+    }
+  }
+
+  /// Evaluates a member-expression property key for ordinary (non-`super`) member operations.
+  ///
+  /// For computed member expressions (`base[expr]`), ECMA-262 requires:
+  /// 1) evaluate `expr` to a value,
+  /// 2) perform `RequireObjectCoercible(base)`,
+  /// 3) then perform `ToPropertyKey(keyValue)`.
+  ///
+  /// This ensures that when `base` is `null`/`undefined`, a TypeError is thrown *before*
+  /// `ToPropertyKey` can invoke user code (e.g. `toString` on the computed key value).
+  fn eval_member_key(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    base: Value,
+    key: &hir_js::ObjectKey,
+  ) -> Result<PropertyKey, VmError> {
+    match key {
+      hir_js::ObjectKey::Computed(expr_id) => {
+        let key_value = self.eval_expr(scope, body, *expr_id)?;
+        // Spec: `RequireObjectCoercible(base)` happens after evaluating the computed key expression
+        // (to a value) but before `ToPropertyKey(keyValue)`.
+        let _ = crate::spec_ops::require_object_coercible(base)?;
+        // Root the computed value across `ToPropertyKey`, which performs `ToPrimitive` (hint String)
+        // and can invoke user code.
+        scope.push_root(key_value)?;
+        scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)
+      }
+      other => self.eval_object_key(scope, body, other),
     }
   }
 
@@ -12561,7 +12592,7 @@ impl<'vm> HirEvaluator<'vm> {
               // triggers GC.
               scope.push_root(base)?;
 
-              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              let key = self.eval_member_key(&mut scope, body, base, &member.property)?;
               root_property_key(&mut scope, key)?;
 
               let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
