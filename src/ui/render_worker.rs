@@ -8947,7 +8947,9 @@ impl BrowserRuntime {
       pos
     };
 
-    self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::default());
+    // AccessKit's `ShowContextMenu` action does not provide modifier key state; dispatch the
+    // cancelable JS `contextmenu` event with no modifiers.
+    self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::NONE);
   }
 
   fn handle_select_dropdown_choose(
