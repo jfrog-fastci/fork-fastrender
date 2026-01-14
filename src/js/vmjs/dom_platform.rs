@@ -1,6 +1,12 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{NodeId, NodeKind};
-use crate::js::dom_internal_keys::{NODE_ID_KEY, WRAPPER_DOCUMENT_KEY};
+use crate::js::dom_internal_keys::{
+  CSS_STYLE_DECL_PROTOTYPE_KEY, HTML_COLLECTION_PROTOTYPE_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY,
+  STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY, STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY,
+  STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY, STYLE_HEIGHT_GET_KEY,
+  STYLE_HEIGHT_SET_KEY, STYLE_REMOVE_PROPERTY_KEY, STYLE_SET_PROPERTY_KEY, STYLE_WIDTH_GET_KEY,
+  STYLE_WIDTH_SET_KEY, WRAPPER_DOCUMENT_KEY,
+};
 use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{
@@ -973,6 +979,161 @@ impl DomPlatform {
   ) {
     let document_id = document_id_from_key(document_key);
     self.register_wrapper_for_document_id(heap, wrapper, document_id, node_id, primary_interface);
+  }
+
+  /// Register a JS-created alias `Document` wrapper (e.g. `Object.create(document)`).
+  ///
+  /// Some WPT tests intentionally fabricate a second `Document` wrapper identity using
+  /// `Object.create(document)` to exercise cross-document wrapper adoption logic without a true
+  /// multi-document `dom2::Document` backend.
+  ///
+  /// The alias object:
+  /// - *must not* allocate a fresh wrapper; the alias object itself becomes the platform wrapper for
+  ///   its derived `DocumentId`,
+  /// - is registered only when it inherits from an already-registered `Document` wrapper, and
+  /// - is mutated to match the internal wrapper shape expected by older shims
+  ///   (`__fastrender_node_id`, `__fastrender_wrapper_document`, `HostSlots` brand).
+  pub fn maybe_register_document_alias_wrapper(
+    &mut self,
+    scope: &mut Scope<'_>,
+    alias_obj: GcObject,
+  ) -> Result<(), VmError> {
+    self.sweep_dead_wrappers_if_needed(scope.heap());
+
+    // Fast path: already registered.
+    let weak = WeakGcObject::from(alias_obj);
+    if self.meta_by_wrapper.contains_key(&weak) {
+      return Ok(());
+    }
+
+    // Only treat objects as `Document` aliases if their prototype chain includes a registered
+    // `Document` wrapper.
+    let mut proto = scope.object_get_prototype(alias_obj)?;
+    let mut proto_document_obj: Option<GcObject> = None;
+    while let Some(proto_obj) = proto {
+      if let Some(meta) = self.meta_by_wrapper.get(&WeakGcObject::from(proto_obj)) {
+        if meta.primary_interface.implements(DomInterface::Document) {
+          proto_document_obj = Some(proto_obj);
+          break;
+        }
+      }
+      proto = scope.object_get_prototype(proto_obj)?;
+    }
+    let Some(proto_document_obj) = proto_document_obj else {
+      return Ok(());
+    };
+
+    // Mutate the alias object to look like a platform wrapper: allocation can trigger GC, so root
+    // it (and any temporary strings) via a nested scope.
+    {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(alias_obj))?;
+      scope.push_root(Value::Object(proto_document_obj))?;
+
+      // Brand for structuredClone() / host-side wrapper detection.
+      scope.heap_mut().object_set_host_slots(
+        alias_obj,
+        HostSlots {
+          a: DOM_WRAPPER_HOST_TAG,
+          b: 0,
+        },
+      )?;
+
+      // __fastrender_node_id = 0
+      let node_id_s = scope.alloc_string(NODE_ID_KEY)?;
+      scope.push_root(Value::String(node_id_s))?;
+      let node_id_key = PropertyKey::from_string(node_id_s);
+      scope.define_property(
+        alias_obj,
+        node_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(0.0),
+            writable: true,
+          },
+        },
+      )?;
+
+      // __fastrender_wrapper_document = alias_obj
+      let wrapper_document_s = scope.alloc_string(WRAPPER_DOCUMENT_KEY)?;
+      scope.push_root(Value::String(wrapper_document_s))?;
+      let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
+      scope.define_property(
+        alias_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(alias_obj),
+            writable: true,
+          },
+        },
+      )?;
+
+      // Copy internal per-document shims stored as own-properties on the canonical Document wrapper.
+      //
+      // Many WebIDL dispatch paths use `object_get_own_data_property_value(document_obj, ...)` to
+      // retrieve these prototypes/functions. `Object.create(document)` would otherwise inherit them
+      // and fail those own-property lookups.
+      for key_str in [
+        NODE_LIST_PROTOTYPE_KEY,
+        HTML_COLLECTION_PROTOTYPE_KEY,
+        CSS_STYLE_DECL_PROTOTYPE_KEY,
+        STYLE_GET_PROPERTY_VALUE_KEY,
+        STYLE_SET_PROPERTY_KEY,
+        STYLE_REMOVE_PROPERTY_KEY,
+        STYLE_CSS_TEXT_GET_KEY,
+        STYLE_CSS_TEXT_SET_KEY,
+        STYLE_DISPLAY_GET_KEY,
+        STYLE_DISPLAY_SET_KEY,
+        STYLE_CURSOR_GET_KEY,
+        STYLE_CURSOR_SET_KEY,
+        STYLE_HEIGHT_GET_KEY,
+        STYLE_HEIGHT_SET_KEY,
+        STYLE_WIDTH_GET_KEY,
+        STYLE_WIDTH_SET_KEY,
+      ] {
+        let key_s = scope.alloc_string(key_str)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let Some(value) = scope
+          .heap()
+          .object_get_own_data_property_value(proto_document_obj, &key)?
+        else {
+          continue;
+        };
+        scope.define_property(
+          alias_obj,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value,
+              writable: false,
+            },
+          },
+        )?;
+      }
+    }
+
+    // Register alias wrapper metadata + node wrapper cache entry for the document node (`NodeId(0)`).
+    let document_id = document_id_from_key(weak);
+    let node_id = NodeId::from_index(0);
+    self.wrappers_by_node.insert(DomNodeKey::new(document_id, node_id), weak);
+    self.meta_by_wrapper.insert(
+      weak,
+      DomWrapperMeta {
+        document_id,
+        node_id,
+        primary_interface: DomInterface::Document,
+        realm_id: self.realm_id,
+      },
+    );
+    Ok(())
   }
 
   /// Return an existing wrapper for `node_id` if still alive.

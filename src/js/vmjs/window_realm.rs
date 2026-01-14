@@ -50850,6 +50850,39 @@ fn init_window_globals(
     let comment_proto = platform.prototype_for(DomInterface::Comment);
     let processing_instruction_proto = platform.prototype_for(DomInterface::ProcessingInstruction);
 
+    // WebIDL bindings currently omit `Node.prototype.ownerDocument`. Provide a small shim so WPT
+    // cross-document wrapper identity tests (which fabricate alias document wrappers via
+    // `Object.create(document)`) can observe the correct owning document wrapper through
+    // `node.ownerDocument`.
+    if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+      let owner_document_key = alloc_key(&mut scope, "ownerDocument")?;
+      if scope
+        .heap()
+        .object_get_own_property(node_proto, &owner_document_key)?
+        .is_none()
+      {
+        let owner_document_get_call_id = vm.register_native_call(node_owner_document_get_native)?;
+        let owner_document_get_name = scope.alloc_string("get ownerDocument")?;
+        scope.push_root(Value::String(owner_document_get_name))?;
+        let owner_document_get_func = scope.alloc_native_function(
+          owner_document_get_call_id,
+          None,
+          owner_document_get_name,
+          0,
+        )?;
+        scope.heap_mut().object_set_prototype(
+          owner_document_get_func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(owner_document_get_func))?;
+        scope.define_property(
+          node_proto,
+          owner_document_key,
+          idl_attribute_desc(Value::Object(owner_document_get_func), Value::Undefined),
+        )?;
+      }
+    }
+
     let make_illegal_ctor = |scope: &mut Scope<'_>, name: &str| -> Result<GcObject, VmError> {
       let name = scope.alloc_string(name)?;
       scope.push_root(Value::String(name))?;

@@ -5155,6 +5155,21 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             {
               return (Err(DomError::NotFoundError), false);
             }
+
+            let new_child_is_fragment = new_child_id.index() < dom.nodes_len()
+              && matches!(
+                dom.node(new_child_id).kind,
+                NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+              );
+            let old_parent = if new_child_is_fragment {
+              None
+            } else {
+              match dom.parent(new_child_id) {
+                Ok(v) => v,
+                Err(err) => return (Err(err), false),
+              }
+            };
+
             let res = if new_child_id.index() < dom.nodes_len()
               && matches!(dom.node(new_child_id).kind, NodeKind::ShadowRoot { .. })
             {
@@ -6787,6 +6802,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         {
           let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.maybe_register_document_alias_wrapper(scope, document_obj)?;
           let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
         }
 
@@ -6826,6 +6842,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         {
           let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.maybe_register_document_alias_wrapper(scope, document_obj)?;
           let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
         }
 
@@ -6848,6 +6865,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         {
           let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          platform.maybe_register_document_alias_wrapper(scope, document_obj)?;
           let _ = platform.require_document_id(scope.heap(), Value::Object(document_obj))?;
         }
 
@@ -7223,7 +7241,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Value::Object(element_obj) = receiver else {
           return Err(VmError::TypeError("Illegal invocation"));
         };
-
+ 
         let (document_id, element_id) = {
           let platform = require_dom_platform_mut(vm)?;
           let handle = platform.require_element_handle(scope.heap(), Value::Object(element_obj))?;
@@ -10509,6 +10527,61 @@ mod window_document_tests {
     }
     let dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
     Ok((window, dom_host, dispatch))
+  }
+
+  #[test]
+  fn webidl_document_alias_wrapper_create_element_uses_alias_owner_document() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "(() => { const doc2 = Object.create(document); const el = doc2.createElement('b'); return el.ownerDocument === doc2; })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_document_alias_wrapper_create_document_fragment_uses_alias_owner_document(
+  ) -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "(() => { const doc2 = Object.create(document); const frag = doc2.createDocumentFragment(); return frag.ownerDocument === doc2; })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_document_alias_wrapper_create_text_node_uses_alias_owner_document() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "(() => { const doc2 = Object.create(document); const text = doc2.createTextNode('x'); return text.ownerDocument === doc2; })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
   }
 
   #[test]
