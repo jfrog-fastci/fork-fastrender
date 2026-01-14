@@ -18,6 +18,7 @@ mod math_content_box_clip;
 mod missing_image_placeholder;
 mod parallel_worker_diagnostics;
 mod partial_repaint_tile_isolation_fallback;
+mod region_paint_filter_backdrop;
 mod scroll_blit;
 mod srcset_slot_width_content_box;
 mod text_diagnostics;
