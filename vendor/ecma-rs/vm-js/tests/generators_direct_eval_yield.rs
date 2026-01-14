@@ -347,6 +347,54 @@ fn generator_direct_eval_with_yield_spread_argument_is_direct_even_if_eval_is_ov
 }
 
 #[test]
+fn generator_direct_eval_with_yield_argument_inherits_strictness_from_eval_source() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            try { return eval(yield 0); }
+            catch (e) { return e.name; }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("\"use strict\"; with ({x:1}) { x }");
+          ok = r.done === true && r.value === "SyntaxError";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_strict_eval_source_does_not_leak_var_declarations_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            eval(yield 0);
+            return typeof x;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("\"use strict\"; var x = 1");
+          ok = r.done === true && r.value === "undefined";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_direct_eval_with_yield_argument_inherits_strictness() {
   let mut rt = new_runtime();
   let value = rt

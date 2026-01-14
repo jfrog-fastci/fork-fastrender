@@ -393,6 +393,60 @@ fn direct_eval_with_await_spread_argument_is_direct_even_if_eval_is_overwritten_
 }
 
 #[test]
+fn direct_eval_with_awaited_argument_inherits_strictness_from_eval_source() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        try { return eval(await "\"use strict\"; with ({x:1}) { x }"); }
+        catch (e) { return e.name; }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+  Ok(())
+}
+
+#[test]
+fn strict_eval_source_does_not_leak_var_declarations_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        eval(await "\"use strict\"; var x = 1");
+        return typeof x;
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  let Value::String(s) = value else {
+    panic!("expected string from typeof");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "undefined");
+  Ok(())
+}
+
+#[test]
 fn direct_eval_with_awaited_argument_inherits_strictness() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
