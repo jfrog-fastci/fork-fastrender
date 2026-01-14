@@ -132,21 +132,26 @@ impl PersistedDownloadsStore {
     out.downloads = self
       .entries
       .into_iter()
-      .map(|e| DownloadEntry {
-        download_id: DownloadId::new(),
-        // Downloads restored from disk are not associated with any active tab; UIs should pick a
-        // reasonable tab id (e.g. active tab) when retrying.
-        tab_id: TabId(0),
-        url: e.url,
-        file_name: e.file_name,
-        path: e.path,
-        status: match e.status {
-          PersistedDownloadStatus::Completed => DownloadStatus::Completed,
-          PersistedDownloadStatus::Cancelled => DownloadStatus::Cancelled,
-          PersistedDownloadStatus::Failed => DownloadStatus::Failed { error: String::new() },
-        },
-        started_at_ms: e.started_at_ms,
-        finished_at_ms: e.finished_at_ms,
+      .map(|e| {
+        let path = e.path;
+        let path_display = path.display().to_string();
+        DownloadEntry {
+          download_id: DownloadId::new(),
+          // Downloads restored from disk are not associated with any active tab; UIs should pick a
+          // reasonable tab id (e.g. active tab) when retrying.
+          tab_id: TabId(0),
+          url: e.url,
+          file_name: e.file_name,
+          path,
+          path_display,
+          status: match e.status {
+            PersistedDownloadStatus::Completed => DownloadStatus::Completed,
+            PersistedDownloadStatus::Cancelled => DownloadStatus::Cancelled,
+            PersistedDownloadStatus::Failed => DownloadStatus::Failed { error: String::new() },
+          },
+          started_at_ms: e.started_at_ms,
+          finished_at_ms: e.finished_at_ms,
+        }
       })
       .collect();
     out
