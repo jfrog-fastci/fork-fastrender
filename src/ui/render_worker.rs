@@ -6597,18 +6597,18 @@ impl BrowserRuntime {
       ) =
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
-          let (mut changed, mut hit, mut hover_is_drop_target) = engine
-            .pointer_move_and_hit_and_drop_target(
-              dom,
-              box_tree,
-              fragment_tree_before,
-              &scroll_snapshot,
-              viewport_point,
-            );
-          let mut fragment_tree_for_cursor = fragment_tree_before;
-          let mut scroll_for_cursor = &scroll_snapshot;
-          if let Some(scroll_after) = next_scroll.as_ref() {
-            let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
+            let (mut changed, mut hit, mut hover_is_drop_target) = engine
+              .pointer_move_and_hit_and_drop_target(
+                dom,
+                box_tree,
+                fragment_tree_before,
+                &scroll_snapshot,
+                viewport_point,
+              );
+            let mut fragment_tree_for_cursor = fragment_tree_before;
+            let mut scroll_for_cursor = &scroll_snapshot;
+            if let Some(scroll_after) = next_scroll.as_ref() {
+              let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
             let (changed_after, hit_after, hover_is_drop_target_after) =
               engine.pointer_move_and_hit_and_drop_target(
                 dom,
@@ -6625,14 +6625,14 @@ impl BrowserRuntime {
             fragment_tree_for_cursor = fragment_tree_after;
             scroll_for_cursor = scroll_after;
           }
-          // Textarea selection drag autoscroll: while dragging a selection/caret in a textarea,
-          // moving the pointer outside the control should scroll it so the caret line stays
-          // visible.
-          let textarea_scroll = engine
-            .active_text_drag()
-            .filter(|(node_id, _)| {
-              crate::dom::find_node_mut_by_preorder_id(dom, *node_id)
-                .is_some_and(|node| dom_is_textarea(node))
+            // Textarea selection drag autoscroll: while dragging a selection/caret in a textarea,
+            // moving the pointer outside the control should scroll it so the caret line stays
+            // visible.
+            let textarea_scroll = engine
+              .active_text_drag()
+              .filter(|(node_id, _)| {
+                crate::dom::find_node_mut_by_preorder_id(dom, *node_id)
+                  .is_some_and(|node| dom_is_textarea(node))
             })
             .and_then(|(_node_id, box_id)| {
               crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(

@@ -6,7 +6,10 @@
 
 use crate::error::Result;
 use crate::geometry::Rect;
-use crate::ui::{BrowserAppState, ChromeActionUrl, OmniboxAction, PointerButton, TabId};
+use crate::ui::{
+  BrowserAppState, ChromeActionUrl, OmniboxAction, OmniboxSearchSource, OmniboxSuggestion,
+  OmniboxSuggestionSource, OmniboxUrlSource, PointerButton, TabId,
+};
 use crate::chrome_frame::ChromeHoverState;
 use crate::interaction::{cursor_kind_for_hit, resolve_url, HitTestKind};
 use crate::{BrowserDocumentDom2, FastRender, RenderOptions};
@@ -20,6 +23,8 @@ use crate::ui::chrome_assets::ChromeAssetsFetcher;
 use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
 use crate::ui::trusted_chrome_fetcher::TrustedChromeFetcher;
 use crate::FontConfig;
+
+use super::dom_mutation_dom2 as dom_mut;
 
 /// Output events produced by the HTML-rendered chrome document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +63,9 @@ pub struct ChromeFrameDocument {
   viewport_css: (u32, u32),
   dpr: f32,
   tab_order: Vec<TabId>,
+  omnibox_row_capacity: usize,
   state_sig: u64,
+  appearance_sig: u64,
   drag: Option<TabDragState>,
   click: Option<ClickState>,
   hover_state: ChromeHoverState,
@@ -104,7 +111,9 @@ impl ChromeFrameDocument {
       viewport_css,
       dpr,
       tab_order: Vec::new(),
+      omnibox_row_capacity: 0,
       state_sig: 0,
+      appearance_sig: 0,
       drag: None,
       click: None,
       hover_state: ChromeHoverState::default(),
@@ -138,18 +147,294 @@ impl ChromeFrameDocument {
     if sig == self.state_sig {
       return Ok(false);
     }
-    self.state_sig = sig;
-    self.tab_order = app.tabs.iter().map(|t| t.id).collect();
 
-    // Reuse the canonical renderer-chrome HTML generator.
-    //
-    // NOTE: This HTML links to `chrome://styles/chrome.css` and references `chrome://favicon/...`
-    // URLs. Embedders are expected to configure the renderer with a strict chrome-only fetcher (see
-    // `ui::ChromeAssetsFetcher` + `ui::ChromeDynamicAssetFetcher` + `ui::TrustedChromeFetcher`).
-    let html = super::state_to_html::chrome_frame_html_from_state(app);
-    let options = self.doc.options().clone();
-    self.doc.reset_with_html(&html, options)?;
-    Ok(true)
+    let new_tab_order: Vec<TabId> = app.tabs.iter().map(|t| t.id).collect();
+
+    // Tab strip structure changes (add/remove/reorder tabs) currently trigger a full document reset.
+    // This avoids complex DOM insert/remove/reorder logic and keeps hit-testing stable.
+    if new_tab_order != self.tab_order {
+      self.state_sig = sig;
+      self.appearance_sig = compute_appearance_signature(app);
+      self.tab_order = new_tab_order;
+      self.omnibox_row_capacity =
+        if app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty() {
+          app.chrome.omnibox.suggestions.len()
+        } else {
+          0
+        };
+
+      // Reuse the canonical renderer-chrome HTML generator.
+      //
+      // NOTE: This HTML links to `chrome://styles/chrome.css` and references `chrome://favicon/...`
+      // URLs. Embedders are expected to configure the renderer with a strict chrome-only fetcher (see
+      // `ui::ChromeAssetsFetcher` + `ui::ChromeDynamicAssetFetcher` + `ui::TrustedChromeFetcher`).
+      let html = super::state_to_html::chrome_frame_html_from_state(app);
+      let options = self.doc.options().clone();
+      self.doc.reset_with_html(&html, options)?;
+      return Ok(true);
+    }
+
+    let appearance_sig = compute_appearance_signature(app);
+    let theme_css_owned = if appearance_sig != self.appearance_sig {
+      Some(super::theme::chrome_theme_css(&app.appearance))
+    } else {
+      None
+    };
+    let theme_css = theme_css_owned.as_deref();
+
+    let active_tab_id = app.active_tab_id();
+    let (can_go_back, can_go_forward, loading) = match app.active_tab() {
+      Some(tab) => (tab.can_go_back, tab.can_go_forward, tab.loading),
+      None => (false, false, false),
+    };
+
+    let omnibox_show = app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
+    let omnibox_selected_idx = app
+      .chrome
+      .omnibox
+      .selected
+      .filter(|idx| *idx < app.chrome.omnibox.suggestions.len());
+    let desired_omnibox_rows = if omnibox_show {
+      app.chrome.omnibox.suggestions.len()
+    } else {
+      0
+    };
+    let new_omnibox_capacity = self.omnibox_row_capacity.max(desired_omnibox_rows);
+    let old_omnibox_capacity = self.omnibox_row_capacity;
+
+    let mut patch_failed = false;
+
+    fn sync_toolbar_button(
+      dom: &mut crate::dom2::Document,
+      id: &str,
+      enabled: bool,
+      href: &str,
+    ) -> bool {
+      let mut changed = false;
+      changed |= dom_mut::toggle_class_by_element_id(dom, id, "disabled", !enabled);
+      if enabled {
+        changed |= dom_mut::set_attribute_by_element_id(dom, id, "href", Some(href));
+        changed |= dom_mut::set_attribute_by_element_id(dom, id, "aria-disabled", None);
+      } else {
+        changed |= dom_mut::set_attribute_by_element_id(dom, id, "href", None);
+        changed |= dom_mut::set_attribute_by_element_id(dom, id, "aria-disabled", Some("true"));
+      }
+      changed
+    }
+
+    let _ = self.doc.mutate_dom(|dom| {
+      // Validate required nodes exist before making any partial mutations.
+      if theme_css.is_some() && dom.get_element_by_id("chrome-theme").is_none() {
+        patch_failed = true;
+        return false;
+      }
+      if dom.get_element_by_id("address-bar").is_none()
+        || dom.get_element_by_id("omnibox-popup").is_none()
+      {
+        patch_failed = true;
+        return false;
+      }
+      for button in [
+        "toolbar-back",
+        "toolbar-forward",
+        "toolbar-reload",
+        "toolbar-stop",
+      ] {
+        if dom.get_element_by_id(button).is_none() {
+          patch_failed = true;
+          return false;
+        }
+      }
+      for tab in &app.tabs {
+        if dom.get_element_by_id(&tab_element_id(tab.id)).is_none()
+          || dom
+            .get_element_by_id(&format!("tab-activate-{}", tab.id.0))
+            .is_none()
+          || dom
+            .get_element_by_id(&format!("tab-title-{}", tab.id.0))
+            .is_none()
+        {
+          patch_failed = true;
+          return false;
+        }
+      }
+
+      let mut changed = false;
+
+      if let Some(css) = theme_css {
+        changed |= dom_mut::set_text_by_element_id(dom, "chrome-theme", css);
+      }
+
+      // Tabs.
+      for tab in &app.tabs {
+        let is_active = active_tab_id == Some(tab.id);
+        let aria_selected = if is_active { "true" } else { "false" };
+        changed |=
+          dom_mut::toggle_class_by_element_id(dom, &tab_element_id(tab.id), "active", is_active);
+        changed |= dom_mut::set_attribute_by_element_id(
+          dom,
+          &format!("tab-activate-{}", tab.id.0),
+          "aria-selected",
+          Some(aria_selected),
+        );
+        changed |= dom_mut::set_text_by_element_id(
+          dom,
+          &format!("tab-title-{}", tab.id.0),
+          tab.display_title(),
+        );
+      }
+
+      // Toolbar.
+      changed |= sync_toolbar_button(dom, "toolbar-back", can_go_back, "chrome-action:back");
+      changed |= sync_toolbar_button(
+        dom,
+        "toolbar-forward",
+        can_go_forward,
+        "chrome-action:forward",
+      );
+      changed |= sync_toolbar_button(dom, "toolbar-reload", !loading, "chrome-action:reload");
+      changed |= sync_toolbar_button(dom, "toolbar-stop", loading, "chrome-action:stop-loading");
+
+      // Address bar.
+      changed |= dom_mut::set_attribute_by_element_id(
+        dom,
+        "address-bar",
+        "value",
+        Some(&app.chrome.address_bar_text),
+      );
+      changed |= dom_mut::set_attribute_by_element_id(
+        dom,
+        "address-bar",
+        "aria-expanded",
+        Some(if omnibox_show { "true" } else { "false" }),
+      );
+      if omnibox_show {
+        changed |= dom_mut::set_attribute_by_element_id(
+          dom,
+          "address-bar",
+          "aria-controls",
+          Some("omnibox-popup"),
+        );
+        if let Some(selected) = omnibox_selected_idx {
+          changed |= dom_mut::set_attribute_by_element_id(
+            dom,
+            "address-bar",
+            "aria-activedescendant",
+            Some(&format!("omnibox-suggestion-{selected}")),
+          );
+        } else {
+          changed |=
+            dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-activedescendant", None);
+        }
+      } else {
+        changed |= dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-controls", None);
+        changed |=
+          dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-activedescendant", None);
+      }
+
+      // Omnibox popup container.
+      if omnibox_show {
+        changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "hidden", None);
+        changed |= dom_mut::set_attribute_by_element_id(
+          dom,
+          "omnibox-popup",
+          "aria-label",
+          Some("Suggestions"),
+        );
+      } else {
+        changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "hidden", Some(""));
+        changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "aria-label", None);
+      }
+
+      if omnibox_show {
+        let Some(popup) = dom.get_element_by_id("omnibox-popup") else {
+          patch_failed = true;
+          return false;
+        };
+
+        // Create any additional suggestion rows needed to cover the current suggestion list.
+        for idx in old_omnibox_capacity..desired_omnibox_rows {
+          let row = create_omnibox_row(dom, popup, idx);
+          if !row {
+            patch_failed = true;
+            return false;
+          }
+          changed = true;
+        }
+
+        // Update suggestion rows in place, reusing the row pool.
+        for idx in 0..new_omnibox_capacity {
+          let row_id = format!("omnibox-suggestion-{idx}");
+          if idx >= desired_omnibox_rows {
+            changed |= dom_mut::set_attribute_by_element_id(dom, &row_id, "hidden", Some(""));
+            continue;
+          }
+
+          let suggestion = &app.chrome.omnibox.suggestions[idx];
+          let selected = omnibox_selected_idx == Some(idx);
+          let aria_selected = if selected { "true" } else { "false" };
+          let href = omnibox_suggestion_href(suggestion).unwrap_or_default();
+
+          let mut class_str = String::new();
+          class_str.push_str("omnibox-suggestion ");
+          class_str.push_str(omnibox_suggestion_type_class(suggestion));
+          class_str.push(' ');
+          class_str.push_str(omnibox_suggestion_source_class(suggestion));
+          if selected {
+            class_str.push_str(" selected");
+          }
+
+          let (title, secondary) = omnibox_suggestion_title_and_secondary(suggestion);
+
+          changed |= dom_mut::set_attribute_by_element_id(dom, &row_id, "hidden", None);
+          changed |= dom_mut::set_attribute_by_element_id(dom, &row_id, "class", Some(&class_str));
+          changed |= dom_mut::set_attribute_by_element_id(
+            dom,
+            &row_id,
+            "aria-selected",
+            Some(aria_selected),
+          );
+          changed |= dom_mut::set_attribute_by_element_id(dom, &row_id, "href", Some(&href));
+
+          changed |= dom_mut::set_text_by_element_id(dom, &format!("omnibox-title-{idx}"), title);
+
+          let url_id = format!("omnibox-url-{idx}");
+          if let Some(url) = secondary {
+            changed |= dom_mut::set_attribute_by_element_id(dom, &url_id, "hidden", None);
+            changed |= dom_mut::set_text_by_element_id(dom, &url_id, url);
+          } else {
+            changed |= dom_mut::set_attribute_by_element_id(dom, &url_id, "hidden", Some(""));
+            changed |= dom_mut::set_text_by_element_id(dom, &url_id, "");
+          }
+        }
+      }
+
+      changed
+    });
+
+    if patch_failed {
+      // Something is structurally off (missing expected node ids). Fall back to a full rebuild to
+      // restore invariants.
+      self.state_sig = sig;
+      self.appearance_sig = appearance_sig;
+      self.tab_order = new_tab_order;
+      self.omnibox_row_capacity =
+        if app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty() {
+          app.chrome.omnibox.suggestions.len()
+        } else {
+          0
+        };
+      let html = super::state_to_html::chrome_frame_html_from_state(app);
+      let options = self.doc.options().clone();
+      self.doc.reset_with_html(&html, options)?;
+      return Ok(true);
+    }
+
+    self.state_sig = sig;
+    self.appearance_sig = appearance_sig;
+    self.tab_order = new_tab_order;
+    self.omnibox_row_capacity = new_omnibox_capacity;
+    Ok(false)
   }
 
   pub fn render_if_needed(&mut self) -> Result<Option<crate::Pixmap>> {
@@ -244,11 +529,13 @@ impl ChromeFrameDocument {
       return Vec::new();
     };
 
-    self.click = self.anchor_action_for_node(hit).map(|(anchor, action)| ClickState {
-      anchor,
-      action,
-      down_pos_css: pos_css,
-    });
+    self.click = self
+      .anchor_action_for_node(hit)
+      .map(|(anchor, action)| ClickState {
+        anchor,
+        action,
+        down_pos_css: pos_css,
+      });
 
     let Some(tab_id) = self.tab_id_for_node(hit) else {
       self.drag = None;
@@ -431,6 +718,139 @@ impl ChromeFrameDocument {
   }
 }
 
+fn compute_appearance_signature(app: &BrowserAppState) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  match app.appearance.theme {
+    crate::ui::theme_parsing::BrowserTheme::System => 0u8.hash(&mut hasher),
+    crate::ui::theme_parsing::BrowserTheme::Light => 1u8.hash(&mut hasher),
+    crate::ui::theme_parsing::BrowserTheme::Dark => 2u8.hash(&mut hasher),
+  }
+  app.appearance.accent_color.hash(&mut hasher);
+  app.appearance.ui_scale.to_bits().hash(&mut hasher);
+  app.appearance.high_contrast.hash(&mut hasher);
+  app.appearance.reduced_motion.hash(&mut hasher);
+  hasher.finish()
+}
+
+fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
+  match &suggestion.action {
+    OmniboxAction::NavigateToUrl => "omnibox-type-url",
+    OmniboxAction::Search(_) => "omnibox-type-search",
+    OmniboxAction::ActivateTab(_) => "omnibox-type-tab",
+  }
+}
+
+fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static str {
+  match suggestion.source {
+    OmniboxSuggestionSource::Primary => "omnibox-source-primary",
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
+      "omnibox-source-remote-suggest"
+    }
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "omnibox-source-about",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "omnibox-source-bookmark",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "omnibox-source-closed-tab",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "omnibox-source-open-tab",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "omnibox-source-visited",
+  }
+}
+
+fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
+  match &suggestion.action {
+    OmniboxAction::NavigateToUrl => suggestion
+      .url
+      .as_ref()
+      .map(|url| ChromeActionUrl::Navigate { url: url.clone() }.to_url_string()),
+    // `chrome-action:navigate` is handled like a typed navigation; passing the raw query preserves
+    // the same behaviour as pressing Enter in the address bar (search-vs-url resolution happens in
+    // the action handler).
+    OmniboxAction::Search(query) => {
+      Some(ChromeActionUrl::Navigate { url: query.clone() }.to_url_string())
+    }
+    OmniboxAction::ActivateTab(tab_id) => {
+      Some(ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string())
+    }
+  }
+}
+
+fn omnibox_suggestion_title_and_secondary(suggestion: &OmniboxSuggestion) -> (&str, Option<&str>) {
+  let title = suggestion
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|t| !t.is_empty())
+    .or_else(|| match &suggestion.action {
+      OmniboxAction::NavigateToUrl => suggestion.url.as_deref(),
+      OmniboxAction::Search(query) => Some(query.as_str()),
+      OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+    })
+    .unwrap_or_default();
+
+  let mut secondary = suggestion
+    .url
+    .as_deref()
+    .map(str::trim)
+    .filter(|u| !u.is_empty());
+  if secondary.is_some_and(|u| u == title) {
+    secondary = None;
+  }
+
+  (title, secondary)
+}
+
+fn create_omnibox_row(
+  dom: &mut crate::dom2::Document,
+  popup: crate::dom2::NodeId,
+  idx: usize,
+) -> bool {
+  let row_id = format!("omnibox-suggestion-{idx}");
+  if dom.get_element_by_id(&row_id).is_some() {
+    return true;
+  }
+
+  let row = dom.create_element("a", "");
+  let icon = dom.create_element("span", "");
+  let text = dom.create_element("span", "");
+  let title = dom.create_element("span", "");
+  let url = dom.create_element("span", "");
+
+  let title_id = format!("omnibox-title-{idx}");
+  let url_id = format!("omnibox-url-{idx}");
+
+  let _ = dom.set_attribute(row, "id", &row_id);
+  let _ = dom.set_attribute(row, "class", "omnibox-suggestion");
+  let _ = dom.set_attribute(row, "role", "option");
+  let _ = dom.set_attribute(row, "aria-selected", "false");
+  let _ = dom.set_attribute(row, "href", "");
+
+  let _ = dom.set_attribute(icon, "class", "omnibox-icon");
+  let _ = dom.set_attribute(icon, "aria-hidden", "true");
+
+  let _ = dom.set_attribute(text, "class", "omnibox-text");
+
+  let _ = dom.set_attribute(title, "id", &title_id);
+  let _ = dom.set_attribute(title, "class", "omnibox-title");
+  let title_text = dom.create_text("");
+  let _ = dom.append_child(title, title_text);
+
+  let _ = dom.set_attribute(url, "id", &url_id);
+  let _ = dom.set_attribute(url, "class", "omnibox-url");
+  let _ = dom.set_attribute(url, "hidden", "");
+  let url_text = dom.create_text("");
+  let _ = dom.append_child(url, url_text);
+
+  let _ = dom.append_child(text, title);
+  let _ = dom.append_child(text, url);
+
+  let _ = dom.append_child(row, icon);
+  let _ = dom.append_child(row, text);
+
+  let _ = dom.append_child(popup, row);
+
+  dom.get_element_by_id(&row_id).is_some()
+    && dom.get_element_by_id(&title_id).is_some()
+    && dom.get_element_by_id(&url_id).is_some()
+}
+
 fn compute_state_signature(app: &BrowserAppState) -> u64 {
   let mut hasher = DefaultHasher::new();
   app.active_tab_id().hash(&mut hasher);
@@ -518,9 +938,10 @@ fn compute_tab_insertion_index(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::ui::BrowserTabState;
   use crate::ui::chrome_assets::ChromeAssetsFetcher;
   use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+  use crate::ui::CursorKind;
+  use crate::ui::BrowserTabState;
   use crate::ui::CursorKind;
   use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
@@ -552,7 +973,9 @@ mod tests {
       false,
     );
 
-    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(ChromeAssetsFetcher::new())));
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(
+      ChromeAssetsFetcher::new(),
+    )));
     let renderer = FastRender::builder()
       .font_sources(FontConfig::bundled_only())
       .fetcher(fetcher)
@@ -627,13 +1050,19 @@ mod tests {
       "expected wants_ticks to be true after first render for document containing @keyframes"
     );
 
-    assert!(chrome.tick(Some(0.0)), "tick(Some) should request a repaint");
+    assert!(
+      chrome.tick(Some(0.0)),
+      "tick(Some) should request a repaint"
+    );
     let first = chrome
       .render_if_needed()?
       .expect("expected repaint after tick(Some(0.0))");
     let first_hash = pixmap_hash(&first);
 
-    assert!(chrome.tick(Some(500.0)), "tick(Some) should request a repaint");
+    assert!(
+      chrome.tick(Some(500.0)),
+      "tick(Some) should request a repaint"
+    );
     let second = chrome
       .render_if_needed()?
       .expect("expected repaint after tick(Some(500.0))");
@@ -719,7 +1148,9 @@ mod tests {
       source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
     }];
 
-    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(ChromeAssetsFetcher::new())));
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(
+      ChromeAssetsFetcher::new(),
+    )));
     let renderer = FastRender::builder()
       .font_sources(FontConfig::bundled_only())
       .fetcher(fetcher)
@@ -735,7 +1166,10 @@ mod tests {
       .dom()
       .get_element_by_id("omnibox-suggestion-0")
       .expect("suggestion node");
-    let rect = chrome.doc.bounding_client_rect(node).expect("suggestion rect");
+    let rect = chrome
+      .doc
+      .bounding_client_rect(node)
+      .expect("suggestion rect");
     let pos = rect.center();
 
     chrome.pointer_down(PointerButton::Primary, (pos.x, pos.y));
@@ -747,6 +1181,154 @@ mod tests {
         ChromeFrameOutput::ActionUrl(ChromeActionUrl::Navigate { url }) if url == "https://example.com/"
       )),
       "expected clicking suggestion to emit Navigate action url, got: {outputs:?}"
+    );
+  }
+
+  fn text_child_contents(dom: &crate::dom2::Document, element_id: &str) -> String {
+    let node = dom.get_element_by_id(element_id).expect("expected element");
+    dom
+      .node(node)
+      .children
+      .iter()
+      .copied()
+      .find_map(|child| {
+        let child_node = dom.node(child);
+        if child_node.parent != Some(node) {
+          return None;
+        }
+        match &child_node.kind {
+          crate::dom2::NodeKind::Text { content } => Some(content.clone()),
+          _ => None,
+        }
+      })
+      .unwrap_or_default()
+  }
+
+  #[test]
+  fn chrome_frame_sync_state_updates_address_bar_without_reset() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(
+      ChromeAssetsFetcher::new(),
+    )));
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new_with_renderer(renderer, (600, 64), 1.0).expect("create chrome doc");
+
+    assert!(
+      chrome.sync_state(&app).expect("sync state"),
+      "expected first sync_state call to rebuild the chrome document"
+    );
+
+    let node = chrome
+      .doc
+      .dom()
+      .get_element_by_id("address-bar")
+      .expect("address bar input");
+
+    app.chrome.address_bar_text = "hello world".to_string();
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected address-bar update to avoid full reset"
+    );
+
+    let node2 = chrome
+      .doc
+      .dom()
+      .get_element_by_id("address-bar")
+      .expect("address bar input");
+    assert_eq!(node, node2, "expected address-bar node id to be stable");
+
+    let value = chrome
+      .doc
+      .dom()
+      .get_attribute(node, "value")
+      .expect("get value attribute");
+    assert_eq!(value, Some("hello world"));
+  }
+
+  #[test]
+  fn chrome_frame_sync_state_updates_omnibox_without_reset_and_reuses_nodes() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    app.chrome.omnibox.open = true;
+    app.chrome.omnibox.selected = Some(0);
+    app.chrome.omnibox.suggestions = vec![OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: Some("Example".to_string()),
+      url: Some("https://example.com/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    }];
+
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(
+      ChromeAssetsFetcher::new(),
+    )));
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new_with_renderer(renderer, (600, 320), 1.0).expect("create chrome doc");
+
+    assert!(
+      chrome.sync_state(&app).expect("sync state"),
+      "expected first sync_state call to rebuild the chrome document"
+    );
+
+    let row = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion row");
+
+    app.chrome.omnibox.suggestions[0].title = Some("Updated".to_string());
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected omnibox updates to avoid full reset"
+    );
+    let row2 = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion row");
+    assert_eq!(row, row2, "expected suggestion row node id to be stable");
+
+    let title = text_child_contents(chrome.doc.dom(), "omnibox-title-0");
+    assert_eq!(title, "Updated");
+
+    // Close then reopen omnibox; rows should remain available for reuse.
+    app.chrome.omnibox.open = false;
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected omnibox close to avoid reset"
+    );
+    let row_closed = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion row");
+    assert_eq!(
+      row, row_closed,
+      "expected suggestion row node id to remain stable while omnibox is hidden"
+    );
+
+    app.chrome.omnibox.open = true;
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected omnibox reopen to avoid reset"
+    );
+    let row_open = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion row");
+    assert_eq!(
+      row, row_open,
+      "expected suggestion row node id to be reused"
     );
   }
 

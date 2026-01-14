@@ -37,21 +37,19 @@ fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static s
 
 fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl => suggestion.url.as_ref().map(|url| {
-      ChromeActionUrl::Navigate { url: url.clone() }.to_url_string()
-    }),
+    OmniboxAction::NavigateToUrl => suggestion
+      .url
+      .as_ref()
+      .map(|url| ChromeActionUrl::Navigate { url: url.clone() }.to_url_string()),
     // `chrome-action:navigate` is handled like a typed navigation; passing the raw query preserves
     // the same behaviour as pressing Enter in the address bar (search-vs-url resolution happens in
     // the action handler).
-    OmniboxAction::Search(query) => Some(
-      ChromeActionUrl::Navigate {
-        url: query.clone(),
-      }
-      .to_url_string(),
-    ),
-    OmniboxAction::ActivateTab(tab_id) => Some(
-      ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string(),
-    ),
+    OmniboxAction::Search(query) => {
+      Some(ChromeActionUrl::Navigate { url: query.clone() }.to_url_string())
+    }
+    OmniboxAction::ActivateTab(tab_id) => {
+      Some(ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string())
+    }
   }
 }
 
@@ -122,14 +120,21 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
     let posinset = idx + 1;
     write!(
       out,
-      "        <a id=\"{row_id}\" class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" aria-posinset=\"{posinset}\" aria-setsize=\"{setsize}\" href=\"{safe_href}\"><span class=\"omnibox-icon\" aria-hidden=\"true\"></span><span class=\"omnibox-text\"><span class=\"omnibox-title\">{safe_title}</span>"
+      "        <a id=\"{row_id}\" class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" aria-posinset=\"{posinset}\" aria-setsize=\"{setsize}\" href=\"{safe_href}\"><span class=\"omnibox-icon\" aria-hidden=\"true\"></span><span class=\"omnibox-text\"><span id=\"omnibox-title-{idx}\" class=\"omnibox-title\">{safe_title}</span>"
     )
     .expect("write omnibox suggestion row"); // fastrender-allow-unwrap
 
-    if let Some(url) = secondary {
-      let safe_url = escape_html(url);
-      write!(out, "<span class=\"omnibox-url\">{safe_url}</span>").expect("write omnibox url"); // fastrender-allow-unwrap
+    out.push_str("<span id=\"omnibox-url-");
+    let _ = write!(out, "{idx}");
+    out.push_str("\" class=\"omnibox-url\"");
+    if secondary.is_none() {
+      out.push_str(" hidden");
     }
+    out.push('>');
+    if let Some(url) = secondary {
+      out.push_str(&escape_html(url));
+    }
+    out.push_str("</span>");
 
     out.push_str("</span></a>\n");
   }
@@ -163,9 +168,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("<head>\n");
   out.push_str("  <meta charset=\"utf-8\">\n");
   out.push_str("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-  out.push_str("  <style>\n");
+  out.push_str("  <style id=\"chrome-theme\">");
   out.push_str(&chrome_theme_css(&app.appearance));
-  out.push_str("  </style>\n");
+  out.push_str("</style>\n");
   out.push_str("  <link rel=\"stylesheet\" href=\"chrome://styles/chrome.css\">\n");
   out.push_str("</head>\n");
   out.push_str("<body>\n");
@@ -194,7 +199,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("\">\n");
 
     // "Activate tab" link.
-    out.push_str("        <a class=\"tab-activate\" role=\"tab\" aria-selected=\"");
+    out.push_str("        <a id=\"tab-activate-");
+    out.push_str(&tab_id);
+    out.push_str("\" class=\"tab-activate\" role=\"tab\" aria-selected=\"");
     out.push_str(aria_selected);
     write!(
       out,
@@ -206,7 +213,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("<img class=\"tab-favicon\" src=\"");
     out.push_str(&favicon_url);
     out.push_str("\" alt=\"\" />");
-    out.push_str("<span class=\"tab-title\">");
+    out.push_str("<span id=\"tab-title-");
+    out.push_str(&tab_id);
+    out.push_str("\" class=\"tab-title\">");
     out.push_str(&title);
     out.push_str("</span>");
     out.push_str("</a>\n");
@@ -368,8 +377,8 @@ mod tests {
   use super::chrome_frame_html_from_state;
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::messages::TabId;
-  use crate::ui::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::ui::theme_parsing::BrowserTheme;
+  use crate::ui::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::{BrowserDocument, FastRender, FontConfig, RenderOptions};
 
   #[test]
@@ -394,8 +403,8 @@ mod tests {
     let html = chrome_frame_html_from_state(&app);
 
     // One `.tab` element per tab.
-    let tab_count =
-      html.matches("<div class=\"tab\"").count() + html.matches("<div class=\"tab active\"").count();
+    let tab_count = html.matches("<div class=\"tab\"").count()
+      + html.matches("<div class=\"tab active\"").count();
     assert_eq!(tab_count, 3);
 
     // Active tab marker is present.
@@ -539,10 +548,7 @@ mod tests {
 
     let expected_href_1 = format!(
       r#"href="{}""#,
-      crate::ui::ChromeActionUrl::ActivateTab {
-        tab_id: TabId(42),
-      }
-      .to_url_string()
+      crate::ui::ChromeActionUrl::ActivateTab { tab_id: TabId(42) }.to_url_string()
     );
     assert!(
       html.contains(&expected_href_1),

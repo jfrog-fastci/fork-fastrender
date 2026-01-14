@@ -4,17 +4,18 @@
 //! FastRender itself.
 
 pub mod context_menu;
+pub mod dialog;
 pub mod document;
 pub mod dom_mutation;
+pub mod dom_mutation_dom2;
+pub mod geometry;
 pub mod modal_dialog;
 pub mod state_to_html;
 pub mod status_bar;
-pub mod dialog;
 pub mod ids;
 pub mod event;
 pub mod runtime;
 mod theme;
-pub mod geometry;
 
 pub use document::{ChromeFrameDocument, ChromeFrameOutput};
 pub use state_to_html::chrome_frame_html_from_state;
