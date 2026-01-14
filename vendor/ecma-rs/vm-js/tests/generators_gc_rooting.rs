@@ -574,3 +574,41 @@ fn generator_resume_roots_object_literal_after_prop_value_yield() {
     "expected generator resumption to trigger at least one GC cycle"
   );
 }
+
+#[test]
+fn generator_resume_roots_object_destructuring_computed_key_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          var x;
+          ({{ [(yield 1)]: x }} = {{ 0: 42 }});
+          return x;
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(0);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 42 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
