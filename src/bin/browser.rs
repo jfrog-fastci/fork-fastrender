@@ -14103,7 +14103,7 @@ impl App {
       tab.cursor = fastrender::ui::CursorKind::Default;
     }
 
-    self.send_worker_msg(UiToWorker::Navigate {
+    let _ = self.send_worker_msg(UiToWorker::Navigate {
       tab_id,
       url,
       reason: NavigationReason::TypedUrl,
