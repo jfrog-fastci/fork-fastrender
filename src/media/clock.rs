@@ -498,6 +498,14 @@ impl PlaybackClock {
   pub fn now(&self) -> Duration {
     Duration::from_nanos(self.compute_now_nanos())
   }
+
+  pub fn state(&self) -> PlaybackState {
+    if self.playing.load(Ordering::Relaxed) {
+      PlaybackState::Playing
+    } else {
+      PlaybackState::Paused
+    }
+  }
 }
 
 impl MediaClock for PlaybackClock {
@@ -530,7 +538,6 @@ fn scale_nanos(nanos: u64, rate: f64) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
 
   #[derive(Debug, Default)]
   struct FakeDeviceClock {

@@ -2284,7 +2284,6 @@ fn compute_scroll_metrics(
     ),
   }
 }
-
 #[cfg(feature = "browser_ui")]
 fn build_page_accesskit_subtree_for_tab(
   tab_id: TabId,
@@ -13138,11 +13137,9 @@ impl BrowserRuntime {
     tab.loading = false;
     tab.pending_history_entry = false;
     tab.history.mark_committed();
-
     let page_accessibility = tab.document.as_ref().and_then(|doc| {
       compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
     });
-
     let actual_dpr = tab
       .document
       .as_ref()

@@ -364,6 +364,7 @@ mod tests {
 
   use super::*;
   use crate::debug::trace::TraceHandle;
+  use crate::media::audio::AudioBackend;
   use crate::media::audio::test_signal;
 
   #[test]
