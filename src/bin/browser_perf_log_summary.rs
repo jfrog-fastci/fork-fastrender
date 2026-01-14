@@ -172,6 +172,7 @@ struct Samples {
   upload_last_ms: Vec<f64>,
   coalesced_frames: Vec<f64>,
   cpu_percent: Vec<f64>,
+  idle_fps: Vec<f64>,
   rss_bytes: Vec<u64>,
 }
 
@@ -188,6 +189,7 @@ struct Summary {
   upload_last_ms: TimeStats,
   coalesced_frames: ScalarStats,
   cpu_percent: ScalarStats,
+  idle_fps: ScalarStats,
   rss_bytes: RssStats,
   rss_mb: ScalarStats,
 }
@@ -358,6 +360,14 @@ fn print_table(summary: &Summary) {
   );
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "idle_fps",
+    summary.idle_fps.count,
+    fmt_opt_f64(summary.idle_fps.min, 2),
+    fmt_opt_f64(summary.idle_fps.mean, 2),
+    fmt_opt_f64(summary.idle_fps.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
     "rss_bytes",
     summary.rss_bytes.count,
     fmt_opt_u64(summary.rss_bytes.min),
@@ -502,6 +512,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.cpu_percent.push(cpu);
               }
             }
+            BrowserPerfLogEventV2::IdleSample { idle_fps, .. } => {
+              if let Some(fps) = idle_fps.filter(|v| v.is_finite()) {
+                samples.idle_fps.push(f64::from(fps));
+              }
+            }
             BrowserPerfLogEventV2::FrameUpload {
               upload_last_ms,
               upload_total_ms,
@@ -523,7 +538,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.rss_bytes.push(rss);
               }
             }
-            BrowserPerfLogEventV2::IdleSample { .. } | BrowserPerfLogEventV2::Unknown => {
+            BrowserPerfLogEventV2::Unknown => {
               unknown_events = unknown_events.saturating_add(1);
             }
           },
@@ -612,6 +627,7 @@ fn run(cli: Cli) -> Result<(), String> {
     upload_last_ms: time_stats(&mut samples.upload_last_ms),
     coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
     cpu_percent: scalar_stats(&mut samples.cpu_percent),
+    idle_fps: scalar_stats(&mut samples.idle_fps),
     rss_bytes,
     rss_mb,
   };
