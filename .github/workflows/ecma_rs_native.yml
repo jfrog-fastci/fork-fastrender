@@ -96,6 +96,14 @@ jobs:
           # `js_test262` workflow (which executes `test262-semantic` via `cargo run --release`).
           timeout -k 10 1800 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --release --lib --tests
 
+      - name: vm-js generator/yield integration smoke tests
+        env:
+          # Keep cargo_agent locks within the ecma-rs workspace target dir.
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          bash scripts/run_vm_js_generator_yield_tests.sh
+
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
     runs-on: ubuntu-latest
