@@ -15193,6 +15193,8 @@ enum ForTripleAwaitStage {
   AwaitInitExpr,
   /// Awaiting `x = await <expr>` in the init position.
   AwaitInitAssign,
+  /// Awaiting `({ ... } = await <expr>)` / `[ ... ] = await <expr>` in the init position.
+  AwaitInitDestructuringAssign,
   Test,
   AwaitTest,
   Body,
@@ -15201,6 +15203,8 @@ enum ForTripleAwaitStage {
   AwaitUpdateExpr,
   /// Awaiting `x = await <expr>` in the update position.
   AwaitUpdateAssign,
+  /// Awaiting `({ ... } = await <expr>)` / `[ ... ] = await <expr>` in the update position.
+  AwaitUpdateDestructuringAssign,
 }
 
 #[derive(Debug)]
@@ -15248,6 +15252,7 @@ struct ForTripleAwaitState {
   iter_env: Option<GcEnv>,
   v_root: Option<RootId>,
   pending_assign: Option<PendingAssignment>,
+  pending_destructuring_pat: Option<hir_js::PatId>,
   stage: ForTripleAwaitStage,
 }
 
@@ -15288,6 +15293,7 @@ impl ForTripleAwaitState {
       iter_env: None,
       v_root: None,
       pending_assign: None,
+      pending_destructuring_pat: None,
       stage: ForTripleAwaitStage::Init,
     })
   }
@@ -15302,6 +15308,7 @@ impl ForTripleAwaitState {
       pending.teardown(heap);
     }
     self.pending_assign = None;
+    self.pending_destructuring_pat = None;
   }
 
   fn teardown(&mut self, heap: &mut crate::Heap) {
@@ -15450,6 +15457,30 @@ impl ForTripleAwaitState {
                           // Budget once for the init expression itself. We'll only budget the `await`
                           // node when we actually evaluate it (logical assignment can short-circuit).
                           evaluator.vm.tick()?;
+
+                          let target_is_plain_assignment_target = {
+                            let pat = evaluator.get_pat(body, *target)?;
+                            matches!(
+                              pat.kind,
+                              hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+                            )
+                          };
+
+                          if *op == hir_js::AssignOp::Assign && !target_is_plain_assignment_target {
+                            // Destructuring assignment targets evaluate the RHS first. Suspend on the
+                            // direct-`await` boundary and complete the pattern assignment after resumption.
+                            //
+                            // Note: `await` in the pattern itself is not supported by this state machine.
+                            evaluator.vm.tick()?;
+                            let await_value = evaluator.eval_expr(scope, body, *awaited_expr)?;
+                            self.pending_destructuring_pat = Some(*target);
+                            self.stage = ForTripleAwaitStage::AwaitInitDestructuringAssign;
+                            return Ok(ForTripleAwaitPoll::Await {
+                              kind: crate::exec::AsyncSuspendKind::Await,
+                              await_value,
+                              await_offset: rhs.span.start,
+                            });
+                          }
 
                           let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
 
@@ -15669,6 +15700,31 @@ impl ForTripleAwaitState {
             continue;
           }
 
+          ForTripleAwaitStage::AwaitInitDestructuringAssign => {
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "for-triple init destructuring assignment await missing resume value",
+              ));
+            };
+
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                self.restore_outer_lex(evaluator, scope);
+                self.cleanup_roots(scope.heap_mut());
+                return Err(err);
+              }
+            };
+
+            let pat_id = self.pending_destructuring_pat.take().ok_or(VmError::InvariantViolation(
+              "missing pending init destructuring assignment pattern id",
+            ))?;
+            evaluator.assign_pattern(scope, body, pat_id, resumed_value)?;
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+          }
+
           ForTripleAwaitStage::Test => {
             if resume_value.is_some() {
               return Err(VmError::InvariantViolation(
@@ -15860,6 +15916,30 @@ impl ForTripleAwaitState {
                       // Budget once for the update expression itself. We'll only budget the `await`
                       // node when we actually evaluate it (logical assignment can short-circuit).
                       evaluator.vm.tick()?;
+
+                      let target_is_plain_assignment_target = {
+                        let pat = evaluator.get_pat(body, *target)?;
+                        matches!(
+                          pat.kind,
+                          hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+                        )
+                      };
+
+                      if *op == hir_js::AssignOp::Assign && !target_is_plain_assignment_target {
+                        // Destructuring assignment targets evaluate the RHS first. Suspend on the
+                        // direct-`await` boundary and complete the pattern assignment after resumption.
+                        //
+                        // Note: `await` in the pattern itself is not supported by this state machine.
+                        evaluator.vm.tick()?;
+                        let await_value = evaluator.eval_expr(scope, body, *awaited_expr)?;
+                        self.pending_destructuring_pat = Some(*target);
+                        self.stage = ForTripleAwaitStage::AwaitUpdateDestructuringAssign;
+                        return Ok(ForTripleAwaitPoll::Await {
+                          kind: crate::exec::AsyncSuspendKind::Await,
+                          await_value,
+                          await_offset: rhs.span.start,
+                        });
+                      }
 
                       let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
 
@@ -16066,6 +16146,31 @@ impl ForTripleAwaitState {
                 return Err(err);
               }
             }
+
+            self.stage = ForTripleAwaitStage::Test;
+            continue;
+          }
+
+          ForTripleAwaitStage::AwaitUpdateDestructuringAssign => {
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "for-triple update destructuring assignment await missing resume value",
+              ));
+            };
+
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                self.restore_outer_lex(evaluator, scope);
+                self.cleanup_roots(scope.heap_mut());
+                return Err(err);
+              }
+            };
+
+            let pat_id = self.pending_destructuring_pat.take().ok_or(VmError::InvariantViolation(
+              "missing pending update destructuring assignment pattern id",
+            ))?;
+            evaluator.assign_pattern(scope, body, pat_id, resumed_value)?;
 
             self.stage = ForTripleAwaitStage::Test;
             continue;

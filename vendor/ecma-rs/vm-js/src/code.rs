@@ -804,7 +804,9 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     if expr_is_direct_await_without_nested_await(expr) {
       return true;
     }
-    allow_assignment && expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+    allow_assignment
+      && (expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+        || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr))
   }
 
   fn for_triple_contains_unsupported_await_for_hir_async_scripts(for_stmt: &Node<ForTripleStmt>) -> bool {
@@ -860,11 +862,11 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `throw await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for (init; test; update) { ... }` loops where the head may contain direct `await` (and
-    //   assignments with direct `await <expr>` RHS) in the init/test/update positions, and the loop
-    //   body contains no other `await`
+    //   assignments with direct `await <expr>` RHS, including destructuring assignments) in the
+    //   init/test/update positions, and the loop body contains no other `await`
     // - `for await (<head> of <rhs>) { ... }` where:
-    //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
-    //     nested `await` inside `<expr>`, and
+      //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
+      //     nested `await` inside `<expr>`, and
     //   - the loop head + body contain no other `await`
     //
     // Any other `await` / `for await..of` form must fall back to the AST interpreter.
@@ -1165,7 +1167,8 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     }
     allow_assignment
       && (expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
-        || expr_is_logical_assignment_with_direct_await_rhs_without_nested_await(expr))
+        || expr_is_logical_assignment_with_direct_await_rhs_without_nested_await(expr)
+        || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr))
   }
 
   fn for_triple_stmt_supported(for_stmt: &Node<ForTripleStmt>) -> bool {

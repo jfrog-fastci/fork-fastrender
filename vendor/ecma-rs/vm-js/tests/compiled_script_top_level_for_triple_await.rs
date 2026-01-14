@@ -69,6 +69,61 @@ fn compiled_script_top_level_for_triple_await_in_init_suspends_and_resumes() -> 
 }
 
 #[test]
+fn compiled_script_top_level_for_triple_await_in_init_destructuring_assignment_suspends_and_resumes(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var x = 0;
+      for (({ x } = await Promise.resolve({ x: 1 })); x < 3; x++) {
+        log.push(x);
+      }
+      log.push("done");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in for-loop init destructuring assignment should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "supported top-level await scripts should not trigger the general compiled-script AST fallback"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The init destructuring assignment after `await` should not have executed yet.
+  assert_eq!(rt.exec_script("x")?, Value::Number(0.0));
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "1,2,done");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_for_triple_logical_assignment_in_init_roots_lhs_reference_across_gc(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -228,6 +283,56 @@ fn compiled_script_top_level_for_triple_await_in_update_suspends_and_resumes() -
   assert!(
     !script.top_level_await_requires_ast_fallback,
     "top-level await in for-loop update should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The first loop iteration runs synchronously before we suspend at the update `await`.
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "0");
+  assert_eq!(rt.exec_script("x")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "0,1,2");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_for_triple_await_in_update_destructuring_assignment_suspends_and_resumes(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var x = 0;
+      for (; x < 3; ([x] = await Promise.resolve([x + 1]))) {
+        log.push(x);
+      }
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in for-loop update destructuring assignment should be supported by the HIR async classic-script executor"
   );
 
   let result = rt.exec_compiled_script(script)?;
