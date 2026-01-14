@@ -333,6 +333,60 @@ fn text_spacing_trim_normal_collapses_adjacent_punctuation_opening_after_closing
 }
 
 #[test]
+fn text_spacing_trim_normal_adjacent_pairs_respects_font_size_for_opening_after_closing() {
+  // CSS Text 4: an opening punctuation following a closing punctuation should only be trimmed when
+  // the closing punctuation is an equivalent or larger font size.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span style=\"font-size: 30px\">」</span><span style=\"font-size: 20px\">「</span><span>H</span>",
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    "<span style=\"font-size: 30px\">」</span><span style=\"font-size: 20px\">「</span><span>H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+  let normal_span_x = inline_x_in_line_containing_text(&normal[0], "「").expect("span x (normal)");
+
+  assert!(
+    normal_open_x < space_open_x - 0.1,
+    "expected normal to trim opening punctuation when preceded by a larger closing punctuation (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+  assert!(
+    normal_open_x < normal_span_x - 0.1,
+    "expected the opening punctuation to be shifted relative to its span (span x={normal_span_x:.3} punct x={normal_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_normal_trims_closing_before_larger_opening_punctuation() {
+  // CSS Text 4: a closing punctuation should be trimmed when followed by a larger opening
+  // punctuation.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span style=\"font-size: 20px\">」</span><span style=\"font-size: 30px\">「</span><span>H</span>",
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    "<span style=\"font-size: 20px\">」</span><span style=\"font-size: 30px\">「</span><span>H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+  let normal_span_x = inline_x_in_line_containing_text(&normal[0], "「").expect("span x (normal)");
+
+  assert!(
+    normal_open_x < space_open_x - 0.1,
+    "expected normal to trim the preceding closing punctuation (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+  assert!(
+    (normal_open_x - normal_span_x).abs() < 0.01,
+    "expected the opening punctuation itself not to be shifted relative to its span (span x={normal_span_x:.3} punct x={normal_open_x:.3})"
+  );
+}
+
+#[test]
 fn text_spacing_trim_normal_collapses_adjacent_punctuation_closing_before_closing() {
   // Adjacent-pairs collapsing: in `normal`, a closing punctuation that precedes another closing
   // punctuation should be trimmed to half-width.

@@ -8233,14 +8233,14 @@ impl InlineFormattingContext {
         }
       }
 
-      fn first_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim)> {
+      fn first_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32)> {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker {
               return None;
             }
             let ch = t.text.chars().next()?;
-            Some((ch, t.style.text_spacing_trim))
+            Some((ch, t.style.text_spacing_trim, t.style.font_size))
           }
           InlineItem::InlineBox(b) => {
             for child in &b.children {
@@ -8257,14 +8257,14 @@ impl InlineFormattingContext {
         }
       }
 
-      fn last_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim)> {
+      fn last_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32)> {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker {
               return None;
             }
             let ch = t.text.chars().next_back()?;
-            Some((ch, t.style.text_spacing_trim))
+            Some((ch, t.style.text_spacing_trim, t.style.font_size))
           }
           InlineItem::InlineBox(b) => {
             for child in b.children.iter().rev() {
@@ -8491,19 +8491,47 @@ impl InlineFormattingContext {
           !matches!(trim, TextSpacingTrim::SpaceAll | TextSpacingTrim::TrimAll)
         }
 
-        fn prev_allows_opening_trim(ch: char) -> bool {
-          ch == '\u{3000}'
-            || is_fullwidth_opening_punctuation(ch)
-            || is_fullwidth_closing_punctuation(ch)
-            || is_fullwidth_middle_dot_punctuation(ch)
-            || matches!(get_general_category(ch), GeneralCategory::OpenPunctuation)
+        fn prev_allows_opening_trim(
+          prev_ch: char,
+          prev_font_size: f32,
+          curr_font_size: f32,
+        ) -> bool {
+          if prev_ch == '\u{3000}'
+            || is_fullwidth_opening_punctuation(prev_ch)
+            || is_fullwidth_middle_dot_punctuation(prev_ch)
+            || matches!(get_general_category(prev_ch), GeneralCategory::OpenPunctuation)
+          {
+            return true;
+          }
+
+          // CSS Text 4: only trim opening punctuation after closing punctuation of an equivalent or
+          // larger font size.
+          if is_fullwidth_closing_punctuation(prev_ch) {
+            return prev_font_size >= curr_font_size - 0.01;
+          }
+
+          false
         }
 
-        fn next_allows_closing_trim(ch: char) -> bool {
-          ch == '\u{3000}'
-            || is_fullwidth_closing_punctuation(ch)
-            || is_fullwidth_middle_dot_punctuation(ch)
-            || matches!(get_general_category(ch), GeneralCategory::ClosePunctuation)
+        fn next_allows_closing_trim(
+          next_ch: char,
+          prev_font_size: f32,
+          next_font_size: f32,
+        ) -> bool {
+          if next_ch == '\u{3000}'
+            || is_fullwidth_closing_punctuation(next_ch)
+            || is_fullwidth_middle_dot_punctuation(next_ch)
+            || matches!(get_general_category(next_ch), GeneralCategory::ClosePunctuation)
+          {
+            return true;
+          }
+
+          // CSS Text 4: trim closing punctuation before a larger fullwidth opening punctuation.
+          if is_fullwidth_opening_punctuation(next_ch) {
+            return next_font_size > prev_font_size + 0.01;
+          }
+
+          false
         }
 
         // Adjacent-pairs trimming (minimal): only collapses punctuation spacing across inline item
@@ -8520,10 +8548,14 @@ impl InlineFormattingContext {
 
           let prev_info = last_char_and_trim(&items[prev_idx].item);
           let curr_info = first_char_and_trim(&items[idx].item);
-          if let (Some((prev_ch, prev_trim)), Some((curr_ch, curr_trim))) = (prev_info, curr_info) {
+          if let (
+            Some((prev_ch, prev_trim, prev_font_size)),
+            Some((curr_ch, curr_trim, curr_font_size)),
+          ) = (prev_info, curr_info)
+          {
             if is_fullwidth_opening_punctuation(curr_ch)
               && allows_adjacent_pairs(curr_trim)
-              && prev_allows_opening_trim(prev_ch)
+              && prev_allows_opening_trim(prev_ch, prev_font_size, curr_font_size)
             {
               if let Some((hang, _)) = opening_punct_hang_and_trim(&items[idx].item) {
                 if let Some(positioned) = items.get_mut(idx) {
@@ -8534,7 +8566,7 @@ impl InlineFormattingContext {
 
             if is_fullwidth_closing_punctuation(prev_ch)
               && allows_adjacent_pairs(prev_trim)
-              && next_allows_closing_trim(curr_ch)
+              && next_allows_closing_trim(curr_ch, prev_font_size, curr_font_size)
             {
               if let Some((hang, _)) = closing_punct_hang_and_trim(&items[prev_idx].item) {
                 if let Some(positioned) = items.get_mut(prev_idx) {
@@ -8616,10 +8648,14 @@ impl InlineFormattingContext {
 
             let prev_info = last_char_and_trim(&children[prev_idx]);
             let curr_info = first_char_and_trim(&children[idx]);
-            if let (Some((prev_ch, prev_trim)), Some((curr_ch, curr_trim))) = (prev_info, curr_info) {
+            if let (
+              Some((prev_ch, prev_trim, prev_font_size)),
+              Some((curr_ch, curr_trim, curr_font_size)),
+            ) = (prev_info, curr_info)
+            {
               if is_fullwidth_opening_punctuation(curr_ch)
                 && allows_adjacent_pairs(curr_trim)
-                && prev_allows_opening_trim(prev_ch)
+                && prev_allows_opening_trim(prev_ch, prev_font_size, curr_font_size)
               {
                 if let Some((hang, _)) = opening_punct_hang_and_trim(&children[idx]) {
                   apply_opening_punct_hang(&mut children[idx], hang, rtl);
@@ -8628,7 +8664,7 @@ impl InlineFormattingContext {
 
               if is_fullwidth_closing_punctuation(prev_ch)
                 && allows_adjacent_pairs(prev_trim)
-                && next_allows_closing_trim(curr_ch)
+                && next_allows_closing_trim(curr_ch, prev_font_size, curr_font_size)
               {
                 if let Some((hang, _)) = closing_punct_hang_and_trim(&children[prev_idx]) {
                   apply_closing_punct_hang(&mut children[prev_idx], hang);
