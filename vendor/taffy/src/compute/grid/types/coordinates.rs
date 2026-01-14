@@ -69,6 +69,29 @@ mod tests {
     };
     assert_eq!(span.span(), 33_767);
   }
+
+  #[test]
+  fn origin_zero_line_add_and_sub_saturate_instead_of_wrapping() {
+    // Regression: `OriginZeroLine + OriginZeroLine` previously used i16 arithmetic which can wrap
+    // in release builds (or panic in debug builds). Ensure we saturate into the representable range
+    // instead.
+    assert_eq!(
+      OriginZeroLine(i16::MAX) + OriginZeroLine(1),
+      OriginZeroLine(i16::MAX)
+    );
+    assert_eq!(
+      OriginZeroLine(i16::MIN) + OriginZeroLine(-1),
+      OriginZeroLine(i16::MIN)
+    );
+    assert_eq!(
+      OriginZeroLine(i16::MIN) - OriginZeroLine(1),
+      OriginZeroLine(i16::MIN)
+    );
+    assert_eq!(
+      OriginZeroLine(i16::MAX) - OriginZeroLine(-1),
+      OriginZeroLine(i16::MAX)
+    );
+  }
 }
 
 /// Represents a grid line position in "OriginZero" coordinates
@@ -85,13 +108,19 @@ pub struct OriginZeroLine(pub i16);
 impl Add<OriginZeroLine> for OriginZeroLine {
   type Output = Self;
   fn add(self, rhs: OriginZeroLine) -> Self::Output {
-    OriginZeroLine(self.0 + rhs.0)
+    // Use i32 arithmetic to avoid i16 overflow on extreme coordinates. Saturate into the
+    // representable range instead of wrapping.
+    let sum = (self.0 as i32) + (rhs.0 as i32);
+    OriginZeroLine(sum.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
   }
 }
 impl Sub<OriginZeroLine> for OriginZeroLine {
   type Output = Self;
   fn sub(self, rhs: OriginZeroLine) -> Self::Output {
-    OriginZeroLine(self.0 - rhs.0)
+    // Use i32 arithmetic to avoid i16 overflow on extreme coordinates. Saturate into the
+    // representable range instead of wrapping.
+    let diff = (self.0 as i32) - (rhs.0 as i32);
+    OriginZeroLine(diff.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
   }
 }
 
