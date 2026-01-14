@@ -41,7 +41,9 @@ const MIN_PAGE_TEXTURE_BUCKET_PX: u32 = 1;
 const MAX_PAGE_TEXTURE_BUCKET_PX: u32 = 512;
 
 fn page_texture_bucket_px() -> u32 {
-  let Some(raw) = runtime_toggles().get(ENV_BROWSER_PAGE_TEXTURE_BUCKET_PX) else {
+  // `runtime_toggles()` returns an `Arc`, so we must keep it alive for the duration of the borrow.
+  let toggles = runtime_toggles();
+  let Some(raw) = toggles.get(ENV_BROWSER_PAGE_TEXTURE_BUCKET_PX) else {
     return DEFAULT_PAGE_TEXTURE_BUCKET_PX;
   };
   let raw = raw.trim();
