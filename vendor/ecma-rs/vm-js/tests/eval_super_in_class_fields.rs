@@ -54,6 +54,41 @@ fn direct_eval_allows_super_in_instance_field_initializer_compiled() {
 }
 
 #[test]
+fn direct_eval_allows_super_in_arrow_within_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 777;
+          y = (() => eval("super.x"))();
+        }
+        (new A()).y
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(777.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_within_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 777;
+        y = (() => eval("super.x"))();
+      }
+      (new A()).y
+    "#,
+  );
+  assert_eq!(value, Value::Number(777.0));
+}
+
+#[test]
 fn direct_eval_allows_super_set_in_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -285,6 +320,41 @@ fn direct_eval_allows_super_in_static_field_initializer_compiled() {
     "#,
   );
   assert_eq!(value, Value::Number(789.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_within_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static get x() { return this.marker; } }
+        class A extends B {
+          static marker = 888;
+          static y = (() => eval("super.x"))();
+        }
+        A.y
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(888.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_within_static_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { static get x() { return this.marker; } }
+      class A extends B {
+        static marker = 888;
+        static y = (() => eval("super.x"))();
+      }
+      A.y
+    "#,
+  );
+  assert_eq!(value, Value::Number(888.0));
 }
 
 #[test]
