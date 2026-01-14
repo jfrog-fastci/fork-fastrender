@@ -6754,19 +6754,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
-  let emit_run_end =
-    |frames_presented: u64, idle_frames: u64, input_events: u64, dropped_frames: Option<u64>| {
-      let Some(writer) = perf_log_writer.as_ref() else {
+  struct RunEndGuard {
+    start: std::time::Instant,
+    cpu_start_ms: Option<u64>,
+    writer: Option<
+      std::rc::Rc<
+        std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+      >,
+    >,
+    frames_presented: u64,
+    idle_frames: u64,
+    input_events: u64,
+    dropped_frames: Option<u64>,
+  }
+
+  impl Drop for RunEndGuard {
+    fn drop(&mut self) {
+      let Some(writer) = self.writer.as_ref() else {
         return;
       };
 
       let now = std::time::Instant::now();
       let t_ms = now
-        .saturating_duration_since(perf_log_start)
+        .saturating_duration_since(self.start)
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
 
-      let cpu_time_ms = match (perf_log_cpu_start_ms, perf_log::process_cpu_time_ms()) {
+      let cpu_time_ms = match (self.cpu_start_ms, perf_log::process_cpu_time_ms()) {
         (Some(start), Some(end)) => Some(end.saturating_sub(start)),
         _ => None,
       };
@@ -6775,20 +6789,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       let event = perf_log::PerfEvent::RunEnd {
         schema_version: perf_log::SCHEMA_VERSION,
         t_ms,
-        frames_presented,
-        idle_frames,
-        input_events,
-        dropped_frames,
+        frames_presented: self.frames_presented,
+        idle_frames: self.idle_frames,
+        input_events: self.input_events,
+        dropped_frames: self.dropped_frames,
         elapsed_ms: t_ms,
         cpu_time_ms,
         rss_bytes,
       };
 
+      // Best-effort: avoid panicking during shutdown if the writer is already borrowed.
       if let Ok(mut writer) = writer.try_borrow_mut() {
         writer.emit(&event);
         writer.flush();
       }
-    };
+    }
+  }
+
+  let mut _run_end_guard = RunEndGuard {
+    start: perf_log_start,
+    cpu_start_ms: perf_log_cpu_start_ms,
+    writer: perf_log_writer.clone(),
+    frames_presented: 0,
+    idle_frames: 0,
+    input_events: 0,
+    dropped_frames: None,
+  };
 
   // ---------------------------------------------------------------------------
   // Crash/unresponsive testing knobs (CLI/env)
@@ -6893,7 +6919,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
   // parsing) without opening a window or initialising wgpu.
   if cli.exit_immediately || std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
-    emit_run_end(0, 0, 0, None);
     return Ok(());
   }
 
@@ -6959,11 +6984,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   if cli.headless_crash_smoke
     || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_some()
   {
-    let res = run_headless_crash_smoke_mode(download_dir);
-    if res.is_ok() {
-      emit_run_end(0, 0, 0, None);
-    }
-    return res;
+    return run_headless_crash_smoke_mode(download_dir);
   }
   if cli.headless_download_smoke
     || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE").is_some()
@@ -6979,19 +7000,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .into(),
       );
     };
-    let res = run_headless_download_smoke_mode(download_dir, page_url);
-    if res.is_ok() {
-      emit_run_end(0, 0, 0, None);
-    }
-    return res;
+    return run_headless_download_smoke_mode(download_dir, page_url);
   }
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     if cli.js_enabled {
-      let res = run_headless_vmjs_smoke_mode();
-      if res.is_ok() {
-        emit_run_end(0, 0, 0, None);
-      }
-      return res;
+      return run_headless_vmjs_smoke_mode();
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
@@ -7004,7 +7017,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
 
-    let frames_presented = u64::from(perf_log_enabled);
     let res = run_headless_smoke_mode(
       startup_session,
       source,
@@ -7014,7 +7026,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       perf_log_writer.clone(),
     );
     if res.is_ok() {
-      emit_run_end(frames_presented, 0, 0, None);
+      // The headless smoke harness emits a single synthetic "frame" perf event.
+      _run_end_guard.frames_presented = u64::from(perf_log_enabled);
     }
     return res;
   }
