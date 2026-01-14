@@ -497,61 +497,6 @@ impl<'a> Parser<'a> {
     }
   }
 
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    let prev_arguments_allowed = self.arguments_allowed;
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init + 1;
-    // Class field initializers and static initialization blocks do not inherit an `arguments`
-    // binding from an enclosing non-arrow function.
-    self.arguments_allowed = 0;
-    let res = f(self);
-    self.arguments_allowed = prev_arguments_allowed;
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    res
-  }
-
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-
-    // Nested non-arrow functions provide their own `arguments` binding; allow references even
-    // within a disallowed class-init context.
-    //
-    // Note: parameter initializers are parsed before we enter the function body, so we can't rely
-    // solely on `with_arguments_bound_in_class_init` to clear the class-init disallow flag.
-    if self.arguments_allowed > 0 {
-      return Ok(());
-    }
-
-    let Some(string_value) = self.identifier_name_string_value(name) else {
-      // Identifier names should have already been validated by the lexer; treat this as a syntax
-      // error to avoid silently accepting malformed escape sequences.
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "`arguments` is not allowed in class field initializers or static initialization blocks",
-        ),
-        None,
-      ));
-    }
-
-    Ok(())
-  }
-
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,
     f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
