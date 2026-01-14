@@ -573,16 +573,6 @@ status = "xfail"
 reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
 
 [[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js"
-status = "xfail"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
-
-[[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-mid-iteration.js"
-status = "xfail"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
-
-[[expectations]]
 id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js"
 status = "xfail"
 reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
@@ -706,63 +696,8 @@ status = "xfail"
 reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
 
 [[expectations]]
-id = "language/statements/for/head-init-expr-check-empty-inc-empty-completion.js"
-status = "xfail"
-reason = "vm-js: for-loop completion value semantics are still incorrect."
-
-[[expectations]]
-id = "language/statements/for/head-init-var-check-empty-inc-empty-completion.js"
-status = "xfail"
-reason = "vm-js: for-loop completion value semantics are still incorrect."
-
-[[expectations]]
-id = "language/statements/for/tco-const-body.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls (PTC)."
-
-[[expectations]]
-id = "language/statements/for/tco-let-body.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls (PTC)."
-
-[[expectations]]
-id = "language/statements/for/tco-lhs-body.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls (PTC)."
-
-[[expectations]]
-id = "language/statements/for/tco-var-body.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls (PTC)."
-
-[[expectations]]
 glob = "language/statements/function/**"
 status = "pass"
-
-[[expectations]]
-id = "language/statements/function/S13.2.2_A17_T3.js"
-status = "xfail"
-reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
-
-[[expectations]]
-id = "language/statements/function/S13.2.2_A18_T1.js"
-status = "xfail"
-reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
-
-[[expectations]]
-id = "language/statements/function/S13.2.2_A18_T2.js"
-status = "xfail"
-reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
-
-[[expectations]]
-id = "language/statements/function/arguments-with-arguments-fn.js"
-status = "xfail"
-reason = "vm-js: function `arguments` binding semantics are still incomplete."
-
-[[expectations]]
-id = "language/statements/function/scope-paramsbody-var-open.js"
-status = "xfail"
-reason = "vm-js: function parameter/body scope semantics are still incomplete."
 
 [[expectations]]
 glob = "language/statements/async-function/**"
@@ -891,11 +826,6 @@ id = "language/statements/class/definition/setters-restricted-ids.js"
 status = "pass"
 
 [[expectations]]
-id = "language/statements/class/definition/methods-restricted-properties.js"
-status = "xfail"
-reason = "vm-js bug: restricted function properties (`caller`/`arguments`) are not handled correctly for class methods/accessors."
-
-[[expectations]]
 glob = "language/statements/class/definition/**"
 status = "pass"
 
@@ -1020,21 +950,6 @@ status = "pass"
 id = "language/statements/class/subclass/class-definition-null-proto-missing-return-override.js"
 status = "pass"
 
-[[expectations]]
-id = "language/statements/class/subclass/derived-class-return-override-catch-finally-arrow.js"
-status = "xfail"
-reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
-
-[[expectations]]
-id = "language/statements/class/subclass/derived-class-return-override-finally-super-arrow.js"
-status = "xfail"
-reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
-
-[[expectations]]
-id = "language/statements/class/subclass/derived-class-return-override-for-of-arrow.js"
-status = "xfail"
-reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
-
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
 glob = "language/statements/**/labelled-fn-stmt*.js"
@@ -1080,26 +995,6 @@ status = "pass"
 [[expectations]]
 glob = "language/statements/let/**"
 status = "pass"
-
-[[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js"
-status = "skip"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
-
-[[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-mid-iteration.js"
-status = "skip"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
-
-[[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js"
-status = "skip"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
-
-[[expectations]]
-id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-to-zero-mid-iteration.js"
-status = "skip"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
 
 [[expectations]]
 glob = "language/statements/for-of/**"
@@ -1284,52 +1179,12 @@ status = "xfail"
 reason = "vm-js: statement/function/class semantics are still incomplete; tracked via curated test262 progress."
 
 [[expectations]]
-id = "language/block-scope/shadowing/dynamic-lookup-from-closure.js"
-status = "xfail"
-reason = "vm-js: block-scope shadowing/dynamic lookup semantics are still incorrect for closure lookups."
-
-[[expectations]]
-id = "language/block-scope/shadowing/lookup-from-closure.js"
-status = "xfail"
-reason = "vm-js: block-scope shadowing/dynamic lookup semantics are still incorrect for closure lookups."
-
-[[expectations]]
 glob = "language/block-scope/**"
 status = "pass"
 
 [[expectations]]
 glob = "language/function-code/**"
 status = "pass"
-
-[[expectations]]
-id = "language/directive-prologue/10.1.1-14-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
-
-[[expectations]]
-id = "language/directive-prologue/10.1.1-30-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
-
-[[expectations]]
-id = "language/directive-prologue/10.1.1-5-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
-
-[[expectations]]
-id = "language/directive-prologue/10.1.1-8-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
-
-[[expectations]]
-id = "language/directive-prologue/14.1-4-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
-
-[[expectations]]
-id = "language/directive-prologue/14.1-5-s.js"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
 
 [[expectations]]
 glob = "language/directive-prologue/**"
@@ -1946,11 +1801,6 @@ glob = "built-ins/Array/prototype/findLast/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Array/prototype/findLast/return-abrupt-from-this-length.js"
-status = "xfail"
-reason = "vm-js: Array.prototype.findLast does not correctly propagate abrupt completion from LengthOfArrayLike."
-
-[[expectations]]
 id = "built-ins/Array/prototype/findLast/callbackfn-resize-arraybuffer.js"
 status = "skip"
 reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
@@ -2015,16 +1865,6 @@ glob = "built-ins/Array/prototype/toSpliced/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Array/prototype/toSpliced/frozen-this-value.js"
-status = "xfail"
-reason = "vm-js: Array.prototype.toSpliced is not fully correct for frozen array-likes."
-
-[[expectations]]
-id = "built-ins/Array/prototype/toSpliced/start-and-deleteCount-missing.js"
-status = "xfail"
-reason = "vm-js: Array.prototype.toSpliced zero-argument semantics are incorrect."
-
-[[expectations]]
 id = "built-ins/Array/prototype/toSpliced/length-exceeding-array-length-limit.js"
 status = "pass"
 
@@ -2060,21 +1900,6 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Array/prototype/slice/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Array/prototype/slice/coerced-start-end-grow.js"
-status = "xfail"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
-
-[[expectations]]
-id = "built-ins/Array/prototype/slice/coerced-start-end-shrink.js"
-status = "xfail"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
-
-[[expectations]]
-id = "built-ins/Array/prototype/slice/resizable-buffer.js"
-status = "xfail"
-reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js / TypedArray + BigInt64Array variants)."
 
 [[expectations]]
 id = "built-ins/Array/prototype/sort/comparefn-grow.js"
@@ -2562,11 +2387,6 @@ id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
-status = "xfail"
-reason = "vm-js: RegExp `v` flag UnicodeSets semantics are not yet fully implemented (String.prototype.matchAll integration)."
-
-[[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
 status = "pass"
 
@@ -2593,11 +2413,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
-status = "xfail"
-reason = "vm-js: RegExp `v` flag UnicodeSets semantics are not yet fully implemented (String.prototype.replace integration)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
@@ -2819,11 +2634,6 @@ id = "built-ins/Map/valid-keys.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Map/Symbol.species/return-value.js"
-status = "xfail"
-reason = "vm-js: Map[Symbol.species] getter semantics are incorrect."
-
-[[expectations]]
 glob = "built-ins/Set/prototype/union/**"
 status = "pass"
 
@@ -2854,11 +2664,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/Set/valid-values.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Set/Symbol.species/return-value.js"
-status = "xfail"
-reason = "vm-js: Set[Symbol.species] getter semantics are incorrect."
 
 # --- WeakMap / WeakSet (symbols-as-weakmap-keys) ---
 [[expectations]]
@@ -3049,11 +2854,6 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/JSON/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Math/round/S15.8.2.15_A7.js"
-status = "xfail"
-reason = "vm-js: Math.round edge case semantics are still incorrect."
 
 [[expectations]]
 glob = "built-ins/Math/**"
