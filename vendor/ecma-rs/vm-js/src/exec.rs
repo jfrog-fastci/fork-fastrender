@@ -10494,10 +10494,10 @@ impl<'a> Evaluator<'a> {
   fn eval_super_property_set(
     &mut self,
     scope: &mut Scope<'_>,
+    receiver: Value,
     key: PropertyKey,
     value: Value,
   ) -> Result<(), VmError> {
-    let this_value = self.this;
     let home_object = self.home_object.ok_or(VmError::InvariantViolation(
       "super property access missing [[HomeObject]]",
     ))?;
@@ -10510,7 +10510,7 @@ impl<'a> Evaluator<'a> {
       PropertyKey::String(s) => Value::String(s),
       PropertyKey::Symbol(s) => Value::Symbol(s),
     };
-    super_scope.push_roots(&[this_value, Value::Object(home_object), key_root, value])?;
+    super_scope.push_roots(&[receiver, Value::Object(home_object), key_root, value])?;
 
     let super_base = super_scope.get_prototype_of_with_host_and_hooks(
       self.vm,
@@ -10536,7 +10536,7 @@ impl<'a> Evaluator<'a> {
       super_base,
       key,
       value,
-      this_value,
+      receiver,
     )?;
 
     if ok {
@@ -13629,15 +13629,9 @@ impl<'a> Evaluator<'a> {
             if member.stx.right.starts_with('#') {
               return Err(VmError::Unimplemented("super private member access"));
             }
-            // Evaluating a super property reference requires an initialized `this` binding. In
-            // derived constructors, `this` is uninitialized until `super()` returns.
-            if self.derived_constructor && !self.this_initialized {
-              return Err(throw_reference_error(
-                self.vm,
-                scope,
-                "Must call super constructor in derived class before accessing 'this'",
-              )?);
-            }
+            // `GetThisBinding` must run before evaluating the RHS so derived constructors throw
+            // before `super()` returns (and use the initialized receiver after super()).
+            let receiver = self.get_this_binding(scope)?;
 
             let home_object = self.home_object.ok_or(VmError::InvariantViolation(
               "super property access missing [[HomeObject]]",
@@ -13646,13 +13640,13 @@ impl<'a> Evaluator<'a> {
             // Evaluate RHS after the super reference checks but before allocating the property-key
             // string; this keeps the rooting simple.
             let mut set_scope = scope.reborrow();
-            set_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+            set_scope.push_roots(&[receiver, Value::Object(home_object)])?;
             let value = self.eval_expr(&mut set_scope, &expr.right)?;
             set_scope.push_root(value)?;
 
             let key_s = set_scope.alloc_string(&member.stx.right)?;
             let key = PropertyKey::from_string(key_s);
-            self.eval_super_property_set(&mut set_scope, key, value)?;
+            self.eval_super_property_set(&mut set_scope, receiver, key, value)?;
             Ok(value)
           }
           // `super[expr] = rhs` assignment in methods/getters/setters.
@@ -13662,23 +13656,16 @@ impl<'a> Evaluator<'a> {
                 "optional chaining used in reference position",
               ));
             }
-            // Evaluating a super property reference requires an initialized `this` binding. In
-            // derived constructors, this check happens before evaluating the computed key expression.
-            if self.derived_constructor && !self.this_initialized {
-              return Err(throw_reference_error(
-                self.vm,
-                scope,
-                "Must call super constructor in derived class before accessing 'this'",
-              )?);
-            }
+            // `GetThisBinding` must run before evaluating the computed key expression.
+            let receiver = self.get_this_binding(scope)?;
 
             let home_object = self.home_object.ok_or(VmError::InvariantViolation(
               "super property access missing [[HomeObject]]",
             ))?;
 
-            // Root `this` + home object across evaluation of the computed key, RHS, and the `[[Set]]`.
+            // Root receiver + home object across evaluation of the computed key, RHS, and the `[[Set]]`.
             let mut set_scope = scope.reborrow();
-            set_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+            set_scope.push_roots(&[receiver, Value::Object(home_object)])?;
             let member_value = self.eval_expr(&mut set_scope, &member.stx.member)?;
             set_scope.push_root(member_value)?;
             let key = self.to_property_key_operator(&mut set_scope, member_value)?;
@@ -13691,7 +13678,7 @@ impl<'a> Evaluator<'a> {
             let value = self.eval_expr(&mut set_scope, &expr.right)?;
             set_scope.push_root(value)?;
 
-            self.eval_super_property_set(&mut set_scope, key, value)?;
+            self.eval_super_property_set(&mut set_scope, receiver, key, value)?;
             Ok(value)
           }
           _ => {
