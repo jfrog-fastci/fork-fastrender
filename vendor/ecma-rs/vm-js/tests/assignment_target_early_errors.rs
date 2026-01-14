@@ -100,3 +100,26 @@ fn parenthesized_optional_chain_base_is_valid_for_of_lhs_target() {
 fn unparenthesized_optional_chain_is_invalid_assignment_target() {
   assert_syntax_error("var o = { x: { y: 0 } }; o?.x.y = 1;");
 }
+
+#[test]
+fn parenthesized_optional_call_base_is_valid_assignment_target() {
+  assert_execs_to_number(
+    "var o; var f = () => (o = { x: 0 }); (f?.()).x = 1; o.x",
+    1.0,
+  );
+}
+
+#[test]
+fn unparenthesized_optional_call_chain_is_invalid_assignment_target() {
+  assert_syntax_error("var o; var f = () => (o = { x: 0 }); f?.().x = 1;");
+}
+
+#[test]
+fn parenthesized_optional_chain_base_is_valid_computed_member_assignment_target() {
+  assert_execs_to_number("var o = { x: { y: 0 } }; (o?.x)['y'] = 1; o.x.y", 1.0);
+}
+
+#[test]
+fn unparenthesized_optional_chain_is_invalid_computed_member_assignment_target() {
+  assert_syntax_error("var o = { x: { y: 0 } }; o?.x['y'] = 1;");
+}
