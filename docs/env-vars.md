@@ -238,8 +238,8 @@ interpret the metrics.
 CLI equivalents (override env vars): `browser --perf-log` (stdout) and
 `browser --perf-log-out <path>` (write JSONL to a file).
 
-For an interactive capture helper (runs under `run_limited`, passes `browser --perf-log`, and tees
-the stdout JSONL stream to a file), see
+For an interactive capture helper (sets `FASTR_PERF_LOG=1`, runs under `run_limited`, writes the
+main log via `FASTR_PERF_LOG_OUT`, and appends any stdout-only JSON `"event"` lines after exit), see
 [`scripts/capture_browser_perf_log.sh`](../scripts/capture_browser_perf_log.sh).
 
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
