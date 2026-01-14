@@ -7590,8 +7590,6 @@ impl<'a> Evaluator<'a> {
         }
         Ok(Completion::empty())
       }
-
-      _ => Err(VmError::Unimplemented("var declaration kind")),
     }
   }
 
@@ -18389,7 +18387,6 @@ fn async_eval_var_decl(
           };
           return Err(syntax_error(declarator.pattern.loc, message));
         }
-        _ => return Err(VmError::Unimplemented("var declaration kind")),
       }
     };
 
@@ -18545,7 +18542,6 @@ fn async_bind_var_declarator_value(
         Ok(AsyncEval::Complete(()))
       }
     }
-    _ => Err(VmError::Unimplemented("var declaration kind")),
   }
 }
 
@@ -34154,7 +34150,6 @@ fn gen_eval_var_decl(
           };
           return Err(syntax_error(declarator.pattern.loc, message));
         }
-        _ => return Err(VmError::Unimplemented("var declaration kind")),
       }
     };
 
@@ -34313,7 +34308,6 @@ fn gen_bind_var_declarator_value(
         .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
       check_disposable_resource_value(evaluator.vm, scope, value)?;
     }
-    _ => return Err(VmError::Unimplemented("var declaration kind")),
   }
 
   Ok(())
