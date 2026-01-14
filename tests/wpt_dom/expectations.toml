@@ -329,12 +329,6 @@ status = "skip"
 reason = "Helper file for the upstream Range suite (not a standalone testharness test); the offline runner expects a WPT report payload and should not execute this directly."
 
 [[expectations]]
-id = "dom/range_content_ops.window.js"
-backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range methods are still incomplete (deleteContents/cloneContents/insertNode); this focused test tracks remaining Range content mutation gaps."
-
-[[expectations]]
 id = "dom/ranges/Range-compareBoundaryPoints-crash.html"
 status = "skip"
 reason = "Crash regression HTML does not use testharness.js (runner expects testharness tests)."
