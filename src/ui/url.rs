@@ -233,7 +233,8 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
       // unsupported-but-explicit schemes like `foo:bar` (which should still round-trip through
       // normalization so callers can display a meaningful "unsupported scheme" error).
       if url.cannot_be_a_base() && looks_like_host_port_without_scheme(input) {
-        let with_scheme = format!("https://{input}");
+        let scheme = default_scheme_for_implicit_url(input);
+        let with_scheme = format!("{scheme}://{input}");
         return Url::parse(&with_scheme)
           .map(|url| url.to_string())
           .map_err(|parse_err| parse_err.to_string());
@@ -242,7 +243,8 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
     }
     Err(parse_err) => {
       if !input.contains("://") && !input.contains(' ') {
-        let with_scheme = format!("https://{input}");
+        let scheme = default_scheme_for_implicit_url(input);
+        let with_scheme = format!("{scheme}://{input}");
         match Url::parse(&with_scheme) {
           Ok(url) => Ok(url.to_string()),
           Err(parse_err) => Err(parse_err.to_string()),
@@ -252,6 +254,52 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
       }
     }
   }
+}
+
+/// Choose a default scheme for an omnibox input that looks like a URL but does not include an
+/// explicit `scheme://` prefix.
+///
+/// For local dev workflows we default to `http` for `localhost` and IP-literals (IPv4/IPv6,
+/// optionally with `:port`), and `https` for normal domain-like inputs.
+fn default_scheme_for_implicit_url(input: &str) -> &'static str {
+  let input = trim_ascii_whitespace(input);
+  if input.is_empty() {
+    return "https";
+  }
+
+  // Exact `localhost` (with or without a port/path/etc.) is overwhelmingly used for local dev
+  // servers which tend to be HTTP-only.
+  if input.eq_ignore_ascii_case("localhost") {
+    return "http";
+  }
+
+  // Bare IP literals (including unbracketed IPv6 like `::1`).
+  if parse_ip_literal(input).is_some() {
+    return "http";
+  }
+
+  // Host extraction for `host:port` / `host/path` / `[v6]:port` forms.
+  if let Some(rest) = input.strip_prefix('[') {
+    if let Some(idx) = rest.find(']') {
+      let host = &rest[..idx];
+      if IpAddr::from_str(host).is_ok() {
+        return "http";
+      }
+    }
+  }
+
+  let host_end = input
+    .find(|c| matches!(c, ':' | '/' | '?' | '#'))
+    .unwrap_or_else(|| input.len());
+  let host = &input[..host_end];
+  if host.eq_ignore_ascii_case("localhost") {
+    return "http";
+  }
+  if IpAddr::from_str(host).is_ok() {
+    return "http";
+  }
+
+  "https"
 }
 
 /// Resolve a link `href` attribute value against a base URL.
@@ -666,7 +714,7 @@ pub fn resolve_omnibox_input_with_search_template(
 
   if let Some(ip) = parse_ip_literal_trimmed(input) {
     return Ok(OmniboxInputResolution::Url {
-      url: https_url_from_ip_literal(ip)?,
+      url: url_from_ip_literal(ip, default_scheme_for_implicit_url(input))?,
     });
   }
 
@@ -728,12 +776,12 @@ fn looks_like_bracketed_ipv6_host_port_without_scheme(input: &str) -> bool {
     .is_some_and(|ch| ch.is_ascii_digit())
 }
 
-fn https_url_from_ip_literal(ip: IpAddr) -> Result<String, String> {
+fn url_from_ip_literal(ip: IpAddr, scheme: &str) -> Result<String, String> {
   let host = match ip {
     IpAddr::V4(v4) => v4.to_string(),
     IpAddr::V6(v6) => format!("[{v6}]"),
   };
-  let url_str = format!("https://{host}/");
+  let url_str = format!("{scheme}://{host}/");
   Url::parse(&url_str)
     .map(|url| url.to_string())
     .map_err(|err| err.to_string())
@@ -1045,10 +1093,18 @@ mod tests {
   }
 
   #[test]
-  fn host_port_is_treated_as_https_url() {
+  fn host_port_defaults_to_http_for_local_hosts_and_https_for_domains() {
     assert_eq!(
       normalize_user_url("localhost:3000").unwrap(),
-      "https://localhost:3000/"
+      "http://localhost:3000/"
+    );
+    assert_eq!(
+      normalize_user_url("127.0.0.1:3000").unwrap(),
+      "http://127.0.0.1:3000/"
+    );
+    assert_eq!(
+      normalize_user_url("[::1]:3000").unwrap(),
+      "http://[::1]:3000/"
     );
     assert_eq!(
       normalize_user_url("devbox:3000").unwrap(),
@@ -1113,15 +1169,15 @@ mod tests {
       other => panic!("expected Url, got {other:?}"),
     }
     match resolve_omnibox_input("localhost").unwrap() {
-      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://localhost/"),
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "http://localhost/"),
       other => panic!("expected Url, got {other:?}"),
     }
     match resolve_omnibox_input("127.0.0.1").unwrap() {
-      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://127.0.0.1/"),
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "http://127.0.0.1/"),
       other => panic!("expected Url, got {other:?}"),
     }
     match resolve_omnibox_input("localhost:3000").unwrap() {
-      OmniboxInputResolution::Url { url } => assert_eq!(url, "https://localhost:3000/"),
+      OmniboxInputResolution::Url { url } => assert_eq!(url, "http://localhost:3000/"),
       other => panic!("expected Url, got {other:?}"),
     }
     match resolve_omnibox_input("about:help").unwrap() {

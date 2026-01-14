@@ -1281,6 +1281,7 @@ impl WorkerToUi {
       | WorkerToUi::NavigationFailed { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }
       | WorkerToUi::LoadingState { tab_id, .. }
       | WorkerToUi::Warning { tab_id, .. }
