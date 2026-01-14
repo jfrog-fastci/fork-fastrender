@@ -11947,15 +11947,48 @@ fn maybe_adopt_node_into_document(
     // documents, but range state stays in the same arena. We only need to rebind `Range` wrappers
     // so they resolve node wrappers in the destination document.
     ranges_to_rebind_same_dom =
-      unsafe { src_dom_ptr.as_mut() }.live_range_wrappers_with_endpoints_in_mapping(scope.heap(), &mapping);
+      // SAFETY: `dest_dom_ptr` is valid for the duration of this native call. Since
+      // `src_dom_ptr == dest_dom_ptr`, this also provides the unique mutable access required to
+      // sweep live range weak wrappers in the shared underlying document.
+      unsafe { dest_dom_ptr.as_mut() }
+        .live_range_wrappers_with_endpoints_in_mapping(scope.heap(), &mapping);
     moved_ranges_cross_doc = Vec::new();
   } else {
     ranges_to_rebind_same_dom = Vec::new();
-    moved_ranges_cross_doc = unsafe { src_dom_ptr.as_mut() }.move_live_ranges_to_after_node_id_remap(
-      scope.heap(),
-      unsafe { dest_dom_ptr.as_mut() },
-      &mapping,
-    );
+    moved_ranges_cross_doc =
+      if let Some(mut src_dom_ptr_mut) = owned_dom_ptr_for_document_id_mut(vm, node.document_id) {
+        // Source document is realm-owned; we can mutate it directly.
+        //
+        // SAFETY: `dest_dom_ptr` and `src_dom_ptr_mut` are valid for the duration of this native
+        // call, and `src_dom_ptr != dest_dom_ptr` ensures the mutable borrows do not alias.
+        unsafe { src_dom_ptr_mut.as_mut() }.move_live_ranges_to_after_node_id_remap(
+          scope.heap(),
+          unsafe { dest_dom_ptr.as_mut() },
+          &mapping,
+        )
+      } else {
+        // Source document is backed by the host DOM. We must not conjure `&mut dom2::Document`
+        // from `src_dom_ptr` (which may come from `dom()`), so route through `DomHost::mutate_dom`.
+        //
+        // Moving live range state is not render-affecting.
+        let heap = scope.heap();
+        let dest_dom_ptr_copy = dest_dom_ptr;
+        mutate_dom_for_vm_host(host, |src_dom| {
+          // SAFETY: `dest_dom_ptr_copy` is valid for the duration of this call, and
+          // `src_dom_ptr != dest_dom_ptr` guarantees `src_dom` and `dest_dom` refer to distinct
+          // documents.
+          let mut dest_dom_ptr = dest_dom_ptr_copy;
+          let moved = src_dom.move_live_ranges_to_after_node_id_remap(
+            heap,
+            unsafe { dest_dom_ptr.as_mut() },
+            &mapping,
+          );
+          (moved, false)
+        })
+        .ok_or(VmError::TypeError(
+          "operation requires a DOM-backed source document",
+        ))?
+      };
   }
 
   let Some(platform) = dom_platform_mut(vm) else {
