@@ -8096,13 +8096,10 @@ mod tests {
 #[cfg(test)]
 mod import_map_tests {
   use super::tests::make_host_state;
-  use super::WindowHostState;
-  use super::tests::make_host_state;
   use crate::dom2;
   use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
   use selectors::context::QuirksMode;
   use url::Url;
-
   #[test]
   fn window_host_state_starts_with_empty_import_map_state() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
