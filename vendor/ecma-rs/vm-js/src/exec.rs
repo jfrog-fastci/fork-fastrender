@@ -40150,6 +40150,7 @@ fn gen_root_values_for_continuation(
   values
     .try_reserve_exact(needed)
     .map_err(|_| VmError::OutOfMemory)?;
+
   values.push(cont.this);
   values.push(cont.new_target);
   if let Some(home_object) = cont.home_object {
