@@ -770,7 +770,6 @@ impl TreeSink for Dom2TreeSink {
       None,
       /* inert_subtree */ false,
     );
-    doc.node_mut(shadow_root_id).parent = Some(*location);
     doc.live_mutation.pre_insert(*location, 0, 1);
     let range_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
     let inserted_count =
@@ -781,6 +780,7 @@ impl TreeSink for Dom2TreeSink {
       inserted_count,
     );
     doc.node_mut(*location).children.insert(0, shadow_root_id);
+    doc.node_mut(shadow_root_id).parent = Some(*location);
 
     self
       .declarative_shadow_templates
