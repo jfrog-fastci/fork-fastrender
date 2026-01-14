@@ -1314,6 +1314,93 @@ mod tests {
   }
 
   #[test]
+  fn string_object_union_prefers_domstring_over_object() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((object or DOMString))
+    let union_ty = IdlType::Union(vec![
+      IdlType::Object,
+      IdlType::String(StringType::DomString),
+    ]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(member_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let WebIdlValue::String(v) = value.as_ref() else {
+      panic!("expected string union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
+  fn string_object_union_prefers_domstring_over_dictionary() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((MyDict or DOMString))
+    let dict_ty = IdlType::Named(NamedType {
+      name: "MyDict".into(),
+      kind: NamedTypeKind::Dictionary,
+    });
+    let union_ty = IdlType::Union(vec![dict_ty, IdlType::String(StringType::DomString)]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(member_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let WebIdlValue::String(v) = value.as_ref() else {
+      panic!("expected string union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
   fn string_object_union_prefers_enum_over_sequence_without_probing_iterator() {
     let mut rt = VmJsRuntime::new();
 
@@ -1469,6 +1556,110 @@ mod tests {
     let iter_key = rt.symbol_iterator().unwrap();
     rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
       .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(
+      member_ty.as_ref(),
+      &IdlType::Named(NamedType {
+        name: "MyEnum".into(),
+        kind: NamedTypeKind::Enum,
+      })
+    );
+    let WebIdlValue::Enum(v) = value.as_ref() else {
+      panic!("expected enum union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
+  fn string_object_union_prefers_enum_over_object() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((object or MyEnum))
+    let enum_ty = IdlType::Named(NamedType {
+      name: "MyEnum".into(),
+      kind: NamedTypeKind::Enum,
+    });
+    let union_ty = IdlType::Union(vec![IdlType::Object, enum_ty]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(
+      member_ty.as_ref(),
+      &IdlType::Named(NamedType {
+        name: "MyEnum".into(),
+        kind: NamedTypeKind::Enum,
+      })
+    );
+    let WebIdlValue::Enum(v) = value.as_ref() else {
+      panic!("expected enum union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
+  fn string_object_union_prefers_enum_over_dictionary() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((MyDict or MyEnum))
+    let enum_ty = IdlType::Named(NamedType {
+      name: "MyEnum".into(),
+      kind: NamedTypeKind::Enum,
+    });
+    let dict_ty = IdlType::Named(NamedType {
+      name: "MyDict".into(),
+      kind: NamedTypeKind::Dictionary,
+    });
+    let union_ty = IdlType::Union(vec![dict_ty, enum_ty]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
 
     let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
     assert_eq!(out.overload_index, 0);
