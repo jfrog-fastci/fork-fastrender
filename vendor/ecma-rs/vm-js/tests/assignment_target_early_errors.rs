@@ -163,3 +163,35 @@ fn parenthesized_optional_chain_base_is_valid_array_destructuring_assignment_tar
 fn unparenthesized_optional_chain_is_invalid_array_destructuring_assignment_target() {
   assert_syntax_error("var o = { x: { y: 0 } }; [o?.x.y] = [1];");
 }
+
+#[test]
+fn unparenthesized_optional_chain_private_member_is_invalid_assignment_target() {
+  assert_syntax_error("class C { #x; m(o) { o?.#x = 1; } }");
+}
+
+#[test]
+fn unparenthesized_optional_chain_private_member_is_invalid_prefix_update_target() {
+  assert_syntax_error("class C { #x; m(o) { ++o?.#x; } }");
+}
+
+#[test]
+fn unparenthesized_optional_chain_private_member_is_invalid_postfix_update_target() {
+  assert_syntax_error("class C { #x; m(o) { o?.#x++; } }");
+}
+
+#[test]
+fn parenthesized_optional_chain_private_base_is_valid_assignment_target() {
+  assert_execs_to_number(
+    r#"
+      class C {
+        #x = { y: 0 };
+        static test(o) {
+          (o?.#x).y = 1;
+          return o.#x.y;
+        }
+      }
+      C.test(new C())
+    "#,
+    1.0,
+  );
+}
