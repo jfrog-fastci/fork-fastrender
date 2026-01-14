@@ -81,3 +81,56 @@ fn computed_super_assignment_observes_rhs_before_topropertykey_compiled() -> Res
   Ok(())
 }
 
+// Null-super-base regression:
+// If the `[[HomeObject]]` prototype is `null`, assignment still evaluates the RHS before the key is
+// coerced (`ToPropertyKey`). The key coercion is still observed before the TypeError.
+const NULL_SUPER_BASE_SOURCE: &str = r#"
+  (() => {
+    let log = [];
+
+    function keyExpr() {
+      log.push("keyExpr");
+      return {
+        toString() {
+          log.push("toString");
+          return "p";
+        }
+      };
+    }
+
+    function rhs() {
+      log.push("rhs");
+      return 1;
+    }
+
+    var obj = {
+      __proto__: null,
+      m() {
+        try { super[keyExpr()] = rhs(); }
+        catch (e) { log.push("err:" + e.name); }
+        return log.join(",");
+      }
+    };
+
+    return obj.m();
+  })()
+"#;
+
+const NULL_SUPER_BASE_EXPECTED: &str = "keyExpr,rhs,toString,err:TypeError";
+
+#[test]
+fn computed_super_assignment_observes_rhs_before_topropertykey_when_super_base_is_null() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(NULL_SUPER_BASE_SOURCE)?;
+  assert_value_is_utf8(&rt, value, NULL_SUPER_BASE_EXPECTED);
+  Ok(())
+}
+
+#[test]
+fn computed_super_assignment_observes_rhs_before_topropertykey_when_super_base_is_null_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, NULL_SUPER_BASE_SOURCE)?;
+  assert_value_is_utf8(&rt, value, NULL_SUPER_BASE_EXPECTED);
+  Ok(())
+}
