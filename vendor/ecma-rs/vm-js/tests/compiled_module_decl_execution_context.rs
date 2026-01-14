@@ -128,7 +128,7 @@ impl TestHostHooks {
 
   fn teardown_jobs(&mut self, vm: &mut Vm, heap: &mut Heap) {
     struct Ctx<'a> {
-      vm: &'a mut Vm,
+      _vm: &'a mut Vm,
       heap: &'a mut Heap,
     }
 
@@ -164,7 +164,7 @@ impl TestHostHooks {
       }
     }
 
-    let mut ctx = Ctx { vm, heap };
+    let mut ctx = Ctx { _vm: vm, heap };
     self.microtasks.teardown(&mut ctx);
   }
 }
