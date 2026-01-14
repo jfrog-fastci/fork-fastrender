@@ -40,3 +40,31 @@ fn async_class_extends_can_await_heritage_expr() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn async_class_extends_can_eval_super_call_in_ctor() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      class A {}
+      async function f() {
+        class B extends (await Promise.resolve(A)) {
+          constructor() { return eval("super(); this"); }
+        }
+        return new B() instanceof A;
+      }
+      f().then(v => out = String(v));
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "true");
+
+  Ok(())
+}

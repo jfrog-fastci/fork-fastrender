@@ -23769,10 +23769,17 @@ fn async_eval_class_after_super(
   // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
   // `super.prototype`.
   if let Some(body_func) = ctor_body_func {
-    if let Err(err) = class_scope
-      .heap_mut()
-      .set_function_home_object(body_func, Some(prototype_obj))
-    {
+    let meta_property_context = if matches!(super_value, Value::Undefined) {
+      MetaPropertyContext::METHOD
+    } else {
+      MetaPropertyContext::DERIVED_CONSTRUCTOR
+    };
+    if let Err(err) = (|| -> Result<(), VmError> {
+      let heap = class_scope.heap_mut();
+      heap.set_function_home_object(body_func, Some(prototype_obj))?;
+      heap.set_function_meta_property_context(body_func, meta_property_context)?;
+      Ok(())
+    })() {
       class_scope.heap_mut().remove_root(func_root);
       return Err(err);
     }
