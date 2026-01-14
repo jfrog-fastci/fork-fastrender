@@ -271,27 +271,27 @@ impl<'a> Parser<'a> {
               p.new_target_allowed += 1;
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
-               // Static blocks have their own `Await` / `Yield` context and parse as
-               // `StatementList[~Yield, +Await, ~Return]opt`:
-               // - `await` is reserved as an identifier,
-               // - `await` expressions are never permitted (static blocks are not async contexts),
-               // - `yield` is not treated as a keyword from an enclosing generator, and
-               // - `return` is not permitted (handled above via `in_function = 0`).
-               let is_module = p.is_module();
-               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+              // Static blocks have their own `Await` / `Yield` context and parse as
+              // `StatementList[~Yield, +Await, ~Return]opt`:
+              // - `await` is reserved as an identifier,
+              // - `await` expressions are never permitted (static blocks are not async contexts),
+              // - `yield` is not treated as a keyword from an enclosing generator, and
+              // - `return` is not permitted (handled above via `in_function = 0`).
+              let is_module = p.is_module();
+              let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 // Static blocks are parsed as:
                 // `StatementList[~Yield, +Await, ~Return]opt`
                 //
-                 // This means:
-                 // - `await` is treated as a keyword (it is not permitted as an identifier),
-                 // - `await` expressions are never permitted,
-                 // - `yield` expressions are never permitted, and
-                 // - `return` statements are never permitted (handled above via `in_function = 0`).
-                 await_allowed: false,
-                 yield_allowed: !is_module,
-                 await_expr_allowed: false,
-                 yield_expr_allowed: false,
-               });
+                // This means:
+                // - `await` is treated as a keyword (it is not permitted as an identifier),
+                // - `await` expressions are never permitted,
+                // - `yield` expressions are never permitted, and
+                // - `return` statements are never permitted (handled above via `in_function = 0`).
+                await_allowed: false,
+                yield_allowed: !is_module,
+                await_expr_allowed: false,
+                yield_expr_allowed: false,
+              });
               let body =
                 p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
               p.in_iteration = prev_in_iteration;
