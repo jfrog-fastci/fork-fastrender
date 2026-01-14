@@ -98,11 +98,7 @@ pub(crate) struct ExtractedForeignObjectMarkup {
 }
 
 fn svg_markup_contains_foreign_object(svg: &str) -> bool {
-  const NEEDLE: &[u8] = b"foreignobject";
-  let bytes = svg.as_bytes();
-  bytes
-    .windows(NEEDLE.len())
-    .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+  contains_ascii_case_insensitive(svg, "foreignobject")
 }
 
 fn parse_svg_number_attr(value: &str) -> Option<f32> {

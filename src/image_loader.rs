@@ -4831,19 +4831,11 @@ fn inline_svg_external_url_fragment_references<'a>(
   }
 
   fn contains_xlink_prefix(value: &str) -> bool {
-    const NEEDLE: &[u8] = b"xlink:";
-    value
-      .as_bytes()
-      .windows(NEEDLE.len())
-      .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+    crate::string_match::contains_ascii_case_insensitive(value, "xlink:")
   }
 
   fn start_tag_has_xmlns_xlink(start_tag: &str) -> bool {
-    const NEEDLE: &[u8] = b"xmlns:xlink";
-    start_tag
-      .as_bytes()
-      .windows(NEEDLE.len())
-      .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+    crate::string_match::contains_ascii_case_insensitive(start_tag, "xmlns:xlink")
   }
 
   let (start_tag_start, start_tag_end) = match find_svg_root_start_tag_bounds(&rewritten) {
