@@ -1,7 +1,7 @@
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::grid::GridFormattingContext;
 use crate::style::display::Display;
-use crate::style::types::{GridAutoFlow, GridTrack, WritingMode};
+use crate::style::types::{AlignContent, AlignItems, GridAutoFlow, GridTrack, JustifyContent, WritingMode};
 use crate::style::values::Length;
 use crate::FormattingContext;
 use crate::{BoxNode, ComputedStyle, FormattingContextType};
@@ -166,23 +166,35 @@ fn nested_subgrid_auto_span_defaults_to_all_parent_tracks_when_line_name_list_om
   outer_style.writing_mode = WritingMode::VerticalRl;
   outer_style.grid_column_subgrid = true;
   outer_style.grid_row_subgrid = true;
+  outer_style.justify_content = JustifyContent::Start;
+  outer_style.align_content = AlignContent::Start;
 
   let mut inner_style = ComputedStyle::default();
   inner_style.display = Display::Grid;
   inner_style.writing_mode = WritingMode::VerticalRl;
   inner_style.grid_column_subgrid = true;
   inner_style.grid_row_subgrid = true;
+  inner_style.justify_content = JustifyContent::Start;
+  inner_style.align_content = AlignContent::Start;
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
+  first_style.justify_self = Some(AlignItems::Start);
+  first_style.align_self = Some(AlignItems::Start);
   first_style.grid_column_start = 1;
   first_style.grid_column_end = 2;
+  first_style.grid_row_start = 1;
+  first_style.grid_row_end = 2;
   first_style.height = Some(Length::px(12.0));
 
   let mut second_style = ComputedStyle::default();
   second_style.display = Display::Block;
+  second_style.justify_self = Some(AlignItems::Start);
+  second_style.align_self = Some(AlignItems::Start);
   second_style.grid_column_start = 2;
   second_style.grid_column_end = 3;
+  second_style.grid_row_start = 1;
+  second_style.grid_row_end = 2;
   second_style.height = Some(Length::px(12.0));
 
   let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
@@ -211,8 +223,9 @@ fn nested_subgrid_auto_span_defaults_to_all_parent_tracks_when_line_name_list_om
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
 
-  assert_approx(first.bounds.x(), 0.0, "first column x");
-  assert_approx(first.bounds.width(), 28.0, "first column width");
-  assert_approx(second.bounds.x(), 33.0, "second column x (gap + first track)");
-  assert_approx(second.bounds.width(), 42.0, "second column width");
+  // The nested subgrids use a vertical writing-mode, so grid columns map to the physical Y axis.
+  // When auto-span is synthesized correctly, the second item should land in the second inherited
+  // column track (y=28px + 5px gap).
+  assert_approx(first.bounds.y(), 0.0, "first column y");
+  assert_approx(second.bounds.y(), 33.0, "second column y (gap + first track)");
 }
