@@ -1419,6 +1419,77 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     })
   }
 
+  fn class_decl_stmt_supported(decl: &Node<parse_js::ast::stmt::decl::ClassDecl>) -> bool {
+    // Support async class declarations with `await` in:
+    // - `extends` (heritage), or
+    // - computed member keys (method/getter/setter).
+    //
+    // This matches the compiled async evaluator's `AsyncClassDeclState`, which is intentionally
+    // limited: it does not currently support class fields, and it does not support `await` inside
+    // static initialization blocks or nested within the awaited operand.
+
+    if !decl.stx.decorators.is_empty() {
+      // Decorators are not supported by the compiled class evaluator.
+      return false;
+    }
+    if decl.stx.declare || decl.stx.abstract_ {
+      return false;
+    }
+    if decl.stx.type_parameters.is_some() || !decl.stx.implements.is_empty() {
+      // TypeScript-only class syntax (not relevant in strict Ecma parsing, but keep this
+      // conservative for other dialects).
+      return false;
+    }
+
+    let mut has_supported_await: bool = false;
+
+    if let Some(extends) = decl.stx.extends.as_ref() {
+      if expr_contains_await(extends) {
+        if !expr_is_direct_await_without_nested_await(extends) {
+          return false;
+        }
+        has_supported_await = true;
+      }
+    }
+
+    for member in decl.stx.members.iter() {
+      if member.stx.declare || member.stx.abstract_ {
+        return false;
+      }
+      if !member.stx.decorators.is_empty() {
+        return false;
+      }
+
+      // Reject class fields: `AsyncClassDeclState` does not support them in the async path.
+      match &member.stx.val {
+        ClassOrObjVal::Prop(_) | ClassOrObjVal::IndexSignature(_) => return false,
+        // The compiled async class evaluator does not currently support `await` inside static
+        // blocks. Those awaits are nested under the class body and require additional state-machine
+        // support.
+        ClassOrObjVal::StaticBlock(block) => {
+          if block.stx.body.iter().any(stmt_contains_await) {
+            return false;
+          }
+        }
+        ClassOrObjVal::Getter(_) | ClassOrObjVal::Setter(_) | ClassOrObjVal::Method(_) => {}
+      }
+
+      if let ClassOrObjKey::Computed(key_expr) = &member.stx.key {
+        if expr_contains_await(key_expr) {
+          if !expr_is_direct_await_without_nested_await(key_expr) {
+            return false;
+          }
+          has_supported_await = true;
+        }
+      }
+    }
+
+    // Require an actual `await` in supported class positions. This avoids accidentally accepting a
+    // class declaration whose only `await` appears in an unsupported nested position (e.g. inside a
+    // static block).
+    has_supported_await
+  }
+
   fn expr_is_object_destructuring_assignment_with_supported_await(expr: &Node<Expr>) -> bool {
     // Supported shape:
     //   `({ <object-pattern> } = <rhs>);`
@@ -1535,6 +1606,12 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // `var`/`let`/`const` declarations where any `await` in an initializer is a direct `await`
       // expression (`const x = await <expr>;`).
       Stmt::VarDecl(decl) => var_decl_stmt_supported(decl),
+
+      // Class declarations with `await` in `extends` or computed member keys.
+      //
+      // This is supported by `AsyncClassDeclState` for a limited subset of class forms; reject
+      // fields and `await` in nested class static blocks for now.
+      Stmt::ClassDecl(decl) => class_decl_stmt_supported(decl),
 
       // `for (init; test; update) { ... }` loops at top-level.
       //
