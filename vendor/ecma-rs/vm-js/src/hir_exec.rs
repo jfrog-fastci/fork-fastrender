@@ -15791,7 +15791,16 @@ fn run_compiled_script_async(
           await_value,
         )
         .map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut root_scope, err)),
-        crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+        crate::exec::AsyncSuspendKind::AwaitResolved => {
+          // `AwaitResolved` means the internal `PromiseResolve` step has already been performed
+          // (e.g. by `AsyncIteratorClose` in `for await..of`). Do not call `PromiseResolve` again or
+          // we'd observe `promise.constructor` twice.
+          debug_assert!(
+            matches!(await_value, Value::Object(obj) if root_scope.heap().is_promise_object(obj)),
+            "AwaitResolved suspension must carry a Promise object"
+          );
+          Ok(await_value)
+        }
         crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in compiled async script",
         )),
@@ -16638,7 +16647,14 @@ pub(crate) fn hir_async_resume_continuation(
             await_value,
           )
           .map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut await_scope, err)),
-          crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+          crate::exec::AsyncSuspendKind::AwaitResolved => {
+            // See comment in `run_compiled_script_async`.
+            debug_assert!(
+              matches!(await_value, Value::Object(obj) if await_scope.heap().is_promise_object(obj)),
+              "AwaitResolved suspension must carry a Promise object"
+            );
+            Ok(await_value)
+          }
           crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in compiled async script",
           )),

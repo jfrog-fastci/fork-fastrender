@@ -97,6 +97,7 @@ fn compiled_script_top_level_for_await_of_throw_suppresses_iterator_return_rejec
     panic!("expected Promise object, got {result:?}");
   };
   assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -162,6 +163,7 @@ fn compiled_script_top_level_for_await_of_async_iterator_close_only_observes_pro
     panic!("expected Promise object, got {result:?}");
   };
   assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
