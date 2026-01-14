@@ -93,6 +93,8 @@ When enabled, you should expect events covering at least:
   `paint`, `unknown`).
 - **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
 - **Input latency** samples (input arrival → visible UI response).
+- **Tab switch latency** samples (`event=tab_switch`), including whether the switch was served from a
+  cached tab render.
 - **Frame upload/coalescing** samples: `event=frame_upload` reports wgpu upload timing and
   `FrameUploadCoalescer` counters (push/overwrite/drain/pending) to help diagnose scroll/resize
   jank caused by dropped frames or expensive texture uploads.

@@ -245,4 +245,45 @@ mod tests {
       other => panic!("unexpected event parsed: {other:?}"),
     }
   }
+
+  #[test]
+  fn parses_tab_switch_v2() {
+    let json = r#"{
+      "event":"tab_switch",
+      "schema_version":2,
+      "t_ms":300,
+      "window_id":"WindowId(1)",
+      "from_tab_id":1,
+      "to_tab_id":2,
+      "cached":true,
+      "latency_ms":42
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::TabSwitch { latency_ms, .. }) => {
+        assert_eq!(latency_ms, Some(42));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_idle_summary_v2_alias() {
+    let json = r#"{
+      "event":"idle_summary",
+      "schema_version":2,
+      "t_ms":400,
+      "window_id":"process",
+      "idle_frames_per_sec":12.5
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::IdleSample { idle_fps, .. }) => {
+        assert_eq!(idle_fps, Some(12.5));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
 }

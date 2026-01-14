@@ -39,6 +39,7 @@ struct Cli {
   /// - `frame` (UI frame samples)
   /// - `input` (keyboard + scroll latency)
   /// - `scroll` (scroll latency only)
+  /// - `tab_switch` (tab-switch latency)
   /// - `resize`
   /// - `ttfp`
   /// - `cpu_summary`

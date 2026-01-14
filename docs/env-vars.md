@@ -248,9 +248,9 @@ the stdout JSONL stream to a file), see
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
   - When enabled, the `browser` binary emits JSONL (one JSON object per line) events describing
     frame-time samples, input latency, resize latency, and navigation TTFP measurements.
-    Event types include: `frame`, `input`, `resize`, `tab_switch`, `navigation`, `ttfp`, `stage`,
-    plus periodic diagnostics like `idle_sample`/`idle_summary`, `cpu_summary`, and `memory_summary`
-    (the schema evolves; treat this list as non-exhaustive).
+    Event types include: `frame`, `input`, `tab_switch`, `resize`, `navigation`, `ttfp`, `stage`,
+    `frame_upload`; plus periodic diagnostics like `idle_sample`/`idle_summary`, `cpu_summary`, and
+    `memory_summary` (the schema evolves; treat this list as non-exhaustive).
   - Worker stage heartbeat events (`event=stage`) are emitted when the windowed UI processes
     `WorkerToUi::Stage` messages. These include:
     - `tab_id`, `stage` (e.g. `layout`, `paint_build`), and `hotspot` (coarse bucket such as
@@ -261,18 +261,20 @@ the stdout JSONL stream to a file), see
   - CPU usage summary (`event=cpu_summary`, emitted ~once per second):
     - `cpu_time_ms_total`: total process CPU time (user + system) since startup (milliseconds).
     - `cpu_percent_recent`: CPU usage over the most recent interval (`Δcpu / Δwall * 100`).
-    - Example:
-    ```bash
-    FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-      timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
-    ```
-    - CLI equivalent (preferred):
-    ```bash
+  - RSS summary (`event=memory_summary`, emitted periodically; Linux-only RSS in the windowed browser):
+    - `rss_bytes` / `rss_mb` are nullable elsewhere (or when RSS cannot be queried).
+  - Example:
+  ```bash
+  FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
     timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
-      --perf-log-out target/browser_perf.jsonl about:test-layout-stress
-    ```
+    bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
+  ```
+  - CLI equivalent (preferred):
+  ```bash
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+    bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+    --perf-log-out target/browser_perf.jsonl about:test-layout-stress
+  ```
 - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – output path for `FASTR_PERF_LOG` JSONL events.
   - When unset/empty, events go to **stdout**.
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`
