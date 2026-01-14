@@ -104,11 +104,45 @@ struct Mp4SampleInfo {
   is_sync: bool,
 }
 
+#[derive(Debug, Clone)]
+enum PtsIndex {
+  Monotonic,
+  Sorted {
+    sample_indices_by_pts: Vec<u32>,
+    /// Suffix minima of decode-order indices for fast "first decode sample with pts>=t" seeking.
+    ///
+    /// `min_sample_index_from_pos[i]` is the smallest decode-order sample index among
+    /// `sample_indices_by_pts[i..]`.
+    min_sample_index_from_pos: Vec<u32>,
+  },
+}
+
 #[derive(Debug)]
 struct ActiveTrack {
   id: u32,
   samples: Vec<Mp4SampleInfo>,
+  pts_index: PtsIndex,
   next_sample: usize,
+}
+
+impl ActiveTrack {
+  fn seek(&mut self, time_ns: u64) {
+    let idx = match &self.pts_index {
+      PtsIndex::Monotonic => self.samples.partition_point(|s| s.pts_ns < time_ns),
+      PtsIndex::Sorted {
+        sample_indices_by_pts,
+        min_sample_index_from_pos,
+      } => {
+        let pos =
+          sample_indices_by_pts.partition_point(|&i| self.samples[i as usize].pts_ns < time_ns);
+        min_sample_index_from_pos
+          .get(pos)
+          .map(|&idx| idx as usize)
+          .unwrap_or_else(|| self.samples.len())
+      }
+    };
+    self.next_sample = idx;
+  }
 }
 
 pub struct Mp4ParseDemuxer<R: Read + Seek> {
@@ -225,9 +259,11 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
         continue;
       };
       let samples = build_sample_list(track)?;
+      let pts_index = build_pts_index(&samples);
       active_tracks.push(ActiveTrack {
         id,
         samples,
+        pts_index,
         next_sample: 0,
       });
     }
@@ -309,6 +345,45 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
       is_keyframe: sample.is_sync,
     }))
   }
+
+  pub fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    for track in &mut self.active_tracks {
+      track.seek(time_ns);
+    }
+    Ok(())
+  }
+}
+
+fn build_pts_index(samples: &[Mp4SampleInfo]) -> PtsIndex {
+  let mut is_monotonic = true;
+  for i in 1..samples.len() {
+    if samples[i].pts_ns < samples[i - 1].pts_ns {
+      is_monotonic = false;
+      break;
+    }
+  }
+
+  if is_monotonic {
+    return PtsIndex::Monotonic;
+  }
+
+  let mut sample_indices_by_pts = Vec::with_capacity(samples.len());
+  for i in 0..samples.len() {
+    sample_indices_by_pts.push(i as u32);
+  }
+  sample_indices_by_pts.sort_unstable_by_key(|&i| (samples[i as usize].pts_ns, i));
+
+  let mut min_sample_index_from_pos = vec![0_u32; sample_indices_by_pts.len()];
+  let mut min = u32::MAX;
+  for (pos, &idx) in sample_indices_by_pts.iter().enumerate().rev() {
+    min = min.min(idx);
+    min_sample_index_from_pos[pos] = min;
+  }
+
+  PtsIndex::Sorted {
+    sample_indices_by_pts,
+    min_sample_index_from_pos,
+  }
 }
 
 fn read_mp4_context<R: Read + Seek>(reader: &mut R) -> MediaResult<mp4parse::MediaContext> {
@@ -337,7 +412,10 @@ impl Mp4SampleEntryMeta {
           .protection_info
           .iter()
           .map(|info| Mp4ProtectionInfo {
-            scheme_type: info.scheme_type.as_ref().map(|scheme| scheme.scheme_type.to_string()),
+            scheme_type: info
+              .scheme_type
+              .as_ref()
+              .map(|scheme| scheme.scheme_type.to_string()),
           })
           .collect(),
       }),
@@ -347,7 +425,10 @@ impl Mp4SampleEntryMeta {
           .protection_info
           .iter()
           .map(|info| Mp4ProtectionInfo {
-            scheme_type: info.scheme_type.as_ref().map(|scheme| scheme.scheme_type.to_string()),
+            scheme_type: info
+              .scheme_type
+              .as_ref()
+              .map(|scheme| scheme.scheme_type.to_string()),
           })
           .collect(),
       }),
@@ -408,17 +489,12 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
     format!("{codec:?}")
   }
 
-  // mp4parse exposes a fairly rich codec model, but for now we keep this simple and best-effort.
-  //
-  // - AAC: detect `mp4a` sample entries.
-  // - Other codecs: surface the fourcc/name as `Unknown`.
-  //
-  // Note: We intentionally leave `codec_private` empty for now. mp4parse can expose codec-specific
-  // config via `AudioSampleEntry::codec_specific`, but the exact enum variants are not yet wired
-  // into our decode pipeline.
+  // mp4parse exposes a fairly rich codec model. Keep codec detection simple but try to surface
+  // decoder-relevant codec_private data for codecs we already support.
   let mut codec = MediaCodec::Unknown("unknown".to_string());
+  let mut codec_private = Vec::new();
   let Some(stsd) = track.stsd.as_ref() else {
-    return (codec, Vec::new());
+    return (codec, codec_private);
   };
 
   // MP4 can have multiple sample entries (`stsd`). The active one is selected via the `stsc`
@@ -439,7 +515,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
     .get(desc_index0)
     .or_else(|| stsd.descriptions.get(0))
   else {
-    return (codec, Vec::new());
+    return (codec, codec_private);
   };
 
   match entry {
@@ -453,6 +529,13 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
       } else {
         MediaCodec::Unknown(name)
       };
+
+      if matches!(codec, MediaCodec::Aac) {
+        // mp4parse exposes the MP4 ESDS/ASC bytes via `ES_Descriptor.decoder_specific_data`.
+        if let mp4parse::AudioCodecSpecific::ES_Descriptor(esds) = &audio.codec_specific {
+          codec_private = esds.decoder_specific_data.iter().copied().collect();
+        }
+      }
     }
     mp4parse::SampleEntry::Video(video) => {
       let name = codec_type_name(&video.codec_type);
@@ -464,11 +547,126 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
       } else {
         MediaCodec::Unknown(name)
       };
+
+      if matches!(codec, MediaCodec::H264) {
+        // mp4parse provides raw avcC bytes (`AVCDecoderConfigurationRecord`) via
+        // `VideoCodecSpecific::AVCConfig`. Convert to the small custom format expected by
+        // `decoder::H264Decoder`.
+        if let mp4parse::VideoCodecSpecific::AVCConfig(avcc) = &video.codec_specific {
+          if let Some(out) = parse_avcc_for_h264_codec_private(&avcc[..]) {
+            codec_private = out;
+          }
+        }
+      } else if matches!(codec, MediaCodec::Vp9) {
+        // Mirror the compact vpcC-derived extradata format used by `Mp4PacketDemuxer`.
+        if let mp4parse::VideoCodecSpecific::VPxConfig(vpcc) = &video.codec_specific {
+          let codec_init: Vec<u8> = vpcc.codec_init.iter().copied().collect();
+          if codec_init.len() <= u16::MAX as usize {
+            let mut out = Vec::with_capacity(3 + 2 + codec_init.len());
+            out.push(vpcc.bit_depth);
+            out.push(vpcc.colour_primaries);
+            out.push(vpcc.chroma_subsampling);
+            out.extend_from_slice(&(codec_init.len() as u16).to_be_bytes());
+            out.extend_from_slice(&codec_init);
+            codec_private = out;
+          }
+        }
+      }
     }
     _ => {}
   }
 
-  (codec, Vec::new())
+  (codec, codec_private)
+}
+
+fn parse_avcc_for_h264_codec_private(avcc: &[u8]) -> Option<Vec<u8>> {
+  // AVCDecoderConfigurationRecord (avcC) layout (ISO/IEC 14496-15):
+  //
+  // 1  configurationVersion (must be 1)
+  // 1  AVCProfileIndication
+  // 1  profile_compatibility
+  // 1  AVCLevelIndication
+  // 1  reserved (6 bits = 1) + lengthSizeMinusOne (2 bits)
+  // 1  reserved (3 bits = 1) + numOfSequenceParameterSets (5 bits)
+  //   [SPS...]
+  // 1  numOfPictureParameterSets
+  //   [PPS...]
+  //
+  // We convert this to the small custom format expected by `decoder::H264Decoder`:
+  //
+  //   u8  nal_length_size
+  //   u8  sps_count
+  //   [sps_count] { u16be len, [len] bytes }
+  //   u8  pps_count
+  //   [pps_count] { u16be len, [len] bytes }
+  if avcc.len() < 7 {
+    return None;
+  }
+  let mut i = 0usize;
+
+  let configuration_version = avcc[i];
+  i += 1;
+  if configuration_version != 1 {
+    return None;
+  }
+
+  // Skip profile/compat/level.
+  i += 3;
+
+  let length_size_minus_one = avcc[i] & 0b11;
+  i += 1;
+  let nal_length_size = length_size_minus_one + 1;
+  if nal_length_size == 0 || nal_length_size > 4 {
+    return None;
+  }
+
+  let num_sps = avcc[i] & 0b1_1111;
+  i += 1;
+  let sps_count = num_sps as usize;
+
+  let mut out = Vec::new();
+  out.push(nal_length_size);
+  out.push(num_sps);
+
+  for _ in 0..sps_count {
+    if i + 2 > avcc.len() {
+      return None;
+    }
+    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+    i += 2;
+    let end = i.checked_add(len)?;
+    if end > avcc.len() {
+      return None;
+    }
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(&avcc[i..end]);
+    i = end;
+  }
+
+  if i >= avcc.len() {
+    return None;
+  }
+  let num_pps = avcc[i];
+  i += 1;
+  let pps_count = num_pps as usize;
+
+  out.push(num_pps);
+  for _ in 0..pps_count {
+    if i + 2 > avcc.len() {
+      return None;
+    }
+    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+    i += 2;
+    let end = i.checked_add(len)?;
+    if end > avcc.len() {
+      return None;
+    }
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(&avcc[i..end]);
+    i = end;
+  }
+
+  Some(out)
 }
 
 fn video_dimensions(track: &mp4parse::Track) -> (Option<u16>, Option<u16>) {
@@ -723,6 +921,58 @@ mod tests {
   }
 
   #[test]
+  fn mp4parse_seek_uses_decode_order_when_pts_non_monotonic() {
+    // Non-monotonic PTS in decode order (typical B-frame reordering):
+    // pts: 0, 3, 1, 2
+    // Seeking to pts>=2 should return sample 1 (pts=3), not sample 3 (pts=2).
+    let samples = vec![
+      Mp4SampleInfo {
+        offset: 0,
+        size: 1,
+        dts_ns: 0,
+        pts_ns: 0,
+        duration_ns: 1,
+        is_sync: true,
+      },
+      Mp4SampleInfo {
+        offset: 1,
+        size: 1,
+        dts_ns: 1,
+        pts_ns: 3,
+        duration_ns: 1,
+        is_sync: false,
+      },
+      Mp4SampleInfo {
+        offset: 2,
+        size: 1,
+        dts_ns: 2,
+        pts_ns: 1,
+        duration_ns: 1,
+        is_sync: false,
+      },
+      Mp4SampleInfo {
+        offset: 3,
+        size: 1,
+        dts_ns: 3,
+        pts_ns: 2,
+        duration_ns: 1,
+        is_sync: false,
+      },
+    ];
+
+    let pts_index = build_pts_index(&samples);
+    let mut track = ActiveTrack {
+      id: 1,
+      samples,
+      pts_index,
+      next_sample: 0,
+    };
+
+    track.seek(2);
+    assert_eq!(track.next_sample, 1);
+  }
+
+  #[test]
   fn rejects_sample_entry_with_protection_info_and_scheme() {
     let meta = Mp4SampleEntryMeta {
       codec_type: mp4parse::CodecType::H264,
@@ -798,11 +1048,15 @@ mod tests {
     );
 
     assert!(
-      tracks.iter().any(|t| t.track_type == MediaTrackType::Video && t.codec == MediaCodec::H264),
+      tracks
+        .iter()
+        .any(|t| t.track_type == MediaTrackType::Video && t.codec == MediaCodec::H264),
       "expected at least one H264 video track: {tracks:?}"
     );
     assert!(
-      tracks.iter().any(|t| t.track_type == MediaTrackType::Audio && t.codec == MediaCodec::Aac),
+      tracks
+        .iter()
+        .any(|t| t.track_type == MediaTrackType::Audio && t.codec == MediaCodec::Aac),
       "expected at least one AAC audio track: {tracks:?}"
     );
   }
