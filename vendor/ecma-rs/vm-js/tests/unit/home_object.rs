@@ -1,4 +1,6 @@
-use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use crate::{
+  CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions,
+};
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -376,37 +378,40 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 fn await_in_class_static_block_preserves_home_object_ast() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let result = rt.exec_script(
+  let promise = rt.exec_script(
     r#"
       class A {
         static {
           // Arrow functions created inside static blocks inherit `[[HomeObject]]` from the static
           // block execution context (the class constructor object), even when the static block
           // suspends/resumes via top-level `await`.
-           this.before = () => 1;
-           await Promise.resolve(0);
-           this.after = () => 2;
-          }
-        };
+          this.before = () => 1;
+          await Promise.resolve(0);
+          this.after = () => 2;
+        }
+      };
       "#,
-  );
-  match result {
-    Ok(_) => {}
-    // `await` in class static blocks is a syntax error (early error) in current semantics.
-    // Treat this test as future-facing: if/when static blocks can suspend, ensure `[[HomeObject]]`
-    // is preserved across resumption.
-    Err(VmError::Syntax(diags))
-      if diags.iter().any(|d| {
-        d.code.as_str() == "VMJS0004"
-          && (d.message.contains("await") || d.notes.iter().any(|n| n.contains("await")))
-      }) =>
-    {
-      return Ok(());
-    }
-    Err(err) => return Err(err),
-  }
+  )?;
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let promise_root = rt.heap.add_root(promise)?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected Promise object, got {promise:?}");
+  };
+  assert!(rt.heap.is_promise_object(promise_obj));
+
+  // Drive microtasks until the async classic-script promise settles.
+  for _ in 0..8 {
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    if rt.heap.promise_state(promise_obj)? != PromiseState::Pending {
+      break;
+    }
+  }
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  assert_eq!(
+    rt.heap.promise_result(promise_obj)?,
+    Some(Value::Undefined),
+    "async classic-script completion should resolve to undefined for a statement-only script"
+  );
 
   let ctor = assert_is_function(rt.exec_script("A")?);
   let before = assert_is_function(rt.exec_script("A.before")?);
@@ -415,6 +420,7 @@ fn await_in_class_static_block_preserves_home_object_ast() -> Result<(), VmError
   assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
   assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
 
+  rt.heap.remove_root(promise_root);
   Ok(())
 }
 
@@ -422,7 +428,7 @@ fn await_in_class_static_block_preserves_home_object_ast() -> Result<(), VmError
 fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let eval_promise = match rt.exec_module(
+  let eval_promise = rt.exec_module(
     "main.js",
     r#"
       class A {
@@ -434,21 +440,23 @@ fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmEr
       }
       globalThis.ctor = A;
     "#,
-  ) {
-    Ok(p) => p,
-    Err(VmError::Syntax(diags))
-      if diags.iter().any(|d| {
-        d.code.as_str() == "VMJS0004"
-          && (d.message.contains("await") || d.notes.iter().any(|n| n.contains("await")))
-      }) =>
-    {
-      return Ok(());
-    }
-    Err(err) => return Err(err),
-  };
+  )?;
   let eval_promise_root = rt.heap.add_root(eval_promise)?;
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  let Value::Object(promise_obj) = eval_promise else {
+    panic!("expected Promise object, got {eval_promise:?}");
+  };
+  assert!(rt.heap.is_promise_object(promise_obj));
+
+  // Module evaluation is async when `await` appears in a static block; the evaluation promise should
+  // settle after microtasks run.
+  for _ in 0..8 {
+    if rt.heap.promise_state(promise_obj)? != PromiseState::Pending {
+      break;
+    }
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  }
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
 
   let ctor = assert_is_function(rt.exec_script("ctor")?);
   let before = assert_is_function(rt.exec_script("before")?);
