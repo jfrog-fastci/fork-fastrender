@@ -371,7 +371,7 @@ mod tests {
     let opts = ecma_script_opts();
 
     let expected = SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or class static initialization blocks",
+      "`arguments` is not allowed in class field initializers or static initialization blocks",
     );
 
     // `arguments` is an early error in class field initializers.
