@@ -616,6 +616,14 @@ impl Realm {
         Value::Object(intrinsics.aggregate_error()),
       )?;
 
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
+        "SuppressedError",
+        Value::Object(intrinsics.suppressed_error()),
+      )?;
+
       // Promise
       define_global_data_property_once(
         &mut scope,

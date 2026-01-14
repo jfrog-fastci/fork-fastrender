@@ -2215,8 +2215,7 @@ reason = "vm-js: Explicit Resource Management built-ins are not implemented yet 
 
 [[expectations]]
 glob = "built-ins/SuppressedError/**"
-status = "xfail"
-reason = "vm-js: Explicit Resource Management built-ins are not implemented yet (SuppressedError)."
+status = "pass"
 
 [[expectations]]
 glob = "staging/explicit-resource-management/**"

@@ -140,6 +140,8 @@ pub struct Intrinsics {
   uri_error_prototype: GcObject,
   aggregate_error: GcObject,
   aggregate_error_prototype: GcObject,
+  suppressed_error: GcObject,
+  suppressed_error_prototype: GcObject,
 
   promise: GcObject,
   promise_prototype: GcObject,
@@ -7370,6 +7372,9 @@ impl Intrinsics {
     // --- Error + subclasses ---
     let error_call = vm.register_native_call(builtins::error_constructor_call)?;
     let error_construct = vm.register_native_construct(builtins::error_constructor_construct)?;
+    let suppressed_error_call = vm.register_native_call(builtins::suppressed_error_constructor_call)?;
+    let suppressed_error_construct =
+      vm.register_native_construct(builtins::suppressed_error_constructor_construct)?;
     let (error, error_prototype) = init_native_error(
       vm,
       scope,
@@ -7564,6 +7569,37 @@ impl Intrinsics {
       "AggregateError",
       2,
     )?;
+
+    let (suppressed_error, suppressed_error_prototype) = init_native_error(
+      vm,
+      scope,
+      roots,
+      common,
+      error,
+      error_prototype,
+      well_known_symbols.to_string_tag,
+      suppressed_error_call,
+      suppressed_error_construct,
+      "SuppressedError",
+      3,
+    )?;
+
+    // SuppressedError.prototype.message
+    //
+    // Per the Explicit Resource Management proposal, SuppressedError instances created without an
+    // explicit message argument inherit the empty string `message` from `%SuppressedError.prototype%`.
+    {
+      let message_s = scope.alloc_string("message")?;
+      scope.push_root(Value::String(message_s))?;
+      let key = PropertyKey::from_string(message_s);
+      let empty = scope.alloc_string("")?;
+      scope.push_root(Value::String(empty))?;
+      scope.define_property(
+        suppressed_error_prototype,
+        key,
+        data_desc(Value::String(empty), true, false, true),
+      )?;
+    }
 
     // --- Promise ---
     let promise_prototype = alloc_rooted_object(scope, roots)?;
@@ -7929,6 +7965,8 @@ impl Intrinsics {
       uri_error_prototype,
       aggregate_error,
       aggregate_error_prototype,
+      suppressed_error,
+      suppressed_error_prototype,
 
       promise,
       promise_prototype,
@@ -8357,6 +8395,14 @@ impl Intrinsics {
 
   pub fn aggregate_error_prototype(&self) -> GcObject {
     self.aggregate_error_prototype
+  }
+
+  pub fn suppressed_error(&self) -> GcObject {
+    self.suppressed_error
+  }
+
+  pub fn suppressed_error_prototype(&self) -> GcObject {
+    self.suppressed_error_prototype
   }
 
   pub fn promise(&self) -> GcObject {

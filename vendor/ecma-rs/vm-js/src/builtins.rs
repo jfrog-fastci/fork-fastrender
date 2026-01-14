@@ -6400,6 +6400,99 @@ pub fn error_constructor_construct(
   Ok(Value::Object(obj))
 }
 
+pub fn suppressed_error_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  suppressed_error_constructor_construct(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    args,
+    Value::Object(callee),
+  )
+}
+
+pub fn suppressed_error_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-suppressederror-constructor
+  let intr = require_intrinsics(vm)?;
+
+  // 1. If NewTarget is undefined, let newTarget be the active function object, else let newTarget
+  //    be NewTarget.
+  let new_target = if matches!(new_target, Value::Undefined) {
+    Value::Object(callee)
+  } else {
+    new_target
+  };
+
+  // 2. Let O be ? OrdinaryCreateFromConstructor(newTarget, "%SuppressedError.prototype%", «
+  //    [[ErrorData]] »).
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.suppressed_error_prototype(),
+    &[],
+    |scope| scope.alloc_error(),
+  )?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  // 3. If message is not undefined, then
+  //   a. Let messageString be ? ToString(message).
+  //   b. Perform CreateNonEnumerableDataPropertyOrThrow(O, "message", messageString).
+  let message_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+  if !matches!(message_arg, Value::Undefined) {
+    scope.push_root(message_arg)?;
+    let message_string = scope.to_string(vm, host, hooks, message_arg)?;
+    scope.push_root(Value::String(message_string))?;
+
+    let message_key = string_key(&mut scope, "message")?;
+    scope.define_property(
+      obj,
+      message_key,
+      data_desc(Value::String(message_string), true, false, true),
+    )?;
+  }
+
+  // 4. Perform CreateNonEnumerableDataPropertyOrThrow(O, "error", error).
+  let error_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(error_arg)?;
+  let error_key = string_key(&mut scope, "error")?;
+  scope.define_property(obj, error_key, data_desc(error_arg, true, false, true))?;
+
+  // 5. Perform CreateNonEnumerableDataPropertyOrThrow(O, "suppressed", suppressed).
+  let suppressed_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(suppressed_arg)?;
+  let suppressed_key = string_key(&mut scope, "suppressed")?;
+  scope.define_property(
+    obj,
+    suppressed_key,
+    data_desc(suppressed_arg, true, false, true),
+  )?;
+
+  // 6. Return O.
+  Ok(Value::Object(obj))
+}
+
 fn aggregate_error_iterable_to_list_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
