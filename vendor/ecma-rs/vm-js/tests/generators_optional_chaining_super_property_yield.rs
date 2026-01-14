@@ -121,6 +121,50 @@ fn generator_optional_super_property_call_binds_this_across_yield_in_arg() {
 }
 
 #[test]
+fn generator_optional_super_property_call_short_circuits_on_nullish_getter_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        let side = 0;
+        class Base {
+          get maybe() { side++; return null; }
+        }
+        class C extends Base {
+          *g() { return super.maybe?.(yield "should-not-yield"); }
+        }
+        const it = (new C()).g();
+        const r = it.next();
+        r.value === undefined && r.done === true && side === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_super_property_computed_member_short_circuits_on_nullish_getter_and_skips_yield_in_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        let side = 0;
+        class Base {
+          get maybe() { side++; return null; }
+        }
+        class C extends Base {
+          *g() { return super.maybe?.[(yield "should-not-yield")]; }
+        }
+        const it = (new C()).g();
+        const r = it.next();
+        r.value === undefined && r.done === true && side === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_optional_super_property_call_evaluates_yield_in_arg_before_throwing_type_error() {
   let mut rt = new_runtime();
   let value = rt
@@ -345,6 +389,22 @@ fn generator_optional_super_property_yield_compiled() -> Result<(), VmError> {
       ok = ok && r8_1.value === "key" && r8_1.done === false &&
         r8_2.value === 1 && r8_2.done === false &&
         r8_3.value === "TypeError" && r8_3.done === true;
+
+      let side9 = 0;
+      class Base9 { get maybe() { side9++; return null; } }
+      class C9 extends Base9 {
+        *g() { return super.maybe?.(yield "should-not-yield"); }
+      }
+      const r9 = (new C9()).g().next();
+      ok = ok && r9.value === undefined && r9.done === true && side9 === 1;
+
+      let side10 = 0;
+      class Base10 { get maybe() { side10++; return null; } }
+      class C10 extends Base10 {
+        *g() { return super.maybe?.[(yield "should-not-yield")]; }
+      }
+      const r10 = (new C10()).g().next();
+      ok = ok && r10.value === undefined && r10.done === true && side10 === 1;
 
       ok
     "#,

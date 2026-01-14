@@ -47086,7 +47086,7 @@ fn named_node_map_remove_named_item_native(
     } else {
       attr_name.as_ref() == query
     };
-    if matches {
+  if matches {
       found = Some(attr);
       break;
     }
