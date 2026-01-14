@@ -885,6 +885,65 @@ mod tests {
   }
 
   #[test]
+  fn session_window_sanitizes_closed_tabs_urls_titles_and_schemes() {
+    let long_url = format!(
+      "https://example.com/{}",
+      "a".repeat(MAX_SESSION_URL_BYTES)
+    );
+    assert!(
+      long_url.len() > MAX_SESSION_URL_BYTES,
+      "expected long_url to exceed max bytes"
+    );
+    let long_title = "x".repeat(MAX_TITLE_BYTES + 32);
+
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads: Vec::new(),
+      tab_groups: Vec::new(),
+      closed_tabs: vec![
+        BrowserSessionClosedTab {
+          url: "javascript:alert(1)".to_string(),
+          title: Some("bad".to_string()),
+          pinned: false,
+        },
+        BrowserSessionClosedTab {
+          url: long_url.clone(),
+          title: Some(long_title),
+          pinned: true,
+        },
+      ],
+      active_tab_index: 0,
+      bookmarks_bar_visible: false,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.closed_tabs.len(), 1, "invalid schemes should be dropped");
+    let restored = &window.closed_tabs[0];
+    assert!(restored.pinned);
+    assert!(
+      restored.url.len() <= MAX_SESSION_URL_BYTES,
+      "closed tab URL should be clamped"
+    );
+    assert!(
+      restored.url.starts_with("https://example.com/"),
+      "expected clamped URL to preserve scheme/host, got: {}",
+      restored.url
+    );
+    assert!(
+      restored.title.as_ref().is_some_and(|t| t.as_bytes().len() <= MAX_TITLE_BYTES),
+      "closed tab title should be clamped"
+    );
+  }
+
+  #[test]
   fn session_omits_default_scroll_from_json() {
     let session = BrowserSession::single("about:newtab".to_string());
     let json = serde_json::to_string(&session).expect("serialize session");
