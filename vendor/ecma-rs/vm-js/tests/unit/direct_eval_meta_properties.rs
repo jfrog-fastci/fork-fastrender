@@ -134,3 +134,56 @@ fn direct_eval_new_target_in_arrow_nested_in_function_is_allowed_compiled() {
   let value = rt.exec_compiled_script(script).unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn direct_eval_super_property_in_arrow_nested_in_class_method_is_allowed() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Foo {
+          method() { return () => eval('super.toString'); }
+        }
+        var f = new Foo().method();
+        f() === Object.prototype.toString
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_super_property_in_arrow_nested_in_object_method_is_allowed() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var proto = { x: 262 };
+        var o = {
+          method() { return () => eval('super.x'); }
+        };
+        Object.setPrototypeOf(o, proto);
+        var f = o.method();
+        f() === 262
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_super_property_in_arrow_nested_in_object_method_is_allowed_compiled() {
+  let mut rt = new_runtime();
+  let source = r#"
+    var proto = { x: 262 };
+    var o = {
+      method() { return () => eval('super.x'); }
+    };
+    Object.setPrototypeOf(o, proto);
+    var f = o.method();
+    f() === 262
+  "#;
+  let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source).unwrap();
+  let value = rt.exec_compiled_script(script).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
