@@ -208,6 +208,11 @@ timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
 
 # Import it as an offline fixture for minimization/regression work:
 timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/timeout_repro_bundle.tar timeout_repro --overwrite
+
+# Note: media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to
+# deterministic empty placeholder files by default so fixtures stay small. If you need **playable**
+# media in the offline fixture (e.g. browser UI testing), add `--include-media` (subject to size
+# budgets; see `xtask import-page-fixture --help`).
 ```
 
 Then minimize the fixture until you find the smallest case that triggers the timeout.
