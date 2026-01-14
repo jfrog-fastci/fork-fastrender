@@ -1660,38 +1660,19 @@ pub fn chrome_ui_with_bookmarks(
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
       // Avoid holding immutable borrows of the active tab across the full chrome UI: we mutate
       // various `BrowserAppState` fields in response to user actions.
-      let (can_back, can_forward, loading, stage, load_progress, zoom_factor, active_url, error, warning) = {
-        let active_tab = app.active_tab();
-        let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = active_tab
-          .map(|t| {
-            (
-              t.can_go_back,
-              t.can_go_forward,
-              t.loading,
-              t.load_stage,
-              t.load_progress,
-              t.zoom,
-            )
-          })
-          .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
-        let active_url = active_tab
-          .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
-          .unwrap_or("")
-          .to_string();
-        let error = active_tab.and_then(|t| t.error.as_deref()).map(str::to_string);
-        let warning = active_tab.and_then(|t| t.warning.as_deref()).map(str::to_string);
-        (
-          can_back,
-          can_forward,
-          loading,
-          stage,
-          load_progress,
-          zoom_factor,
-          active_url,
-          error,
-          warning,
-        )
-      };
+      let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = app
+        .active_tab()
+        .map(|t| {
+          (
+            t.can_go_back,
+            t.can_go_forward,
+            t.loading,
+            t.load_stage,
+            t.load_progress,
+            t.zoom,
+          )
+        })
+        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
 
       let downloads = app.downloads.aggregate_progress();
 
@@ -1879,36 +1860,56 @@ pub fn chrome_ui_with_bookmarks(
       let mut key_alt_enter = false;
       let mut key_enter = false;
       let mut key_escape = false;
+      let mut text_edit_response: Option<egui::Response> = None;
+      let mut active_url_is_bookmarked = false;
 
-      // Derive the URL for display/indicator from the active tab (not from in-progress address bar
-      // edits).
-      let active_url_trim = active_url.trim();
+      {
+        // Derive the URL for display/indicator from the active tab (not from in-progress address bar
+        // edits).
+        //
+        // Avoid cloning the URL/error/warning strings every frame: the address bar reads these values
+        // frequently even while idle.
+        let (active_url, error, warning) = {
+          let active_tab = app
+            .active_tab
+            .and_then(|tab_id| app.tabs.iter().find(|t| t.id == tab_id));
+          let active_url = active_tab
+            .and_then(|t| t.current_url())
+            .unwrap_or_default();
+          let error = active_tab.and_then(|t| t.error.as_deref());
+          let warning = active_tab.and_then(|t| t.warning.as_deref());
+          (active_url, error, warning)
+        };
+        let active_url_trim = active_url.trim();
 
-      let (
-        formatted_url,
-        url_generation,
-        indicator,
-        display_path_query_fragment,
-        active_url_is_bookmarked,
-        loading_text,
-      ) = {
-        let cache = &mut app.chrome.address_bar_cache;
-        cache.update_active_url(active_url.as_str(), ADDRESS_BAR_DISPLAY_MAX_CHARS);
-        let url_generation = cache.active_url_generation();
-        let active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
-        let indicator = cache.security_indicator();
-        let formatted_url = cache.formatted_url().clone();
-        let display_path_query_fragment = cache.display_path_query_fragment().map(str::to_string);
-        let loading_text = cache.loading_text(stage).to_string();
-        (
+        let (
           formatted_url,
           url_generation,
           indicator,
           display_path_query_fragment,
-          active_url_is_bookmarked,
           loading_text,
-        )
-      };
+        ) = {
+          let cache = &mut app.chrome.address_bar_cache;
+          cache.update_active_url(active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
+          let url_generation = cache.active_url_generation();
+          active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
+          // Only rebuild the cached loading text when it will be visible.
+          let loading_text = if loading {
+            cache.loading_text(stage)
+          } else {
+            ""
+          };
+          let indicator = cache.security_indicator();
+          let formatted_url = cache.formatted_url();
+          let display_path_query_fragment = cache.display_path_query_fragment();
+          (
+            formatted_url,
+            url_generation,
+            indicator,
+            display_path_query_fragment,
+            loading_text,
+          )
+        };
       let bar_height = ui.spacing().interact_size.y;
       let button_side = ui.spacing().interact_size.y;
       let spacing_x = ui.spacing().item_spacing.x;
@@ -2022,7 +2023,6 @@ pub fn chrome_ui_with_bookmarks(
       // Build the contents inside an inset rect to get pill-like padding.
       let pad = ui.spacing().button_padding;
       let inner_rect = bar_rect.shrink2(egui::vec2(pad.x.max(6.0), pad.y.max(4.0)));
-      let mut text_edit_response: Option<egui::Response> = None;
       ui.allocate_ui_at_rect(inner_rect, |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
@@ -2035,7 +2035,7 @@ pub fn chrome_ui_with_bookmarks(
           egui::Margin::same((pad.y * 0.35).clamp(1.0, 3.0))
         };
 
-        let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
+        let err_msg = error.map(str::trim).filter(|s| !s.is_empty());
         let show_try_http = err_msg.is_some()
           && matches!(formatted_url.security_state, AddressBarSecurityState::Https);
         let err_t = motion.animate_bool(
@@ -2045,7 +2045,7 @@ pub fn chrome_ui_with_bookmarks(
           motion.durations.progress_fade,
         );
 
-        let warn_msg = warning.as_deref().filter(|s| !s.trim().is_empty());
+        let warn_msg = warning.map(str::trim).filter(|s| !s.is_empty());
         let warn_t = motion.animate_bool(
           ctx,
           address_bar_id.with("status_badge_warning"),
@@ -2086,7 +2086,7 @@ pub fn chrome_ui_with_bookmarks(
           let label_width = ctx.data_mut(|d| {
             let cache_id = address_bar_id.with("loading_text_width_cache");
             let cache = d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id);
-            cache.width(ui, stage_key, &font_id, loading_text.as_str())
+            cache.width(ui, stage_key, &font_id, loading_text)
           });
           right_sum += label_width;
           right_len += 1;
@@ -2205,13 +2205,13 @@ pub fn chrome_ui_with_bookmarks(
               let galley = ctx.data_mut(|d| {
                 let cache_id = address_bar_id.with("display_galley_cache");
                 let cache = d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id);
-                cache.update(
-                  ui,
-                  &formatted_url,
-                  display_path_query_fragment.as_deref(),
-                  max_width,
-                  url_generation,
-                );
+            cache.update(
+              ui,
+              formatted_url,
+              display_path_query_fragment,
+              max_width,
+              url_generation,
+            );
                 cache.galley()
               });
               ui.add(egui::Label::new(galley));
@@ -2383,20 +2383,20 @@ pub fn chrome_ui_with_bookmarks(
             // Loading status (optional; shown to the right of downloads).
             if loading && !is_compact {
               let resp = ui.add(
-                egui::Label::new(egui::RichText::new(loading_text.clone()).small())
+                egui::Label::new(egui::RichText::new(loading_text).small())
                   .wrap(false)
                   .truncate(true),
               );
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text.as_str());
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
             }
             if loading {
               let resp = spinner(ui, icon_side);
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text.as_str());
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
               // In compact mode the spinner may be the only visible loading affordance, so expose the
               // full loading text to screen readers (hover text is not sufficient).
               resp.widget_info({
-                let label = loading_text.clone();
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                let label = loading_text;
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
               });
             }
 
@@ -2729,7 +2729,7 @@ pub fn chrome_ui_with_bookmarks(
         let tooltip = if active_url_trim.is_empty() {
           "Enter URL…"
         } else {
-          active_url.as_str()
+          active_url
         };
         // Avoid `on_hover_text`: it forces the tooltip text to be owned (`'static`) and allocates
         // every frame even when the address bar isn't hovered. We only need the tooltip when the
@@ -2779,6 +2779,7 @@ pub fn chrome_ui_with_bookmarks(
             ui.close_menu();
           }
         });
+      }
       }
       if let Some(response) = text_edit_response {
         // When the omnibox dropdown is open, keep keyboard focus in the address bar so keyboard
@@ -3102,6 +3103,13 @@ pub fn chrome_ui_with_bookmarks(
 
         address_bar_text_edit_response = Some(response.clone());
       }
+
+      let active_url_trim = app
+        .active_tab
+        .and_then(|tab_id| app.tabs.iter().find(|t| t.id == tab_id))
+        .and_then(|t| t.current_url())
+        .unwrap_or_default()
+        .trim();
 
       // Toolbar menu (hamburger) button.
       //
