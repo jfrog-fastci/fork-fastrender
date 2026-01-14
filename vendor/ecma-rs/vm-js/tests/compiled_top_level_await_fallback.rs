@@ -1,4 +1,7 @@
-use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  CompiledScript, Heap, HeapLimits, JsRuntime, MicrotaskQueue, PromiseState, Value, Vm, VmError,
+  VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -48,6 +51,66 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, out), "");
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_string(&rt, result), "ok");
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_host_and_hooks_falls_back_for_top_level_await() -> Result<(), VmError> {
+  // Regression test for `exec_compiled_script_with_host_and_hooks`: unsupported top-level await
+  // patterns must execute via the AST interpreter and enqueue Promise jobs via the provided
+  // `hooks`.
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_await_fallback_with_hooks.js",
+    r#"
+      var out = "";
+      out += await Promise.resolve("ok");
+      out
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "compound assignment with await is not supported by the HIR async classic-script executor"
+  );
+  assert!(
+    script.requires_ast_fallback,
+    "unsupported top-level await patterns should set `requires_ast_fallback` for compiled-script execution"
+  );
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let completion = rt.exec_compiled_script_with_host_and_hooks(&mut host, &mut hooks, script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The assignment after `await` should not have executed yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  let errors = hooks.perform_microtask_checkpoint(&mut rt);
+  if let Some(err) = errors.into_iter().next() {
+    return Err(err);
+  }
 
   assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
   let result = rt
