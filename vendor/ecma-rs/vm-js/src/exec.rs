@@ -7640,37 +7640,22 @@ impl<'a> Evaluator<'a> {
           _ => false,
         };
 
-        let value = self.eval_expr(scope, &stmt.stx.expression)?;
-
-        // ECMA-262 `ExportDefaultDeclaration` performs `SetFunctionName` when exporting an anonymous
-        // function/class expression. Do this before initializing the module binding.
-        if is_anonymous_function_or_class {
-          if let Value::Object(func_obj) = value {
-            let name_key = PropertyKey::String(scope.common_key_name()?);
-            let should_set_name = match scope.heap().object_get_own_property(func_obj, &name_key)? {
-              None => true,
-              Some(desc) => match desc.kind {
-                PropertyKind::Data {
-                  value: Value::String(s),
-                  ..
-                } => scope.heap().get_string(s)?.is_empty(),
-                _ => false,
-              },
-            };
-
-            if should_set_name {
-              let mut name_scope = scope.reborrow();
-              let default_s = name_scope.alloc_string("default")?;
-              name_scope.push_root(Value::String(default_s))?;
-              crate::function_properties::set_function_name(
-                &mut name_scope,
-                func_obj,
-                PropertyKey::String(default_s),
-                None,
-              )?;
-            }
-          }
-        }
+        let value = if is_anonymous_function_or_class {
+          // `export default <expr>;` performs `SetFunctionName` when exporting an anonymous
+          // function/class expression (including arrow functions). Use `eval_expr_named` so anonymous
+          // class expressions receive the inferred name **during** class construction (allowing a
+          // `static name() {}` class element to override the constructor's initial `"name"` property).
+          let mut name_scope = scope.reborrow();
+          let default_s = name_scope.alloc_string("default")?;
+          name_scope.push_root(Value::String(default_s))?;
+          self.eval_expr_named(
+            &mut name_scope,
+            &stmt.stx.expression,
+            PropertyKey::String(default_s),
+          )?
+        } else {
+          self.eval_expr(scope, &stmt.stx.expression)?
+        };
 
         let binding_name = "*default*";
         if !scope

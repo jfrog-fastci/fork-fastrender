@@ -3385,83 +3385,79 @@ impl<'vm> HirEvaluator<'vm> {
           // - and initialize the module's `*default*` binding with the resulting value.
           //
           // Module linking pre-creates the immutable `*default*` binding (see `ModuleGraph::link`).
-          let is_anonymous_function_or_class = decl_body
+          let expr_stmt_id = decl_body
             .root_stmts
             .last()
-            .and_then(|stmt_id| decl_body.stmts.get(stmt_id.0 as usize))
-            .and_then(|stmt| match &stmt.kind {
-              hir_js::StmtKind::Expr(expr_id) => Some(*expr_id),
-              _ => None,
-            })
-            .and_then(|expr_id| decl_body.exprs.get(expr_id.0 as usize))
-            .is_some_and(|expr| match &expr.kind {
-              hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
-              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
-              _ => false,
-            });
-
-          let result = self.eval_stmt_list(scope, decl_body, decl_body.root_stmts.as_slice())?;
-          let value = match result {
-            Flow::Normal(v) => v.unwrap_or(Value::Undefined),
-            Flow::Return(_) => {
+            .copied()
+            .ok_or(VmError::InvariantViolation(
+              "export default expression missing statement list",
+            ))?;
+          let export_expr_id = match &self.get_stmt(decl_body, expr_stmt_id)?.kind {
+            hir_js::StmtKind::Expr(expr_id) => *expr_id,
+            _ => {
               return Err(VmError::InvariantViolation(
-                "export default expression produced Return completion (early errors should prevent this)",
-              ))
-            }
-            Flow::Break(..) => {
-              return Err(VmError::InvariantViolation(
-                "export default expression produced Break completion (early errors should prevent this)",
-              ))
-            }
-            Flow::Continue(..) => {
-              return Err(VmError::InvariantViolation(
-                "export default expression produced Continue completion (early errors should prevent this)",
+                "export default expression missing expression statement",
               ))
             }
           };
 
-          // Root the value across `SetFunctionName` and environment initialization: both may allocate
-          // and trigger GC.
-          let mut init_scope = scope.reborrow();
-          init_scope.push_root(value)?;
-
-          // ECMA-262 `ExportDefaultDeclaration` performs `SetFunctionName` when exporting an anonymous
-          // function/class expression (including arrow functions).
-          if is_anonymous_function_or_class {
-            if let Value::Object(func_obj) = value {
-              let name_key = PropertyKey::String(init_scope.common_key_name()?);
-              let should_set_name = match init_scope.heap().object_get_own_property(func_obj, &name_key)? {
-                None => true,
-                Some(desc) => match desc.kind {
-                  PropertyKind::Data {
-                    value: Value::String(s),
-                    ..
-                  } => init_scope.heap().get_string(s)?.as_code_units().is_empty(),
-                  _ => false,
-                },
-              };
-
-              if should_set_name {
-                let mut name_scope = init_scope.reborrow();
-                let default_s = name_scope.alloc_string("default")?;
-                name_scope.push_root(Value::String(default_s))?;
-                crate::function_properties::set_function_name(
-                  &mut name_scope,
-                  func_obj,
-                  PropertyKey::String(default_s),
-                  None,
-                )?;
+          // Evaluate the statement list in source order so the exported expression observes
+          // preceding side effects.
+          if decl_body.root_stmts.len() > 1 {
+            let prefix = &decl_body.root_stmts[..decl_body.root_stmts.len().saturating_sub(1)];
+            let prefix_result = self.eval_stmt_list(scope, decl_body, prefix)?;
+            match prefix_result {
+              Flow::Normal(_) => {}
+              Flow::Return(_) => {
+                return Err(VmError::InvariantViolation(
+                  "export default expression produced Return completion (early errors should prevent this)",
+                ))
+              }
+              Flow::Break(..) => {
+                return Err(VmError::InvariantViolation(
+                  "export default expression produced Break completion (early errors should prevent this)",
+                ))
+              }
+              Flow::Continue(..) => {
+                return Err(VmError::InvariantViolation(
+                  "export default expression produced Continue completion (early errors should prevent this)",
+                ))
               }
             }
           }
 
+          // Implement the observable behaviour of `ExportDefaultDeclaration` `SetFunctionName`.
+          //
+          // This must use spec-ish `NamedEvaluation` for anonymous class expressions so the inferred
+          // name is applied **during** class construction (allowing a `static name() {}` element to
+          // override the constructor's initial `"name"` property).
+          self.vm.tick()?;
+          let is_anonymous_function_or_class = match &self.get_expr(decl_body, export_expr_id)?.kind {
+            hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+            hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
+            _ => false,
+          };
+          let value = if is_anonymous_function_or_class {
+            let mut name_scope = scope.reborrow();
+            let default_s = name_scope.alloc_string("default")?;
+            name_scope.push_root(Value::String(default_s))?;
+            self.eval_expr_named(
+              &mut name_scope,
+              decl_body,
+              export_expr_id,
+              PropertyKey::String(default_s),
+            )?
+          } else {
+            self.eval_expr(scope, decl_body, export_expr_id)?
+          };
+
           let binding_env = self.env.lexical_env();
-          if !init_scope.heap().env_has_binding(binding_env, "*default*")? {
+          if !scope.heap().env_has_binding(binding_env, "*default*")? {
             return Err(VmError::InvariantViolation(
               "export default expression missing *default* binding",
             ));
           }
-          init_scope
+          scope
             .heap_mut()
             .env_initialize_binding(binding_env, "*default*", value)?;
 
