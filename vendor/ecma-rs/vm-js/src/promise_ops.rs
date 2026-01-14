@@ -104,6 +104,12 @@ pub fn promise_resolve_with_host_and_hooks(
 /// if `value` is already a Promise, we still perform `Get(value, "constructor")` for
 /// side-effects/throws, but we do **not** wrap it into a new Promise (which can add an extra
 /// microtask turn and consult `constructor[Symbol.species]` via `.then`).
+///
+/// vm-js also deviates from the spec's thenable handling: when `value` is a non-Promise object with
+/// a callable `then`, we invoke `then` **synchronously** (rather than enqueueing a
+/// `PromiseResolveThenableJob`). This allows async generators to synchronously observe thenable side
+/// effects during `yield`, matching test262-style expectations even when the host does not
+/// automatically drain the Promise job queue after script execution.
 #[inline]
 pub(crate) fn promise_resolve_for_await_with_host_and_hooks(
   vm: &mut Vm,
@@ -132,6 +138,80 @@ pub(crate) fn promise_resolve_for_await_with_host_and_hooks(
       )?;
       return Ok(value);
     }
+
+    // Awaiting a thenable must observe `thenable.then` and, in vm-js, invoke it synchronously.
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "PromiseResolve for await requires intrinsics (create a Realm first)",
+    ))?;
+
+    // Root the thenable object across Promise allocation and property access/calls.
+    let mut scope = scope.reborrow();
+    let value = scope.push_root(value)?;
+
+    // Allocate a fresh intrinsic Promise and pre-mark it as "handled" so synchronous rejections
+    // (from a thenable calling `reject` immediately) do not trigger unhandled rejection tracking
+    // before `Await` attaches its reactions.
+    let promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
+    scope.push_root(Value::Object(promise))?;
+    scope.heap_mut().promise_set_is_handled(promise, true)?;
+
+    // Get `thenable.then`. Errors while retrieving `then` reject the new Promise.
+    let then_result = {
+      let mut key_scope = scope.reborrow();
+      key_scope.push_root(value)?;
+
+      let receiver = value;
+      let then_key_s = key_scope.alloc_string("then")?;
+      key_scope.push_roots(&[Value::String(then_key_s), receiver])?;
+      let then_key = PropertyKey::from_string(then_key_s);
+
+      match key_scope.get_with_host_and_hooks(vm, host_ctx, hooks, obj, then_key, receiver) {
+        Ok(v) => Ok(v),
+        Err(err) => Err(crate::vm::coerce_error_to_throw(vm, &mut key_scope, err)),
+      }
+    };
+
+    let then = match then_result {
+      Ok(v) => v,
+      Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+        scope.heap_mut().promise_reject(promise, reason)?;
+        return Ok(Value::Object(promise));
+      }
+      Err(err) => return Err(err),
+    };
+
+    // Non-callable `then`: fulfill with the original thenable value (spec behavior).
+    if !scope.heap().is_callable(then)? {
+      scope.heap_mut().promise_fulfill(promise, value)?;
+      return Ok(Value::Object(promise));
+    }
+
+    // Callable `then`: invoke it synchronously with fresh resolving functions.
+    let (resolve, reject) = crate::builtins::create_promise_resolving_functions(vm, &mut scope, promise)?;
+    scope.push_roots(&[then, resolve, reject])?;
+
+    match vm.call_with_host_and_hooks(host_ctx, &mut scope, hooks, then, value, &[resolve, reject]) {
+      Ok(_) => {}
+      Err(err) => {
+        let err = crate::vm::coerce_error_to_throw(vm, &mut scope, err);
+        match err {
+          VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+            // Use the rejecting function so `alreadyResolved` semantics are preserved.
+            let _ = vm.call_with_host_and_hooks(
+              host_ctx,
+              &mut scope,
+              hooks,
+              reject,
+              Value::Undefined,
+              &[reason],
+            )?;
+          }
+          other => return Err(other),
+        }
+      }
+    }
+
+    return Ok(Value::Object(promise));
   }
 
   promise_resolve_with_host_and_hooks(vm, scope, host_ctx, hooks, value)

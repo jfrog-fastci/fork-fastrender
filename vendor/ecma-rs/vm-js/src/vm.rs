@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::{AsyncGeneratorRuntimeState, RuntimeEnv};
+use crate::exec::{AsyncGeneratorVmContinuation, RuntimeEnv};
 use crate::hir_exec::HirAsyncContinuation;
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
@@ -490,7 +490,8 @@ pub struct Vm {
   async_disposable_stack_dispose_continuation_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, VmAsyncContinuation>,
-  async_generator_continuations: HashMap<GcObject, AsyncGeneratorRuntimeState>,
+  next_async_generator_continuation_id: u32,
+  async_generator_continuations: HashMap<u32, AsyncGeneratorVmContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -541,6 +542,10 @@ impl std::fmt::Debug for Vm {
       .filter(|c| matches!(c, VmAsyncContinuation::Hir(_)))
       .count();
     ds.field("hir_async_continuations", &hir_async_count);
+    ds.field(
+      "async_generator_continuations",
+      &self.async_generator_continuations.len(),
+    );
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("realm_states", &self.realm_states.len());
     ds.field("intrinsics", &self.intrinsics);
@@ -781,6 +786,7 @@ impl Vm {
       async_disposable_stack_dispose_continuation_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
+      next_async_generator_continuation_id: 0,
       async_generator_continuations: HashMap::new(),
       module_graph: None,
       realm_states: HashMap::new(),
@@ -1082,8 +1088,8 @@ impl Vm {
           }
         }
       }
-      for (_, state) in generator_continuations {
-        crate::exec::async_generator_teardown_runtime_state(&mut scope, state);
+      for (_, cont) in generator_continuations {
+        crate::exec::async_generator_teardown_continuation(&mut scope, cont);
       }
     }
 
@@ -1155,6 +1161,12 @@ impl Vm {
   #[inline]
   pub fn async_continuation_count(&self) -> usize {
     self.async_continuations.len()
+  }
+
+  /// Returns the number of in-progress async generator continuations currently stored in the VM.
+  #[inline]
+  pub fn async_generator_continuation_count(&self) -> usize {
+    self.async_generator_continuations.len()
   }
 
   pub(crate) fn reserve_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
@@ -1448,26 +1460,6 @@ impl Vm {
     self.replace_async_continuation(id, VmAsyncContinuation::Hir(cont))
   }
 
-  pub(crate) fn take_async_generator_continuation(
-    &mut self,
-    gen: GcObject,
-  ) -> Option<AsyncGeneratorRuntimeState> {
-    self.async_generator_continuations.remove(&gen)
-  }
-
-  pub(crate) fn replace_async_generator_continuation(
-    &mut self,
-    gen: GcObject,
-    cont: AsyncGeneratorRuntimeState,
-  ) -> Result<(), VmError> {
-    self
-      .async_generator_continuations
-      .try_reserve(1)
-      .map_err(|_| VmError::OutOfMemory)?;
-    self.async_generator_continuations.insert(gen, cont);
-    Ok(())
-  }
-
   /// Removes an async continuation from the VM and tears down all of its persistent roots.
   ///
   /// This is used by embeddings that abort in-progress async module evaluation (top-level await),
@@ -1481,6 +1473,64 @@ impl Vm {
       VmAsyncContinuation::Ast(cont) => crate::exec::async_teardown_continuation(&mut scope, cont),
       VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont),
     }
+  }
+
+  pub(crate) fn insert_async_generator_continuation(
+    &mut self,
+    cont: AsyncGeneratorVmContinuation,
+  ) -> Result<u32, VmError> {
+    self
+      .async_generator_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let id = self.next_async_generator_continuation_id;
+    self.next_async_generator_continuation_id =
+      self.next_async_generator_continuation_id.wrapping_add(1);
+    self.async_generator_continuations.insert(id, cont);
+    Ok(id)
+  }
+
+  pub(crate) fn insert_async_generator_continuation_reserved(
+    &mut self,
+    cont: AsyncGeneratorVmContinuation,
+  ) -> u32 {
+    let id = self.next_async_generator_continuation_id;
+    self.next_async_generator_continuation_id =
+      self.next_async_generator_continuation_id.wrapping_add(1);
+    // Callers are expected to call `reserve_async_generator_continuations` before inserting so this
+    // does not allocate (and therefore cannot abort the process).
+    self.async_generator_continuations.insert(id, cont);
+    id
+  }
+
+  pub(crate) fn take_async_generator_continuation(
+    &mut self,
+    id: u32,
+  ) -> Option<AsyncGeneratorVmContinuation> {
+    self.async_generator_continuations.remove(&id)
+  }
+
+  pub(crate) fn replace_async_generator_continuation(
+    &mut self,
+    id: u32,
+    cont: AsyncGeneratorVmContinuation,
+  ) -> Result<(), VmError> {
+    self
+      .async_generator_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self.async_generator_continuations.insert(id, cont);
+    Ok(())
+  }
+
+  pub(crate) fn replace_async_generator_continuation_reserved(
+    &mut self,
+    id: u32,
+    cont: AsyncGeneratorVmContinuation,
+  ) {
+    // Callers are expected to call `reserve_async_generator_continuations` before replacing so this
+    // does not allocate.
+    self.async_generator_continuations.insert(id, cont);
   }
 
   /// Temporarily override the host hook implementation used by [`Vm::call`] / [`Vm::construct`].

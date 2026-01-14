@@ -8921,7 +8921,7 @@ pub(crate) fn promise_resolve_abstract(
   Ok(promise_obj)
 }
 
-fn create_promise_resolving_functions(
+pub(crate) fn create_promise_resolving_functions(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   promise: GcObject,
@@ -17717,7 +17717,7 @@ pub fn array_iterator_next(
   Ok(Value::Object(out))
 }
 
-fn create_iterator_result_object(
+pub(crate) fn create_iterator_result_object(
   vm: &Vm,
   scope: &mut Scope<'_>,
   value: Value,
@@ -17774,11 +17774,9 @@ pub fn async_generator_prototype_next(
   )?;
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-
   // Async generator iteration methods use `NewPromiseCapability(%Promise%)` and must not consult the
   // mutable global `Promise` binding.
   let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-
   let req = crate::heap::AsyncGeneratorRequest {
     kind: crate::heap::AsyncGeneratorRequestKind::Next(arg0),
     capability: cap,
@@ -17786,9 +17784,7 @@ pub fn async_generator_prototype_next(
   scope
     .heap_mut()
     .async_generator_request_queue_push(this_obj, req)?;
-
   crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
-
   Ok(cap.promise)
 }
 
@@ -17809,9 +17805,7 @@ pub fn async_generator_prototype_return(
   )?;
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-
   let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-
   let req = crate::heap::AsyncGeneratorRequest {
     kind: crate::heap::AsyncGeneratorRequestKind::Return(arg0),
     capability: cap,
@@ -17819,9 +17813,7 @@ pub fn async_generator_prototype_return(
   scope
     .heap_mut()
     .async_generator_request_queue_push(this_obj, req)?;
-
   crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
-
   Ok(cap.promise)
 }
 
@@ -17842,9 +17834,7 @@ pub fn async_generator_prototype_throw(
   )?;
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-
   let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-
   let req = crate::heap::AsyncGeneratorRequest {
     kind: crate::heap::AsyncGeneratorRequestKind::Throw(arg0),
     capability: cap,
@@ -17852,9 +17842,7 @@ pub fn async_generator_prototype_throw(
   scope
     .heap_mut()
     .async_generator_request_queue_push(this_obj, req)?;
-
   crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
-
   Ok(cap.promise)
 }
 

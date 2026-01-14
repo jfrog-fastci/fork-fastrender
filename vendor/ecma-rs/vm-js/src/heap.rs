@@ -6659,6 +6659,22 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(())
   }
 
+  pub(crate) fn async_generator_vm_continuation_id(
+    &self,
+    gen: GcObject,
+  ) -> Result<Option<u32>, VmError> {
+    Ok(self.get_async_generator(gen)?.vm_continuation_id)
+  }
+
+  pub(crate) fn async_generator_set_vm_continuation_id(
+    &mut self,
+    gen: GcObject,
+    id: Option<u32>,
+  ) -> Result<(), VmError> {
+    self.get_async_generator_mut(gen)?.vm_continuation_id = id;
+    Ok(())
+  }
+
   /// Takes the async generator continuation out of the generator object.
   ///
   /// Note: this does **not** update heap accounting immediately. Callers should update the slot
@@ -12604,6 +12620,15 @@ struct JsAsyncGenerator {
   state: AsyncGeneratorState,
   continuation: Option<Box<AsyncGeneratorContinuation>>,
   request_queue: VecDeque<AsyncGeneratorRequest>,
+  /// VM-owned continuation id used for async generator execution state stored outside the GC heap.
+  ///
+  /// Async generator evaluation suspends across Promise jobs, but the async evaluator frame stack
+  /// stores persistent roots (`RootId`) which must be explicitly torn down. vm-js stores that
+  /// execution state in the [`Vm`] (similar to async functions) and links it from the generator via
+  /// this numeric id.
+  ///
+  /// Note: this is *not* part of the spec-visible async generator internal slots.
+  vm_continuation_id: Option<u32>,
 }
 
 impl JsAsyncGenerator {
@@ -12618,6 +12643,7 @@ impl JsAsyncGenerator {
       state,
       continuation,
       request_queue,
+      vm_continuation_id: None,
     }
   }
 

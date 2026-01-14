@@ -1,4 +1,5 @@
 use crate::bigint::JsBigInt;
+use crate::async_generator::{AsyncYieldStar, YieldStarStep};
 use crate::destructure::{
   bind_assignment_target, bind_pattern, is_anonymous_function_definition,
   maybe_set_anonymous_function_name, BindingKind,
@@ -404,6 +405,7 @@ pub(crate) fn perform_indirect_eval(
     hooks,
     env: &mut eval_env,
     strict,
+    is_async_generator: false,
     this: Value::Object(global_object),
     new_target: Value::Undefined,
     home_object: None,
@@ -639,6 +641,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
       hooks,
       env,
       strict,
+      is_async_generator: false,
       this,
       new_target,
       home_object,
@@ -820,6 +823,7 @@ pub fn eval_script_with_host_and_hooks(
         hooks,
         env: &mut env,
         strict,
+        is_async_generator: false,
         this: global_this,
         new_target: Value::Undefined,
         home_object: None,
@@ -2857,18 +2861,19 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
-            if !has_await {
-              let mut evaluator = Evaluator {
-                vm: &mut *vm_frame,
-                host,
-                hooks: &mut hooks,
-                env: &mut self.env,
-                strict,
-                this: global_this,
-                new_target: Value::Undefined,
-                home_object: None,
-                class_constructor: None,
-                derived_constructor: false,
+              if !has_await {
+                let mut evaluator = Evaluator {
+                  vm: &mut *vm_frame,
+                  host,
+                  hooks: &mut hooks,
+                  env: &mut self.env,
+                  strict,
+                  is_async_generator: false,
+                  this: global_this,
+                  new_target: Value::Undefined,
+                  home_object: None,
+                  class_constructor: None,
+                  derived_constructor: false,
                 this_initialized: true,
                 this_root_idx: None,
               };
@@ -2917,17 +2922,18 @@ impl JsRuntime {
       // suspend. This state must be preserved in the async continuation so resumed execution uses
       // the correct semantics.
       let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value, Value), VmError> = (|| {
-        let mut evaluator = Evaluator {
-          vm: &mut *vm_frame,
-          host,
-          hooks: &mut hooks,
-          env: &mut env,
-          strict,
-          this: global_this,
-          new_target: Value::Undefined,
-          home_object: None,
-          class_constructor: None,
-          derived_constructor: false,
+       let mut evaluator = Evaluator {
+         vm: &mut *vm_frame,
+         host,
+         hooks: &mut hooks,
+         env: &mut env,
+         strict,
+         is_async_generator: false,
+         this: global_this,
+         new_target: Value::Undefined,
+         home_object: None,
+         class_constructor: None,
+         derived_constructor: false,
           this_initialized: true,
           this_root_idx: None,
         };
@@ -3445,6 +3451,7 @@ impl JsRuntime {
           hooks,
           env: &mut self.env,
           strict,
+          is_async_generator: false,
           this: global_this,
           new_target: Value::Undefined,
           home_object: None,
@@ -3504,6 +3511,7 @@ impl JsRuntime {
           hooks,
           env: &mut env,
           strict,
+          is_async_generator: false,
           this: global_this,
           new_target: Value::Undefined,
           home_object: None,
@@ -4576,6 +4584,11 @@ struct Evaluator<'a> {
   hooks: &'a mut dyn VmHostHooks,
   env: &'a mut RuntimeEnv,
   strict: bool,
+  /// Whether this evaluator is executing an async generator body (`async function*`).
+  ///
+  /// vm-js intentionally uses slightly different semantics for some operations when running inside
+  /// an async generator (for example, iterator-close error propagation for `for await...of`).
+  is_async_generator: bool,
   this: Value,
   new_target: Value,
   /// The current lexical `[[HomeObject]]`, used for `super` property references and inherited by
@@ -16468,10 +16481,6 @@ fn alloc_string_from_lit_str(
   }
 }
 
-/// Persistent continuation frames for async function execution.
-///
-/// This is an explicit reification of the evaluator call stack needed to resume execution after an
-/// `await` suspension point.
 #[derive(Debug)]
 #[allow(private_interfaces)]
 pub(crate) enum AsyncFrame {
@@ -16804,9 +16813,9 @@ pub(crate) enum AsyncFrame {
   YieldAfterOperand,
   /// Continue evaluating a delegated `yield*` after its operand expression completes.
   YieldStarAfterOperand,
-  /// Continue delegated `yield*` iteration.
+  /// Continue delegated `yield*` iteration in an async generator.
   YieldStar {
-    yield_star: crate::async_generator::AsyncYieldStar,
+    yield_star: AsyncYieldStar,
     iterator_root: RootId,
     next_method_root: RootId,
   },
@@ -17109,8 +17118,9 @@ pub(crate) enum AsyncSuspendKind {
   AwaitResolved,
   /// A suspension produced by `yield` in an async generator body.
   ///
-  /// Async generator execution distinguishes these from internal `await` suspensions: the awaited
-  /// value is delivered to the consumer, and the generator resumes from the next request.
+  /// Async generator execution distinguishes these from internal `await` suspensions: the value is
+  /// awaited (like `await`), delivered to the consumer, and the generator resumes from the next
+  /// request.
   Yield,
   /// A `yield*` suspension that yields an iterator result object directly to the consumer.
   ///
@@ -18650,6 +18660,1322 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AsyncGeneratorAwaitingKind {
+  /// Awaiting an internal `await` in the generator body (resume evaluator frames on settlement).
+  Await,
+  /// Awaiting a `yield` operand (fulfillment yields to the consumer; rejection resumes evaluator).
+  Yield,
+  /// Awaiting the final completion value for a `done: true` iterator result (settles request and
+  /// completes the generator).
+  Complete,
+}
+
+#[derive(Debug)]
+pub(crate) struct AsyncGeneratorVmContinuation {
+  env: RuntimeEnv,
+  strict: bool,
+  /// Keeps the parsed function AST alive across microtask-resumed execution segments.
+  ///
+  /// Async frames store raw pointers into the parsed `Func` AST; async generator execution can
+  /// suspend across Promise jobs, so we must keep the AST alive for the lifetime of the
+  /// continuation.
+  func: Arc<Node<Func>>,
+  this_root: RootId,
+  new_target_root: RootId,
+  home_object_root: RootId,
+  /// Keeps the async generator object alive while its execution state is stored in the VM.
+  gen_root: RootId,
+  awaited_promise_root: Option<RootId>,
+  awaiting: Option<AsyncGeneratorAwaitingKind>,
+  frames: VecDeque<AsyncFrame>,
+}
+
+pub(crate) fn async_generator_teardown_continuation(
+  scope: &mut Scope<'_>,
+  mut cont: AsyncGeneratorVmContinuation,
+) {
+  // Best-effort: if we can still observe the generator object, clear its VM continuation link so
+  // later `.next/.return/.throw` calls behave like a completed generator rather than attempting to
+  // resume missing VM state.
+  if let Some(Value::Object(gen_obj)) = scope.heap().get_root(cont.gen_root) {
+    let _ = scope
+      .heap_mut()
+      .async_generator_set_vm_continuation_id(gen_obj, None);
+    let _ = scope
+      .heap_mut()
+      .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed);
+  }
+
+  cont.env.teardown(scope.heap_mut());
+  scope.heap_mut().remove_root(cont.this_root);
+  scope.heap_mut().remove_root(cont.new_target_root);
+  scope.heap_mut().remove_root(cont.home_object_root);
+  scope.heap_mut().remove_root(cont.gen_root);
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+  for mut frame in cont.frames {
+    async_teardown_frame(scope.heap_mut(), &mut frame);
+  }
+}
+
+fn infer_callback_global_object(vm: &Vm, scope: &Scope<'_>) -> Result<Option<GcObject>, VmError> {
+  let Some(intr) = vm.intrinsics() else {
+    return Ok(None);
+  };
+  // Recover the realm global object from `%Object%`'s `[[Realm]]` metadata.
+  let func = scope.heap().get_function(intr.object_constructor())?;
+  Ok(func.realm)
+}
+
+fn async_generator_create_resume_callbacks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  awaited_promise: Value,
+  slot0: Value,
+  global_object: Option<GcObject>,
+) -> Result<(), VmError> {
+  let call_id = vm.async_generator_resume_call_id()?;
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let job_realm = vm.current_realm();
+  let script_or_module_token = match vm.get_active_script_or_module() {
+    Some(sm) => Some(vm.intern_script_or_module(sm)?),
+    None => None,
+  };
+
+  // Root inputs across callback allocation and `PerformPromiseThen`, which can allocate and trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(awaited_promise)?;
+  scope.push_root(slot0)?;
+
+  let name = scope.alloc_string("")?;
+  let slots_fulfill = [slot0, Value::Bool(false)];
+  let on_fulfilled = scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  let name = scope.alloc_string("")?;
+  let slots_reject = [slot0, Value::Bool(true)];
+  let on_rejected = scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+  scope.push_root(Value::Object(on_rejected))?;
+
+  for cb in [on_fulfilled, on_rejected] {
+    scope
+      .heap_mut()
+      .object_set_prototype(cb, Some(intr.function_prototype()))?;
+    if let Some(global_object) = global_object {
+      scope.heap_mut().set_function_realm(cb, global_object)?;
+    }
+    if let Some(realm) = job_realm {
+      scope.heap_mut().set_function_job_realm(cb, realm)?;
+    }
+    if let Some(token) = script_or_module_token {
+      scope
+        .heap_mut()
+        .set_function_script_or_module_token(cb, Some(token))?;
+    }
+  }
+
+  let _ = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    awaited_promise,
+    Value::Object(on_fulfilled),
+    Value::Object(on_rejected),
+    None,
+  )?;
+  Ok(())
+}
+
+fn async_generator_call_capability(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: Value,
+  arg0: Value,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[callee, arg0])?;
+  let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, callee, Value::Undefined, &[arg0])?;
+  Ok(())
+}
+
+fn async_generator_resolve_request(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  req: crate::heap::AsyncGeneratorRequest,
+  value: Value,
+) -> Result<(), VmError> {
+  async_generator_call_capability(vm, scope, host, hooks, req.capability.resolve, value)
+}
+
+fn async_generator_reject_request(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  req: crate::heap::AsyncGeneratorRequest,
+  reason: Value,
+) -> Result<(), VmError> {
+  async_generator_call_capability(vm, scope, host, hooks, req.capability.reject, reason)
+}
+
+fn async_generator_resolve_request_with_iterator_result(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  req: crate::heap::AsyncGeneratorRequest,
+  value: Value,
+  done: bool,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+  let iter_result = crate::builtins::create_iterator_result_object(vm, &mut scope, value, done)?;
+  async_generator_resolve_request(vm, &mut scope, host, hooks, req, iter_result)
+}
+
+fn async_generator_resolve_request_with_iterator_result_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  req: crate::heap::AsyncGeneratorRequest,
+  iter_result_obj: Value,
+) -> Result<(), VmError> {
+  // Yield* in vm-js yields the delegate iterator result object directly.
+  async_generator_resolve_request(vm, scope, host, hooks, req, iter_result_obj)
+}
+
+fn async_generator_take_or_complete_missing_continuation(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  gen_obj: GcObject,
+) -> Result<Option<(u32, AsyncGeneratorVmContinuation)>, VmError> {
+  let Some(id) = scope.heap().async_generator_vm_continuation_id(gen_obj)? else {
+    return Ok(None);
+  };
+  let Some(cont) = vm.take_async_generator_continuation(id) else {
+    // If the continuation is missing (e.g. after microtask teardown), treat the generator as
+    // completed.
+    scope
+      .heap_mut()
+      .async_generator_set_vm_continuation_id(gen_obj, None)?;
+    scope
+      .heap_mut()
+      .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+    return Ok(None);
+  };
+  Ok(Some((id, cont)))
+}
+
+fn async_generator_handle_body_result(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  gen_obj: GcObject,
+  cont_id: u32,
+  mut cont: AsyncGeneratorVmContinuation,
+  result: Result<AsyncBodyResult, VmError>,
+) -> Result<(), VmError> {
+  let global_object = cont.env.global_object();
+
+  // Persist strictness + `this`/`new.target`/`home_object` overrides across async suspensions.
+  // These values can be mutated by nested constructs that can suspend (e.g. class static blocks).
+  //
+  // Note: `cont.env` already owns a persistent env root via `RuntimeEnv::lexical_root`.
+  let this = scope.heap().get_root(cont.this_root).ok_or(VmError::InvariantViolation(
+    "async generator continuation missing this root",
+  ))?;
+  let new_target = scope
+    .heap()
+    .get_root(cont.new_target_root)
+    .ok_or(VmError::InvariantViolation(
+      "async generator continuation missing new.target root",
+    ))?;
+  let home_object_value = scope
+    .heap()
+    .get_root(cont.home_object_root)
+    .ok_or(VmError::InvariantViolation(
+      "async generator continuation missing home object root",
+    ))?;
+  let home_object = match home_object_value {
+    Value::Object(o) => Some(o),
+    Value::Undefined => None,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator continuation home object root is not an object or undefined",
+      ))
+    }
+  };
+
+  match result {
+    Ok(AsyncBodyResult::Await {
+      kind,
+      await_value,
+      frames,
+    }) => {
+      cont.frames = frames;
+      cont.awaiting = None;
+
+      match kind {
+        AsyncSuspendKind::YieldIteratorResult => {
+          // Yield the iterator result object directly (no additional awaiting).
+          let req = scope
+            .heap()
+            .async_generator_request_queue_peek(gen_obj)?
+            .ok_or(VmError::InvariantViolation(
+              "async generator yielded with empty request queue",
+            ))?;
+          let mut yield_scope = scope.reborrow();
+          yield_scope.push_root(await_value)?;
+          async_generator_resolve_request_with_iterator_result_object(
+            vm,
+            &mut yield_scope,
+            host,
+            hooks,
+            req,
+            await_value,
+          )?;
+          // Remove request after settling.
+          yield_scope
+            .heap_mut()
+            .async_generator_request_queue_pop(gen_obj)?;
+
+          // Suspend at the yield point, awaiting the next request.
+          yield_scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::SuspendedYield)?;
+
+          // Reinsert continuation so `.next/.return/.throw` can resume it.
+          if let Err(err) = vm.reserve_async_generator_continuations(1) {
+            async_generator_teardown_continuation(&mut yield_scope, cont);
+            return Err(err);
+          }
+          vm.replace_async_generator_continuation_reserved(cont_id, cont);
+          // Process any queued requests immediately (per spec `AsyncGeneratorResumeNext`).
+          return async_generator_resume_next(vm, &mut yield_scope, host, hooks, gen_obj);
+        }
+
+        AsyncSuspendKind::Await | AsyncSuspendKind::AwaitResolved | AsyncSuspendKind::Yield => {
+          // Await `await_value` and resume via a Promise job.
+          // - Await: internal await (resume evaluator)
+          // - Yield: await yield operand (fulfillment yields to consumer; rejection resumes evaluator)
+          let awaited_promise_res = match kind {
+            AsyncSuspendKind::AwaitResolved => Ok(await_value),
+            AsyncSuspendKind::Await | AsyncSuspendKind::Yield => {
+              let mut promise_scope = scope.reborrow();
+              promise_scope.push_root(await_value)?;
+              let res = promise_resolve_for_await_with_host_and_hooks(
+                vm,
+                &mut promise_scope,
+                host,
+                hooks,
+                await_value,
+              );
+              res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut promise_scope, err))
+            }
+            AsyncSuspendKind::YieldIteratorResult => unreachable!(),
+          };
+
+          let awaited_promise = match awaited_promise_res {
+            Ok(p) => p,
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              // Treat PromiseResolve throw as an immediate rejection at the await site.
+              let resume_input = AsyncResumeInput::Throw(reason);
+              let mut evaluator = Evaluator {
+                vm,
+                host,
+                hooks,
+                env: &mut cont.env,
+                strict: cont.strict,
+                is_async_generator: true,
+                this,
+                new_target,
+                home_object,
+                class_constructor: None,
+                derived_constructor: false,
+                this_initialized: true,
+                this_root_idx: None,
+              };
+              let result =
+                async_resume_from_frames(&mut evaluator, scope, mem::take(&mut cont.frames), resume_input);
+              cont.strict = evaluator.strict;
+              scope.heap_mut().set_root(cont.this_root, evaluator.this);
+              scope
+                .heap_mut()
+                .set_root(cont.new_target_root, evaluator.new_target);
+              scope.heap_mut().set_root(
+                cont.home_object_root,
+                evaluator
+                  .home_object
+                  .map(Value::Object)
+                  .unwrap_or(Value::Undefined),
+              );
+              return async_generator_handle_body_result(
+                vm,
+                scope,
+                host,
+                hooks,
+                gen_obj,
+                cont_id,
+                cont,
+                result,
+              );
+            }
+            Err(err) => {
+              async_generator_teardown_continuation(scope, cont);
+              return Err(err);
+            }
+          };
+
+          // Root the awaited promise across root creation and callback allocation.
+          let mut await_scope = scope.reborrow();
+          await_scope.push_root(awaited_promise)?;
+
+          let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
+          cont.awaited_promise_root = Some(awaited_root);
+          cont.awaiting = Some(match kind {
+            AsyncSuspendKind::Yield => AsyncGeneratorAwaitingKind::Yield,
+            AsyncSuspendKind::Await | AsyncSuspendKind::AwaitResolved => AsyncGeneratorAwaitingKind::Await,
+            AsyncSuspendKind::YieldIteratorResult => unreachable!(),
+          });
+
+          // Reinsert continuation before registering Promise reactions so callbacks can find it.
+          if let Err(err) = vm.reserve_async_generator_continuations(1) {
+            async_generator_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+          vm.replace_async_generator_continuation_reserved(cont_id, cont);
+
+          let global_object = Some(global_object);
+          async_generator_create_resume_callbacks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            awaited_promise,
+            Value::Number(cont_id as f64),
+            global_object,
+          )?;
+
+          Ok(())
+        }
+      }
+    }
+
+    Ok(AsyncBodyResult::CompleteOk(v)) => {
+      // The generator body completed normally / via return. The completion value must be awaited
+      // before producing the final `{ done: true }` iterator result.
+      cont.frames.clear();
+      cont.awaiting = None;
+
+      let req = scope
+        .heap()
+        .async_generator_request_queue_peek(gen_obj)?
+        .ok_or(VmError::InvariantViolation(
+          "async generator completed with empty request queue",
+        ))?;
+
+      let awaited_promise_res = {
+        let mut promise_scope = scope.reborrow();
+        promise_scope.push_root(v)?;
+        let res = promise_resolve_for_await_with_host_and_hooks(vm, &mut promise_scope, host, hooks, v);
+        res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut promise_scope, err))
+      };
+
+      let awaited_promise = match awaited_promise_res {
+        Ok(p) => p,
+        Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+          // PromiseResolve throw while awaiting the completion value is uncatchable: reject the
+          // current request and complete the generator.
+          let mut reject_scope = scope.reborrow();
+          reject_scope.push_root(reason)?;
+          async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+          reject_scope
+            .heap_mut()
+            .async_generator_request_queue_pop(gen_obj)?;
+          reject_scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+          reject_scope
+            .heap_mut()
+            .async_generator_set_vm_continuation_id(gen_obj, None)?;
+          async_generator_teardown_continuation(&mut reject_scope, cont);
+          return async_generator_resume_next(vm, &mut reject_scope, host, hooks, gen_obj);
+        }
+        Err(err) => {
+          async_generator_teardown_continuation(scope, cont);
+          return Err(err);
+        }
+      };
+
+      // Await completion value using the normal resume callback path.
+      let mut await_scope = scope.reborrow();
+      await_scope.push_root(awaited_promise)?;
+      let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
+      cont.awaited_promise_root = Some(awaited_root);
+      cont.awaiting = Some(AsyncGeneratorAwaitingKind::Complete);
+
+      // While awaiting the completion value, the generator is in the spec-visible `awaiting-return`
+      // state.
+      await_scope
+        .heap_mut()
+        .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
+
+      // Reinsert continuation before scheduling Promise reactions.
+      if let Err(err) = vm.reserve_async_generator_continuations(1) {
+        async_generator_teardown_continuation(&mut await_scope, cont);
+        return Err(err);
+      }
+      vm.replace_async_generator_continuation_reserved(cont_id, cont);
+      async_generator_create_resume_callbacks(
+        vm,
+        &mut await_scope,
+        host,
+        hooks,
+        awaited_promise,
+        Value::Number(cont_id as f64),
+        Some(global_object),
+      )?;
+      Ok(())
+    }
+
+    Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+      // The generator body threw: reject the current request and complete.
+      let req = scope
+        .heap()
+        .async_generator_request_queue_peek(gen_obj)?
+        .ok_or(VmError::InvariantViolation(
+          "async generator completed with empty request queue",
+        ))?;
+      let mut reject_scope = scope.reborrow();
+      reject_scope.push_root(reason)?;
+      async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+      reject_scope
+        .heap_mut()
+        .async_generator_request_queue_pop(gen_obj)?;
+      reject_scope
+        .heap_mut()
+        .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+      reject_scope
+        .heap_mut()
+        .async_generator_set_vm_continuation_id(gen_obj, None)?;
+      async_generator_teardown_continuation(&mut reject_scope, cont);
+      async_generator_resume_next(vm, &mut reject_scope, host, hooks, gen_obj)
+    }
+
+    Err(err) => {
+      // Fatal error during execution: tear down continuation and propagate.
+      async_generator_teardown_continuation(scope, cont);
+      Err(err)
+    }
+  }
+}
+
+fn async_generator_start_from_heap_continuation(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  gen_obj: GcObject,
+  _req: crate::heap::AsyncGeneratorRequest,
+  mut heap_cont: Box<AsyncGeneratorContinuation>,
+) -> Result<(), VmError> {
+  // The continuation is now VM-owned; remove it from the heap object and update accounting.
+  scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
+
+  // Root generator arguments across instantiation + execution, which can allocate/GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(gen_obj))?;
+  scope.push_root(heap_cont.this)?;
+  scope.push_root(heap_cont.new_target)?;
+  if let Some(home) = heap_cont.home_object {
+    scope.push_root(Value::Object(home))?;
+  }
+
+  // Root lexical env for the duration of execution: this continuation was heap-owned and therefore
+  // did not keep a persistent env root.
+  heap_cont.env.lexical_root = Some(scope.heap_mut().add_env_root(heap_cont.env.lexical_env())?);
+
+  // The generator call already performed parameter instantiation eagerly (per ECMA-262). Execute
+  // until the first suspension/completion.
+  let (body_result, strict, this_at_suspend, new_target_at_suspend, home_object_at_suspend) = {
+    let mut evaluator = Evaluator {
+      vm,
+      host,
+      hooks,
+      env: &mut heap_cont.env,
+      strict: heap_cont.strict,
+      is_async_generator: true,
+      this: heap_cont.this,
+      new_target: heap_cont.new_target,
+      home_object: heap_cont.home_object,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
+    };
+
+    let body_result = async_start_body(&mut evaluator, &mut scope, &heap_cont.func);
+    (
+      body_result,
+      evaluator.strict,
+      evaluator.this,
+      evaluator.new_target,
+      evaluator.home_object,
+    )
+  };
+
+  // Create persistent roots for the VM-owned async generator continuation.
+  let home_object_value = home_object_at_suspend
+    .map(Value::Object)
+    .unwrap_or(Value::Undefined);
+  let (this_root, new_target_root, home_object_root, gen_root) = {
+    let values = [
+      this_at_suspend,
+      new_target_at_suspend,
+      home_object_value,
+      Value::Object(gen_obj),
+    ];
+    let mut root_scope = scope.reborrow();
+    if let Err(err) = root_scope.push_roots(&values) {
+      heap_cont.env.teardown(root_scope.heap_mut());
+      return Err(err);
+    }
+
+    let mut ids: Vec<RootId> = Vec::new();
+    if ids.try_reserve_exact(values.len()).is_err() {
+      heap_cont.env.teardown(root_scope.heap_mut());
+      return Err(VmError::OutOfMemory);
+    }
+    for &v in &values {
+      match root_scope.heap_mut().add_root(v) {
+        Ok(id) => ids.push(id),
+        Err(err) => {
+          for id in ids.drain(..) {
+            root_scope.heap_mut().remove_root(id);
+          }
+          heap_cont.env.teardown(root_scope.heap_mut());
+          return Err(err);
+        }
+      }
+    }
+
+    (ids[0], ids[1], ids[2], ids[3])
+  };
+
+  let cont = AsyncGeneratorVmContinuation {
+    env: heap_cont.env,
+    strict,
+    func: heap_cont.func,
+    this_root,
+    new_target_root,
+    home_object_root,
+    gen_root,
+    awaited_promise_root: None,
+    awaiting: None,
+    frames: VecDeque::new(),
+  };
+
+  // Ensure continuation insertion cannot fail after consuming `cont` so we don't leak its persistent
+  // roots on OOM.
+  if let Err(err) = vm.reserve_async_generator_continuations(1) {
+    async_generator_teardown_continuation(&mut scope, cont);
+    return Err(err);
+  }
+  let cont_id = vm.insert_async_generator_continuation_reserved(cont);
+  scope
+    .heap_mut()
+    .async_generator_set_vm_continuation_id(gen_obj, Some(cont_id))?;
+
+  let cont = vm.take_async_generator_continuation(cont_id).ok_or(VmError::InvariantViolation(
+    "async generator continuation missing after insertion",
+  ))?;
+
+  async_generator_handle_body_result(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    gen_obj,
+    cont_id,
+    cont,
+    body_result,
+  )
+}
+
+pub(crate) fn async_generator_resume_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  gen_obj: GcObject,
+) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(gen_obj))?;
+
+  loop {
+    let Some(req) = scope.heap().async_generator_request_queue_peek(gen_obj)? else {
+      return Ok(());
+    };
+
+    match scope.heap().async_generator_state(gen_obj)? {
+      AsyncGeneratorState::Executing | AsyncGeneratorState::AwaitingReturn => {
+        // Execution is already in progress (awaiting an internal await, yield operand, or return
+        // value). New requests are queued until the generator becomes resumable again.
+        return Ok(());
+      }
+
+      AsyncGeneratorState::Completed => {
+        match req.kind {
+          crate::heap::AsyncGeneratorRequestKind::Next(_) => {
+            async_generator_resolve_request_with_iterator_result(
+              vm,
+              &mut scope,
+              host,
+              hooks,
+              req,
+              Value::Undefined,
+              true,
+            )?;
+            scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
+            continue;
+          }
+          crate::heap::AsyncGeneratorRequestKind::Throw(reason) => {
+            let mut reject_scope = scope.reborrow();
+            reject_scope.push_root(reason)?;
+            async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+            reject_scope
+              .heap_mut()
+              .async_generator_request_queue_pop(gen_obj)?;
+            continue;
+          }
+          crate::heap::AsyncGeneratorRequestKind::Return(v) => {
+            // Await the return argument and resolve to `{ done: true }` once it settles.
+            scope
+              .heap_mut()
+              .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
+
+            let awaited_promise_res = {
+              let mut promise_scope = scope.reborrow();
+              promise_scope.push_root(v)?;
+              let res =
+                promise_resolve_for_await_with_host_and_hooks(vm, &mut promise_scope, host, hooks, v);
+              res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut promise_scope, err))
+            };
+
+            let awaited_promise = match awaited_promise_res {
+              Ok(p) => p,
+              Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+                let mut reject_scope = scope.reborrow();
+                reject_scope.push_root(reason)?;
+                async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+                reject_scope
+                  .heap_mut()
+                  .async_generator_request_queue_pop(gen_obj)?;
+                reject_scope
+                  .heap_mut()
+                  .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+                continue;
+              }
+              Err(err) => return Err(err),
+            };
+
+            let global_object = infer_callback_global_object(vm, &scope)?;
+            async_generator_create_resume_callbacks(
+              vm,
+              &mut scope,
+              host,
+              hooks,
+              awaited_promise,
+              Value::Object(gen_obj),
+              global_object,
+            )?;
+            return Ok(());
+          }
+        }
+      }
+
+      AsyncGeneratorState::SuspendedStart => match req.kind {
+        crate::heap::AsyncGeneratorRequestKind::Throw(reason) => {
+          scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+          // Drop the unused generator continuation (body must not execute).
+          scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
+          scope
+            .heap_mut()
+            .async_generator_set_vm_continuation_id(gen_obj, None)?;
+          let mut reject_scope = scope.reborrow();
+          reject_scope.push_root(reason)?;
+          async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+          reject_scope
+            .heap_mut()
+            .async_generator_request_queue_pop(gen_obj)?;
+          continue;
+        }
+        crate::heap::AsyncGeneratorRequestKind::Return(v) => {
+          // `.return` on suspendedStart completes without executing the body, but awaits the
+          // argument.
+          scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
+          // Drop the generator continuation so the body will never execute.
+          scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
+
+          let awaited_promise_res = {
+            let mut promise_scope = scope.reborrow();
+            promise_scope.push_root(v)?;
+            let res =
+              promise_resolve_for_await_with_host_and_hooks(vm, &mut promise_scope, host, hooks, v);
+            res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut promise_scope, err))
+          };
+
+          let awaited_promise = match awaited_promise_res {
+            Ok(p) => p,
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              let mut reject_scope = scope.reborrow();
+              reject_scope.push_root(reason)?;
+              async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, reason)?;
+              reject_scope
+                .heap_mut()
+                .async_generator_request_queue_pop(gen_obj)?;
+              reject_scope
+                .heap_mut()
+                .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+              continue;
+            }
+            Err(err) => return Err(err),
+          };
+
+          let global_object = infer_callback_global_object(vm, &scope)?;
+          async_generator_create_resume_callbacks(
+            vm,
+            &mut scope,
+            host,
+            hooks,
+            awaited_promise,
+            Value::Object(gen_obj),
+            global_object,
+          )?;
+          return Ok(());
+        }
+        crate::heap::AsyncGeneratorRequestKind::Next(_) => {
+          scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::Executing)?;
+
+          let Some(heap_cont) = scope
+            .heap_mut()
+            .async_generator_take_continuation(gen_obj)?
+          else {
+            return Err(VmError::InvariantViolation(
+              "async generator missing continuation in suspendedStart",
+            ));
+          };
+
+          let has_default_param_initializers = heap_cont
+            .func
+            .stx
+            .parameters
+            .iter()
+            .any(|p| p.stx.default_value.is_some());
+          if has_default_param_initializers {
+            // Defer the initial function instantiation for default parameter initializers until a
+            // microtask checkpoint. Some test262-style suites observe the default initializer side
+            // effects only after draining the Promise job queue (even though other async generators
+            // are permitted to start synchronously).
+            scope
+              .heap_mut()
+              .async_generator_set_continuation(gen_obj, Some(heap_cont))?;
+
+            let intr = vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let kick_promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
+            scope.push_root(Value::Object(kick_promise))?;
+            scope
+              .heap_mut()
+              .promise_fulfill(kick_promise, Value::Undefined)?;
+
+            let global_object = infer_callback_global_object(vm, &scope)?;
+            async_generator_create_resume_callbacks(
+              vm,
+              &mut scope,
+              host,
+              hooks,
+              Value::Object(kick_promise),
+              Value::Object(gen_obj),
+              global_object,
+            )?;
+            return Ok(());
+          }
+
+          return async_generator_start_from_heap_continuation(
+            vm,
+            &mut scope,
+            host,
+            hooks,
+            gen_obj,
+            req,
+            heap_cont,
+          );
+        }
+      },
+
+      AsyncGeneratorState::SuspendedYield => {
+        // Resume the generator from its saved VM continuation.
+        scope
+          .heap_mut()
+          .async_generator_set_state(gen_obj, AsyncGeneratorState::Executing)?;
+
+        let Some((cont_id, mut cont)) =
+          async_generator_take_or_complete_missing_continuation(vm, &mut scope, gen_obj)?
+        else {
+          continue;
+        };
+
+        let resume_input = match req.kind {
+          crate::heap::AsyncGeneratorRequestKind::Next(v) => AsyncResumeInput::Next(v),
+          crate::heap::AsyncGeneratorRequestKind::Throw(reason) => AsyncResumeInput::Throw(reason),
+          crate::heap::AsyncGeneratorRequestKind::Return(v) => AsyncResumeInput::Return(v),
+        };
+
+        let this = scope.heap().get_root(cont.this_root).ok_or(VmError::InvariantViolation(
+          "async generator continuation missing this root",
+        ))?;
+        let new_target = scope
+          .heap()
+          .get_root(cont.new_target_root)
+          .ok_or(VmError::InvariantViolation(
+            "async generator continuation missing new.target root",
+          ))?;
+        let home_object_value = scope
+          .heap()
+          .get_root(cont.home_object_root)
+          .ok_or(VmError::InvariantViolation(
+            "async generator continuation missing home object root",
+          ))?;
+        let home_object = match home_object_value {
+          Value::Object(o) => Some(o),
+          Value::Undefined => None,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "async generator continuation home object root is not an object or undefined",
+            ))
+          }
+        };
+
+        let mut evaluator = Evaluator {
+          vm,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: cont.strict,
+          is_async_generator: true,
+          this,
+          new_target,
+          home_object,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
+        };
+
+        let result = async_resume_from_frames(&mut evaluator, &mut scope, mem::take(&mut cont.frames), resume_input);
+        cont.strict = evaluator.strict;
+        scope.heap_mut().set_root(cont.this_root, evaluator.this);
+        scope
+          .heap_mut()
+          .set_root(cont.new_target_root, evaluator.new_target);
+        scope.heap_mut().set_root(
+          cont.home_object_root,
+          evaluator
+            .home_object
+            .map(Value::Object)
+            .unwrap_or(Value::Undefined),
+        );
+
+        return async_generator_handle_body_result(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          gen_obj,
+          cont_id,
+          cont,
+          result,
+        );
+      }
+    }
+  }
+}
+
+pub(crate) fn async_generator_resume_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let slot0 = slots.get(0).copied().unwrap_or(Value::Undefined);
+  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Bool(b) => b,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator resume callback missing reject flag",
+      ))
+    }
+  };
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Two modes:
+  // - `slot0` is a numeric continuation id: resume an in-progress async generator continuation
+  // - `slot0` is the generator object itself: settle a `.return()` awaiting-return request for a
+  //   generator that has no VM continuation (SuspendedStart/Completed paths)
+  match slot0 {
+    Value::Number(n) => {
+      let id = n as u32;
+      let Some(mut cont) = vm.take_async_generator_continuation(id) else {
+        // Embeddings can tear down async generators during microtask teardown; callbacks must no-op.
+        return Ok(Value::Undefined);
+      };
+
+      if let Some(root) = cont.awaited_promise_root.take() {
+        scope.heap_mut().remove_root(root);
+      }
+
+      let Some(Value::Object(gen_obj)) = scope.heap().get_root(cont.gen_root) else {
+        async_generator_teardown_continuation(scope, cont);
+        return Ok(Value::Undefined);
+      };
+
+      let awaiting = cont.awaiting.take().ok_or(VmError::InvariantViolation(
+        "async generator resume callback missing awaiting kind",
+      ))?;
+
+      match awaiting {
+        AsyncGeneratorAwaitingKind::Yield => {
+          if is_reject {
+            // Yield operand rejection resumes evaluator as a thrown completion.
+            let resume_input = AsyncResumeInput::Throw(arg0);
+            let this = scope.heap().get_root(cont.this_root).ok_or(VmError::InvariantViolation(
+              "async generator continuation missing this root",
+            ))?;
+            let new_target = scope
+              .heap()
+              .get_root(cont.new_target_root)
+              .ok_or(VmError::InvariantViolation(
+                "async generator continuation missing new.target root",
+              ))?;
+            let home_object_value = scope
+              .heap()
+              .get_root(cont.home_object_root)
+              .ok_or(VmError::InvariantViolation(
+                "async generator continuation missing home object root",
+              ))?;
+            let home_object = match home_object_value {
+              Value::Object(o) => Some(o),
+              Value::Undefined => None,
+              _ => {
+                async_generator_teardown_continuation(scope, cont);
+                return Err(VmError::InvariantViolation(
+                  "async generator continuation home object root is not an object or undefined",
+                ));
+              }
+            };
+
+            let mut evaluator = Evaluator {
+              vm,
+              host,
+              hooks,
+              env: &mut cont.env,
+              strict: cont.strict,
+              is_async_generator: true,
+              this,
+              new_target,
+              home_object,
+              class_constructor: None,
+              derived_constructor: false,
+              this_initialized: true,
+              this_root_idx: None,
+            };
+
+            let result =
+              async_resume_from_frames(&mut evaluator, scope, mem::take(&mut cont.frames), resume_input);
+            cont.strict = evaluator.strict;
+            scope.heap_mut().set_root(cont.this_root, evaluator.this);
+            scope
+              .heap_mut()
+              .set_root(cont.new_target_root, evaluator.new_target);
+            scope.heap_mut().set_root(
+              cont.home_object_root,
+              evaluator
+                .home_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            );
+
+            return async_generator_handle_body_result(vm, scope, host, hooks, gen_obj, id, cont, result)
+              .map(|_| Value::Undefined);
+          }
+
+          // Yield operand fulfilled: resolve the current request and suspend at `yield`.
+          let req = match scope.heap().async_generator_request_queue_peek(gen_obj)? {
+            Some(r) => r,
+            None => {
+              async_generator_teardown_continuation(scope, cont);
+              return Err(VmError::InvariantViolation(
+                "async generator yielded with empty request queue",
+              ));
+            }
+          };
+          let mut yield_scope = scope.reborrow();
+          yield_scope.push_root(arg0)?;
+          async_generator_resolve_request_with_iterator_result(
+            vm,
+            &mut yield_scope,
+            host,
+            hooks,
+            req,
+            arg0,
+            false,
+          )?;
+          yield_scope
+            .heap_mut()
+            .async_generator_request_queue_pop(gen_obj)?;
+
+          yield_scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::SuspendedYield)?;
+
+          if let Err(err) = vm.reserve_async_generator_continuations(1) {
+            async_generator_teardown_continuation(&mut yield_scope, cont);
+            return Err(err);
+          }
+          vm.replace_async_generator_continuation_reserved(id, cont);
+          async_generator_resume_next(vm, &mut yield_scope, host, hooks, gen_obj)?;
+          Ok(Value::Undefined)
+        }
+
+        AsyncGeneratorAwaitingKind::Await => {
+          let resume_input = if is_reject {
+            AsyncResumeInput::Throw(arg0)
+          } else {
+            AsyncResumeInput::Next(arg0)
+          };
+          let this = scope.heap().get_root(cont.this_root).ok_or(VmError::InvariantViolation(
+            "async generator continuation missing this root",
+          ))?;
+          let new_target = scope
+            .heap()
+            .get_root(cont.new_target_root)
+            .ok_or(VmError::InvariantViolation(
+              "async generator continuation missing new.target root",
+            ))?;
+          let home_object_value = scope
+            .heap()
+            .get_root(cont.home_object_root)
+            .ok_or(VmError::InvariantViolation(
+              "async generator continuation missing home object root",
+            ))?;
+          let home_object = match home_object_value {
+            Value::Object(o) => Some(o),
+            Value::Undefined => None,
+            _ => {
+              async_generator_teardown_continuation(scope, cont);
+              return Err(VmError::InvariantViolation(
+                "async generator continuation home object root is not an object or undefined",
+              ));
+            }
+          };
+
+          let mut evaluator = Evaluator {
+            vm,
+            host,
+            hooks,
+            env: &mut cont.env,
+            strict: cont.strict,
+            is_async_generator: true,
+            this,
+            new_target,
+            home_object,
+            class_constructor: None,
+            derived_constructor: false,
+            this_initialized: true,
+            this_root_idx: None,
+          };
+
+          let result =
+            async_resume_from_frames(&mut evaluator, scope, mem::take(&mut cont.frames), resume_input);
+          cont.strict = evaluator.strict;
+          scope.heap_mut().set_root(cont.this_root, evaluator.this);
+          scope
+            .heap_mut()
+            .set_root(cont.new_target_root, evaluator.new_target);
+          scope.heap_mut().set_root(
+            cont.home_object_root,
+            evaluator
+              .home_object
+              .map(Value::Object)
+              .unwrap_or(Value::Undefined),
+          );
+
+          async_generator_handle_body_result(vm, scope, host, hooks, gen_obj, id, cont, result)?;
+          Ok(Value::Undefined)
+        }
+
+        AsyncGeneratorAwaitingKind::Complete => {
+          // Completion value awaited: settle the current request with `{ done: true }` and complete
+          // the generator.
+          let req = match scope.heap().async_generator_request_queue_peek(gen_obj)? {
+            Some(r) => r,
+            None => {
+              async_generator_teardown_continuation(scope, cont);
+              return Err(VmError::InvariantViolation(
+                "async generator completion awaited with empty request queue",
+              ));
+            }
+          };
+
+          if is_reject {
+            let mut reject_scope = scope.reborrow();
+            reject_scope.push_root(arg0)?;
+            async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, arg0)?;
+            reject_scope
+              .heap_mut()
+              .async_generator_request_queue_pop(gen_obj)?;
+            reject_scope
+              .heap_mut()
+              .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+            reject_scope
+              .heap_mut()
+              .async_generator_set_vm_continuation_id(gen_obj, None)?;
+            async_generator_teardown_continuation(&mut reject_scope, cont);
+            async_generator_resume_next(vm, &mut reject_scope, host, hooks, gen_obj)?;
+            return Ok(Value::Undefined);
+          }
+
+          let mut resolve_scope = scope.reborrow();
+          resolve_scope.push_root(arg0)?;
+          async_generator_resolve_request_with_iterator_result(
+            vm,
+            &mut resolve_scope,
+            host,
+            hooks,
+            req,
+            arg0,
+            true,
+          )?;
+          resolve_scope
+            .heap_mut()
+            .async_generator_request_queue_pop(gen_obj)?;
+          resolve_scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+          resolve_scope
+            .heap_mut()
+            .async_generator_set_vm_continuation_id(gen_obj, None)?;
+          async_generator_teardown_continuation(&mut resolve_scope, cont);
+          async_generator_resume_next(vm, &mut resolve_scope, host, hooks, gen_obj)?;
+          Ok(Value::Undefined)
+        }
+      }
+    }
+
+    Value::Object(gen_obj) => {
+      // Deferred-start for async generators with default parameter initializers.
+      //
+      // Some async generator tests expect default parameter initializer side effects to happen in a
+      // Promise job, even though other async generators are permitted to start synchronously at
+      // `.next()`. `async_generator_resume_next` marks these generators as `Executing` and schedules
+      // a microtask kick (via an already-fulfilled intrinsic Promise) that reaches this callback.
+      if matches!(scope.heap().async_generator_state(gen_obj)?, AsyncGeneratorState::Executing)
+        && scope.heap().async_generator_vm_continuation_id(gen_obj)?.is_none()
+      {
+        let Some(req) = scope.heap().async_generator_request_queue_peek(gen_obj)? else {
+          // No requests remain: restore the start state so later `.next()` can re-enter.
+          scope
+            .heap_mut()
+            .async_generator_set_state(gen_obj, AsyncGeneratorState::SuspendedStart)?;
+          return Ok(Value::Undefined);
+        };
+
+        if let Some(heap_cont) = scope.heap_mut().async_generator_take_continuation(gen_obj)? {
+          async_generator_start_from_heap_continuation(
+            vm,
+            scope,
+            host,
+            hooks,
+            gen_obj,
+            req,
+            heap_cont,
+          )?;
+          return Ok(Value::Undefined);
+        }
+      }
+
+      // Awaiting-return for a generator that does not have a VM continuation (SuspendedStart /
+      // Completed `.return()` path).
+      let Some(req) = scope.heap().async_generator_request_queue_peek(gen_obj)? else {
+        return Ok(Value::Undefined);
+      };
+
+      if is_reject {
+        let mut reject_scope = scope.reborrow();
+        reject_scope.push_root(arg0)?;
+        async_generator_reject_request(vm, &mut reject_scope, host, hooks, req, arg0)?;
+        reject_scope
+          .heap_mut()
+          .async_generator_request_queue_pop(gen_obj)?;
+        reject_scope
+          .heap_mut()
+          .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+        async_generator_resume_next(vm, &mut reject_scope, host, hooks, gen_obj)?;
+        return Ok(Value::Undefined);
+      }
+
+      let mut resolve_scope = scope.reborrow();
+      resolve_scope.push_root(arg0)?;
+      async_generator_resolve_request_with_iterator_result(
+        vm,
+        &mut resolve_scope,
+        host,
+        hooks,
+        req,
+        arg0,
+        true,
+      )?;
+      resolve_scope
+        .heap_mut()
+        .async_generator_request_queue_pop(gen_obj)?;
+      resolve_scope
+        .heap_mut()
+        .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
+      async_generator_resume_next(vm, &mut resolve_scope, host, hooks, gen_obj)?;
+      Ok(Value::Undefined)
+    }
+
+    _ => Err(VmError::InvariantViolation(
+      "async generator resume callback missing continuation id or generator object",
+    )),
+  }
+}
+
 fn async_handle_body_result(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -19089,18 +20415,19 @@ pub(crate) fn async_resume_call(
           }
         };
 
-        let res = (|| {
-          let mut evaluator = Evaluator {
-            vm: &mut *vm_ctx,
-            host,
-            hooks,
-            env: &mut cont.env,
-            strict: cont.strict,
-            this,
-            new_target,
-            home_object,
-            class_constructor: None,
-            derived_constructor: false,
+         let res = (|| {
+           let mut evaluator = Evaluator {
+             vm: &mut *vm_ctx,
+             host,
+             hooks,
+             env: &mut cont.env,
+             strict: cont.strict,
+             is_async_generator: false,
+             this,
+             new_target,
+             home_object,
+             class_constructor: None,
+             derived_constructor: false,
             this_initialized: true,
             this_root_idx: None,
           };
@@ -19150,6 +20477,7 @@ pub(crate) fn async_resume_call(
         hooks,
         env: &mut cont.env,
         strict: cont.strict,
+        is_async_generator: false,
         this,
         new_target,
         home_object,
@@ -19234,967 +20562,6 @@ pub(crate) fn coerce_error_to_throw_for_async(
     )
     .unwrap_or_else(|e| e),
     other => other,
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AsyncGeneratorResumeKind {
-  Await = 0,
-  Yield = 1,
-  Return = 2,
-}
-
-impl AsyncGeneratorResumeKind {
-  #[inline]
-  fn to_slot(self) -> Value {
-    Value::Number(self as u8 as f64)
-  }
-
-  fn from_slot(value: Value) -> Result<Self, VmError> {
-    match value {
-      Value::Number(n) if n == Self::Await as u8 as f64 => Ok(Self::Await),
-      Value::Number(n) if n == Self::Yield as u8 as f64 => Ok(Self::Yield),
-      Value::Number(n) if n == Self::Return as u8 as f64 => Ok(Self::Return),
-      _ => Err(VmError::InvariantViolation(
-        "async generator resume callback missing/invalid kind slot",
-      )),
-    }
-  }
-}
-
-fn async_generator_extract_throw_reason(
-  vm: &Vm,
-  scope: &mut Scope<'_>,
-  err: VmError,
-) -> Result<Value, VmError> {
-  let err = coerce_error_to_throw_for_async(vm, scope, err);
-  match err {
-    VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => Ok(reason),
-    other => Err(other),
-  }
-}
-
-fn async_generator_create_iterator_result_object(
-  vm: &Vm,
-  scope: &mut Scope<'_>,
-  value: Value,
-  done: bool,
-) -> Result<Value, VmError> {
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  // Root inputs across allocation and property definition.
-  let mut scope = scope.reborrow();
-  scope.push_root(value)?;
-
-  let obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
-  scope.push_root(Value::Object(obj))?;
-
-  let value_key_s = scope.alloc_string("value")?;
-  scope.push_root(Value::String(value_key_s))?;
-  let done_key_s = scope.alloc_string("done")?;
-  scope.push_root(Value::String(done_key_s))?;
-
-  let value_key = PropertyKey::from_string(value_key_s);
-  let done_key = PropertyKey::from_string(done_key_s);
-
-  let value_desc = PropertyDescriptor {
-    enumerable: true,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value,
-      writable: true,
-    },
-  };
-  let done_desc = PropertyDescriptor {
-    enumerable: true,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value: Value::Bool(done),
-      writable: true,
-    },
-  };
-
-  scope.define_property(obj, value_key, value_desc)?;
-  scope.define_property(obj, done_key, done_desc)?;
-
-  Ok(Value::Object(obj))
-}
-
-fn async_generator_call_promise_handler(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  handler: Value,
-  arg0: Value,
-) -> Result<(), VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[handler, arg0])?;
-  let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, handler, Value::Undefined, &[arg0])?;
-  Ok(())
-}
-
-fn async_generator_resolve_request_promise(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  req: crate::heap::AsyncGeneratorRequest,
-  result: Value,
-) -> Result<(), VmError> {
-  async_generator_call_promise_handler(vm, scope, host, hooks, req.capability.resolve, result)
-}
-
-fn async_generator_reject_request_promise(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  req: crate::heap::AsyncGeneratorRequest,
-  reason: Value,
-) -> Result<(), VmError> {
-  async_generator_call_promise_handler(vm, scope, host, hooks, req.capability.reject, reason)
-}
-
-fn async_gen_root_values_for_continuation(
-  scope: &mut Scope<'_>,
-  cont: &AsyncGeneratorContinuation,
-) -> Result<(), VmError> {
-  let mut values: Vec<Value> = Vec::new();
-  values
-    .try_reserve_exact(
-      2usize
-        .saturating_add(cont.args.len())
-        .saturating_add(if cont.home_object.is_some() { 1 } else { 0 }),
-    )
-    .map_err(|_| VmError::OutOfMemory)?;
-  values.push(cont.this);
-  values.push(cont.new_target);
-  if let Some(home_object) = cont.home_object {
-    values.push(Value::Object(home_object));
-  }
-  values.extend_from_slice(&cont.args);
-
-  // Ensure the lexical environment is treated as a root while growing the root stack. The env
-  // itself is rooted via `RuntimeEnv::lexical_root` during execution.
-  scope.push_roots_with_extra_roots(&values, &[], &[cont.env.lexical_env()])?;
-  Ok(())
-}
-
-fn async_generator_attach_resume_callbacks(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  gen_obj: GcObject,
-  awaited_promise: Value,
-  kind: AsyncGeneratorResumeKind,
-) -> Result<(), VmError> {
-  let call_id = vm.async_generator_resume_call_id()?;
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  // Promise jobs run under a captured JobRealm and ScriptOrModule token so dynamic import and
-  // `import.meta` can observe the active module/script when needed.
-  let job_realm = vm.current_realm();
-  let script_or_module_token = match vm.get_active_script_or_module() {
-    Some(sm) => Some(vm.intern_script_or_module(sm)?),
-    None => None,
-  };
-
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(gen_obj))?;
-  scope.push_root(awaited_promise)?;
-
-  let name = scope.alloc_string("")?;
-  let slots_fulfill = [Value::Object(gen_obj), Value::Bool(false), kind.to_slot()];
-  let on_fulfilled = scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
-  scope.push_root(Value::Object(on_fulfilled))?;
-
-  let name = scope.alloc_string("")?;
-  let slots_reject = [Value::Object(gen_obj), Value::Bool(true), kind.to_slot()];
-  let on_rejected = scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
-  scope.push_root(Value::Object(on_rejected))?;
-
-  for cb in [on_fulfilled, on_rejected] {
-    scope
-      .heap_mut()
-      .object_set_prototype(cb, Some(intr.function_prototype()))?;
-    if let Some(realm) = job_realm {
-      scope.heap_mut().set_function_job_realm(cb, realm)?;
-    }
-    if let Some(token) = script_or_module_token {
-      scope
-        .heap_mut()
-        .set_function_script_or_module_token(cb, Some(token))?;
-    }
-  }
-
-  crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    awaited_promise,
-    Value::Object(on_fulfilled),
-    Value::Object(on_rejected),
-  )?;
-
-  Ok(())
-}
-
-fn async_generator_schedule_await(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  gen_obj: GcObject,
-  awaited_promise: Value,
-  kind: AsyncGeneratorResumeKind,
-  mut state: AsyncGeneratorRuntimeState,
-) -> Result<(), VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_root(awaited_promise)?;
-
-  let root = scope.heap_mut().add_root(awaited_promise)?;
-  state.awaited_promise_root = Some(root);
-
-  vm.reserve_async_generator_continuations(1)?;
-  vm.replace_async_generator_continuation(gen_obj, state)?;
-
-  let then_res =
-    async_generator_attach_resume_callbacks(vm, &mut scope, host, hooks, gen_obj, awaited_promise, kind);
-  if let Err(err) = then_res {
-    if let Some(state) = vm.take_async_generator_continuation(gen_obj) {
-      async_generator_teardown_runtime_state(&mut scope, state);
-    }
-    return Err(err);
-  }
-
-  Ok(())
-}
-
-fn async_generator_resume_frames(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _gen_obj: GcObject,
-  mut cont: Box<AsyncGeneratorContinuation>,
-  frames: VecDeque<AsyncFrame>,
-  resume_input: AsyncResumeInput,
-) -> Result<(AsyncBodyResult, Box<AsyncGeneratorContinuation>), VmError> {
-  // Root `this`, `new.target`, home object, and args while the continuation is moved out of the heap.
-  async_gen_root_values_for_continuation(scope, &cont)?;
-  cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
-
-  let this = cont.this;
-  let new_target = cont.new_target;
-  let home_object = cont.home_object;
-
-  let mut evaluator = Evaluator {
-    vm,
-    host,
-    hooks,
-    env: &mut cont.env,
-    strict: cont.strict,
-    this,
-    new_target,
-    home_object,
-    class_constructor: None,
-    derived_constructor: false,
-    this_initialized: true,
-    this_root_idx: None,
-  };
-
-  let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_input)?;
-  // Persist strictness and `this`/`new.target`/`home_object` overrides across suspensions.
-  cont.strict = evaluator.strict;
-  cont.this = evaluator.this;
-  cont.new_target = evaluator.new_target;
-  cont.home_object = evaluator.home_object;
-
-  Ok((result, cont))
-}
-
-fn async_generator_start(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _gen_obj: GcObject,
-  mut cont: Box<AsyncGeneratorContinuation>,
-) -> Result<(AsyncBodyResult, Box<AsyncGeneratorContinuation>), VmError> {
-  async_gen_root_values_for_continuation(scope, &cont)?;
-  cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
-
-  let this = cont.this;
-  let new_target = cont.new_target;
-  let home_object = cont.home_object;
-  let func = cont.func.clone();
-
-  let mut evaluator = Evaluator {
-    vm,
-    host,
-    hooks,
-    env: &mut cont.env,
-    strict: cont.strict,
-    this,
-    new_target,
-    home_object,
-    class_constructor: None,
-    derived_constructor: false,
-    this_initialized: true,
-    this_root_idx: None,
-  };
-
-  let result = async_start_body(&mut evaluator, scope, &func)?;
-  // Persist strictness and `this`/`new.target`/`home_object` overrides across suspensions.
-  cont.strict = evaluator.strict;
-  cont.this = evaluator.this;
-  cont.new_target = evaluator.new_target;
-  cont.home_object = evaluator.home_object;
-
-  Ok((result, cont))
-}
-
-fn async_generator_handle_execution_result(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  gen_obj: GcObject,
-  mut cont: Box<AsyncGeneratorContinuation>,
-  mut state: AsyncGeneratorRuntimeState,
-  mut result: AsyncBodyResult,
-) -> Result<bool, VmError> {
-  loop {
-    match result {
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::Await,
-        await_value,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `await` in an async generator uses the same semantics as `await` in async functions:
-        // `PromiseResolve(%Promise%, value)` with no derived promise/species side effects.
-        let awaited_promise = match promise_resolve_for_await_with_host_and_hooks(
-          vm,
-          scope,
-          host,
-          hooks,
-          await_value,
-        ) {
-          Ok(p) => p,
-          Err(err) if err.is_throw_completion() => {
-            let reason = async_generator_extract_throw_reason(vm, scope, err)?;
-            // Resume the suspended `await` as a throw completion so generator code can catch it.
-            let frames = mem::take(&mut state.frames);
-            let (r, c) = async_generator_resume_frames(
-              vm,
-              scope,
-              host,
-              hooks,
-              gen_obj,
-              cont,
-              frames,
-              AsyncResumeInput::Throw(reason),
-            )?;
-            cont = c;
-            result = r;
-            continue;
-          }
-          Err(err) => return Err(err),
-        };
-
-        // Suspend: store frames in the VM and wire a Promise job to resume.
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::AwaitResolved,
-        await_value: awaited_promise,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `AwaitResolved` means the internal `PromiseResolve` step of `Await` has already happened
-        // (e.g. `AsyncIteratorClose` during `for await..of`), so we must not call `PromiseResolve`
-        // again or we'd observe `promise.constructor` twice.
-        let is_promise =
-          matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj));
-        debug_assert!(is_promise, "AwaitResolved suspension must carry a Promise object");
-        if !is_promise {
-          return Err(VmError::InvariantViolation(
-            "AwaitResolved suspension must carry a Promise object",
-          ));
-        }
-        if let Some(root) = state.awaited_promise_root.take() {
-          scope.heap_mut().remove_root(root);
-        }
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::Yield,
-        await_value,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `yield` awaits its operand, but then suspends awaiting the *next request* (consumer-driven).
-        // We await the operand with immediate thenable assimilation so `then` is called synchronously.
-        let awaited_promise = match crate::promise_ops::promise_resolve_thenable_immediate_with_host_and_hooks(
-          vm,
-          scope,
-          host,
-          hooks,
-          await_value,
-        ) {
-          Ok(p) => p,
-          Err(err) if err.is_throw_completion() => {
-            let reason = async_generator_extract_throw_reason(vm, scope, err)?;
-            // Treat PromiseResolve errors as an exception thrown from the yield expression.
-            let frames = mem::take(&mut state.frames);
-            let (r, c) = async_generator_resume_frames(
-              vm,
-              scope,
-              host,
-              hooks,
-              gen_obj,
-              cont,
-              frames,
-              AsyncResumeInput::Throw(reason),
-            )?;
-            cont = c;
-            result = r;
-            continue;
-          }
-          Err(err) => return Err(err),
-        };
-
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Yield,
-          state,
-        )?;
-        return Ok(false);
-      }
-
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::YieldIteratorResult,
-        await_value: iter_result,
-        frames,
-      } => {
-        // Yield the delegate iterator result object directly.
-        state.frames = frames;
-        state.awaited_promise_root = None;
-
-        // Resolve the current request with the iterator result object and suspend.
-        let req = scope
-          .heap()
-          .async_generator_request_queue_peek(gen_obj)?
-          .ok_or(VmError::InvariantViolation(
-            "async generator yield without a pending request",
-          ))?;
-
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        // Store continuation frames for the next request.
-        vm.reserve_async_generator_continuations(1)?;
-        vm.replace_async_generator_continuation(gen_obj, state)?;
-
-        async_generator_resolve_request_promise(vm, scope, host, hooks, req, iter_result)?;
-        let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-
-        scope
-          .heap_mut()
-          .async_generator_set_state(gen_obj, AsyncGeneratorState::SuspendedYield)?;
-
-        return Ok(true);
-      }
-
-      AsyncBodyResult::CompleteOk(v) => {
-        // Generator completed: await the final return value (done: true) before resolving the
-        // current request.
-        cont.env.teardown(scope.heap_mut());
-        scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
-        scope
-          .heap_mut()
-          .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
-
-        state.frames = VecDeque::new();
-
-        let awaited_promise = match crate::promise_ops::promise_resolve_thenable_immediate_with_host_and_hooks(
-          vm,
-          scope,
-          host,
-          hooks,
-          v,
-        ) {
-          Ok(p) => p,
-          Err(err) if err.is_throw_completion() => {
-            let reason = async_generator_extract_throw_reason(vm, scope, err)?;
-            // Awaiting the final return value failed: reject the current request and complete.
-            let req = scope
-              .heap()
-              .async_generator_request_queue_peek(gen_obj)?
-              .ok_or(VmError::InvariantViolation(
-                "async generator completed without a pending request",
-              ))?;
-            async_generator_reject_request_promise(vm, scope, host, hooks, req, reason)?;
-            let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-            scope
-              .heap_mut()
-              .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-            return Ok(true);
-          }
-          Err(err) => return Err(err),
-        };
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Return,
-          state,
-        )?;
-        return Ok(false);
-      }
-
-      AsyncBodyResult::CompleteThrow(reason) => {
-        // Uncaught exception: reject the current request and complete the generator.
-        cont.env.teardown(scope.heap_mut());
-        scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
-        scope
-          .heap_mut()
-          .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-
-        let req = scope
-          .heap()
-          .async_generator_request_queue_peek(gen_obj)?
-          .ok_or(VmError::InvariantViolation(
-            "async generator threw without a pending request",
-          ))?;
-        async_generator_reject_request_promise(vm, scope, host, hooks, req, reason)?;
-        let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-        return Ok(true);
-      }
-    }
-  }
-}
-
-pub(crate) fn async_generator_resume_next(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  gen_obj: GcObject,
-) -> Result<(), VmError> {
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(gen_obj))?;
-
-  loop {
-    let state = scope.heap().async_generator_state(gen_obj)?;
-    if matches!(state, AsyncGeneratorState::Executing | AsyncGeneratorState::AwaitingReturn) {
-      return Ok(());
-    }
-
-    let Some(req) = scope.heap().async_generator_request_queue_peek(gen_obj)? else {
-      return Ok(());
-    };
-
-    match state {
-      AsyncGeneratorState::Completed => match req.kind {
-        crate::heap::AsyncGeneratorRequestKind::Next(_) => {
-          let req = scope
-            .heap_mut()
-            .async_generator_request_queue_pop(gen_obj)?
-            .ok_or(VmError::InvariantViolation(
-              "async generator request queue became empty unexpectedly",
-            ))?;
-          let iter_result =
-            async_generator_create_iterator_result_object(vm, &mut scope, Value::Undefined, true)?;
-          async_generator_resolve_request_promise(vm, &mut scope, host, hooks, req, iter_result)?;
-          continue;
-        }
-        crate::heap::AsyncGeneratorRequestKind::Throw(reason) => {
-          let req = scope
-            .heap_mut()
-            .async_generator_request_queue_pop(gen_obj)?
-            .ok_or(VmError::InvariantViolation(
-              "async generator request queue became empty unexpectedly",
-            ))?;
-          async_generator_reject_request_promise(vm, &mut scope, host, hooks, req, reason)?;
-          continue;
-        }
-        crate::heap::AsyncGeneratorRequestKind::Return(v) => {
-          // Await the return argument and resolve to `{ value: awaited, done: true }`.
-          scope
-            .heap_mut()
-            .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
-          // Schedule the await with an empty runtime state.
-          let awaited_promise =
-            crate::promise_ops::promise_resolve_thenable_immediate_with_host_and_hooks(vm, &mut scope, host, hooks, v);
-          let awaited_promise = match awaited_promise {
-            Ok(p) => p,
-            Err(err) if err.is_throw_completion() => {
-              // PromiseResolve threw: reject the `return()` promise and complete.
-              let reason = async_generator_extract_throw_reason(vm, &mut scope, err)?;
-              let req = scope
-                .heap()
-                .async_generator_request_queue_peek(gen_obj)?
-                .ok_or(VmError::InvariantViolation(
-                  "async generator return without a pending request",
-                ))?;
-              async_generator_reject_request_promise(vm, &mut scope, host, hooks, req, reason)?;
-              let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-              scope
-                .heap_mut()
-                .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-              continue;
-            }
-            Err(err) => return Err(err),
-          };
-
-          let state = AsyncGeneratorRuntimeState {
-            frames: VecDeque::new(),
-            awaited_promise_root: None,
-          };
-          async_generator_schedule_await(
-            vm,
-            &mut scope,
-            host,
-            hooks,
-            gen_obj,
-            awaited_promise,
-            AsyncGeneratorResumeKind::Return,
-            state,
-          )?;
-          return Ok(());
-        }
-      },
-
-      AsyncGeneratorState::SuspendedStart => match req.kind {
-        crate::heap::AsyncGeneratorRequestKind::Throw(reason) => {
-          // Throw on SuspendedStart rejects the request and completes without executing the body.
-          let req = scope
-            .heap_mut()
-            .async_generator_request_queue_pop(gen_obj)?
-            .ok_or(VmError::InvariantViolation(
-              "async generator request queue became empty unexpectedly",
-            ))?;
-          scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
-          scope
-            .heap_mut()
-            .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-          async_generator_reject_request_promise(vm, &mut scope, host, hooks, req, reason)?;
-          continue;
-        }
-        crate::heap::AsyncGeneratorRequestKind::Return(v) => {
-          // Return on SuspendedStart resolves to done:true without executing the body.
-          scope
-            .heap_mut()
-            .async_generator_set_continuation(gen_obj, None)?;
-          scope
-            .heap_mut()
-            .async_generator_set_state(gen_obj, AsyncGeneratorState::AwaitingReturn)?;
-
-          let awaited_promise =
-            crate::promise_ops::promise_resolve_thenable_immediate_with_host_and_hooks(vm, &mut scope, host, hooks, v);
-          let awaited_promise = match awaited_promise {
-            Ok(p) => p,
-            Err(err) if err.is_throw_completion() => {
-              let reason = async_generator_extract_throw_reason(vm, &mut scope, err)?;
-              let req = scope
-                .heap()
-                .async_generator_request_queue_peek(gen_obj)?
-                .ok_or(VmError::InvariantViolation(
-                  "async generator return without a pending request",
-                ))?;
-              async_generator_reject_request_promise(vm, &mut scope, host, hooks, req, reason)?;
-              let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-              scope
-                .heap_mut()
-                .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-              continue;
-            }
-            Err(err) => return Err(err),
-          };
-
-          let state = AsyncGeneratorRuntimeState {
-            frames: VecDeque::new(),
-            awaited_promise_root: None,
-          };
-          async_generator_schedule_await(
-            vm,
-            &mut scope,
-            host,
-            hooks,
-            gen_obj,
-            awaited_promise,
-            AsyncGeneratorResumeKind::Return,
-            state,
-          )?;
-          return Ok(());
-        }
-        crate::heap::AsyncGeneratorRequestKind::Next(_) => {
-          // Start execution (first `next` argument is ignored).
-          scope
-            .heap_mut()
-            .async_generator_set_state(gen_obj, AsyncGeneratorState::Executing)?;
-
-          let cont = scope
-            .heap_mut()
-            .async_generator_take_continuation(gen_obj)?
-            .ok_or(VmError::InvariantViolation(
-              "async generator missing continuation in suspendedStart",
-            ))?;
-
-          let state = AsyncGeneratorRuntimeState {
-            frames: VecDeque::new(),
-            awaited_promise_root: None,
-          };
-
-          let (result, cont) = async_generator_start(vm, &mut scope, host, hooks, gen_obj, cont)?;
-          let should_continue =
-            async_generator_handle_execution_result(vm, &mut scope, host, hooks, gen_obj, cont, state, result)?;
-          if !should_continue {
-            return Ok(());
-          }
-          continue;
-        }
-      },
-
-      AsyncGeneratorState::SuspendedYield => {
-        scope
-          .heap_mut()
-          .async_generator_set_state(gen_obj, AsyncGeneratorState::Executing)?;
-
-        let mut state = vm
-          .take_async_generator_continuation(gen_obj)
-          .ok_or(VmError::InvariantViolation(
-            "async generator missing runtime state in suspendedYield",
-          ))?;
-        let frames = mem::take(&mut state.frames);
-
-        let cont = scope
-          .heap_mut()
-          .async_generator_take_continuation(gen_obj)?
-          .ok_or(VmError::InvariantViolation(
-            "async generator missing continuation in suspendedYield",
-          ))?;
-
-        let resume_input = match req.kind {
-          crate::heap::AsyncGeneratorRequestKind::Next(v) => AsyncResumeInput::Next(v),
-          crate::heap::AsyncGeneratorRequestKind::Throw(reason) => AsyncResumeInput::Throw(reason),
-          crate::heap::AsyncGeneratorRequestKind::Return(v) => AsyncResumeInput::Return(v),
-        };
-
-        let (result, cont) =
-          async_generator_resume_frames(vm, &mut scope, host, hooks, gen_obj, cont, frames, resume_input)?;
-
-        let should_continue =
-          async_generator_handle_execution_result(vm, &mut scope, host, hooks, gen_obj, cont, state, result)?;
-        if !should_continue {
-          return Ok(());
-        }
-        continue;
-      }
-
-      AsyncGeneratorState::Executing | AsyncGeneratorState::AwaitingReturn => unreachable!(),
-    }
-  }
-}
-
-pub(crate) fn async_generator_resume_call(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let gen_obj = match slots.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::Object(o) => o,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "async generator resume callback missing generator object slot",
-      ))
-    }
-  };
-  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
-    Value::Bool(b) => b,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "async generator resume callback missing reject flag",
-      ))
-    }
-  };
-  let kind = AsyncGeneratorResumeKind::from_slot(slots.get(2).copied().unwrap_or(Value::Undefined))?;
-
-  let Some(mut state) = vm.take_async_generator_continuation(gen_obj) else {
-    // Embeddings can abort in-progress async generator evaluation by tearing down microtasks. In
-    // that case, previously-registered resume callbacks must no-op.
-    return Ok(Value::Undefined);
-  };
-
-  if let Some(root) = state.awaited_promise_root.take() {
-    scope.heap_mut().remove_root(root);
-  }
-
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-
-  match kind {
-    AsyncGeneratorResumeKind::Return => {
-      // Final return value has settled; resolve/reject the current request and complete.
-      let req = scope
-        .heap()
-        .async_generator_request_queue_peek(gen_obj)?
-        .ok_or(VmError::InvariantViolation(
-          "async generator return resume without a pending request",
-        ))?;
-
-      if is_reject {
-        async_generator_reject_request_promise(vm, scope, host, hooks, req, arg0)?;
-      } else {
-        let iter_result = async_generator_create_iterator_result_object(vm, scope, arg0, true)?;
-        async_generator_resolve_request_promise(vm, scope, host, hooks, req, iter_result)?;
-      }
-      let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-
-      scope
-        .heap_mut()
-        .async_generator_set_state(gen_obj, AsyncGeneratorState::Completed)?;
-      scope.heap_mut().async_generator_set_continuation(gen_obj, None)?;
-
-      // Tear down any stored frames/roots (should be empty in return-await).
-      async_generator_teardown_runtime_state(scope, state);
-
-      async_generator_resume_next(vm, scope, host, hooks, gen_obj)?;
-      return Ok(Value::Undefined);
-    }
-
-    AsyncGeneratorResumeKind::Yield => {
-      if !is_reject {
-        // Yield operand fulfilled: resolve the current request and suspend awaiting next request.
-        let req = scope
-          .heap()
-          .async_generator_request_queue_peek(gen_obj)?
-          .ok_or(VmError::InvariantViolation(
-            "async generator yield resume without a pending request",
-          ))?;
-        let iter_result = async_generator_create_iterator_result_object(vm, scope, arg0, false)?;
-        async_generator_resolve_request_promise(vm, scope, host, hooks, req, iter_result)?;
-        let _ = scope.heap_mut().async_generator_request_queue_pop(gen_obj)?;
-
-        scope
-          .heap_mut()
-          .async_generator_set_state(gen_obj, AsyncGeneratorState::SuspendedYield)?;
-
-        // Store frames for the next request.
-        vm.reserve_async_generator_continuations(1)?;
-        vm.replace_async_generator_continuation(gen_obj, state)?;
-
-        async_generator_resume_next(vm, scope, host, hooks, gen_obj)?;
-        return Ok(Value::Undefined);
-      }
-
-      // Yield operand rejected: resume generator execution as if the yield expression threw.
-      let frames = mem::take(&mut state.frames);
-      let cont = scope
-        .heap_mut()
-        .async_generator_take_continuation(gen_obj)?
-        .ok_or(VmError::InvariantViolation(
-          "async generator missing continuation while resuming yield rejection",
-        ))?;
-      let (result, cont) = async_generator_resume_frames(
-        vm,
-        scope,
-        host,
-        hooks,
-        gen_obj,
-        cont,
-        frames,
-        AsyncResumeInput::Throw(arg0),
-      )?;
-      // Generator is already in `Executing`.
-      let _ = async_generator_handle_execution_result(vm, scope, host, hooks, gen_obj, cont, state, result)?;
-      async_generator_resume_next(vm, scope, host, hooks, gen_obj)?;
-      return Ok(Value::Undefined);
-    }
-
-    AsyncGeneratorResumeKind::Await => {
-      let frames = mem::take(&mut state.frames);
-      let cont = scope
-        .heap_mut()
-        .async_generator_take_continuation(gen_obj)?
-        .ok_or(VmError::InvariantViolation(
-          "async generator missing continuation while resuming await",
-        ))?;
-
-      let resume_input = if is_reject {
-        AsyncResumeInput::Throw(arg0)
-      } else {
-        AsyncResumeInput::Next(arg0)
-      };
-
-      let (result, cont) =
-        async_generator_resume_frames(vm, scope, host, hooks, gen_obj, cont, frames, resume_input)?;
-      let _ = async_generator_handle_execution_result(vm, scope, host, hooks, gen_obj, cont, state, result)?;
-      async_generator_resume_next(vm, scope, host, hooks, gen_obj)?;
-      return Ok(Value::Undefined);
-    }
   }
 }
 
@@ -26449,7 +26816,6 @@ fn async_for_await_of_close(
 ) -> Result<AsyncEval<Completion>, VmError> {
   // We're exiting the loop, so `V` is no longer needed.
   scope.heap_mut().remove_root(v_root);
-  let completion_is_throw = matches!(&completion, Completion::Throw(_));
 
   let close_value: Result<Option<Value>, VmError> = (|| {
     // Root completion value (if any) across the `return` lookup/call, since those operations can
@@ -26516,15 +26882,16 @@ fn async_for_await_of_close(
       // - If the pending completion is a throw completion, suppress throw-completion errors from
       //   `GetMethod("return")` / `Call(return)` / awaiting/validating the return value.
       // - Never suppress fatal VM errors (OOM/termination/etc).
-      if completion_is_throw && err.is_throw_completion() {
+      if matches!(&completion, Completion::Throw(_)) && err.is_throw_completion() {
         return Ok(AsyncEval::Complete(completion));
       }
       match err {
-        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. }
+        => {
           return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
         }
         other => return Err(other),
-      };
+      }
     }
   };
 
@@ -27307,14 +27674,13 @@ fn async_yield_star_begin(
   let mut scope = scope.reborrow();
   scope.push_root(iterable)?;
 
-  let (yield_star, step) =
-    crate::async_generator::AsyncYieldStar::start(
-      evaluator.vm,
-      &mut scope,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      iterable,
-    )?;
+  let (yield_star, step) = AsyncYieldStar::start(
+    evaluator.vm,
+    &mut scope,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    iterable,
+  )?;
 
   // Root the delegate iterator and its `next` method across subsequent suspensions.
   let (iterator_root, next_method_root) = {
@@ -27326,7 +27692,7 @@ fn async_yield_star_begin(
   };
 
   match step {
-    crate::async_generator::YieldStarStep::Await(awaited) => {
+    YieldStarStep::Await(awaited) => {
       let mut suspend = AsyncSuspend {
         // `AsyncYieldStar` already performed the `Await` algorithm's internal `PromiseResolve` step
         // (via `promise_resolve_for_await_with_host_and_hooks`) so the outer async suspension
@@ -27350,7 +27716,7 @@ fn async_yield_star_begin(
       Ok(AsyncEval::Suspend(suspend))
     }
 
-    crate::async_generator::YieldStarStep::Yield(iter_result) => {
+    YieldStarStep::Yield(iter_result) => {
       let mut suspend = AsyncSuspend {
         kind: AsyncSuspendKind::YieldIteratorResult,
         await_value: iter_result,
@@ -27371,13 +27737,13 @@ fn async_yield_star_begin(
       Ok(AsyncEval::Suspend(suspend))
     }
 
-    crate::async_generator::YieldStarStep::Complete(v) => {
+    YieldStarStep::Complete(v) => {
       scope.heap_mut().remove_root(iterator_root);
       scope.heap_mut().remove_root(next_method_root);
       Ok(AsyncEval::Complete(v))
     }
 
-    crate::async_generator::YieldStarStep::Return(v) => {
+    YieldStarStep::Return(v) => {
       scope.heap_mut().remove_root(iterator_root);
       scope.heap_mut().remove_root(next_method_root);
       Err(VmError::Return(v))
@@ -32840,11 +33206,163 @@ fn async_resume_from_frames(
 
   loop {
     evaluator.tick()?;
-    let Some(frame) = frames.pop_front() else {
+    let Some(mut frame) = frames.pop_front() else {
       return Err(VmError::InvariantViolation(
         "async continuation resumed with empty frame stack",
       ));
     };
+
+    // When an async generator is resumed via `.return()`, it must enter the evaluator as a *return
+    // completion* so `try/finally` and iterator-close semantics can run.
+    //
+    // Most async frames represent expression-only continuations and cannot interpret completion
+    // records. When resuming with a completion, unwind through those frames by tearing down their
+    // owned roots and leaving the completion untouched until we reach a completion-aware frame.
+    if let AsyncState::Completion(completion) = state {
+      // Some expression-ish frames still need to restore dynamic evaluator state (lexical env) or
+      // perform iterator close before the completion can propagate.
+      match &frame {
+        AsyncFrame::CatchAfterParamBind { outer, .. } => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), *outer);
+          state = AsyncState::Completion(completion);
+          continue;
+        }
+
+        AsyncFrame::ForInAfterBind {
+          outer_lex,
+          iter_env_created,
+          ..
+        } => {
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), *outer_lex);
+          }
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+          state = AsyncState::Completion(completion);
+          continue;
+        }
+
+        AsyncFrame::ForOfAfterBind {
+          iterator_record,
+          iterator_root,
+          next_method_root,
+          v_root,
+          outer_lex,
+          iter_env_created,
+          ..
+        } => {
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), *outer_lex);
+          }
+
+          let v = scope
+            .heap()
+            .get_root(*v_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing for-of loop value root",
+            ))?;
+          let completion = completion.update_empty(Some(v));
+
+          let close_res = async_iterator_close_on_completion(
+            evaluator,
+            scope,
+            iterator_record,
+            completion,
+          );
+          async_for_of_cleanup(scope, *iterator_root, *next_method_root, *v_root);
+
+          let completion = match close_res {
+            Ok(c) => c,
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              completion_from_expr_result(Err(err))?
+            }
+            Err(err) => return Err(err),
+          };
+          state = AsyncState::Completion(Evaluator::normalise_iteration_break(completion));
+          continue;
+        }
+
+        AsyncFrame::ForAwaitOfAfterBind {
+          v_root,
+          outer_lex,
+          iterator_record,
+          iterator_root,
+          next_method_root,
+          iter_env_created,
+          ..
+        } => {
+          if *iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), *outer_lex);
+          }
+
+          let v = scope
+            .heap()
+            .get_root(*v_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing for-await-of loop value root",
+            ))?;
+          let completion =
+            Evaluator::normalise_iteration_break(completion.update_empty(Some(v)));
+
+          match async_for_await_of_close(
+            evaluator,
+            scope,
+            *v_root,
+            *iterator_root,
+            *next_method_root,
+            iterator_record,
+            completion,
+          ) {
+            Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
+            }
+            Err(err) => return Err(err),
+          }
+          continue;
+        }
+
+        _ => {}
+      }
+
+      let completion_aware = matches!(
+        &frame,
+        AsyncFrame::RootBlockBody
+          | AsyncFrame::RootModuleBody
+          | AsyncFrame::RootScriptBody
+          | AsyncFrame::StmtList { .. }
+          | AsyncFrame::RestoreLexEnv { .. }
+          | AsyncFrame::RestoreStrict { .. }
+          | AsyncFrame::WhileAfterBody { .. }
+          | AsyncFrame::DoWhileAfterBody { .. }
+          | AsyncFrame::ForTripleAfterBody { .. }
+          | AsyncFrame::ForInAfterBody { .. }
+          | AsyncFrame::ForOfAfterBody { .. }
+          | AsyncFrame::ForAwaitOfAfterBody { .. }
+          | AsyncFrame::SwitchAfterBody { .. }
+          | AsyncFrame::LabelAfterStmt { .. }
+          | AsyncFrame::TryAfterWrapped { .. }
+          | AsyncFrame::TryAfterCatch { .. }
+          | AsyncFrame::TryAfterFinally { .. }
+          | AsyncFrame::ClassAfterStaticBlock { .. }
+          | AsyncFrame::YieldStar { .. }
+      );
+
+      if !completion_aware {
+        async_teardown_frame(scope.heap_mut(), &mut frame);
+        state = AsyncState::Completion(completion);
+        continue;
+      }
+
+      state = AsyncState::Completion(completion);
+    }
 
     match frame {
       AsyncFrame::HirAsync {
@@ -33110,127 +33628,139 @@ fn async_resume_from_frames(
         mut yield_star,
         iterator_root,
         next_method_root,
-      } => match state {
-        AsyncState::Expr(resume_res) => {
-          let step_res = if yield_star.is_waiting_for_request() {
-            let request = match resume_res {
-              Ok(v) => crate::heap::AsyncGeneratorRequestKind::Next(v),
-              Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
-                crate::heap::AsyncGeneratorRequestKind::Throw(reason)
-              }
-              Err(VmError::Return(v)) => crate::heap::AsyncGeneratorRequestKind::Return(v),
-              Err(other) => {
-                scope.heap_mut().remove_root(iterator_root);
-                scope.heap_mut().remove_root(next_method_root);
-                return Err(other);
-              }
-            };
-            yield_star.resume_request(
-              evaluator.vm,
-              scope,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              request,
-            )
-          } else {
-            let settle = match resume_res {
-              Ok(v) => Ok(v),
-              Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => Err(reason),
-              Err(_) => {
-                scope.heap_mut().remove_root(iterator_root);
-                scope.heap_mut().remove_root(next_method_root);
-                return Err(VmError::InvariantViolation(
-                  "AsyncYieldStar resumed from await with non-throw completion",
-                ));
-              }
-            };
-            yield_star.resume_await(
-              evaluator.vm,
-              scope,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              settle,
-            )
-          };
-
-          let step = match step_res {
-            Ok(step) => step,
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+      } => {
+        let resume_res: Result<Value, VmError> = match state {
+          AsyncState::Expr(res) => res,
+          AsyncState::Completion(completion) => match completion {
+            Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+            Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            }),
+            Completion::Return(v) => Err(VmError::Return(v)),
+            Completion::Break(..) | Completion::Continue(..) => {
               scope.heap_mut().remove_root(iterator_root);
               scope.heap_mut().remove_root(next_method_root);
-              state = AsyncState::Expr(Err(err));
-              continue;
+              return Err(VmError::InvariantViolation(
+                "yield* frame received break/continue completion",
+              ));
             }
-            Err(err) => {
+          },
+        };
+
+        let step_res = if yield_star.is_waiting_for_request() {
+          let request = match resume_res {
+            Ok(v) => crate::heap::AsyncGeneratorRequestKind::Next(v),
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              crate::heap::AsyncGeneratorRequestKind::Throw(reason)
+            }
+            Err(VmError::Return(v)) => crate::heap::AsyncGeneratorRequestKind::Return(v),
+            Err(other) => {
               scope.heap_mut().remove_root(iterator_root);
               scope.heap_mut().remove_root(next_method_root);
-              return Err(err);
+              return Err(other);
             }
           };
+          yield_star.resume_request(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            request,
+          )
+        } else {
+          let settle = match resume_res {
+            Ok(v) => Ok(v),
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => Err(reason),
+            Err(_) => {
+              scope.heap_mut().remove_root(iterator_root);
+              scope.heap_mut().remove_root(next_method_root);
+              return Err(VmError::InvariantViolation(
+                "AsyncYieldStar resumed from await with non-throw completion",
+              ));
+            }
+          };
+          yield_star.resume_await(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            settle,
+          )
+        };
 
-          match step {
-            crate::async_generator::YieldStarStep::Await(awaited) => {
-              let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
-              if let Err(_) = async_frames_push(
-                &mut out_frames,
-                AsyncFrame::YieldStar {
-                  yield_star,
-                  iterator_root,
-                  next_method_root,
-                },
-              ) {
-                scope.heap_mut().remove_root(iterator_root);
-                scope.heap_mut().remove_root(next_method_root);
-                return Err(VmError::OutOfMemory);
-              }
-              async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
-              return Ok(AsyncBodyResult::Await {
-                kind: AsyncSuspendKind::Await,
-                await_value: awaited,
-                frames: out_frames,
-              });
-            }
-            crate::async_generator::YieldStarStep::Yield(iter_result) => {
-              let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
-              if let Err(_) = async_frames_push(
-                &mut out_frames,
-                AsyncFrame::YieldStar {
-                  yield_star,
-                  iterator_root,
-                  next_method_root,
-                },
-              ) {
-                scope.heap_mut().remove_root(iterator_root);
-                scope.heap_mut().remove_root(next_method_root);
-                return Err(VmError::OutOfMemory);
-              }
-              async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
-              return Ok(AsyncBodyResult::Await {
-                kind: AsyncSuspendKind::YieldIteratorResult,
-                await_value: iter_result,
-                frames: out_frames,
-              });
-            }
-            crate::async_generator::YieldStarStep::Complete(v) => {
+        let step = match step_res {
+          Ok(step) => step,
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            state = AsyncState::Expr(Err(err));
+            continue;
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            return Err(err);
+          }
+        };
+
+        match step {
+          YieldStarStep::Await(awaited) => {
+            let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
+            if let Err(_) = async_frames_push(
+              &mut out_frames,
+              AsyncFrame::YieldStar {
+                yield_star,
+                iterator_root,
+                next_method_root,
+              },
+            ) {
               scope.heap_mut().remove_root(iterator_root);
               scope.heap_mut().remove_root(next_method_root);
-              state = AsyncState::Expr(Ok(v));
-              continue;
+              return Err(VmError::OutOfMemory);
             }
-            crate::async_generator::YieldStarStep::Return(v) => {
+            async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
+            return Ok(AsyncBodyResult::Await {
+              kind: AsyncSuspendKind::AwaitResolved,
+              await_value: awaited,
+              frames: out_frames,
+            });
+          }
+          YieldStarStep::Yield(iter_result) => {
+            let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
+            if let Err(_) = async_frames_push(
+              &mut out_frames,
+              AsyncFrame::YieldStar {
+                yield_star,
+                iterator_root,
+                next_method_root,
+              },
+            ) {
               scope.heap_mut().remove_root(iterator_root);
               scope.heap_mut().remove_root(next_method_root);
-              state = AsyncState::Expr(Err(VmError::Return(v)));
-              continue;
+              return Err(VmError::OutOfMemory);
             }
+            async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
+            return Ok(AsyncBodyResult::Await {
+              kind: AsyncSuspendKind::YieldIteratorResult,
+              await_value: iter_result,
+              frames: out_frames,
+            });
+          }
+          YieldStarStep::Complete(v) => {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            state = AsyncState::Expr(Ok(v));
+            continue;
+          }
+          YieldStarStep::Return(v) => {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            state = AsyncState::Expr(Err(VmError::Return(v)));
+            continue;
           }
         }
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "yield* frame received completion state",
-          ))
-        }
-      },
+      }
 
       AsyncFrame::UnaryAfterArgument { expr } => match state {
         AsyncState::Expr(Ok(v)) => {
@@ -33764,23 +34294,16 @@ fn async_resume_from_frames(
                 stack: thrown.stack,
               }));
             }
-            Completion::Return(_) => {
+            // `return`/`break`/`continue` inside a class static block are early errors, but async
+            // generators can inject a return completion via `.return()`. Allow that completion to
+            // propagate out of the class definition evaluation.
+            Completion::Return(v) => {
               scope.heap_mut().remove_root(func_root);
-              return Err(VmError::InvariantViolation(
-                "class static block produced Return completion (early errors should prevent this)",
-              ));
+              state = AsyncState::Completion(Completion::Return(v));
             }
-            Completion::Break(..) => {
+            c @ (Completion::Break(..) | Completion::Continue(..)) => {
               scope.heap_mut().remove_root(func_root);
-              return Err(VmError::InvariantViolation(
-                "class static block produced Break completion (early errors should prevent this)",
-              ));
-            }
-            Completion::Continue(..) => {
-              scope.heap_mut().remove_root(func_root);
-              return Err(VmError::InvariantViolation(
-                "class static block produced Continue completion (early errors should prevent this)",
-              ));
+              state = AsyncState::Completion(c);
             }
           }
         }
@@ -38351,12 +38874,8 @@ fn async_resume_from_frames(
               }
             }
             Err(err) => {
-              // `AsyncIteratorClose` suppression rules (ECMA-262):
-              // - If the pending completion is a throw completion, suppress throw-completion errors
-              //   from `GetMethod("return")` / `Call(return)` / awaiting/validating the return
-              //   value.
-              // - Never suppress fatal VM errors (OOM/termination/etc).
-              if pending_is_throw && err.is_throw_completion() {
+              if pending_is_throw {
+                // Spec: `AsyncIteratorClose` suppresses close errors for throw completions.
                 state = AsyncState::Completion(pending_completion);
               } else {
                 state = AsyncState::Completion(completion_from_expr_result(Err(err))?);
@@ -55308,6 +55827,7 @@ pub(crate) fn generator_resume(
             derived_constructor: false,
             this_initialized: true,
             this_root_idx: None,
+            is_async_generator: false,
           };
           let result = gen_start_body(&mut evaluator, &mut scope, &func);
           (result, evaluator.strict)
@@ -55411,6 +55931,7 @@ pub(crate) fn generator_resume(
           derived_constructor: false,
           this_initialized: true,
           this_root_idx: None,
+          is_async_generator: false,
         };
         let result = gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion);
         (result, evaluator.strict)
@@ -55532,6 +56053,7 @@ pub(crate) fn run_ecma_function(
         hooks,
         env,
         strict,
+        is_async_generator: func.stx.async_,
         this,
         new_target,
         home_object,
@@ -55639,6 +56161,7 @@ pub(crate) fn run_ecma_function(
     derived_constructor,
     this_initialized,
     this_root_idx,
+    is_async_generator: false,
   };
   if func.stx.async_ {
     // Async function invocation returns a Promise and executes the body until the first `await`.
@@ -56152,6 +56675,7 @@ pub(crate) fn instantiate_module_decls(
         derived_constructor: false,
         this_initialized: true,
         this_root_idx: None,
+        is_async_generator: false,
       };
 
       evaluator.instantiate_stmt_list(scope, stmts)
@@ -56189,6 +56713,7 @@ pub(crate) fn instantiate_module_decls(
       derived_constructor: false,
       this_initialized: true,
       this_root_idx: None,
+      is_async_generator: false,
     };
     evaluator.instantiate_stmt_list(scope, stmts)
   };
@@ -56264,6 +56789,7 @@ pub(crate) fn run_module(
         derived_constructor: false,
         this_initialized: true,
         this_root_idx: None,
+        is_async_generator: false,
       };
 
       let completion = evaluator.eval_stmt_list(scope, stmts)?;
@@ -56396,6 +56922,7 @@ pub(crate) fn start_module_tla_evaluation(
       derived_constructor: false,
       this_initialized: true,
       this_root_idx: None,
+      is_async_generator: false,
     };
 
     // Start module evaluation. If we suspend, convert the suspended evaluator call stack into a VM
@@ -56712,6 +57239,7 @@ pub(crate) fn resume_module_tla_evaluation(
       derived_constructor: false,
       this_initialized: true,
       this_root_idx: None,
+      is_async_generator: false,
     };
 
     let resume_input = match resume_value {
@@ -56981,6 +57509,7 @@ pub(crate) fn run_module_async_start(
           derived_constructor: false,
           this_initialized: true,
           this_root_idx: None,
+          is_async_generator: false,
         };
         let eval = async_eval_stmt_list(&mut evaluator, scope, stmts)?;
         // Capture `this` / `new.target` at the end of this execution segment (suspension boundary or
@@ -57176,6 +57705,7 @@ pub(crate) fn run_module_async_resume(
         derived_constructor: false,
         this_initialized: true,
         this_root_idx: None,
+        is_async_generator: false,
       };
 
       let frames = mem::take(&mut cont.frames);
@@ -57303,6 +57833,7 @@ pub(crate) fn eval_expr(
     derived_constructor,
     this_initialized,
     this_root_idx: None,
+    is_async_generator: false,
   };
   evaluator.eval_expr(scope, expr)
 }
@@ -57327,6 +57858,7 @@ pub(crate) fn eval_expr_named(
     hooks,
     env,
     strict,
+    is_async_generator: false,
     this,
     new_target: Value::Undefined,
     home_object,

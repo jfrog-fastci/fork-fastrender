@@ -133,6 +133,11 @@ fn get_method(
 
 impl AsyncYieldStar {
   #[inline]
+  pub(crate) fn iterator_record(&self) -> iterator::AsyncIteratorRecord {
+    self.iterator_record
+  }
+
+  #[inline]
   pub(crate) fn iterator(&self) -> Value {
     self.iterator_record.iterator
   }
