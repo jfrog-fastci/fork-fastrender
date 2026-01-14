@@ -245,8 +245,9 @@ the stdout JSONL stream to a file), see
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
   - When enabled, the `browser` binary emits JSONL (one JSON object per line) events describing
     frame-time samples, input latency, resize latency, and navigation TTFP measurements.
-    Event types: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`, `cpu_summary`,
-    `frame_upload`.
+    Event types include: `frame`, `input`, `resize`, `tab_switch`, `navigation`, `ttfp`, `stage`,
+    plus periodic diagnostics like `idle_sample`/`idle_summary`, `cpu_summary`, and `memory_summary`
+    (the schema evolves; treat this list as non-exhaustive).
   - Worker stage heartbeat events (`event=stage`) are emitted when the windowed UI processes
     `WorkerToUi::Stage` messages. These include:
     - `tab_id`, `stage` (e.g. `layout`, `paint_build`), and `hotspot` (coarse bucket such as
