@@ -59783,7 +59783,7 @@ pub(crate) fn run_module_async_start(
             )),
           }
         }
-        (AsyncEval::Suspend(mut suspend), this_at_suspend, new_target_at_suspend) => {
+        (AsyncEval::Suspend(suspend), this_at_suspend, new_target_at_suspend) => {
           scope.heap_mut().set_root(
             cont
               .as_ref()
