@@ -248,6 +248,7 @@ struct BookmarkRow {
   kind: BookmarkRowKind,
   id: BookmarkId,
   depth: usize,
+  open: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1059,6 +1060,7 @@ fn bookmarks_list(
                   ui,
                   state,
                   row.id,
+                  row.open,
                   folder.title.as_str(),
                   folder.children.len(),
                   row.depth,
@@ -1216,15 +1218,18 @@ fn build_visible_rows(
           kind: BookmarkRowKind::Bookmark,
           id,
           depth,
+          open: false,
         }),
         BookmarkNode::Folder(folder) => {
+          let open = folder_open(ctx, folder.id);
           out.push(BookmarkRow {
             kind: BookmarkRowKind::Folder,
             id,
             depth,
+            open,
           });
 
-          if folder_open(ctx, folder.id) {
+          if open {
             // Make the common case (opening a large folder) cheaper by reserving for its direct
             // children. This avoids repeated reallocations while keeping collapsed trees cheap.
             out.reserve(folder.children.len());
@@ -1261,6 +1266,7 @@ fn build_visible_rows(
           kind: BookmarkRowKind::Bookmark,
           id,
           depth: 0,
+          open: false,
         }));
         prev.rows
       }
@@ -1273,6 +1279,7 @@ fn build_visible_rows(
           kind: BookmarkRowKind::Bookmark,
           id,
           depth: 0,
+          open: false,
         })
         .collect()
     }
@@ -1283,15 +1290,13 @@ fn render_folder_row(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
   folder_id: BookmarkId,
+  initial_open: bool,
   title: &str,
   item_count: usize,
   depth: usize,
 ) -> bool {
   let open_id = folder_open_id(folder_id);
-  let mut open = ui
-    .ctx()
-    .data(|d| d.get_persisted::<bool>(open_id))
-    .unwrap_or(false);
+  let mut open = initial_open;
 
   let mut delete_clicked = false;
 
