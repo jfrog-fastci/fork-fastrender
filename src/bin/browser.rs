@@ -15845,19 +15845,35 @@ impl App {
       .name(format!("fastr-page-export-{}", export.tab_id.0))
       .spawn(move || {
         use base64::Engine as _;
+        use std::io::Write as _;
 
         let result: Result<std::path::PathBuf, String> = (|| {
-          match kind {
-            PageExportKind::Print => {
-              let png_bytes = fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
-                .map_err(|err| err.to_string())?;
-              std::fs::write(&export.path, &png_bytes)
-                .map_err(|err| format!("failed to write {}: {err}", export.path.display()))?;
-              Ok(export.path)
-            }
+          let part_path = fastrender::ui::downloads::part_path_for_final(&export.path);
+          let cleanup_part = || {
+            let _ = std::fs::remove_file(&part_path);
+          };
+
+          // If a previous export attempt crashed/was interrupted, clear any stale `.part` file up
+          // front so failures never leave behind confusing artifacts.
+          cleanup_part();
+
+          if let Some(parent) = export.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+              .map_err(|err| format!("failed to create export dir {}: {err}", parent.display()))?;
+          }
+
+          let bytes: Vec<u8> = match kind {
+            PageExportKind::Print => fastrender::image_output::encode_image(
+              &pixmap,
+              fastrender::OutputFormat::Png,
+            )
+            .map_err(|err| err.to_string())?,
             PageExportKind::SavePage => {
-              let png_bytes = fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
-                .map_err(|err| err.to_string())?;
+              let png_bytes = fastrender::image_output::encode_image(
+                &pixmap,
+                fastrender::OutputFormat::Png,
+              )
+              .map_err(|err| err.to_string())?;
               let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
 
               fn escape_html(raw: &str) -> String {
@@ -15890,12 +15906,69 @@ impl App {
 <div class=\"meta\">Saved from: <a href=\"{url}\">{url}</a></div>\n\
 <img alt=\"Page snapshot\" src=\"data:image/png;base64,{b64}\" style=\"max-width:100%;height:auto\" />\n"
               );
+              html.into_bytes()
+            }
+          };
 
-              std::fs::write(&export.path, html)
-                .map_err(|err| format!("failed to write {}: {err}", export.path.display()))?;
-              Ok(export.path)
+          let mut writer = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part_path)
+          {
+            Ok(file) => file,
+            Err(err) => {
+              cleanup_part();
+              return Err(format!(
+                "failed to create temp export file {}: {err}",
+                part_path.display()
+              ));
+            }
+          };
+
+          if let Err(err) = writer.write_all(&bytes) {
+            drop(writer);
+            cleanup_part();
+            return Err(format!("failed to write export file {}: {err}", part_path.display()));
+          }
+          if let Err(err) = writer.flush() {
+            drop(writer);
+            cleanup_part();
+            return Err(format!("failed to flush export file {}: {err}", part_path.display()));
+          }
+          let _ = writer.sync_all();
+          drop(writer);
+
+          match std::fs::rename(&part_path, &export.path) {
+            Ok(()) => {}
+            Err(err) => {
+              // Best-effort Windows compatibility: if rename fails due to destination already
+              // existing, remove it and retry.
+              let retry = matches!(
+                err.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+              );
+              if retry {
+                let _ = std::fs::remove_file(&export.path);
+                if let Err(err) = std::fs::rename(&part_path, &export.path) {
+                  cleanup_part();
+                  return Err(format!(
+                    "failed to finalize export (rename {} -> {}): {err}",
+                    part_path.display(),
+                    export.path.display()
+                  ));
+                }
+              } else {
+                cleanup_part();
+                return Err(format!(
+                  "failed to finalize export (rename {} -> {}): {err}",
+                  part_path.display(),
+                  export.path.display()
+                ));
+              }
             }
           }
+
+          Ok(export.path)
         })();
 
         let _ = proxy.send_event(UserEvent::PageExportFinished {
