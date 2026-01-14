@@ -1643,6 +1643,82 @@ mod tests {
   }
 
   #[test]
+  fn arrow_left_skips_grapheme_cluster_zwj_emoji_sequence() {
+    let value = "a👨‍👩‍👧‍👦b";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = value.chars().count();
+    let boundaries = grapheme_cluster_boundaries_char_idx(value);
+    assert!(
+      boundaries.len() >= 4,
+      "expected at least 3 grapheme clusters plus end boundary; boundaries={boundaries:?}"
+    );
+
+    // Default caret is at the end.
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, len);
+
+    // ArrowLeft once: move to before "b" (after the emoji cluster).
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(
+      engine.text_edit.as_ref().unwrap().caret,
+      boundaries[boundaries.len() - 2]
+    );
+
+    // ArrowLeft again: must skip the entire emoji grapheme cluster, not land inside it.
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, boundaries[1]);
+
+    // ArrowLeft again: move before "a".
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
+  fn caret_hit_testing_never_returns_index_inside_grapheme_cluster() {
+    let text = "a👨‍👩‍👧‍👦b";
+    let boundaries = grapheme_cluster_boundaries_char_idx(text);
+    assert!(
+      boundaries.len() >= 4,
+      "expected at least 3 grapheme clusters plus end boundary; boundaries={boundaries:?}"
+    );
+    let emoji_start = boundaries[1];
+    let emoji_end = boundaries[2];
+
+    let style = ComputedStyle::default();
+    let rect = Rect::from_xywh(0.0, 0.0, 1000.0, 20.0);
+
+    let fallback_advance = fallback_text_advance(text, &style);
+    let runs = shape_text_runs_for_interaction(text, &style).unwrap_or_default();
+    let total_advance = shaped_total_advance(&runs, fallback_advance);
+    let stops = crate::text::caret::caret_stops_for_runs(text, &runs, total_advance);
+
+    let x_start = stops
+      .iter()
+      .find(|stop| stop.char_idx == emoji_start)
+      .map(|stop| stop.x)
+      .unwrap_or(0.0);
+    let x_end = stops
+      .iter()
+      .find(|stop| stop.char_idx == emoji_end)
+      .map(|stop| stop.x)
+      .unwrap_or(x_start);
+    let x_mid = (x_start + x_end) / 2.0;
+
+    let (caret, _) = caret_position_for_x_in_text(text, text, &style, rect, x_mid);
+    assert!(
+      caret == emoji_start || caret == emoji_end,
+      "expected hit-testing within emoji cluster to place caret before/after the cluster (got caret={caret}, boundaries={boundaries:?})"
+    );
+  }
+
+  #[test]
   fn bidi_mixed_direction_arrow_keys_follow_visual_order() {
     let mut dom =
       crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג\"></body></html>")
@@ -4497,7 +4573,7 @@ fn shaped_total_advance(runs: &[crate::text::pipeline::ShapedRun], fallback: f32
 
 fn caret_position_for_x_in_text(
   text: &str,
-  boundary_text: &str,
+  grapheme_text: &str,
   style: &ComputedStyle,
   rect: Rect,
   x: f32,
@@ -4506,6 +4582,17 @@ fn caret_position_for_x_in_text(
   if char_count == 0 {
     return (0, CaretAffinity::Downstream);
   }
+
+  // `text` is the display string (e.g. password masking). `grapheme_text` is the source string
+  // whose grapheme cluster boundaries should constrain caret placement. These should typically have
+  // the same character count; if they don't, fall back to constraining by the displayed text so
+  // indices remain in-range.
+  let boundary_text = if grapheme_text.chars().count() == char_count {
+    grapheme_text
+  } else {
+    text
+  };
+  let allowed_boundaries = grapheme_cluster_boundaries_char_idx(boundary_text);
 
   let fallback_advance = fallback_text_advance(text, style);
   let runs = shape_text_runs_for_interaction(text, style)
@@ -4519,18 +4606,26 @@ fn caret_position_for_x_in_text(
   }
   local_x = local_x.clamp(0.0, total_advance);
 
-  let allowed_boundaries = grapheme_cluster_boundaries_char_idx(boundary_text);
   let stops = crate::text::caret::caret_stops_for_runs(text, runs.as_ref(), total_advance);
-  let Some(best) = stops
+  let best_filtered = stops
     .iter()
-    .filter(|stop| is_grapheme_cluster_boundary(&allowed_boundaries, stop.char_idx))
     .filter(|stop| stop.x.is_finite())
+    .filter(|stop| is_grapheme_cluster_boundary(&allowed_boundaries, stop.char_idx))
     .min_by(|a, b| {
       let da = (local_x - a.x).abs();
       let db = (local_x - b.x).abs();
       da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+  let best = best_filtered.or_else(|| {
+    // If shaping produced only non-finite caret stops on allowed boundaries, fall back to the full
+    // stop list so we still return a stable caret.
+    stops.iter().filter(|stop| stop.x.is_finite()).min_by(|a, b| {
+      let da = (local_x - a.x).abs();
+      let db = (local_x - b.x).abs();
+      da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
     })
-  else {
+  });
+  let Some(best) = best else {
     return (0, CaretAffinity::Downstream);
   };
 
@@ -12065,7 +12160,8 @@ impl InteractionEngine {
             let runs = shape_text_runs_for_interaction(text, shape_style)
               .unwrap_or_else(|| Arc::new(Vec::new()));
             let total_advance = shaped_total_advance(runs.as_ref(), fallback_advance);
-            let stops = crate::text::caret::caret_stops_for_runs(text, runs.as_ref(), total_advance);
+            let stops =
+              crate::text::caret::caret_stops_for_runs(text, runs.as_ref(), total_advance);
             // Grapheme cluster boundary indices are based on the underlying value, not on the
             // display text (e.g. password inputs render bullets), so we don't allow the caret to be
             // placed within a multi-scalar grapheme cluster.

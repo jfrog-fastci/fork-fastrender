@@ -1,4 +1,5 @@
 use crate::style::ComputedStyle;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TextareaVisualLine {
@@ -33,6 +34,25 @@ fn char_boundary_bytes(text: &str) -> Vec<usize> {
   out
 }
 
+fn char_idx_at_byte(boundaries: &[usize], byte_idx: usize) -> usize {
+  match boundaries.binary_search(&byte_idx) {
+    Ok(idx) => idx,
+    Err(idx) => idx,
+  }
+}
+
+fn grapheme_cluster_boundaries_char_idx(text: &str, boundary_bytes: &[usize]) -> Vec<usize> {
+  if text.is_empty() {
+    return vec![0];
+  }
+  let mut out = Vec::with_capacity(boundary_bytes.len());
+  for (byte_idx, _) in text.grapheme_indices(true) {
+    out.push(char_idx_at_byte(boundary_bytes, byte_idx));
+  }
+  out.push(boundary_bytes.len().saturating_sub(1));
+  out
+}
+
 pub(crate) fn textarea_chars_per_line(style: &ComputedStyle, available_width: f32) -> usize {
   let width = if available_width.is_finite() {
     available_width.max(0.0)
@@ -58,6 +78,7 @@ pub(crate) fn textarea_chars_per_line(style: &ComputedStyle, available_width: f3
 pub(crate) fn build_textarea_visual_lines(value: &str, chars_per_line: usize) -> TextareaVisualLines {
   let chars_per_line = chars_per_line.max(1);
   let boundaries = char_boundary_bytes(value);
+  let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(value, &boundaries);
   let total_chars = boundaries.len().saturating_sub(1);
 
   let mut lines: Vec<TextareaVisualLine> = Vec::new();
@@ -66,12 +87,26 @@ pub(crate) fn build_textarea_visual_lines(value: &str, chars_per_line: usize) ->
   let mut idx = 0usize;
   for ch in value.chars() {
     if ch == '\n' {
-      push_wrapped_lines(&mut lines, &boundaries, logical_start, idx, chars_per_line);
+      push_wrapped_lines(
+        &mut lines,
+        &boundaries,
+        &grapheme_boundaries,
+        logical_start,
+        idx,
+        chars_per_line,
+      );
       logical_start = idx.saturating_add(1);
     }
     idx = idx.saturating_add(1);
   }
-  push_wrapped_lines(&mut lines, &boundaries, logical_start, idx, chars_per_line);
+  push_wrapped_lines(
+    &mut lines,
+    &boundaries,
+    &grapheme_boundaries,
+    logical_start,
+    idx,
+    chars_per_line,
+  );
 
   // Ensure at least one visual line exists so callers can clamp indices without special-casing
   // empty textareas.
@@ -93,6 +128,7 @@ pub(crate) fn build_textarea_visual_lines(value: &str, chars_per_line: usize) ->
 fn push_wrapped_lines(
   out: &mut Vec<TextareaVisualLine>,
   boundaries: &[usize],
+  grapheme_boundaries: &[usize],
   start_char: usize,
   end_char: usize,
   chars_per_line: usize,
@@ -113,9 +149,19 @@ fn push_wrapped_lines(
     return;
   }
 
-  let mut seg_start = start_char;
-  while seg_start < end_char {
-    let seg_end = (seg_start + chars_per_line).min(end_char);
+  // Wrap by grapheme clusters so visual line boundaries never split a single user-perceived
+  // character (e.g. ZWJ emoji sequences).
+  let start_boundary_idx = grapheme_boundaries
+    .partition_point(|&b| b <= start_char)
+    .saturating_sub(1);
+  let end_boundary_idx = grapheme_boundaries.partition_point(|&b| b < end_char);
+  let end_boundary_idx = end_boundary_idx.min(grapheme_boundaries.len().saturating_sub(1));
+
+  let mut boundary_idx = start_boundary_idx;
+  while boundary_idx < end_boundary_idx {
+    let next_boundary_idx = (boundary_idx + chars_per_line).min(end_boundary_idx);
+    let seg_start = *grapheme_boundaries.get(boundary_idx).unwrap_or(&start_char);
+    let seg_end = *grapheme_boundaries.get(next_boundary_idx).unwrap_or(&end_char);
     let start_byte = *boundaries.get(seg_start).unwrap_or(&0);
     let end_byte = *boundaries.get(seg_end).unwrap_or(&start_byte);
     out.push(TextareaVisualLine {
@@ -124,7 +170,7 @@ fn push_wrapped_lines(
       start_byte,
       end_byte,
     });
-    seg_start = seg_end;
+    boundary_idx = next_boundary_idx;
   }
 }
 
@@ -173,4 +219,3 @@ pub(crate) fn textarea_visual_line_index_for_caret(
 
   lines.len().saturating_sub(1)
 }
-
