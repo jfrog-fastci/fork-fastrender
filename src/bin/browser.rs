@@ -7365,7 +7365,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
       } else if let Some(toast_text) = startup_profile_toast_text {
         app.chrome_toast.show(
-          fastrender::ui::ToastKind::Error,
+          fastrender::ui::ToastKind::Warning,
           toast_text.to_string(),
           now,
           std::time::Duration::from_secs(8),
