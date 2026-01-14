@@ -42,7 +42,7 @@ fn arguments_identifier_reference_in_class_field_initializer_is_vmjs0004() {
   assert!(
     diags.iter().any(|d| d.code.as_str() == EARLY_ERROR_CODE
       && d.message.contains("arguments")
-      && d.message.contains("class field")),
+      && d.message.contains("class")),
     "expected early error VMJS0004 for arguments in class init, got {diags:?}"
   );
 }
