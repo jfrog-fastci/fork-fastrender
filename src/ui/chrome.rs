@@ -9978,6 +9978,23 @@ frame={idx} repaint_after={:?}\n",
     ctx.end_frame()
   }
 
+  fn accesskit_checkbox_checked_state(
+    output: &egui::FullOutput,
+    name: &str,
+  ) -> Option<accesskit::CheckedState> {
+    let update = output.platform_output.accesskit_update.as_ref()?;
+    update.nodes.iter().find_map(|(_id, node)| {
+      if node.role() != accesskit::Role::CheckBox {
+        return None;
+      }
+      let node_name = node.name().unwrap_or("").trim();
+      if node_name != name {
+        return None;
+      }
+      a11y_test_util::accesskit_node_checked(node)
+    })
+  }
+
   #[test]
   fn chrome_menu_toggle_bookmark_emits_action() {
     let mut app = BrowserAppState::new();
@@ -10050,6 +10067,11 @@ frame={idx} repaint_after={:?}\n",
         .any(|n| n.role == "CheckBox" && n.name == "Show history panel"),
       "expected \"Show history panel\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
+    assert_eq!(
+      accesskit_checkbox_checked_state(&output, "Show history panel"),
+      Some(accesskit::CheckedState::False),
+      "expected \"Show history panel\" checkbox to be unchecked when the panel is closed.\n\nsnapshot:\n{snapshot}"
+    );
     assert!(
       !nodes.iter().any(|n| n.name == "Hide history panel"),
       "expected \"Hide history panel\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
@@ -10078,6 +10100,11 @@ frame={idx} repaint_after={:?}\n",
         .iter()
         .any(|n| n.role == "CheckBox" && n.name == "Hide history panel"),
       "expected \"Hide history panel\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert_eq!(
+      accesskit_checkbox_checked_state(&output, "Hide history panel"),
+      Some(accesskit::CheckedState::True),
+      "expected \"Hide history panel\" checkbox to be checked when the panel is open.\n\nsnapshot:\n{snapshot}"
     );
     assert!(
       !nodes.iter().any(|n| n.name == "Show history panel"),
@@ -10108,6 +10135,11 @@ frame={idx} repaint_after={:?}\n",
         .any(|n| n.role == "CheckBox" && n.name == "Show bookmarks manager"),
       "expected \"Show bookmarks manager\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
+    assert_eq!(
+      accesskit_checkbox_checked_state(&output, "Show bookmarks manager"),
+      Some(accesskit::CheckedState::False),
+      "expected \"Show bookmarks manager\" checkbox to be unchecked when the panel is closed.\n\nsnapshot:\n{snapshot}"
+    );
     assert!(
       !nodes.iter().any(|n| n.name == "Hide bookmarks manager"),
       "expected \"Hide bookmarks manager\" not to appear in AccessKit output.\n\nsnapshot:\n{snapshot}"
@@ -10136,6 +10168,11 @@ frame={idx} repaint_after={:?}\n",
         .iter()
         .any(|n| n.role == "CheckBox" && n.name == "Hide bookmarks manager"),
       "expected \"Hide bookmarks manager\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+    assert_eq!(
+      accesskit_checkbox_checked_state(&output, "Hide bookmarks manager"),
+      Some(accesskit::CheckedState::True),
+      "expected \"Hide bookmarks manager\" checkbox to be checked when the panel is open.\n\nsnapshot:\n{snapshot}"
     );
     assert!(
       !nodes.iter().any(|n| n.name == "Show bookmarks manager"),
