@@ -96,6 +96,91 @@ fn generator_optional_chain_call_computed_member_propagates_and_skips_yield_in_k
 }
 
 #[test]
+fn generator_optional_chain_call_propagates_short_circuit_and_skips_args() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var side = 0;
+        function arg() { side++; return 0; }
+
+        var r = (yield 0)?.(arg());
+        return r === undefined && side === 0;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === 0 && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_call_propagates_and_skips_yield_in_arg_after_base_short_circuit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = (yield 0)?.(yield "should-not-yield-arg");
+        return r === undefined;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === 0 && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_nullish_base_skips_yield_in_call_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = null?.(yield "should-not-yield-arg");
+        return r === undefined;
+      }
+      var it = g();
+      var r = it.next();
+      r.value === true && r.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_member_call_propagates_and_skips_yield_in_arg_after_base_short_circuit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = (yield 0)?.x(yield "should-not-yield-arg");
+        return r === undefined;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === 0 && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_optional_chain_computed_member_does_not_evaluate_key_when_base_is_nullish() {
   let mut rt = new_runtime();
   let value = rt
@@ -225,6 +310,27 @@ fn generator_parenthesized_optional_chain_does_not_propagate_into_following_call
       r1.value === null && r1.done === false &&
       r2.value === "arg" && r2.done === false &&
       r3.value === "TypeError" && r3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_parenthesized_optional_chain_followed_by_optional_call_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = ((yield null)?.x)?.(yield "should-not-yield-arg");
+        return r === undefined;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === null && r1.done === false &&
+      r2.value === true && r2.done === true
     "#,
     )
     .unwrap();
