@@ -4139,7 +4139,6 @@ impl BrowserRuntime {
           }
 
           if tab.document.is_some() {
-            tab.request_non_scroll_repaint();
             tab.force_repaint = true;
             let viewport_css = tab.viewport_css;
             let dpr = tab.dpr;
@@ -4147,6 +4146,7 @@ impl BrowserRuntime {
               doc.set_viewport(viewport_css.0, viewport_css.1);
               doc.set_device_pixel_ratio(dpr);
             }
+            tab.request_non_scroll_repaint();
           }
           tab.sync_js_viewport_state();
 

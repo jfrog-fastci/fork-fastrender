@@ -144,7 +144,13 @@ fn apply_form_control_paint_state(
       *caret_affinity = next_affinity;
       *selection = next_selection;
 
-      control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
+      control.ime_preedit = interaction_state
+        .and_then(|state| state.ime_preedit_state_for(node_id))
+        .filter(|state| !state.text.is_empty())
+        .map(|state| crate::tree::box_tree::ImePreeditPaintState {
+          text: state.text.clone(),
+          cursor: state.cursor,
+        });
     }
     FormControlKind::TextArea {
       value,
