@@ -310,3 +310,141 @@ fn generator_array_destructuring_rest_target_super_computed_is_evaluated_before_
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_target_super_computed_throw_aborts_before_getv() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 7; } };
+              try {
+                ({a: super[(yield 0)]} = src);
+              } catch (e) {
+                log.push("catch");
+              }
+              return log.join("|");
+            }
+          }
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          var r1 = it.throw("boom");
+          return r1.done === true && r1.value === "catch" && log.join("|") === "catch";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_rest_target_super_computed_throw_aborts_before_copy_data_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 1; } };
+              try {
+                ({...super[(yield 0)]} = src);
+              } catch (e) {
+                log.push("catch");
+              }
+              return log.join("|");
+            }
+          }
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          var r1 = it.throw("boom");
+          return r1.done === true && r1.value === "catch" && log.join("|") === "catch";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_target_super_computed_throw_closes_iterator_without_next() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCount = 0;
+          var returnCount = 0;
+          var iterable = {
+            [Symbol.iterator]() {
+              return {
+                next() { nextCount++; return { value: 7, done: false }; },
+                return() { returnCount++; return {}; },
+              };
+            }
+          };
+          class Base {}
+          class Derived extends Base {
+            *g(iterable) {
+              [super[(yield 0)]] = iterable;
+            }
+          }
+          var it = (new Derived()).g(iterable);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          try { it.throw("boom"); } catch (e) {}
+          return nextCount === 0 && returnCount === 1;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_rest_target_super_computed_throw_closes_iterator_without_next() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCount = 0;
+          var returnCount = 0;
+          var iterable = {
+            [Symbol.iterator]() {
+              return {
+                next() { nextCount++; return { done: false }; },
+                return() { returnCount++; return {}; },
+              };
+            }
+          };
+          class Base {}
+          class Derived extends Base {
+            *g(iterable) {
+              [...super[(yield 0)]] = iterable;
+            }
+          }
+          var it = (new Derived()).g(iterable);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          try { it.throw("boom"); } catch (e) {}
+          return nextCount === 0 && returnCount === 1;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
