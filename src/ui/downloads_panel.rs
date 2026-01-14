@@ -709,6 +709,40 @@ mod tests {
     }
   }
 
+  fn left_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
+  }
+
+  fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
+    fn in_shape(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+      match shape {
+        egui::epaint::Shape::Text(text) => text
+          .galley
+          .text()
+          .contains(needle)
+          .then_some(text.pos + text.galley.size() / 2.0),
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|s| in_shape(s, needle)),
+        _ => None,
+      }
+    }
+
+    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+  }
+
   fn expect_temp_id(ctx: &egui::Context, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
     ctx
       .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
@@ -781,6 +815,46 @@ mod tests {
       output.open_requests,
       vec![download_dir.clone()],
       "expected Show downloads folder to open injected dir"
+    );
+  }
+
+  #[test]
+  fn show_downloads_folder_click_emits_open_request() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::light(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    // Frame 0: capture the button location.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let output = ctx.end_frame();
+    let pos = find_text_center(&output.shapes, "Show downloads folder")
+      .expect("failed to find Show downloads folder button label in egui shapes");
+
+    // Frame 1: click the button.
+    begin_frame(&ctx, left_click_at(pos));
+    let output = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert_eq!(
+      output.open_requests,
+      vec![download_dir],
+      "expected click on Show downloads folder to open injected dir"
     );
   }
 
