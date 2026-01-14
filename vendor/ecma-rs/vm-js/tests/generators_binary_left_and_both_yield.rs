@@ -462,6 +462,52 @@ fn generator_binary_bigint_negative_exponent_throws_range_error_after_yield() {
 }
 
 #[test]
+fn generator_binary_in_operator_rhs_non_object_error_is_catchable_after_yields_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){
+        try { return (yield "a") in (yield 0); }
+        catch (e) { return e && e.name === "TypeError"; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("a");
+      var r3 = it.next(null);
+      r1.value === "a" && r1.done === false &&
+      r2.value === 0 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_instanceof_rhs_non_object_error_is_catchable_after_yields_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){
+        try { return (yield 1) instanceof (yield 0); }
+        catch (e) { return e && e.name === "TypeError"; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next({});
+      var r3 = it.next(null);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 0 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_left_associativity_with_multiple_yields() {
   let mut rt = new_runtime();
   let value = rt
