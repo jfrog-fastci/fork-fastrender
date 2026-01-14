@@ -795,3 +795,59 @@ fn generator_switch_case_selector_can_yield_before_direct_eval() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inside_for_in_sees_for_in_let_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding visible to indirect eval.
+          var x = 2;
+          function* g() {
+            for (let x in {x: 0}) {
+              return eval(yield 0);
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          ok = r.done === true && r.value === "x" && x === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inside_lexical_for_triple_sees_for_let_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding visible to indirect eval.
+          var i = 2;
+          function* g() {
+            for (let i = 0; i < 1; i++) {
+              return eval(yield 0);
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("i");
+          ok = r.done === true && r.value === 0 && i === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

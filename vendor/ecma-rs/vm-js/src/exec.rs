@@ -16468,6 +16468,51 @@ pub(crate) enum GenFrame {
     v: Value,
   },
 
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the initializer.
+  ForTripleAfterInit {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v: Value,
+    outer_lex: Option<GcEnv>,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the test expression.
+  ForTripleAfterTest {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v: Value,
+    outer_lex: Option<GcEnv>,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the body statement list.
+  ForTripleAfterBody {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v: Value,
+    outer_lex: Option<GcEnv>,
+  },
+  /// Continue a `for (init; cond; post) { ... }` loop after evaluating the post expression.
+  ForTripleAfterPost {
+    stmt: *const ForTripleStmt,
+    label_set: Vec<String>,
+    v: Value,
+    outer_lex: Option<GcEnv>,
+  },
+
+  /// Continue a `for..in` loop after evaluating the RHS expression.
+  ForInAfterRhs {
+    stmt: *const ForInStmt,
+    label_set: Vec<String>,
+  },
+  /// Continue a `for..in` loop after evaluating the body statement list for one iteration.
+  ForInAfterBody {
+    stmt: *const ForInStmt,
+    label_set: Vec<String>,
+    object: Value,
+    keys: Vec<Value>,
+    next_key_index: usize,
+    v: Value,
+    outer_lex: GcEnv,
+  },
+
   /// Continue a `for..of` loop after evaluating the RHS iterable expression.
   ForOfAfterRhs {
     stmt: *const ForOfStmt,
@@ -16801,6 +16846,29 @@ impl Trace for GenFrame {
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterTest { v, .. } => tracer.trace_value(*v),
+      GenFrame::ForTripleAfterInit { v, outer_lex, .. }
+      | GenFrame::ForTripleAfterTest { v, outer_lex, .. }
+      | GenFrame::ForTripleAfterBody { v, outer_lex, .. }
+      | GenFrame::ForTripleAfterPost { v, outer_lex, .. } => {
+        tracer.trace_value(*v);
+        if let Some(outer) = outer_lex {
+          tracer.trace_env(*outer)
+        }
+      }
+      GenFrame::ForInAfterBody {
+        object,
+        keys,
+        v,
+        outer_lex,
+        ..
+      } => {
+        tracer.trace_value(*object);
+        tracer.trace_value(*v);
+        for key in keys.iter().copied() {
+          tracer.trace_value(key);
+        }
+        tracer.trace_env(*outer_lex);
+      }
       GenFrame::ForOfAfterBind {
         iterator_record,
         outer_lex,
@@ -18276,6 +18344,28 @@ fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
     }
     Stmt::DoWhile(do_while) => {
       expr_contains_yield(&do_while.stx.condition) || stmt_contains_yield(&do_while.stx.body)
+    }
+    Stmt::ForTriple(for_stmt) => {
+      let init_has_yield = match &for_stmt.stx.init {
+        parse_js::ast::stmt::ForTripleStmtInit::None => false,
+        parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => expr_contains_yield(expr),
+        parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => {
+          decl.stx.declarators.iter().any(|d| {
+            d.initializer.as_ref().is_some_and(expr_contains_yield)
+              || pat_contains_yield(&d.pattern.stx.pat.stx)
+          })
+        }
+      };
+
+      init_has_yield
+        || for_stmt.stx.cond.as_ref().is_some_and(expr_contains_yield)
+        || for_stmt.stx.post.as_ref().is_some_and(expr_contains_yield)
+        || for_stmt.stx.body.stx.body.iter().any(stmt_contains_yield)
+    }
+    Stmt::ForIn(for_in) => {
+      for_in_of_lhs_contains_yield(&for_in.stx.lhs)
+        || expr_contains_yield(&for_in.stx.rhs)
+        || for_in.stx.body.stx.body.iter().any(stmt_contains_yield)
     }
     Stmt::ForOf(for_of) => {
       for_in_of_lhs_contains_yield(&for_of.stx.lhs)
@@ -35705,6 +35795,696 @@ fn gen_do_while_after_test(
   }
 }
 
+fn for_triple_needs_explicit_iter_tick(stmt: &ForTripleStmt) -> bool {
+  stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty()
+}
+
+fn gen_eval_for_triple(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
+  // does not survive across yields.
+  let mut loop_scope = scope.reborrow();
+  let v_root_idx = loop_scope.heap().root_stack.len();
+  loop_scope.push_root(Value::Undefined)?;
+  let v = Value::Undefined;
+
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  // Lexically-declared `for` loops require per-iteration environments so closures capture the
+  // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
+  let lexical_init_decl = match &stmt.init {
+    parse_js::ast::stmt::ForTripleStmtInit::Decl(decl)
+      if matches!(
+        decl.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      Some(decl)
+    }
+    _ => None,
+  };
+
+  if let Some(init_decl) = lexical_init_decl {
+    let outer_lex = evaluator.env.lexical_env;
+
+    // Create a loop-scoped declarative environment for the lexical declaration and evaluate the
+    // initializer with TDZ semantics.
+    let loop_env = loop_scope.env_create(Some(outer_lex))?;
+    evaluator.env.set_lexical_env(loop_scope.heap_mut(), loop_env);
+
+    let mutable = init_decl.stx.mode == VarDeclMode::Let;
+    for declarator in &init_decl.stx.declarators {
+      evaluator.tick()?;
+      evaluator.instantiate_lexical_names_from_pat(
+        &mut loop_scope,
+        loop_env,
+        &declarator.pattern.stx.pat.stx,
+        init_decl.loc,
+        mutable,
+      )?;
+    }
+
+    match gen_eval_var_decl(evaluator, &mut loop_scope, &init_decl.stx, 0)? {
+      GenEval::Complete(c) => {
+        if c.is_abrupt() {
+          evaluator.env.set_lexical_env(loop_scope.heap_mut(), outer_lex);
+          return Ok(GenEval::Complete(c));
+        }
+
+        let loop_eval = gen_for_triple_after_init(
+          evaluator,
+          &mut loop_scope,
+          stmt,
+          label_vec,
+          v_root_idx,
+          v,
+          Some(outer_lex),
+        )?;
+
+        match loop_eval {
+          GenEval::Complete(c) => {
+            evaluator.env.set_lexical_env(loop_scope.heap_mut(), outer_lex);
+            Ok(GenEval::Complete(c))
+          }
+          GenEval::Suspend(mut suspend) => {
+            // Restore the outer lexical environment after the loop completes.
+            gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+            Ok(GenEval::Suspend(suspend))
+          }
+        }
+      }
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
+            v,
+            outer_lex: Some(outer_lex),
+          },
+        )?;
+        // Restore the outer lexical environment after the loop completes.
+        gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    }
+  } else {
+    // Non-lexical loop initializer.
+    match &stmt.init {
+      parse_js::ast::stmt::ForTripleStmtInit::None => {}
+      parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => match gen_eval_expr(evaluator, &mut loop_scope, expr)? {
+        GenEval::Complete(c) => {
+          if c.is_abrupt() {
+            return Ok(GenEval::Complete(c));
+          }
+        }
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ForTripleAfterInit {
+              stmt: stmt as *const ForTripleStmt,
+              label_set: label_vec,
+              v,
+              outer_lex: None,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+      parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => match gen_eval_var_decl(evaluator, &mut loop_scope, &decl.stx, 0)? {
+        GenEval::Complete(c) => {
+          if c.is_abrupt() {
+            return Ok(GenEval::Complete(c));
+          }
+        }
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ForTripleAfterInit {
+              stmt: stmt as *const ForTripleStmt,
+              label_set: label_vec,
+              v,
+              outer_lex: None,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    }
+
+    gen_for_triple_after_init(evaluator, &mut loop_scope, stmt, label_vec, v_root_idx, v, None)
+  }
+}
+
+fn gen_for_triple_after_init(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: Option<GcEnv>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Enter the first per-iteration environment for lexically declared `for` loops.
+  if let Some(outer) = outer_lex {
+    let loop_env = evaluator.env.lexical_env;
+    let iter_env = evaluator.create_for_triple_per_iteration_env(scope, outer, loop_env)?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), iter_env);
+  }
+
+  gen_for_triple_begin_iteration(evaluator, scope, stmt, label_set, v_root_idx, v, outer_lex)
+}
+
+fn gen_for_triple_begin_iteration(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: Option<GcEnv>,
+) -> Result<GenEval<Completion>, VmError> {
+  if for_triple_needs_explicit_iter_tick(stmt) {
+    evaluator.tick()?;
+  }
+
+  match &stmt.cond {
+    Some(cond) => match gen_eval_expr(evaluator, scope, cond)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(test) => gen_for_triple_after_test(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          v_root_idx,
+          v,
+          outer_lex,
+          test.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForTripleAfterTest {
+            stmt: stmt as *const ForTripleStmt,
+            label_set,
+            v,
+            outer_lex,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    None => gen_for_triple_after_test(
+      evaluator,
+      scope,
+      stmt,
+      label_set,
+      v_root_idx,
+      v,
+      outer_lex,
+      Value::Bool(true),
+    ),
+  }
+}
+
+fn gen_for_triple_after_test(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: Option<GcEnv>,
+  test_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  if !to_boolean(scope.heap(), test_value)? {
+    let result = Evaluator::normalise_iteration_break(Completion::normal(v));
+    return Ok(GenEval::Complete(result));
+  }
+
+  match gen_eval_for_body(evaluator, scope, &stmt.body.stx)? {
+    GenEval::Complete(c) => gen_for_triple_after_body(
+      evaluator,
+      scope,
+      stmt,
+      label_set,
+      v_root_idx,
+      v,
+      outer_lex,
+      c,
+    ),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ForTripleAfterBody {
+          stmt: stmt as *const ForTripleStmt,
+          label_set,
+          v,
+          outer_lex,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_for_triple_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: Option<GcEnv>,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+  let mut v = scope.heap().root_stack[v_root_idx];
+
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+    return Ok(GenEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  // Create the next iteration's environment *before* evaluating the update expression so closures
+  // created in the body do not observe the post-update value.
+  if let Some(outer) = outer_lex {
+    let iter_env = evaluator.env.lexical_env;
+    let next_env = evaluator.create_for_triple_per_iteration_env(scope, outer, iter_env)?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), next_env);
+  }
+
+  match &stmt.post {
+    Some(post) => match gen_eval_expr(evaluator, scope, post)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(_) => gen_for_triple_begin_iteration(
+          evaluator, scope, stmt, label_set, v_root_idx, v, outer_lex,
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForTripleAfterPost {
+            stmt: stmt as *const ForTripleStmt,
+            label_set,
+            v,
+            outer_lex,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    },
+    None => gen_for_triple_begin_iteration(evaluator, scope, stmt, label_set, v_root_idx, v, outer_lex),
+  }
+}
+
+fn gen_for_triple_after_post(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForTripleStmt,
+  label_set: Vec<String>,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: Option<GcEnv>,
+  post_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+  let v = scope.heap().root_stack[v_root_idx];
+
+  match post_completion {
+    Completion::Normal(_) => gen_for_triple_begin_iteration(evaluator, scope, stmt, label_set, v_root_idx, v, outer_lex),
+    abrupt => Ok(GenEval::Complete(abrupt)),
+  }
+}
+
+fn gen_eval_for_in(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  if for_in_of_lhs_contains_yield(&stmt.lhs) {
+    return Err(VmError::Unimplemented("yield in for-in binding pattern"));
+  }
+
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let old_lex = evaluator.env.lexical_env;
+      let tdz_env = scope.env_create(Some(old_lex))?;
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+        return Err(err);
+      }
+
+      return match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
+        GenEval::Complete(c) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          match c {
+            Completion::Normal(v) => gen_for_in_after_rhs(
+              evaluator,
+              scope,
+              stmt,
+              label_vec,
+              v.unwrap_or(Value::Undefined),
+            ),
+            abrupt => Ok(GenEval::Complete(abrupt)),
+          }
+        }
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::RestoreLexEnv { outer: old_lex },
+          )?;
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ForInAfterRhs {
+              stmt: stmt as *const ForInStmt,
+              label_set: label_vec,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      };
+    }
+  }
+
+  match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_for_in_after_rhs(
+        evaluator,
+        scope,
+        stmt,
+        label_vec,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ForInAfterRhs {
+          stmt: stmt as *const ForInStmt,
+          label_set: label_vec,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_for_in_after_rhs(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  rhs_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+  // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
+  if is_nullish(rhs_value) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  let mut iter_scope = scope.reborrow();
+  iter_scope.push_root(rhs_value)?;
+
+  let object = match iter_scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    rhs_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut iter_scope, err,
+      )?));
+    }
+  };
+  let object_value = Value::Object(object);
+  iter_scope.push_root(object_value)?;
+
+  // Snapshot enumerable string keys using the shared `ForInEnumerator` model.
+  let mut keys: Vec<Value> = Vec::new();
+  let mut enumerator = ForInEnumerator::new(object);
+  loop {
+    let next_key = match enumerator.next_key(
+      evaluator.vm,
+      &mut iter_scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+    ) {
+      Ok(v) => v,
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, &mut iter_scope, err,
+        )?));
+      }
+    };
+
+    let Some(key_s) = next_key else {
+      break;
+    };
+    keys.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    keys.push(Value::String(key_s));
+  }
+
+  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
+  // does not survive across yields.
+  let v_root_idx = iter_scope.heap().root_stack.len();
+  iter_scope.push_root(Value::Undefined)?;
+  let v = Value::Undefined;
+
+  let outer_lex = evaluator.env.lexical_env;
+  gen_for_in_loop_from(
+    evaluator,
+    &mut iter_scope,
+    stmt,
+    label_set,
+    object_value,
+    keys,
+    0,
+    v_root_idx,
+    v,
+    outer_lex,
+  )
+}
+
+fn gen_for_in_loop_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  object: Value,
+  keys: Vec<Value>,
+  start_index: usize,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: GcEnv,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+  let mut v = scope.heap().root_stack[v_root_idx];
+
+  let mut index = start_index;
+  while index < keys.len() {
+    // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
+    evaluator.tick()?;
+
+    let value = keys[index];
+    index = index.saturating_add(1);
+
+    let mut iter_env_created = false;
+    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if matches!(
+        *mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) {
+        let env = scope.env_create(Some(outer_lex))?;
+        evaluator.env.set_lexical_env(scope.heap_mut(), env);
+        iter_env_created = true;
+      }
+    }
+
+    let bind_res: Result<(), VmError> = match &stmt.lhs {
+      ForInOfLhs::Decl((mode, pat_decl)) => {
+        let kind = match *mode {
+          VarDeclMode::Var => BindingKind::Var,
+          VarDeclMode::Let => BindingKind::Let,
+          VarDeclMode::Const => BindingKind::Const,
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
+        };
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &pat_decl.stx.pat.stx,
+          value,
+          kind,
+          evaluator.strict,
+          evaluator.this,
+        )
+      }
+      ForInOfLhs::Assign(pat) => bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        evaluator.env,
+        &pat.stx,
+        value,
+        BindingKind::Assignment,
+        evaluator.strict,
+        evaluator.this,
+      ),
+    };
+
+    if let Err(err) = bind_res {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, scope, err,
+      )?));
+    }
+
+    let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
+    let body_eval = match body_eval {
+      Ok(v) => v,
+      Err(err) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+        return Err(err);
+      }
+    };
+
+    match body_eval {
+      GenEval::Complete(body_completion) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+
+        if !Evaluator::loop_continues(&body_completion, &label_set) {
+          let result =
+            Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+          return Ok(GenEval::Complete(result));
+        }
+
+        if let Some(value) = body_completion.value() {
+          v = value;
+          scope.heap_mut().root_stack[v_root_idx] = value;
+        }
+      }
+      GenEval::Suspend(mut suspend) => {
+        if iter_env_created {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::RestoreLexEnv { outer: outer_lex },
+          )?;
+        }
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForInAfterBody {
+            stmt: stmt as *const ForInStmt,
+            label_set,
+            object,
+            keys,
+            next_key_index: index,
+            v,
+            outer_lex,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  Ok(GenEval::Complete(Completion::normal(v)))
+}
+
+fn gen_for_in_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  object: Value,
+  keys: Vec<Value>,
+  next_key_index: usize,
+  v_root_idx: usize,
+  v: Value,
+  outer_lex: GcEnv,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+  let mut v = scope.heap().root_stack[v_root_idx];
+
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
+    return Ok(GenEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  gen_for_in_loop_from(
+    evaluator,
+    scope,
+    stmt,
+    label_set,
+    object,
+    keys,
+    next_key_index,
+    v_root_idx,
+    v,
+    outer_lex,
+  )
+}
+
 fn gen_label_after_stmt(label: &str, completion: Completion) -> Completion {
   match completion {
     Completion::Break(Some(target), value) if target == label => Completion::Normal(value),
@@ -36489,6 +37269,8 @@ fn gen_eval_stmt_labelled(
     Stmt::With(with_stmt) => gen_eval_with(evaluator, scope, &with_stmt.stx, label_set),
     Stmt::While(while_stmt) => gen_eval_while(evaluator, scope, &while_stmt.stx, label_set),
     Stmt::DoWhile(do_while) => gen_eval_do_while(evaluator, scope, &do_while.stx, label_set),
+    Stmt::ForTriple(for_stmt) => gen_eval_for_triple(evaluator, scope, &for_stmt.stx, label_set),
+    Stmt::ForIn(for_in) => gen_eval_for_in(evaluator, scope, &for_in.stx, label_set),
     Stmt::Switch(switch_stmt) => gen_eval_switch(evaluator, scope, &switch_stmt.stx),
     Stmt::ForOf(for_of) => gen_eval_for_of(evaluator, scope, &for_of.stx, label_set),
     // Conservatively punt on other statement forms for now.
@@ -42687,6 +43469,172 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::ForTripleAfterInit {
+        stmt,
+        label_set,
+        v,
+        outer_lex,
+      } => match state {
+        Completion::Normal(_) => {
+          let v_root_idx = scope.heap().root_stack.len();
+          scope.push_root(v)?;
+          let stmt = unsafe { &*stmt };
+          match gen_for_triple_after_init(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root_idx,
+            v,
+            outer_lex,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ForTripleAfterTest {
+        stmt,
+        label_set,
+        v,
+        outer_lex,
+      } => match state {
+        Completion::Normal(test) => {
+          let v_root_idx = scope.heap().root_stack.len();
+          scope.push_root(v)?;
+          let stmt = unsafe { &*stmt };
+          match gen_for_triple_after_test(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v_root_idx,
+            v,
+            outer_lex,
+            test.unwrap_or(Value::Undefined),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ForTripleAfterBody {
+        stmt,
+        label_set,
+        v,
+        outer_lex,
+      } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_for_triple_after_body(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          v_root_idx,
+          v,
+          outer_lex,
+          state,
+        )? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::ForTripleAfterPost {
+        stmt,
+        label_set,
+        v,
+        outer_lex,
+      } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_for_triple_after_post(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          v_root_idx,
+          v,
+          outer_lex,
+          state,
+        )? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::ForInAfterRhs { stmt, label_set } => match state {
+        Completion::Normal(v) => {
+          let stmt = unsafe { &*stmt };
+          match gen_for_in_after_rhs(
+            evaluator,
+            scope,
+            stmt,
+            label_set,
+            v.unwrap_or(Value::Undefined),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ForInAfterBody {
+        stmt,
+        label_set,
+        object,
+        keys,
+        next_key_index,
+        v,
+        outer_lex,
+      } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        match gen_for_in_after_body(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          object,
+          keys,
+          next_key_index,
+          v_root_idx,
+          v,
+          outer_lex,
+          state,
+        )? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
       GenFrame::ForOfAfterRhs { stmt, label_set } => match state {
         Completion::Normal(v) => {
           let stmt = unsafe { &*stmt };
@@ -42831,8 +43779,15 @@ fn gen_root_values_for_continuation(
       GenFrame::WhileAfterTest { .. }
       | GenFrame::WhileAfterBody { .. }
       | GenFrame::DoWhileAfterBody { .. }
-      | GenFrame::DoWhileAfterTest { .. } => {
+      | GenFrame::DoWhileAfterTest { .. }
+      | GenFrame::ForTripleAfterInit { .. }
+      | GenFrame::ForTripleAfterTest { .. }
+      | GenFrame::ForTripleAfterBody { .. }
+      | GenFrame::ForTripleAfterPost { .. } => {
         needed = needed.saturating_add(1);
+      }
+      GenFrame::ForInAfterBody { keys, .. } => {
+        needed = needed.saturating_add(2).saturating_add(keys.len());
       }
       GenFrame::ForOfAfterBind { .. } | GenFrame::ForOfAfterBody { .. } => {
         needed = needed.saturating_add(3);
@@ -42928,7 +43883,16 @@ fn gen_root_values_for_continuation(
       GenFrame::WhileAfterTest { v, .. }
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
-      | GenFrame::DoWhileAfterTest { v, .. } => values.push(*v),
+      | GenFrame::DoWhileAfterTest { v, .. }
+      | GenFrame::ForTripleAfterInit { v, .. }
+      | GenFrame::ForTripleAfterTest { v, .. }
+      | GenFrame::ForTripleAfterBody { v, .. }
+      | GenFrame::ForTripleAfterPost { v, .. } => values.push(*v),
+      GenFrame::ForInAfterBody { object, keys, v, .. } => {
+        values.push(*object);
+        values.push(*v);
+        values.extend_from_slice(keys);
+      }
       GenFrame::ForOfAfterBind {
         iterator_record, v, ..
       }
