@@ -3013,6 +3013,62 @@ mod tests {
   }
 
   #[test]
+  fn load_session_outcome_falls_back_to_backup_when_primary_is_oversized() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&session_path);
+
+    let mut file = File::create(&session_path).expect("create oversized session file");
+    file
+      .set_len(MAX_SESSION_FILE_BYTES + 1)
+      .expect("grow session file");
+    drop(file);
+
+    let expected_primary_error = read_session_file_bounded(&session_path)
+      .expect_err("expected oversized primary session file to be rejected");
+
+    let backup_session = BrowserSession::single("about:blank".to_string());
+    std::fs::write(
+      &backup_path,
+      serde_json::to_string(&backup_session).expect("serialize backup session"),
+    )
+    .expect("write backup session");
+
+    let loaded = load_session_outcome(&session_path)
+      .expect("load session")
+      .expect("expected session");
+    assert_eq!(loaded.source, SessionLoadSource::Backup);
+    assert_eq!(loaded.primary_error, Some(expected_primary_error));
+    assert_eq!(loaded.session, backup_session);
+  }
+
+  #[test]
+  fn load_session_outcome_falls_back_to_backup_when_primary_is_invalid_utf8() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&session_path);
+
+    // Write invalid UTF-8 bytes into the primary session file.
+    std::fs::write(&session_path, [0xff, 0xfe, 0xfd]).expect("write invalid utf8 primary session");
+    let expected_primary_error = read_session_file_bounded(&session_path)
+      .expect_err("expected invalid utf8 primary session file to be rejected");
+
+    let backup_session = BrowserSession::single("about:newtab".to_string());
+    std::fs::write(
+      &backup_path,
+      serde_json::to_string(&backup_session).expect("serialize backup session"),
+    )
+    .expect("write backup session");
+
+    let loaded = load_session_outcome(&session_path)
+      .expect("load session")
+      .expect("expected session");
+    assert_eq!(loaded.source, SessionLoadSource::Backup);
+    assert_eq!(loaded.primary_error, Some(expected_primary_error));
+    assert_eq!(loaded.session, backup_session);
+  }
+
+  #[test]
   fn load_session_outcome_reports_primary_when_primary_is_valid() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session_path = dir.path().join("session.json");
