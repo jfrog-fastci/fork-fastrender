@@ -239,26 +239,6 @@ status = "xfail"
 reason = "vm-js: SuperCall evaluation order differs (ArgumentsListEvaluation should happen before the IsConstructor check)."
 
 [[expectations]]
-id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js"
-status = "xfail"
-reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
-
-[[expectations]]
-id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue.js"
-status = "xfail"
-reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
-
-[[expectations]]
-id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-increment.js"
-status = "xfail"
-reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
-
-[[expectations]]
-id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-compound-assign.js"
-status = "xfail"
-reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
-
-[[expectations]]
 glob = "language/expressions/super/**"
 status = "pass"
 
