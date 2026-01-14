@@ -9,6 +9,7 @@ use crate::interaction::{
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
+use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::style::color::Rgba;
 use crate::ui::about_pages;
 use crate::ui::clipboard;
@@ -2313,6 +2314,9 @@ impl BrowserTabController {
   }
 
   fn paint_if_needed(&mut self) -> Result<Vec<WorkerToUi>> {
+    self
+      .document
+      .set_scroll_anchoring_priority_candidate(self.scroll_anchoring_priority_candidate());
     let Some(frame) = self
       .document
       .render_if_needed_with_scroll_state_and_interaction_state(Some(
@@ -2325,12 +2329,32 @@ impl BrowserTabController {
   }
 
   fn force_repaint(&mut self) -> Result<Vec<WorkerToUi>> {
+    self
+      .document
+      .set_scroll_anchoring_priority_candidate(self.scroll_anchoring_priority_candidate());
     let frame = self
       .document
       .render_frame_with_scroll_state_and_interaction_state(Some(
         self.interaction.interaction_state(),
       ))?;
     Ok(self.emit_frame(frame))
+  }
+
+  fn scroll_anchoring_priority_candidate(&self) -> Option<ScrollAnchoringPriorityCandidate> {
+    let active = self.find_active_match_index?;
+    let m = self.find_matches.get(active)?;
+    if m.bounds == Rect::ZERO {
+      return None;
+    }
+    let point = m.bounds.center();
+    if let Some(box_id) = m.first_box_id {
+      Some(ScrollAnchoringPriorityCandidate::BoxId {
+        box_id,
+        point: Some(point),
+      })
+    } else {
+      Some(ScrollAnchoringPriorityCandidate::Point(point))
+    }
   }
 
   fn emit_frame(&mut self, mut frame: crate::PaintedFrame) -> Vec<WorkerToUi> {
@@ -2987,6 +3011,124 @@ mod find_in_page_tests {
     assert!(
       scrolled_y.is_some_and(|y| y > 0.0),
       "expected FindNext to scroll down to the next match (got scroll_y={scrolled_y:?})"
+    );
+  }
+
+  #[test]
+  fn scroll_anchoring_uses_active_find_match_as_priority_candidate() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (240, 120);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            body { font: 16px sans-serif; }
+            #spacer { height: 500px; }
+            #top { height: 20px; line-height: 20px; background: #eee; }
+            #grow { height: 0px; }
+          </style>
+        </head>
+        <body>
+          <div id="spacer"></div>
+          <div id="top">top</div>
+          <div id="grow"></div>
+          <div id="content">needle</div>
+          <div style="height: 2000px"></div>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    // Initial paint so scroll/clamping and find indexing have a prepared tree.
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+
+    // Scroll so the #top element is at the top of the viewport.
+    let _ = controller
+      .handle_message(UiToWorker::ScrollTo {
+        tab_id,
+        pos_css: (0.0, 500.0),
+      })
+      .expect("scroll to spacer boundary");
+    assert!(
+      (controller.scroll_state.viewport.y - 500.0).abs() < 1.0,
+      "expected to scroll to y=500 (got {})",
+      controller.scroll_state.viewport.y
+    );
+
+    // Find the match and set it as the active match (index 0).
+    let _ = controller
+      .handle_message(UiToWorker::FindQuery {
+        tab_id,
+        query: "needle".to_string(),
+        case_sensitive: false,
+      })
+      .expect("find query");
+
+    let active = controller.find_active_match_index.expect("active find match");
+    let before_match_bounds = controller.find_matches[active].bounds;
+    assert_ne!(before_match_bounds, Rect::ZERO, "expected non-empty find bounds");
+    let before_scroll_y = controller.scroll_state.viewport.y;
+    let before_match_viewport_y = before_match_bounds.min_y() - before_scroll_y;
+
+    // Trigger a relayout *between* the generic top-of-viewport candidate (#top) and the match by
+    // increasing #grow height. Without the find-in-page priority candidate, anchoring would keep
+    // #top stable and allow the match to shift.
+    controller.document.mutate_dom(|dom| {
+      fn mutate(node: &mut crate::dom::DomNode) -> bool {
+        if node.get_attribute_ref("id").is_some_and(|id| id == "grow") {
+          node.set_attribute("style", "height: 100px");
+          return true;
+        }
+        for child in node.children.iter_mut() {
+          if mutate(child) {
+            return true;
+          }
+        }
+        false
+      }
+      mutate(dom)
+    });
+
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("repaint after relayout");
+
+    let after_scroll_y = controller.scroll_state.viewport.y;
+    let after_active = controller.find_active_match_index.expect("active find match after relayout");
+    let after_match_bounds = controller.find_matches[after_active].bounds;
+    let after_match_viewport_y = after_match_bounds.min_y() - after_scroll_y;
+
+    assert!(
+      (after_match_viewport_y - before_match_viewport_y).abs() < 1.0,
+      "expected scroll anchoring to keep active match stable (before_y={before_match_viewport_y}, after_y={after_match_viewport_y})"
+    );
+    assert!(
+      (after_scroll_y - (before_scroll_y + 100.0)).abs() < 1.0,
+      "expected scroll anchoring to adjust scroll by the relayout delta (before_scroll_y={before_scroll_y}, after_scroll_y={after_scroll_y})"
     );
   }
 }

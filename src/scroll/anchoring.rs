@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::geometry::{Point, Rect};
 use crate::style::types::OverflowAnchor;
-use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
 use super::ScrollState;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -11,6 +11,23 @@ pub struct ScrollAnchor {
   pub box_id: usize,
   /// Anchor origin relative to the scroll container's coordinate space.
   pub origin: Point,
+}
+
+/// A high-priority scroll anchoring candidate provided by the embedding/UI layer.
+///
+/// This is used to implement CSS Scroll Anchoring Module Level 1 §2.2 "anchor priority candidates",
+/// such as the element containing the current active match of the find-in-page algorithm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollAnchoringPriorityCandidate {
+  /// Identify the candidate by a stable box id.
+  ///
+  /// When `point` is provided, it should be a page coordinate within (or near) the target fragment,
+  /// and is used to disambiguate cases where the same box id produces multiple fragments.
+  BoxId { box_id: usize, point: Option<Point> },
+  /// Fallback: identify the candidate by a page coordinate point.
+  ///
+  /// The engine will hit test this point to derive a fragment/box id.
+  Point(Point),
 }
 
 /// Captured scroll anchoring state used to adjust scroll offsets across relayouts.
@@ -232,6 +249,194 @@ fn select_viewport_anchor(tree: &FragmentTree, scroll: Point) -> Option<ScrollAn
   None
 }
 
+fn select_viewport_anchor_with_priority_candidate(
+  tree: &FragmentTree,
+  scroll: Point,
+  priority: Option<ScrollAnchoringPriorityCandidate>,
+) -> Option<ScrollAnchor> {
+  if let Some(candidate) = priority {
+    let scrollport = viewport_scrollport(tree, scroll);
+    if let Some(anchor) = viewport_anchor_for_priority_candidate(tree, scrollport, candidate) {
+      return Some(anchor);
+    }
+  }
+  select_viewport_anchor(tree, scroll)
+}
+
+fn viewport_anchor_for_priority_candidate(
+  tree: &FragmentTree,
+  scrollport: Rect,
+  candidate: ScrollAnchoringPriorityCandidate,
+) -> Option<ScrollAnchor> {
+  match candidate {
+    ScrollAnchoringPriorityCandidate::BoxId { box_id, point } => {
+      viewport_anchor_for_box_id(tree, scrollport, box_id, point)
+    }
+    ScrollAnchoringPriorityCandidate::Point(point) => viewport_anchor_for_point(tree, scrollport, point),
+  }
+}
+
+fn score_origin_relative_to_point(origin: Point, rect: Rect, target: Point) -> f32 {
+  if rect.contains_point(target) {
+    0.0
+  } else {
+    let dx = (origin.x - target.x).abs();
+    let dy = (origin.y - target.y).abs();
+    // Prefer vertical closeness since vertical scrolling is the common case.
+    dy * 1_000.0 + dx
+  }
+}
+
+fn best_anchor_for_box_id_in_subtree(
+  root: &FragmentNode,
+  box_id: usize,
+  scrollport: Rect,
+  start_origin: Point,
+  include_root: bool,
+  target_point: Option<Point>,
+) -> Option<(Point, f32)> {
+  #[derive(Clone, Copy)]
+  struct Frame<'a> {
+    node: &'a FragmentNode,
+    origin: Point,
+    next_child: usize,
+    consider: bool,
+    excluded: bool,
+  }
+
+  let mut best: Option<(Point, f32)> = None;
+  let mut stack = vec![Frame {
+    node: root,
+    origin: start_origin,
+    next_child: 0,
+    consider: include_root,
+    excluded: fragment_excludes_scroll_anchoring(root),
+  }];
+
+  while let Some(frame) = stack.last_mut() {
+    if frame.next_child == 0
+      && frame.consider
+      && !frame.excluded
+      && frame.node.box_id() == Some(box_id)
+      && fragment_is_anchor_candidate(frame.node)
+    {
+      let rect = Rect::from_xywh(
+        frame.origin.x,
+        frame.origin.y,
+        frame.node.bounds.width(),
+        frame.node.bounds.height(),
+      );
+      if rect.intersects(scrollport) {
+        let score = target_point.map_or(0.0, |p| score_origin_relative_to_point(frame.origin, rect, p));
+        let replace = match best {
+          None => true,
+          Some((_, best_score)) => score < best_score,
+        };
+        if replace {
+          best = Some((frame.origin, score));
+          if score == 0.0 {
+            // We found a fragment that actually contains the probe point; this is as good as it gets.
+            // Continue scanning so we keep deterministic traversal order for ties.
+          }
+        }
+      }
+    }
+
+    if frame.excluded {
+      stack.pop();
+      continue;
+    }
+
+    if frame.next_child < frame.node.children.len() {
+      let idx = frame.next_child;
+      frame.next_child += 1;
+      let child = &frame.node.children[idx];
+      let origin = Point::new(frame.origin.x + child.bounds.x(), frame.origin.y + child.bounds.y());
+      stack.push(Frame {
+        node: child,
+        origin,
+        next_child: 0,
+        consider: true,
+        excluded: fragment_excludes_scroll_anchoring(child),
+      });
+    } else {
+      stack.pop();
+    }
+  }
+
+  best
+}
+
+fn viewport_anchor_for_box_id(
+  tree: &FragmentTree,
+  scrollport: Rect,
+  box_id: usize,
+  target_point: Option<Point>,
+) -> Option<ScrollAnchor> {
+  // Walk the main fragment root only; additional fragment roots represent viewport-fixed layers and
+  // do not participate in viewport scroll anchoring.
+  let root_origin = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
+  let best = best_anchor_for_box_id_in_subtree(
+    &tree.root,
+    box_id,
+    scrollport,
+    root_origin,
+    false,
+    target_point,
+  )?;
+  Some(ScrollAnchor {
+    box_id,
+    origin: best.0,
+  })
+}
+
+fn viewport_anchor_for_point(
+  tree: &FragmentTree,
+  scrollport: Rect,
+  point: Point,
+) -> Option<ScrollAnchor> {
+  if !point.x.is_finite() || !point.y.is_finite() || !scrollport.contains_point(point) {
+    return None;
+  }
+
+  let (root, path) = tree.hit_test_path(point)?;
+  if !matches!(root, HitTestRoot::Root) {
+    // Ignore additional fragment roots (e.g. fixed layers).
+    return None;
+  }
+
+  // Walk down the hit-test path and pick the deepest eligible box id.
+  let mut current = &tree.root;
+  if fragment_excludes_scroll_anchoring(current) {
+    return None;
+  }
+  let mut parent_origin = Point::ZERO;
+  let mut current_bounds = current.bounds.translate(parent_origin);
+  let mut best = current
+    .box_id()
+    .filter(|_| fragment_is_anchor_candidate(current))
+    .map(|id| (id, current_bounds.origin));
+
+  for &child_idx in &path {
+    let Some(child) = current.children.get(child_idx) else {
+      break;
+    };
+    parent_origin = current_bounds.origin;
+    current = child;
+    if fragment_excludes_scroll_anchoring(current) {
+      return None;
+    }
+    current_bounds = current.bounds.translate(parent_origin);
+    if let Some(id) = current.box_id() {
+      if fragment_is_anchor_candidate(current) {
+        best = Some((id, current_bounds.origin));
+      }
+    }
+  }
+
+  best.map(|(box_id, origin)| ScrollAnchor { box_id, origin })
+}
+
 fn select_element_anchor(
   tree: &FragmentTree,
   container_box_id: usize,
@@ -255,13 +460,21 @@ fn select_element_anchor(
 
 /// Capture the current scroll anchor selections for the provided fragment tree + scroll state.
 pub fn capture_scroll_anchors(tree: &FragmentTree, scroll: &ScrollState) -> ScrollAnchorSnapshot {
+  capture_scroll_anchors_with_priority(tree, scroll, None)
+}
+
+/// Like [`capture_scroll_anchors`], but allows the embedding/UI layer to inject a higher-priority
+/// viewport anchoring candidate.
+pub fn capture_scroll_anchors_with_priority(
+  tree: &FragmentTree,
+  scroll: &ScrollState,
+  priority: Option<ScrollAnchoringPriorityCandidate>,
+) -> ScrollAnchorSnapshot {
   let mut snapshot = ScrollAnchorSnapshot::default();
 
   let viewport_scroll = sanitize_point(scroll.viewport);
-  snapshot.viewport = select_viewport_anchor(tree, viewport_scroll).map(|anchor| ScrollAnchor {
-    box_id: anchor.box_id,
-    origin: anchor.origin,
-  });
+  snapshot.viewport =
+    select_viewport_anchor_with_priority_candidate(tree, viewport_scroll, priority);
 
   for (&container_id, &offset) in &scroll.elements {
     let offset = sanitize_point(offset);

@@ -25,6 +25,11 @@ impl Default for FindOptions {
 pub struct FindMatch {
   pub rects: Vec<Rect>,
   pub bounds: Rect,
+  /// Best-effort originating box identifier for the first span of this match.
+  ///
+  /// When present, this can be used as a stable identifier for scroll anchoring priority
+  /// candidates (e.g. the element containing the active find-in-page match).
+  pub first_box_id: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +38,7 @@ struct TextFragment {
   text: Arc<str>,
   shaped: Option<Arc<Vec<ShapedRun>>>,
   char_boundaries: Vec<usize>,
+  box_id: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +97,7 @@ impl FindIndex {
 
       let mut rects: Vec<Rect> = Vec::new();
       let mut bounds: Option<Rect> = None;
+      let mut first_box_id: Option<usize> = None;
 
       let mut seg_idx = segment_cursor;
       while seg_idx < self.segments.len() && self.segments[seg_idx].haystack_range.start < match_end {
@@ -99,6 +106,9 @@ impl FindIndex {
         let overlap_end = match_end.min(seg.haystack_range.end);
         if overlap_start < overlap_end {
           let frag = &self.fragments[seg.frag_index];
+          if first_box_id.is_none() {
+            first_box_id = frag.box_id;
+          }
           let local_start = overlap_start - seg.haystack_range.start;
           let local_end = overlap_end - seg.haystack_range.start;
 
@@ -139,6 +149,7 @@ impl FindIndex {
       out.push(FindMatch {
         rects,
         bounds: bounds.unwrap_or(Rect::ZERO),
+        first_box_id,
       });
     }
 
@@ -180,12 +191,14 @@ impl FindIndex {
           let abs_bounds = Rect::new(abs_origin, frame.node.bounds.size);
 
           if let FragmentContent::Text { text, shaped, .. } = &frame.node.content {
+            let box_id = frame.node.box_id();
             let frag_index = self.fragments.len();
             self.fragments.push(TextFragment {
               abs_bounds,
               text: text.clone(),
               shaped: shaped.clone(),
               char_boundaries: char_boundary_byte_offsets(text),
+              box_id,
             });
 
             let start = self.haystack.len();
@@ -341,4 +354,3 @@ mod tests {
     );
   }
 }
-

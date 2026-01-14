@@ -6,6 +6,7 @@ use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
 use crate::interaction::{form_controls, InteractionState};
 use crate::resource::ReferrerPolicy;
+use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
@@ -48,6 +49,12 @@ pub struct BrowserDocument {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  /// Optional high-priority viewport scroll anchoring candidate supplied by the embedding/UI.
+  ///
+  /// When set, the document will attempt to keep this candidate stable across relayouts (CSS Scroll
+  /// Anchoring §2.2 "anchor priority candidates"), falling back to the default anchor selection when
+  /// it is absent or ineligible.
+  scroll_anchoring_priority_candidate: Option<ScrollAnchoringPriorityCandidate>,
   /// Hash of the most recently rendered interaction state's CSS-affecting subset.
   ///
   /// This captures pseudo-class matching (`:hover`, `:focus`, etc.) and other inputs that influence
@@ -314,6 +321,7 @@ impl BrowserDocument {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      scroll_anchoring_priority_candidate: None,
       interaction_css_hash: interaction_state_css_fingerprint(None),
       interaction_paint_hash: interaction_state_paint_fingerprint(None),
       realtime_animations_enabled: false,
@@ -345,6 +353,7 @@ impl BrowserDocument {
       layout_dirty: false,
       // First frame still needs a paint.
       paint_dirty: true,
+      scroll_anchoring_priority_candidate: None,
       interaction_css_hash: interaction_state_css_fingerprint(None),
       interaction_paint_hash: interaction_state_paint_fingerprint(None),
       realtime_animations_enabled: false,
@@ -980,6 +989,21 @@ impl BrowserDocument {
     }
   }
 
+  /// Sets (or clears) the priority candidate used by scroll anchoring.
+  ///
+  /// This is an embedding/UI hint used when the document performs a layout recomputation while the
+  /// viewport is scrolled. When set, scroll anchoring will attempt to keep this candidate stable
+  /// across the relayout (CSS Scroll Anchoring §2.2).
+  ///
+  /// The hint does not invalidate style/layout/paint; it is consulted opportunistically during the
+  /// next layout pass that requires scroll anchoring.
+  pub fn set_scroll_anchoring_priority_candidate(
+    &mut self,
+    candidate: Option<ScrollAnchoringPriorityCandidate>,
+  ) {
+    self.scroll_anchoring_priority_candidate = candidate;
+  }
+
   /// Updates the cooperative cancellation callback used during prepare/layout.
   ///
   /// This is a control knob (e.g. for UI-level cancellation) and does not mark the document dirty.
@@ -1232,6 +1256,53 @@ impl BrowserDocument {
             return Err(err);
           }
         };
+
+      // Scroll anchoring: adjust the scroll offsets to keep an anchor stable across this relayout.
+      //
+      // This is a best-effort implementation intended to avoid visible jumps when content above the
+      // viewport changes (CSS Scroll Anchoring Module Level 1). When an embedding supplies a
+      // priority candidate (e.g. active find-in-page match), anchoring starts from it.
+      if let Some(prev_prepared) = prev_prepared.as_ref() {
+        let scroll_state = self.scroll_state();
+        let snapshot = crate::scroll::anchoring::capture_scroll_anchors_with_priority(
+          prev_prepared.fragment_tree(),
+          &scroll_state,
+          self.scroll_anchoring_priority_candidate,
+        );
+        let (anchored, _next_snapshot) =
+          crate::scroll::apply_scroll_anchoring(&snapshot, prepared.fragment_tree(), &scroll_state);
+
+        let viewport_delta = Point::new(
+          anchored.viewport.x - scroll_state.viewport.x,
+          anchored.viewport.y - scroll_state.viewport.y,
+        );
+
+        let mut element_deltas: HashMap<usize, Point> = HashMap::new();
+        for (&id, old_offset) in &scroll_state.elements {
+          let new_offset = anchored.elements.get(&id).copied().unwrap_or(Point::ZERO);
+          let delta = Point::new(
+            new_offset.x - old_offset.x,
+            new_offset.y - old_offset.y,
+          );
+          if delta != Point::ZERO {
+            element_deltas.insert(id, delta);
+          }
+        }
+        for (&id, &new_offset) in &anchored.elements {
+          if scroll_state.elements.contains_key(&id) {
+            continue;
+          }
+          if new_offset != Point::ZERO {
+            element_deltas.insert(id, new_offset);
+          }
+        }
+
+        self.options.scroll_x = anchored.viewport.x;
+        self.options.scroll_y = anchored.viewport.y;
+        self.options.scroll_delta = viewport_delta;
+        self.options.element_scroll_offsets = anchored.elements.clone();
+        self.options.element_scroll_deltas = element_deltas;
+      }
 
       let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {

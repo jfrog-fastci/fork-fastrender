@@ -25,6 +25,7 @@ use crate::render_control::{
 use crate::resource::{
   origin_from_url, CachingFetcher, DocumentOrigin, HttpFetcher, ResourceFetcher,
 };
+use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
@@ -2160,6 +2161,26 @@ fn build_page_accesskit_subtree_for_tab(
 
   Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
 }
+
+fn scroll_anchoring_priority_candidate_for_find(
+  find: &FindInPageWorkerState,
+) -> Option<ScrollAnchoringPriorityCandidate> {
+  let active = find.active_match_index?;
+  let m = find.matches.get(active)?;
+  if m.bounds == Rect::ZERO {
+    return None;
+  }
+  let point = m.bounds.center();
+  if let Some(box_id) = m.first_box_id {
+    Some(ScrollAnchoringPriorityCandidate::BoxId {
+      box_id,
+      point: Some(point),
+    })
+  } else {
+    Some(ScrollAnchoringPriorityCandidate::Point(point))
+  }
+}
+
 fn base_url_for_links(tab: &TabState) -> &str {
   tab
     .last_base_url
@@ -12334,6 +12355,9 @@ impl BrowserRuntime {
         return None;
       };
       doc.set_cancel_callback(Some(cancel_callback.clone()));
+      doc.set_scroll_anchoring_priority_candidate(
+        scroll_anchoring_priority_candidate_for_find(&tab.find),
+      );
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       let interaction_state = Some(tab.interaction.interaction_state());
       if force {

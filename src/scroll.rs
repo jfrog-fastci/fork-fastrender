@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+pub mod anchoring;
+
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::Transform3D;
 use crate::style::position::Position;
