@@ -618,7 +618,7 @@ fn super_property_reference_semantics_in_derived_method_compiled() -> Result<(),
 #[test]
 fn super_property_reference_semantics_in_base_class_compiled_path() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       Object.defineProperty(Object.prototype, "__g", {
@@ -646,12 +646,7 @@ fn super_property_reference_semantics_in_base_class_compiled_path() -> Result<()
 
       new C().test()
     "#,
-  ) {
-    Ok(v) => v,
-    // Compiled HIR execution does not implement `super` property references yet.
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -702,7 +697,7 @@ fn super_property_reference_semantics_in_base_static_method_compiled_path() -> R
 #[test]
 fn super_property_reference_semantics_in_instance_field_initializer() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       class B {
         get __g() { return this.__x + 1; }
@@ -718,13 +713,7 @@ fn super_property_reference_semantics_in_instance_field_initializer() -> Result<
       const d = new D();
       d.y === 11 && d.z === 14 && d.w === 14 && d.__x === 14
     "#,
-  ) {
-    Ok(v) => v,
-    // `super.prop` in field initializers is not supported yet.
-    Err(VmError::Syntax(_)) => return Ok(()),
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -732,7 +721,7 @@ fn super_property_reference_semantics_in_instance_field_initializer() -> Result<
 #[test]
 fn super_property_reference_semantics_in_instance_field_initializer_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       class B {
@@ -749,12 +738,7 @@ fn super_property_reference_semantics_in_instance_field_initializer_compiled() -
       const d = new D();
       d.y === 11 && d.z === 14 && d.w === 14 && d.__x === 14
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Syntax(_)) => return Ok(()),
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -871,7 +855,7 @@ fn super_property_reference_in_base_static_block() -> Result<(), VmError> {
 #[test]
 fn super_property_reference_in_base_static_block_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       var out = "";
@@ -890,12 +874,7 @@ fn super_property_reference_in_base_static_block_compiled() -> Result<(), VmErro
       }
       out === "12"
     "#,
-  ) {
-    Ok(v) => v,
-    // Compiled HIR execution does not implement `super` property references yet.
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -928,7 +907,7 @@ fn super_property_reference_in_derived_static_block() -> Result<(), VmError> {
 #[test]
 fn super_property_reference_in_derived_static_block_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       var out = "";
@@ -946,11 +925,7 @@ fn super_property_reference_in_derived_static_block_compiled() -> Result<(), VmE
       }
       out === "12"
     "#,
-  ) {
-    Ok(v) => v,
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }

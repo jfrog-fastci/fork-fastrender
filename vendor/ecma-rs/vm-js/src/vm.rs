@@ -286,8 +286,9 @@ pub(crate) enum EcmaFunctionKind {
   Expr,
   /// A public class field initializer (`x = <expr>` / `static x = <expr>`).
   ///
-  /// These are parsed by wrapping the field initializer expression in a function expression:
-  /// `(function(){ return <expr>; })`.
+  /// These are parsed by wrapping the field initializer expression in a synthetic class *method*
+  /// body:
+  /// `(class extends null { m() { return <expr>; } })`.
   ///
   /// This allows the VM to represent field initializers as ordinary callable functions which can be
   /// invoked during instance/static initialization with the correct `this` value.

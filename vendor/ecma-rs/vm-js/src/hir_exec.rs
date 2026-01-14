@@ -9825,7 +9825,8 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<GcObject, VmError> {
     // Mirror `exec.rs::eval_class`:
     // class field initializers are represented as ordinary strict-mode callable functions created
-    // by parsing `(function(){ return <expr>; })` snippets (see `EcmaFunctionKind::ClassFieldInitializer`).
+    // by parsing `(class extends null { m() { return <expr>; } })` snippets (see
+    // `EcmaFunctionKind::ClassFieldInitializer`).
     //
     // This allows both static field initialization and per-instance field initialization to share the
     // same `vm.call` machinery and ensures `eval()` inside initializers uses a function-scoped
