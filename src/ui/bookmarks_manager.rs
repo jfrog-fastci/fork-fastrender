@@ -1007,13 +1007,13 @@ fn bookmarks_list(
 
     // Move the cache out temporarily so row rendering can mutably borrow `state` without fighting
     // Rust's borrow checker.
-    let prev_cache = state.list_cache.take();
+    let mut prev_cache = state.list_cache.take();
     let mut cache = if needs_rebuild {
       BookmarksListCache {
         cache_revision,
         search_query: query.to_string(),
         folder_open_revision: open_rev,
-        rows: build_visible_rows(ui.ctx(), store, query, prev_cache.as_ref()),
+        rows: build_visible_rows(ui.ctx(), store, query, prev_cache.take()),
       }
     } else {
       prev_cache.expect("list cache present when not rebuilding") // fastrender-allow-unwrap
@@ -1119,11 +1119,7 @@ fn folder_open(ctx: &egui::Context, folder_id: BookmarkId) -> bool {
     .unwrap_or(false)
 }
 
-fn filter_search_rows(
-  store: &BookmarkStore,
-  query: &str,
-  prev_rows: &[BookmarkRow],
-) -> Vec<BookmarkRow> {
+fn filter_search_rows_in_place(store: &BookmarkStore, query: &str, rows: &mut Vec<BookmarkRow>) {
   // Keep matching behavior consistent with `BookmarkStore::search`.
   let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
     Cow::Owned(query.to_ascii_lowercase())
@@ -1132,7 +1128,8 @@ fn filter_search_rows(
   };
   let mut tokens_iter = query_lower.split_whitespace().filter(|t| !t.is_empty());
   let Some(first_token) = tokens_iter.next() else {
-    return Vec::new();
+    rows.clear();
+    return;
   };
   let tokens: Option<SmallVec<[&str; 4]>> = tokens_iter.next().map(|second_token| {
     let mut tokens: SmallVec<[&str; 4]> = SmallVec::new();
@@ -1142,18 +1139,17 @@ fn filter_search_rows(
     tokens
   });
 
-  let mut out = Vec::with_capacity(prev_rows.len());
-  'rows: for row in prev_rows {
-    let BookmarkRowKind::Bookmark = row.kind else {
-      continue;
-    };
+  rows.retain(|row| {
+    if row.kind != BookmarkRowKind::Bookmark {
+      return false;
+    }
     let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&row.id) else {
-      continue;
+      return false;
     };
 
     let url = entry.url.trim();
     if url.is_empty() {
-      continue;
+      return false;
     }
     let title = entry
       .title
@@ -1162,106 +1158,120 @@ fn filter_search_rows(
       .filter(|t| !t.is_empty());
 
     if let Some(tokens) = &tokens {
-      // Multi-token query: every token must match either title or URL.
       for token_lower in tokens {
         if !contains_ascii_case_insensitive(url, token_lower)
           && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
         {
-          continue 'rows;
+          return false;
         }
       }
-    } else if !contains_ascii_case_insensitive(url, first_token)
-      && !title.is_some_and(|t| contains_ascii_case_insensitive(t, first_token))
-    {
-      // Single-token query fast path.
-      continue 'rows;
+      true
+    } else {
+      contains_ascii_case_insensitive(url, first_token)
+        || title.is_some_and(|t| contains_ascii_case_insensitive(t, first_token))
     }
-
-    out.push(BookmarkRow {
-      kind: BookmarkRowKind::Bookmark,
-      id: row.id,
-      depth: 0,
-    });
-  }
-
-  out
+  });
 }
 
 fn build_visible_rows(
   ctx: &egui::Context,
   store: &BookmarkStore,
   query: &str,
-  prev_cache: Option<&BookmarksListCache>,
+  prev_cache: Option<BookmarksListCache>,
 ) -> Vec<BookmarkRow> {
-  if !query.is_empty() {
-    if let Some(prev) = prev_cache {
+  if query.is_empty() {
+    let mut out: Vec<BookmarkRow> = match prev_cache {
+      Some(mut prev) => {
+        prev.rows.clear();
+        prev.rows
+      }
+      None => {
+        // Avoid preallocating `store.nodes.len()` here: large bookmark stores can have many nodes
+        // hidden behind collapsed folders, and the flattened list is only as big as the *visible*
+        // rows.
+        Vec::with_capacity(store.roots.len().max(256))
+      }
+    };
+
+    // Depth-first traversal: push roots in reverse so `pop()` visits them in store order.
+    let mut stack: Vec<(usize, BookmarkId)> = store
+      .roots
+      .iter()
+      .rev()
+      .copied()
+      .map(|id| (0, id))
+      .collect();
+    while let Some((depth, id)) = stack.pop() {
+      let Some(node) = store.nodes.get(&id) else {
+        continue;
+      };
+
+      match node {
+        BookmarkNode::Bookmark(_) => out.push(BookmarkRow {
+          kind: BookmarkRowKind::Bookmark,
+          id,
+          depth,
+        }),
+        BookmarkNode::Folder(folder) => {
+          out.push(BookmarkRow {
+            kind: BookmarkRowKind::Folder,
+            id,
+            depth,
+          });
+
+          if folder_open(ctx, folder.id) {
+            // Make the common case (opening a large folder) cheaper by reserving for its direct
+            // children. This avoids repeated reallocations while keeping collapsed trees cheap.
+            out.reserve(folder.children.len());
+            stack.reserve(folder.children.len());
+            stack.extend(
+              folder
+                .children
+                .iter()
+                .rev()
+                .copied()
+                .map(|child| (depth.saturating_add(1), child)),
+            );
+          }
+        }
+      }
+    }
+
+    return out;
+  }
+
+  match prev_cache {
+    Some(mut prev) => {
       if prev.cache_revision == store.revision()
         && !prev.search_query.is_empty()
         && query.starts_with(prev.search_query.as_str())
       {
-        return filter_search_rows(store, query, &prev.rows);
-      }
-    }
-
-    let ids = store.search(query, usize::MAX);
-    return ids
-      .into_iter()
-      .map(|id| BookmarkRow {
-        kind: BookmarkRowKind::Bookmark,
-        id,
-        depth: 0,
-      })
-      .collect();
-  }
-
-  // Avoid preallocating `store.nodes.len()` here: large bookmark stores can have many nodes hidden
-  // behind collapsed folders, and the flattened list is only as big as the *visible* rows.
-  let mut out: Vec<BookmarkRow> = Vec::with_capacity(store.roots.len().max(256));
-  // Depth-first traversal: push roots in reverse so `pop()` visits them in store order.
-  let mut stack: Vec<(usize, BookmarkId)> = store
-    .roots
-    .iter()
-    .rev()
-    .copied()
-    .map(|id| (0, id))
-    .collect();
-  while let Some((depth, id)) = stack.pop() {
-    let Some(node) = store.nodes.get(&id) else {
-      continue;
-    };
-
-    match node {
-      BookmarkNode::Bookmark(_) => out.push(BookmarkRow {
-        kind: BookmarkRowKind::Bookmark,
-        id,
-        depth,
-      }),
-      BookmarkNode::Folder(folder) => {
-        out.push(BookmarkRow {
-          kind: BookmarkRowKind::Folder,
+        filter_search_rows_in_place(store, query, &mut prev.rows);
+        prev.rows
+      } else {
+        let ids = store.search(query, usize::MAX);
+        prev.rows.clear();
+        prev.rows.reserve(ids.len());
+        prev.rows.extend(ids.into_iter().map(|id| BookmarkRow {
+          kind: BookmarkRowKind::Bookmark,
           id,
-          depth,
-        });
-
-        if folder_open(ctx, folder.id) {
-          // Make the common case (opening a large folder) cheaper by reserving for its direct
-          // children. This avoids repeated reallocations while keeping collapsed trees cheap.
-          out.reserve(folder.children.len());
-          stack.reserve(folder.children.len());
-          stack.extend(
-            folder
-              .children
-              .iter()
-              .rev()
-              .copied()
-              .map(|child| (depth.saturating_add(1), child)),
-          );
-        }
+          depth: 0,
+        }));
+        prev.rows
       }
     }
+    None => {
+      let ids = store.search(query, usize::MAX);
+      ids
+        .into_iter()
+        .map(|id| BookmarkRow {
+          kind: BookmarkRowKind::Bookmark,
+          id,
+          depth: 0,
+        })
+        .collect()
+    }
   }
-
-  out
 }
 
 fn render_folder_row(
