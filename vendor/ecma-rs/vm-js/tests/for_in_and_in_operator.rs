@@ -2,7 +2,7 @@ use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
-fn test_unimplemented(
+fn test_uncatchable_error(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -11,7 +11,7 @@ fn test_unimplemented(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("test unimplemented"))
+  Err(VmError::InvariantViolation("test invariant violation"))
 }
 
 fn new_runtime() -> JsRuntime {
@@ -148,14 +148,14 @@ fn in_operator_treats_string_indices_as_properties() {
 fn for_in_restores_lexical_env_on_uncatchable_error() {
   let mut rt = new_runtime();
 
-  rt.register_global_native_function("__test_unimplemented", test_unimplemented, 0)
+  rt.register_global_native_function("__test_uncatchable_error", test_uncatchable_error, 0)
     .unwrap();
   let err = rt
     // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
     // per-iteration lexical environment before unwinding.
-    .exec_script(r#"for (let k in {a:1}) { __test_unimplemented(); }"#)
+    .exec_script(r#"for (let k in {a:1}) { __test_uncatchable_error(); }"#)
     .unwrap_err();
-  assert!(matches!(err, VmError::Unimplemented(_)));
+  assert!(matches!(err, VmError::InvariantViolation(_)));
 
   // If the loop's per-iteration lexical environment is not restored when the body returns an
   // uncatchable error, the loop variable binding would leak into subsequent script executions.

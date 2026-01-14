@@ -21913,7 +21913,7 @@ pub(crate) fn hir_async_resume_continuation(
                 PropertyKey::Symbol(s) => Value::Symbol(*s),
               };
               let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
- 
+
               let base_root = match await_scope.heap_mut().add_root(base_value) {
                 Ok(id) => id,
                 Err(err) => {
