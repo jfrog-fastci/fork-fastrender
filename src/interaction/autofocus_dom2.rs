@@ -1,4 +1,4 @@
-use crate::dom2::{Document, NodeId, NodeKind, NULL_NAMESPACE};
+use crate::dom2::{Document, NodeId, NodeKind};
 use crate::interaction::InteractionStateDom2;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -211,6 +211,23 @@ mod tests {
       .set_bool_attribute(target, "AutoFocus", true)
       .expect("set AutoFocus");
 
+    assert_eq!(autofocus_target_node_id(&doc), Some(target));
+  }
+
+  #[test]
+  fn autofocus_matches_attribute_name_case_sensitively_in_xml_document() {
+    let mut doc = Document::new_xml();
+    let target = doc.create_element("input", "");
+    doc.append_child(doc.root(), target).expect("append");
+    doc
+      .set_bool_attribute(target, "AutoFocus", true)
+      .expect("set AutoFocus");
+
+    assert_eq!(autofocus_target_node_id(&doc), None);
+
+    doc
+      .set_bool_attribute(target, "autofocus", true)
+      .expect("set autofocus");
     assert_eq!(autofocus_target_node_id(&doc), Some(target));
   }
 
