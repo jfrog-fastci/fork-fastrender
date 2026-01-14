@@ -26317,6 +26317,11 @@ enum HirAsyncResumePoint {
   ForAwaitOf {
     next_stmt_index: usize,
     break_label: Option<hir_js::NameId>,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists (e.g. implicit await of `iterator.next()`), this may be 0
+    /// and callers should fall back to the surrounding statement offset.
+    await_offset: u32,
   },
   /// Resume a top-level `for (init; test; update)` statement whose head contains `await`.
   ///
@@ -26327,6 +26332,11 @@ enum HirAsyncResumePoint {
   ForTriple {
     next_stmt_index: usize,
     break_label: Option<hir_js::NameId>,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists, callers should fall back to the surrounding statement
+    /// offset.
+    await_offset: u32,
   },
 }
 
@@ -26423,7 +26433,10 @@ fn await_span_start_for_hir_async_resume_point(
         stmt_offset
       }
     }
-    HirAsyncResumePoint::ForAwaitOf { .. } | HirAsyncResumePoint::ForTriple { .. } => stmt_offset,
+    HirAsyncResumePoint::ForAwaitOf { await_offset, .. }
+    | HirAsyncResumePoint::ForTriple { await_offset, .. } => {
+      if await_offset != 0 { await_offset } else { stmt_offset }
+    }
   };
 
   Ok(await_offset)
@@ -27193,7 +27206,7 @@ fn hir_eval_stmt_list_until_await(
           Ok(ForAwaitOfPoll::Await {
             kind,
             await_value,
-            await_offset: _,
+            await_offset,
           }) => {
             return Ok(HirAsyncEvalResult::Await {
               kind,
@@ -27203,6 +27216,7 @@ fn hir_eval_stmt_list_until_await(
                 // `HirAsyncResumePoint` currently only carries a single optional label; the loop
                 // state itself stores the full label set for completion conversion.
                 break_label: None,
+                await_offset,
               },
               assign_reference: None,
               assign_op: None,
@@ -27303,7 +27317,7 @@ fn hir_eval_stmt_list_until_await(
             Ok(ForTripleAwaitPoll::Await {
               kind,
               await_value,
-              await_offset: _,
+              await_offset,
             }) => {
               return Ok(HirAsyncEvalResult::Await {
                 kind,
@@ -27311,6 +27325,7 @@ fn hir_eval_stmt_list_until_await(
                 resume: HirAsyncResumePoint::ForTriple {
                   next_stmt_index: i.saturating_add(1),
                   break_label: None,
+                  await_offset,
                 },
                 assign_reference: None,
                 assign_op: None,
@@ -27384,7 +27399,7 @@ fn hir_eval_stmt_list_until_await(
         Ok(ForAwaitOfPoll::Await {
           kind,
           await_value,
-          await_offset: _,
+          await_offset,
         }) => {
           return Ok(HirAsyncEvalResult::Await {
             kind,
@@ -27392,6 +27407,7 @@ fn hir_eval_stmt_list_until_await(
             resume: HirAsyncResumePoint::ForAwaitOf {
               next_stmt_index: i.saturating_add(1),
               break_label: None,
+              await_offset,
             },
             assign_reference: None,
             assign_op: None,
@@ -27466,7 +27482,7 @@ fn hir_eval_stmt_list_until_await(
           Ok(ForTripleAwaitPoll::Await {
             kind,
             await_value,
-            await_offset: _,
+            await_offset,
           }) => {
             return Ok(HirAsyncEvalResult::Await {
               kind,
@@ -27474,6 +27490,7 @@ fn hir_eval_stmt_list_until_await(
               resume: HirAsyncResumePoint::ForTriple {
                 next_stmt_index: i.saturating_add(1),
                 break_label: None,
+                await_offset,
               },
               assign_reference: None,
               assign_op: None,
@@ -28813,6 +28830,7 @@ pub(crate) fn hir_async_resume_continuation(
         HirAsyncResumePoint::ForAwaitOf {
           next_stmt_index,
           break_label,
+          ..
         } => {
           // Attach any throw stack to the `for await..of` statement span.
           let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
@@ -28834,13 +28852,14 @@ pub(crate) fn hir_async_resume_continuation(
             Ok(ForAwaitOfPoll::Await {
               kind,
               await_value,
-              await_offset: _,
+              await_offset,
             }) => Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
               resume: HirAsyncResumePoint::ForAwaitOf {
                 next_stmt_index,
                 break_label,
+                await_offset,
               },
               assign_reference: None,
               assign_op: None,
@@ -28914,6 +28933,7 @@ pub(crate) fn hir_async_resume_continuation(
         HirAsyncResumePoint::ForTriple {
           next_stmt_index,
           break_label,
+          ..
         } => {
           // Attach any throw stack to the `for (init; test; update)` statement span.
           let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
@@ -28935,13 +28955,14 @@ pub(crate) fn hir_async_resume_continuation(
             Ok(ForTripleAwaitPoll::Await {
               kind,
               await_value,
-              await_offset: _,
+              await_offset,
             }) => Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
               resume: HirAsyncResumePoint::ForTriple {
                 next_stmt_index,
                 break_label,
+                await_offset,
               },
               assign_reference: None,
               assign_op: None,
@@ -30248,4 +30269,146 @@ mod hir_async_await_stack_tests {
     rt.heap.remove_root(promise_root);
     Ok(())
   }
-}
+
+  #[test]
+  fn top_level_for_await_of_rhs_await_rejection_error_stack_attributed_to_await_site() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let src = "for await (const x of\n  await Promise.reject(new Error('boom'))\n) {}\n";
+    let script = CompiledScript::compile_script(&mut rt.heap, "tla_forawait_reject.js", src)?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.top_level_await_requires_ast_fallback);
+    assert!(!script.requires_ast_fallback);
+
+    let value = rt.exec_compiled_script(script.clone())?;
+    let Value::Object(promise_obj) = value else {
+      panic!("expected top-level await script to evaluate to a Promise object, got {value:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+
+    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected rooted completion Promise to remain live");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("rejected promise missing reason"))?;
+    let Value::Object(err_obj) = reason else {
+      panic!("expected rejection reason to be an Error object, got {reason:?}");
+    };
+
+    let stack_string = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(err_obj))?;
+      let key_s = scope.alloc_string("stack")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      let stack_value = scope.heap().get(err_obj, &key)?;
+      let Value::String(stack_s) = stack_value else {
+        panic!("expected error.stack to be a string, got {stack_value:?}");
+      };
+      let s = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+      assert!(
+        !s.is_empty(),
+        "expected error.stack to be non-empty for top-level await rejection"
+      );
+      s
+    };
+
+    let await_offset = script
+      .source
+      .text
+      .find("await Promise.reject")
+      .expect("test source should contain await site") as u32;
+    let (line, col) = script.source.line_col(await_offset);
+    let expected_loc = format!("{}:{line}:{col}", script.source.name.as_ref());
+    let first_frame = stack_string
+      .lines()
+      .find(|line| line.starts_with("at "))
+      .unwrap_or_default();
+    assert!(
+      first_frame.contains(&expected_loc),
+      "expected top stack frame to contain {expected_loc:?}, got {first_frame:?}\nfull stack:\n{stack_string}"
+    );
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn top_level_for_triple_multi_await_rejection_error_stack_attributed_to_latest_await_site() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let src = "for (\n  await Promise.resolve(0);\n  await Promise.reject(new Error('boom'));\n) {}\n";
+    let script = CompiledScript::compile_script(&mut rt.heap, "tla_fortriple_reject.js", src)?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.top_level_await_requires_ast_fallback);
+    assert!(!script.requires_ast_fallback);
+
+    let value = rt.exec_compiled_script(script.clone())?;
+    let Value::Object(promise_obj) = value else {
+      panic!("expected top-level await script to evaluate to a Promise object, got {value:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+
+    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected rooted completion Promise to remain live");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("rejected promise missing reason"))?;
+    let Value::Object(err_obj) = reason else {
+      panic!("expected rejection reason to be an Error object, got {reason:?}");
+    };
+
+    let stack_string = {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(err_obj))?;
+      let key_s = scope.alloc_string("stack")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      let stack_value = scope.heap().get(err_obj, &key)?;
+      let Value::String(stack_s) = stack_value else {
+        panic!("expected error.stack to be a string, got {stack_value:?}");
+      };
+      let s = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+      assert!(
+        !s.is_empty(),
+        "expected error.stack to be non-empty for top-level await rejection"
+      );
+      s
+    };
+
+    let await_offset = script
+      .source
+      .text
+      .find("await Promise.reject")
+      .expect("test source should contain await site") as u32;
+    let (line, col) = script.source.line_col(await_offset);
+    let expected_loc = format!("{}:{line}:{col}", script.source.name.as_ref());
+    let first_frame = stack_string
+      .lines()
+      .find(|line| line.starts_with("at "))
+      .unwrap_or_default();
+    assert!(
+      first_frame.contains(&expected_loc),
+      "expected top stack frame to contain {expected_loc:?}, got {first_frame:?}\nfull stack:\n{stack_string}"
+    );
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+} 
