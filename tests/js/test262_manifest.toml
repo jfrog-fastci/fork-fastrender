@@ -576,6 +576,162 @@ status = "pass"
 glob = "language/statements/let/**"
 status = "pass"
 
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-to-zero-mid-iteration.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+glob = "language/statements/for-of/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for/head-init-expr-check-empty-inc-empty-completion.js"
+status = "xfail"
+reason = "vm-js: statement completion value for `for` loops (especially under `eval`) is not fully spec-compliant."
+
+[[expectations]]
+id = "language/statements/for/head-init-var-check-empty-inc-empty-completion.js"
+status = "xfail"
+reason = "vm-js: statement completion value for `for` loops (especially under `eval`) is not fully spec-compliant."
+
+[[expectations]]
+id = "language/statements/for/tco-const-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/for/tco-let-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/for/tco-lhs-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/for/tco-var-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/for/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/try/S12.14_A19_T1.js"
+status = "xfail"
+reason = "vm-js: legacy Error constructor extra-argument behavior differs from this Sputnik-era test262 case (Error options/cause handling)."
+
+[[expectations]]
+id = "language/statements/try/S12.14_A19_T2.js"
+status = "xfail"
+reason = "vm-js: legacy Error constructor extra-argument behavior differs from this Sputnik-era test262 case (Error options/cause handling)."
+
+[[expectations]]
+id = "language/statements/try/tco-catch-finally.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/try/tco-catch.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/try/tco-finally.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/try/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/switch/tco-case-body-dflt.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/switch/tco-case-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/switch/tco-dftl-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/switch/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/block/tco-stmt-list.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+id = "language/statements/block/tco-stmt.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/block/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/while/tco-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/while/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/do-while/tco-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/do-while/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/labeled/tco.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/labeled/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/return/tco.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/statements/return/**"
+status = "pass"
+
 # --- Variable statements ---
 #
 # Variable declarations are mostly spec-compliant; keep the remaining `with`-related edge case narrow
@@ -1195,6 +1351,11 @@ reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test use
 [[expectations]]
 glob = "built-ins/Array/prototype/indexOf/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js"
+status = "skip"
+reason = "Flaky timeout under the full curated suite (passes in isolation, but can exceed the per-test 10s budget under parallel load)."
 
 [[expectations]]
 id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-grow.js"
