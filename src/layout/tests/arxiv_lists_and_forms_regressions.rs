@@ -155,3 +155,50 @@ fn inline_form_control_expands_line_box_height() {
     input_fragment.bounds.height()
   );
 }
+
+#[test]
+fn ua_select_and_button_default_metrics_match_chrome_compact_controls() {
+  // arxiv.org relies on UA-styled <select>/<input type=button> controls for the homepage
+  // "Subject search and browse" form. If our UA defaults are too large, the entire page's main
+  // content gets pushed down and diffs explode. Keep the default geometry close to Chromium:
+  // - select (non-multiple, size=1): ~19px tall
+  // - button-like inputs: ~21px tall
+  let select_bg = Rgba::rgb(1, 2, 3);
+  let button_bg = Rgba::rgb(4, 5, 6);
+  let html = format!(
+    r#"
+      <style>
+        body {{ margin: 0; }}
+        select {{ background: rgb({},{},{}); }}
+        input {{ background: rgb({},{},{}); }}
+      </style>
+      <select>
+        <option>Physics</option>
+        <option>Electrical Engineering and Systems Science</option>
+      </select>
+      <input type="button" value="Search">
+    "#,
+    select_bg.r, select_bg.g, select_bg.b, button_bg.r, button_bg.g, button_bg.b
+  );
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
+  let dom = renderer.parse_html(&html).expect("parse HTML");
+  let fragments = renderer.layout_document(&dom, 600, 200).expect("layout");
+
+  let select_fragment = find_fragment_by_background(&fragments.root, select_bg).expect("select");
+  let button_fragment = find_fragment_by_background(&fragments.root, button_bg).expect("button");
+
+  assert!(
+    (select_fragment.bounds.height() - 19.0).abs() <= 0.5,
+    "expected UA select height ~= 19px, got {}",
+    select_fragment.bounds.height()
+  );
+  assert!(
+    (button_fragment.bounds.height() - 21.0).abs() <= 0.5,
+    "expected UA input[type=button] height ~= 21px, got {}",
+    button_fragment.bounds.height()
+  );
+}

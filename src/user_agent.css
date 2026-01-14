@@ -399,14 +399,16 @@ input, textarea, select, button {
     display: inline-block;
     box-sizing: content-box;
     margin: 0;
-    padding: 4px 6px;
+    /* Chromium defaults: compact vertical padding + a predictable line-height so control metrics
+       do not depend on system font line metrics (which can vary noticeably across environments). */
+    padding: 1px 2px;
     border: 1px solid #767676;
     background-color: white;
     color: black;
     /* Match Chrome's default form-control typography more closely than inheriting the page font. */
     font-family: sans-serif;
     font-size: 13.333333px;
-    line-height: normal;
+    line-height: 1.125;
     border-radius: 3px;
 }
 

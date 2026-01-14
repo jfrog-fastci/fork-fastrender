@@ -16,31 +16,32 @@
     "layout": 68.2543543207547,
     "paint": 25.093512617924524
   },
-  "notes": "Visually close overall: the Cornell identity bar + red arXiv masthead render correctly and the main content structure matches. Remaining diffs vs Chrome are dominated by (1) text rasterization/hinting differences and (2) different line breaks in the long semicolon-separated inline link lists (e.g. the many subcategory links under Physics/Math/etc), plus minor UA form-control styling differences for the header/search `<input>`/`<select>` widgets.",
+  "notes": "Visually close overall: the Cornell identity bar + red arXiv masthead render correctly and the main content structure matches. A major layout offset was fixed by matching Chromium's default UA sizing for form controls (notably the homepage search `<select>` and button-like `<input>`), which previously made the search block too tall and pushed the entire page down. Remaining diffs vs Chrome are dominated by (1) text rasterization/hinting and (2) different line breaks in the long semicolon-separated inline link lists (e.g. the many subcategory links under Physics/Math/etc).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 173886,
-    "diff_percent": 18.1131,
-    "perceptual": 0.1928,
+    "diff_pixels": 106415,
+    "diff_percent": 11.0849,
+    "perceptual": 0.0354,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 22,
-      "y": 0,
+      "x": 38,
+      "y": 14,
       "baseline_rgba": [
-        34,
-        34,
-        34,
+        77,
+        77,
+        77,
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        62,
+        62,
+        62,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9e24292ca15621df5a653745fb3bfd6a3ae5d053"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "layout",
   "failure_stage": null,
