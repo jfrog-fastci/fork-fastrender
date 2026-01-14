@@ -183,7 +183,6 @@ fn compiled_script_rejects_await_in_class_static_block_even_with_async_classic_s
     "#,
   )
   .unwrap_err();
-
   match err {
     VmError::Syntax(diags) => assert!(!diags.is_empty()),
     other => panic!("expected VmError::Syntax, got {other:?}"),
@@ -191,8 +190,7 @@ fn compiled_script_rejects_await_in_class_static_block_even_with_async_classic_s
 }
 
 #[test]
-fn compiled_script_with_budget_rejects_await_in_class_static_block_even_with_async_classic_script_retry(
-) {
+fn compiled_script_with_budget_rejects_await_in_class_static_block_even_with_async_classic_script_retry() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 

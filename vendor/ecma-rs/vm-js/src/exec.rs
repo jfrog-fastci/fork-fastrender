@@ -12722,7 +12722,7 @@ impl<'a> Evaluator<'a> {
       //   coercion does not affect the resolved super base (test262:
       //   `prop-expr-getsuperbase-before-topropertykey-*`).
       let super_base = self.super_base(&mut key_scope)?;
-      // Root the base across key coercion / `GetValue` in case it triggers a GC.
+      // Root the base across key coercion / `GetValue` in case they allocate/GC.
       key_scope.push_root(super_base)?;
 
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -12977,7 +12977,8 @@ impl<'a> Evaluator<'a> {
           // - `GetThisBinding` must be observed before any key side effects (handled above),
           // - the key expression is evaluated to a value before `GetSuperBase`, and
           // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
-          //   coercion does not affect the resolved super base.
+          //   coercion does not affect the resolved super base (test262:
+          //   `prop-expr-getsuperbase-before-topropertykey-*`).
           let base = self.get_super_base(&mut key_scope)?;
           // Root the base across key coercion / dereference (`GetValue`/`PutValue` can invoke
           // user-code via accessors/Proxy traps and trigger GC).
@@ -60889,24 +60890,26 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_is_allowed() -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let value = rt.exec_script(
-      r#"
-        async function f() {
-          class Parent {}
-          class C extends Parent {
-            static {
-              super[await "x"];
+    let err = rt
+      .exec_script(
+        r#"
+          async function f() {
+            class Parent {}
+            class C extends Parent {
+              static {
+                super[await "x"];
+              }
             }
-         }
-       }
-      "#,
-    )?;
-    assert_eq!(value, Value::Undefined);
+          }
+        "#,
+      )
+      .unwrap_err();
+    assert!(matches!(err, VmError::Syntax(_)), "got {err:?}");
     Ok(())
   }
 
@@ -60921,9 +60924,9 @@ mod tests {
     // ensuing static block sees the class constructor object as its `[[HomeObject]]` so `super.prop`
     // and `super[expr]` resolve correctly even after resumption.
     //
-    // Note: `await` is allowed inside static blocks in async contexts, but this test places its
-    // suspension points *around* the static block (via the awaited heritage) to focus on `super`
-    // home object binding across resumption.
+    // Note: `await` is an early error inside static blocks, so the suspension points live *around*
+    // the static block (via the awaited heritage) to focus on `super` home object binding across
+    // resumption.
     rt.exec_script(
       r#"
         var out = "";

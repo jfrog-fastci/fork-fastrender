@@ -73,69 +73,24 @@ fn async_class_evaluation_supports_static_blocks() -> Result<(), VmError> {
 }
 
 #[test]
-fn await_in_async_class_static_block_is_allowed() -> Result<(), VmError> {
+fn await_in_async_class_static_block_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  rt.exec_script(
-    r#"
-      var out = "";
-      async function f() {
-        class C {
-          static {
-            out += "a";
-            await Promise.resolve(0);
-            out += "b";
-          }
-        }
-        return out;
-      }
-      f().then(v => out = v);
-    "#,
-  )?;
-
-  // Static block evaluation has started, but the `await` has not yet resumed.
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "a");
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "ab");
+  let err = rt
+    .exec_script("async function f(){ class C { static { await Promise.resolve(0); } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 
 #[test]
-fn await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
+fn script_await_in_class_static_block_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  let value = rt.exec_script(
-    r#"
-      var out = "";
-      out += "a";
-      class C {
-        static {
-          out += "b";
-          await Promise.resolve(0);
-          out += "c";
-        }
-      }
-      out += "d";
-    "#,
-  )?;
-  let Value::Object(promise_obj) = value else {
-    return Err(VmError::InvariantViolation(
-      "expected top-level await in script to return a promise object",
-    ));
-  };
-  assert!(rt.heap.is_promise_object(promise_obj));
-
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "ab");
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "abcd");
+  let err = rt
+    .exec_script("class C { static { await Promise.resolve(0); } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 

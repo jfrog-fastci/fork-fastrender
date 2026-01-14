@@ -12333,8 +12333,8 @@ impl<'vm> HirEvaluator<'vm> {
                 Err(err) => return Err(err),
               };
               scope.push_root(Value::Object(obj))?;
-               (key, obj)
-             }
+              (key, obj)
+            }
           };
           let func = scope.get_with_host_and_hooks(
             self.vm,

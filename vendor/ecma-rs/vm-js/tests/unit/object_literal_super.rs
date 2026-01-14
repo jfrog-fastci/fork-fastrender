@@ -254,12 +254,11 @@ fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmE
       var key = {
         toString() {
           Object.setPrototypeOf(obj, proto2);
-           return "p";
-         }
-        };
+          return "p";
+        }
+       };
 
-      obj.m() === "ok" &&
-        Object.getPrototypeOf(obj) === proto2;
+      obj.m() === "ok" && Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
@@ -296,12 +295,11 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmE
         toString() {
           Object.setPrototypeOf(obj, proto2);
           return "p";
-         }
+        }
        };
 
-      obj.m();
-      result === "ok" &&
-        Object.getPrototypeOf(obj) === proto2;
+       obj.m();
+      result === "ok" && Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
@@ -324,16 +322,14 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -
         }
       };
 
-      var key = {
-        toString() {
-          Object.setPrototypeOf(obj, proto2);
+       var key = {
+         toString() {
+           Object.setPrototypeOf(obj, proto2);
            return "p";
          }
-        };
+       };
 
-      obj.m() === 2 &&
-        obj.p === 2 &&
-        Object.getPrototypeOf(obj) === proto2;
+       obj.m() === 2 && obj.p === 2 && Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
@@ -355,16 +351,14 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Resu
         }
       };
 
-      var key = {
-        toString() {
-          Object.setPrototypeOf(obj, proto2);
+       var key = {
+         toString() {
+           Object.setPrototypeOf(obj, proto2);
            return "p";
          }
-        };
+       };
 
-      obj.m() === 2 &&
-        obj.p === 2 &&
-        Object.getPrototypeOf(obj) === proto2;
+       obj.m() === 2 && obj.p === 2 && Object.getPrototypeOf(obj) === proto2;
     "#,
   )
 }
