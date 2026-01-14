@@ -200,6 +200,46 @@ fn super_in_static_arrow_closure_observes_dynamic_home_object_prototype_compiled
 }
 
 #[test]
+fn super_in_static_arrow_closure_captures_call_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A { static f() { return this.tag; } }
+        class B extends A {
+          static make() { return () => super.f(); }
+        }
+        function C() {}
+        C.tag = 7;
+        const fn = B.make.call(C);
+        fn.call({ tag: 999 }) === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_in_static_arrow_closure_captures_call_receiver_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A { static f() { return this.tag; } }
+      class B extends A {
+        static make() { return () => super.f(); }
+      }
+      function C() {}
+      C.tag = 7;
+      const fn = B.make.call(C);
+      fn.call({ tag: 999 }) === 7
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_method_call_uses_primitive_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt

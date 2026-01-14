@@ -11226,8 +11226,8 @@ impl<'a> Evaluator<'a> {
           ))?;
           let mut super_scope = scope.reborrow();
           // Root `this` binding state (may be a DerivedConstructorState cell) and `[[HomeObject]]`
-          // across computed-key evaluation and `GetSuperBase()`. These steps can allocate and may
-          // invoke user code (Proxy traps).
+          // across `GetThisBinding`, key evaluation, and `GetSuperBase()`. These steps can allocate
+          // and may invoke user code (Proxy traps).
           super_scope.push_roots(&[self.this, Value::Object(home_object)])?;
 
           let receiver = self.get_this_binding(&mut super_scope)?;
@@ -13873,7 +13873,6 @@ impl<'a> Evaluator<'a> {
         let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
         super_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut super_scope, member_value)?;
-
         // Root the property key before computing the super reference (which can allocate).
         match key {
           PropertyKey::String(s) => {
@@ -14036,26 +14035,26 @@ impl<'a> Evaluator<'a> {
       Expr::ComputedMember(member) if !member.stx.optional_chaining => {
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
           // Computed super call `super[expr]()`:
-          // - evaluate the key expression before resolving the `this` binding (side effects),
-          // - then resolve `GetSuperBase()` and call with `this = receiver`.
+          // - resolve the `this` binding first (throwing in derived constructors before `super()`),
+          // - then evaluate the computed key and call with `this = receiver`.
           let mut key_scope = scope.reborrow();
-          // Root the raw `this` binding (which may be a derived-constructor state cell) and home
-          // object across key evaluation, `GetThisBinding`, and `GetSuperBase()` (which can invoke
-          // proxy traps / GC).
-          key_scope.push_root(self.this)?;
+          let receiver = self.get_this_binding(&mut key_scope)?;
+          key_scope.push_root(receiver)?;
           if let Some(home) = self.home_object {
             key_scope.push_root(Value::Object(home))?;
           }
+
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
           match key {
-            PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-            PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-          };
-
-          let receiver = self.get_this_binding(&mut key_scope)?;
-          key_scope.push_root(receiver)?;
+            PropertyKey::String(s) => {
+              key_scope.push_root(Value::String(s))?;
+            }
+            PropertyKey::Symbol(s) => {
+              key_scope.push_root(Value::Symbol(s))?;
+            }
+          }
 
           let base = self.get_super_base(&mut key_scope)?;
           let reference = Reference::SuperProperty { base, key, receiver };
@@ -24506,6 +24505,10 @@ fn async_eval_expr_chain(
             "optional chaining super computed member access",
           ));
         }
+        // In derived constructors before `super()` returns, `this` is uninitialized. `super[expr]`
+        // must throw before evaluating the computed key expression (including any `await` within
+        // it).
+        let _ = async_get_super_receiver(evaluator, scope)?;
 
         match async_eval_expr(evaluator, scope, &member.stx.member)? {
           AsyncEval::Complete(member_value) => {
@@ -26011,6 +26014,11 @@ fn async_eval_assignment_to_computed_member(
   // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
   // reference.
   if matches!(&*member.object.stx, Expr::Super(_)) {
+    // `super[expr]` requires an initialized `this` binding. In derived constructors before
+    // `super()` returns, this must throw before evaluating the computed key expression (including
+    // any `await` within it).
+    let _ = async_get_super_receiver(evaluator, scope)?;
+
     let mut member_scope = scope.reborrow();
     // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
     // across key evaluation, which can allocate and trigger GC.
@@ -26790,6 +26798,11 @@ fn async_eval_update_expression(
 
       // `super[expr]++` / `++super[expr]` update targets.
       if matches!(&*member.object.stx, Expr::Super(_)) {
+        // `super[expr]` requires an initialized `this` binding. In derived constructors before
+        // `super()` returns, this must throw before evaluating the computed key expression (including
+        // any `await` within it).
+        let _ = async_get_super_receiver(evaluator, scope)?;
+
         let mut member_scope = scope.reborrow();
         // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
         // across key evaluation, which can allocate and trigger GC.
@@ -28002,9 +28015,6 @@ fn async_super_get(
 
   let mut super_scope = scope.reborrow();
   // Resolve the current `this` binding used as the receiver for Super References.
-  //
-  // Note: for computed super members (`super[expr]`), this must happen *after* the computed key
-  // expression is evaluated to preserve side effects in derived constructors before `super()`.
   let this_value = async_get_super_receiver(evaluator, &mut super_scope)?;
   let key_value = match key {
     PropertyKey::String(s) => Value::String(s),
@@ -28525,6 +28535,10 @@ fn async_eval_call(
       if member.stx.optional_chaining {
         return Err(VmError::Unimplemented("optional chaining super member call"));
       }
+
+      // `super[expr](...)` requires an initialized `this` binding. In derived constructors before
+      // `super()` returns, this must throw before evaluating the computed key expression.
+      let _ = async_get_super_receiver(evaluator, scope)?;
 
       async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, Value::Undefined)
     }
