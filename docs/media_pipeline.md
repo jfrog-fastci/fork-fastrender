@@ -311,6 +311,10 @@ is still nanoseconds.
   compensating for codec delay).
 - **MP4**: `Mp4ParseDemuxer::seek(time_ns)` seeks each active track to the first decode-order sample
   whose `pts_ns >= time_ns` (see above; not yet keyframe-aware).
+- **Decode pipeline**: `MediaDecodePipeline::seek(time_ns)` resets the demuxer + decoders and then
+  drops decoded preroll items with `pts_ns < time_ns` until it produces a “post-seek” video frame
+  (or any item for audio-only media). This lets demuxers emit preroll packets (e.g. Matroska
+  `SeekPreRoll`) for decoder warm-up without surfacing them to callers.
 
 ## How to manually test (fixtures)
 
