@@ -212,10 +212,44 @@ fn arguments_identifier_reference_is_allowed_in_object_method_in_class_field_ini
 }
 
 #[test]
+fn arguments_identifier_reference_is_allowed_in_object_method_param_default_in_class_field_initializer(
+) {
+  let src = r#"
+    class C {
+      x = ({ m(x = arguments) { return x; } });
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
 fn arguments_identifier_reference_is_allowed_in_nested_class_method_in_class_field_initializer() {
   let src = r#"
     class C {
       x = class D { m() { return arguments; } };
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
+fn arguments_identifier_reference_is_allowed_in_nested_class_method_param_default_in_class_field_initializer(
+) {
+  let src = r#"
+    class C {
+      x = class D { m(x = arguments) { return x; } };
     }
   "#;
   let opts = ParseOptions {
