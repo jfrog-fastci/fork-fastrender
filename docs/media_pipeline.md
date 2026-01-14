@@ -329,7 +329,8 @@ The repo contains tiny, offline MP4/WebM fixtures and matching HTML pages:
 - Legacy “single page” fixtures: `tests/pages/fixtures/media_mp4_basic/`,
   `tests/pages/fixtures/media_webm_basic/`
 
-The `media_playback/assets/` files are kept in sync with `tests/fixtures/media/` (see
+The shared `media_playback/assets/` fixtures (`test_h264_aac.mp4` and `test_vp9_opus.webm`) are kept
+identical to the unit-test versions under `tests/fixtures/media/` (see
 `tests/pages/fixtures/media_playback/README.md`).
 
 Run the windowed browser UI (requires the `browser_ui` feature; see `docs/browser_ui.md` for
