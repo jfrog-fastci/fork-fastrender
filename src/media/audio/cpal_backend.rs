@@ -403,6 +403,8 @@ impl CpalAudioBackend {
         errors: errors.clone(),
         trace,
       };
+      // Print warnings from a non-RT context even if callers never query output_info/clock.
+      let diagnostics_for_warnings = factory.diagnostics.clone();
       // Start suspended: do not open an OS audio device until we actually have active audio.
       let mut manager = ResilientStreamManager::new(factory, policy, Instant::now());
       let mut suspended = true;
@@ -428,6 +430,7 @@ impl CpalAudioBackend {
       };
 
       loop {
+        diagnostics_for_warnings.report_warnings_once();
         if suspended {
           let cmd = match command_rx.recv() {
             Ok(cmd) => cmd,
