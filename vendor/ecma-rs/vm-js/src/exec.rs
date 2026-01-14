@@ -13027,9 +13027,9 @@ impl<'a> Evaluator<'a> {
     }
 
     // Evaluate the callee and compute the `this` value for the call.
-      let (callee_value, this_value) = match &*expr.callee.stx {
-        // `super.method()` call in methods/getters/setters.
-        Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+    let (callee_value, this_value) = match &*expr.callee.stx {
+      // `super.method()` call in methods/getters/setters.
+      Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
         if member.stx.optional_chaining {
           return Err(VmError::InvariantViolation(
             "optional chaining cannot be used on super",
