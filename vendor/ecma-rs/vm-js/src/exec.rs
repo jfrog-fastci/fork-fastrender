@@ -77,20 +77,11 @@ fn is_identifier_ref(expr: &Node<Expr>) -> bool {
   !is_parenthesized && matches!(&*expr.stx, Expr::Id(_) | Expr::IdPat(_))
 }
 
-fn maybe_set_name_for_destructuring_default(
-  scope: &mut Scope<'_>,
+fn inferred_name_for_destructuring_default<'a>(
   kind: BindingKind,
-  target: &Node<Pat>,
-  default_expr: &Node<Expr>,
-  value: Value,
-) -> Result<(), VmError> {
-  // Name inference only applies when the initializer expression is *syntactically* an anonymous
-  // function definition (not based on the runtime value).
-  if !is_anonymous_function_definition(default_expr) {
-    return Ok(());
-  }
-
-  let inferred_name = if matches!(kind, BindingKind::Assignment) {
+  target: &'a Node<Pat>,
+) -> Option<&'a str> {
+  if matches!(kind, BindingKind::Assignment) {
     match &*target.stx {
       Pat::Id(id) => Some(id.stx.name.as_str()),
       Pat::AssignTarget(target) => {
@@ -111,7 +102,23 @@ fn maybe_set_name_for_destructuring_default(
       Pat::Id(id) => Some(id.stx.name.as_str()),
       _ => None,
     }
-  };
+  }
+}
+
+fn maybe_set_name_for_destructuring_default(
+  scope: &mut Scope<'_>,
+  kind: BindingKind,
+  target: &Node<Pat>,
+  default_expr: &Node<Expr>,
+  value: Value,
+) -> Result<(), VmError> {
+  // Name inference only applies when the initializer expression is *syntactically* an anonymous
+  // function definition (not based on the runtime value).
+  if !is_anonymous_function_definition(default_expr) {
+    return Ok(());
+  }
+
+  let inferred_name = inferred_name_for_destructuring_default(kind, target);
 
   if let Some(inferred_name) = inferred_name {
     maybe_set_anonymous_function_name(scope, value, inferred_name)?;
@@ -228,6 +235,36 @@ pub(crate) fn compute_needs_mapped_arguments_object(func: &Node<Func>) -> bool {
   };
   func.drive(&mut visitor);
   visitor.needs_mapping
+}
+
+fn gen_eval_destructuring_default_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  kind: BindingKind,
+  target: &Node<Pat>,
+  default_expr: &Node<Expr>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Generator-mode `NamedEvaluation` for anonymous class defaults that can `yield`.
+  //
+  // When a destructuring default expression is an anonymous `class` and can suspend (e.g.
+  // `extends (yield ...)`), the inferred name must be applied *during* class construction so that
+  // static blocks observe it (`static { this.name }`).
+  if let Expr::Class(class_expr) = default_expr.stx.as_ref() {
+    if class_expr.stx.name.is_none() && expr_contains_yield(default_expr) {
+      if let Some(inferred_name) = inferred_name_for_destructuring_default(kind, target) {
+        // Root the inferred name string across class evaluation. If evaluation suspends, the name
+        // will also be captured in continuation frames, which are traced by the GC.
+        let name_s = scope.alloc_string(inferred_name)?;
+        scope.push_root(Value::String(name_s))?;
+
+        // `gen_eval_expr` charges one tick at expression entry. Preserve that behaviour since we
+        // bypass it for class `NamedEvaluation`.
+        evaluator.tick()?;
+        return gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s));
+      }
+    }
+  }
+  gen_eval_expr(evaluator, scope, default_expr)
 }
 
 /// A `throw` completion value paired with a captured stack trace.
@@ -49534,7 +49571,13 @@ fn gen_bind_object_pattern_from(
 
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.default_value {
-        match gen_eval_expr(evaluator, &mut prop_scope, default_expr)? {
+        match gen_eval_destructuring_default_expr(
+          evaluator,
+          &mut prop_scope,
+          kind,
+          &prop.target,
+          default_expr,
+        )? {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               prop_value = v.unwrap_or(Value::Undefined);
@@ -49996,7 +50039,13 @@ fn gen_bind_object_pattern_prop_after_assign_target(
 
   if matches!(prop_value, Value::Undefined) {
     if let Some(default_expr) = &prop.default_value {
-      match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+      match gen_eval_destructuring_default_expr(
+        evaluator,
+        &mut scope,
+        kind,
+        &prop.target,
+        default_expr,
+      )? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             prop_value = v.unwrap_or(Value::Undefined);
@@ -50911,7 +50960,13 @@ fn gen_bind_array_pattern_from(
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        match gen_eval_expr(evaluator, &mut elem_scope, default_expr)? {
+        match gen_eval_destructuring_default_expr(
+          evaluator,
+          &mut elem_scope,
+          kind,
+          &elem.target,
+          default_expr,
+        )? {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               item = v.unwrap_or(Value::Undefined);
@@ -52991,7 +53046,13 @@ fn gen_resume_from_frames(
 
           if matches!(prop_value, Value::Undefined) {
             if let Some(default_expr) = &prop.default_value {
-              match gen_eval_expr(evaluator, &mut obj_scope, default_expr)? {
+              match gen_eval_destructuring_default_expr(
+                evaluator,
+                &mut obj_scope,
+                kind,
+                &prop.target,
+                default_expr,
+              )? {
                 GenEval::Complete(c) => match c {
                   Completion::Normal(v) => {
                     prop_value = v.unwrap_or(Value::Undefined);

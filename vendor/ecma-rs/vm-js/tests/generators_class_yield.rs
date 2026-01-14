@@ -276,6 +276,123 @@ fn generator_property_assignment_anonymous_class_inferred_name_across_yield_in_e
 }
 
 #[test]
+fn generator_object_destructuring_default_anonymous_class_inferred_name_across_yield_in_extends() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        let { a = class extends (yield 1) { static { globalThis.saw = this.name; } } } = {};
+        return a;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "a" &&
+      C.name === "a" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_assignment_default_anonymous_class_inferred_name_across_yield_in_extends(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        let a;
+        ({ a = class extends (yield 1) { static { globalThis.saw = this.name; } } } = {});
+        return a;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "a" &&
+      C.name === "a" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_default_anonymous_class_inferred_name_across_yield_in_extends() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        let [a = class extends (yield 1) { static { globalThis.saw = this.name; } }] = [];
+        return a;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "a" &&
+      C.name === "a" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_default_anonymous_class_inferred_name_across_yield_in_extends_after_computed_key_yield(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        let { [yield 1]: a = class extends (yield 2) { static { globalThis.saw = this.name; } } } = {};
+        return a;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("a");
+      var r3 = it.next(Base);
+      var C = r3.value;
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true &&
+      globalThis.saw === "a" &&
+      C.name === "a" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_class_yield_in_static_block() {
   let mut rt = new_runtime();
   let value = rt
