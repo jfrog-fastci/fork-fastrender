@@ -201,6 +201,7 @@ impl From<&ResourcePolicy> for ResourcePolicySummary {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct RunConfig {
+  #[serde(default = "default_rayon_threads")]
   rayon_threads: usize,
   #[serde(default)]
   rayon_threads_source: RayonThreadsSource,
