@@ -16516,28 +16516,25 @@ pub(crate) enum GenFrame {
     stmt: *const ForInStmt,
     label_set: Vec<String>,
   },
-  /// Continue a `for..in` loop after binding the next iteration value suspends.
+  /// Continue a `for..in` loop after binding the current iteration value suspends.
   ///
   /// This is used when the loop's LHS binding/assignment pattern contains `yield` (e.g. in a
   /// default initializer or computed property key).
   ForInAfterBind {
     stmt: *const ForInStmt,
     label_set: Vec<String>,
-    object: Value,
-    keys: Vec<Value>,
-    next_key_index: usize,
-    v: Value,
+    enumerator: ForInEnumerator,
     outer_lex: GcEnv,
+    v: Value,
+    iter_env_created: bool,
   },
-  /// Continue a `for..in` loop after evaluating the body statement list for one iteration.
+  /// Continue a `for..in` loop after evaluating the body statement list.
   ForInAfterBody {
     stmt: *const ForInStmt,
     label_set: Vec<String>,
-    object: Value,
-    keys: Vec<Value>,
-    next_key_index: usize,
-    v: Value,
+    enumerator: ForInEnumerator,
     outer_lex: GcEnv,
+    v: Value,
   },
 
   /// Continue a `for..of` loop after evaluating the RHS iterable expression.
@@ -16924,24 +16921,23 @@ impl Trace for GenFrame {
         }
       }
       GenFrame::ForInAfterBind {
-        object,
-        keys,
-        v,
+        enumerator,
         outer_lex,
-        ..
-      }
-      | GenFrame::ForInAfterBody {
-        object,
-        keys,
         v,
-        outer_lex,
         ..
       } => {
-        tracer.trace_value(*object);
+        enumerator.trace(tracer);
         tracer.trace_value(*v);
-        for key in keys.iter().copied() {
-          tracer.trace_value(key);
-        }
+        tracer.trace_env(*outer_lex);
+      }
+      GenFrame::ForInAfterBody {
+        enumerator,
+        outer_lex,
+        v,
+        ..
+      } => {
+        enumerator.trace(tracer);
+        tracer.trace_value(*v);
         tracer.trace_env(*outer_lex);
       }
       GenFrame::ForOfAfterBind {
@@ -36365,445 +36361,6 @@ fn gen_for_triple_after_post(
   }
 }
 
-fn gen_eval_for_in(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  stmt: &ForInStmt,
-  label_set: &[String],
-) -> Result<GenEval<Completion>, VmError> {
-  let mut label_vec: Vec<String> = Vec::new();
-  label_vec
-    .try_reserve_exact(label_set.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  label_vec.extend_from_slice(label_set);
-
-  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
-  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
-  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
-  // evaluating the RHS expression.
-  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
-    if matches!(
-      *mode,
-      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
-    ) {
-      let old_lex = evaluator.env.lexical_env;
-      let tdz_env = scope.env_create(Some(old_lex))?;
-      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
-
-      let mutable = *mode == VarDeclMode::Let;
-      let inst_res = evaluator.instantiate_lexical_names_from_pat(
-        scope,
-        tdz_env,
-        &pat_decl.stx.pat.stx,
-        pat_decl.loc,
-        mutable,
-      );
-      if let Err(err) = inst_res {
-        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
-        return Err(err);
-      }
-
-      return match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
-        GenEval::Complete(c) => {
-          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
-          match c {
-            Completion::Normal(v) => gen_for_in_after_rhs(
-              evaluator,
-              scope,
-              stmt,
-              label_vec,
-              v.unwrap_or(Value::Undefined),
-            ),
-            abrupt => Ok(GenEval::Complete(abrupt)),
-          }
-        }
-        GenEval::Suspend(mut suspend) => {
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::RestoreLexEnv { outer: old_lex },
-          )?;
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::ForInAfterRhs {
-              stmt: stmt as *const ForInStmt,
-              label_set: label_vec,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      };
-    }
-  }
-
-  match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_for_in_after_rhs(
-        evaluator,
-        scope,
-        stmt,
-        label_vec,
-        v.unwrap_or(Value::Undefined),
-      ),
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::ForInAfterRhs {
-          stmt: stmt as *const ForInStmt,
-          label_set: label_vec,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_for_in_after_rhs(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  stmt: &ForInStmt,
-  label_set: Vec<String>,
-  rhs_value: Value,
-) -> Result<GenEval<Completion>, VmError> {
-  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
-  // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
-  if is_nullish(rhs_value) {
-    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
-  }
-
-  let mut iter_scope = scope.reborrow();
-  iter_scope.push_root(rhs_value)?;
-
-  let object = match iter_scope.to_object(
-    evaluator.vm,
-    &mut *evaluator.host,
-    &mut *evaluator.hooks,
-    rhs_value,
-  ) {
-    Ok(obj) => obj,
-    Err(err) => {
-      return Ok(GenEval::Complete(gen_error_to_completion(
-        evaluator, &mut iter_scope, err,
-      )?));
-    }
-  };
-  let object_value = Value::Object(object);
-  iter_scope.push_root(object_value)?;
-
-  // Snapshot enumerable string keys using the shared `ForInEnumerator` model.
-  let mut keys: Vec<Value> = Vec::new();
-  let mut enumerator = ForInEnumerator::new(object);
-  loop {
-    let next_key = match enumerator.next_key(
-      evaluator.vm,
-      &mut iter_scope,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-    ) {
-      Ok(v) => v,
-      Err(err) => {
-        return Ok(GenEval::Complete(gen_error_to_completion(
-          evaluator, &mut iter_scope, err,
-        )?));
-      }
-    };
-
-    let Some(key_s) = next_key else {
-      break;
-    };
-    keys.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-    keys.push(Value::String(key_s));
-  }
-
-  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
-  // does not survive across yields.
-  let v_root_idx = iter_scope.heap().root_stack.len();
-  iter_scope.push_root(Value::Undefined)?;
-  let v = Value::Undefined;
-
-  let outer_lex = evaluator.env.lexical_env;
-  gen_for_in_loop_from(
-    evaluator,
-    &mut iter_scope,
-    stmt,
-    label_set,
-    object_value,
-    keys,
-    0,
-    v_root_idx,
-    v,
-    outer_lex,
-  )
-}
-
-fn gen_for_in_loop_from(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  stmt: &ForInStmt,
-  label_set: Vec<String>,
-  object: Value,
-  keys: Vec<Value>,
-  start_index: usize,
-  v_root_idx: usize,
-  v: Value,
-  outer_lex: GcEnv,
-) -> Result<GenEval<Completion>, VmError> {
-  scope.heap_mut().root_stack[v_root_idx] = v;
-  let mut v = scope.heap().root_stack[v_root_idx];
-
-  let mut index = start_index;
-  while index < keys.len() {
-    // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
-    evaluator.tick()?;
-
-    let value = keys[index];
-    index = index.saturating_add(1);
-
-    let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
-      if matches!(
-        *mode,
-        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
-      ) {
-        let env = scope.env_create(Some(outer_lex))?;
-        evaluator.env.set_lexical_env(scope.heap_mut(), env);
-        iter_env_created = true;
-      }
-    }
-
-    let bind_eval = match &stmt.lhs {
-      ForInOfLhs::Decl((mode, pat_decl)) => {
-        let kind = match *mode {
-          VarDeclMode::Var => BindingKind::Var,
-          VarDeclMode::Let => BindingKind::Let,
-          VarDeclMode::Const => BindingKind::Const,
-          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-        };
-        gen_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)
-      }
-      ForInOfLhs::Assign(pat) => {
-        gen_bind_pattern(evaluator, scope, &pat.stx, value, BindingKind::Assignment)
-      }
-    };
-
-    let bind_eval = match bind_eval {
-      Ok(v) => v,
-      Err(err) => {
-        if iter_env_created {
-          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-        }
-        return Err(err);
-      }
-    };
-
-    match bind_eval {
-      GenEval::Complete(bind_completion) => {
-        if bind_completion.is_abrupt() {
-          if iter_env_created {
-            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-          }
-          return Ok(GenEval::Complete(bind_completion));
-        }
-      }
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::ForInAfterBind {
-            stmt: stmt as *const ForInStmt,
-            label_set,
-            object,
-            keys,
-            next_key_index: index,
-            v,
-            outer_lex,
-          },
-        )?;
-        return Ok(GenEval::Suspend(suspend));
-      }
-    }
-
-    let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
-    let body_eval = match body_eval {
-      Ok(v) => v,
-      Err(err) => {
-        if iter_env_created {
-          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-        }
-        return Err(err);
-      }
-    };
-
-    match body_eval {
-      GenEval::Complete(body_completion) => {
-        if iter_env_created {
-          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-        }
-
-        if !Evaluator::loop_continues(&body_completion, &label_set) {
-          let result =
-            Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
-          return Ok(GenEval::Complete(result));
-        }
-
-        if let Some(value) = body_completion.value() {
-          v = value;
-          scope.heap_mut().root_stack[v_root_idx] = value;
-        }
-      }
-      GenEval::Suspend(mut suspend) => {
-        if iter_env_created {
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::RestoreLexEnv { outer: outer_lex },
-          )?;
-        }
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::ForInAfterBody {
-            stmt: stmt as *const ForInStmt,
-            label_set,
-            object,
-            keys,
-            next_key_index: index,
-            v,
-            outer_lex,
-          },
-        )?;
-        return Ok(GenEval::Suspend(suspend));
-      }
-    }
-  }
-
-  Ok(GenEval::Complete(Completion::normal(v)))
-}
-
-fn gen_for_in_after_bind(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  stmt: &ForInStmt,
-  label_set: Vec<String>,
-  object: Value,
-  keys: Vec<Value>,
-  next_key_index: usize,
-  v_root_idx: usize,
-  v: Value,
-  outer_lex: GcEnv,
-  bind_completion: Completion,
-) -> Result<GenEval<Completion>, VmError> {
-  scope.heap_mut().root_stack[v_root_idx] = v;
-  let v = scope.heap().root_stack[v_root_idx];
-
-  let iter_env_created = matches!(
-    &stmt.lhs,
-    ForInOfLhs::Decl((mode, _))
-      if matches!(
-        *mode,
-        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
-      )
-  );
-
-  if bind_completion.is_abrupt() {
-    if iter_env_created {
-      evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-    }
-    return Ok(GenEval::Complete(bind_completion));
-  }
-
-  let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
-  let body_eval = match body_eval {
-    Ok(v) => v,
-    Err(err) => {
-      if iter_env_created {
-        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-      }
-      return Err(err);
-    }
-  };
-
-  match body_eval {
-    GenEval::Complete(body_completion) => {
-      if iter_env_created {
-        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
-      }
-      gen_for_in_after_body(
-        evaluator,
-        scope,
-        stmt,
-        label_set,
-        object,
-        keys,
-        next_key_index,
-        v_root_idx,
-        v,
-        outer_lex,
-        body_completion,
-      )
-    }
-    GenEval::Suspend(mut suspend) => {
-      if iter_env_created {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::RestoreLexEnv { outer: outer_lex },
-        )?;
-      }
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::ForInAfterBody {
-          stmt: stmt as *const ForInStmt,
-          label_set,
-          object,
-          keys,
-          next_key_index,
-          v,
-          outer_lex,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_for_in_after_body(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  stmt: &ForInStmt,
-  label_set: Vec<String>,
-  object: Value,
-  keys: Vec<Value>,
-  next_key_index: usize,
-  v_root_idx: usize,
-  v: Value,
-  outer_lex: GcEnv,
-  body_completion: Completion,
-) -> Result<GenEval<Completion>, VmError> {
-  scope.heap_mut().root_stack[v_root_idx] = v;
-  let mut v = scope.heap().root_stack[v_root_idx];
-
-  if !Evaluator::loop_continues(&body_completion, &label_set) {
-    let result = Evaluator::normalise_iteration_break(body_completion.update_empty(Some(v)));
-    return Ok(GenEval::Complete(result));
-  }
-
-  if let Some(value) = body_completion.value() {
-    v = value;
-    scope.heap_mut().root_stack[v_root_idx] = value;
-  }
-
-  gen_for_in_loop_from(
-    evaluator,
-    scope,
-    stmt,
-    label_set,
-    object,
-    keys,
-    next_key_index,
-    v_root_idx,
-    v,
-    outer_lex,
-  )
-}
-
 fn gen_label_after_stmt(label: &str, completion: Completion) -> Completion {
   match completion {
     Completion::Break(Some(target), value) if target == label => Completion::Normal(value),
@@ -37118,6 +36675,396 @@ fn gen_eval_for_body(
       Ok(GenEval::Suspend(suspend))
     }
   }
+}
+
+fn gen_eval_for_in(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  let mut label_vec: Vec<String> = Vec::new();
+  label_vec
+    .try_reserve_exact(label_set.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  label_vec.extend_from_slice(label_set);
+
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let old_lex = evaluator.env.lexical_env;
+      let tdz_env = scope.env_create(Some(old_lex))?;
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+        return Err(err);
+      }
+
+      return match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
+        GenEval::Complete(c) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          match c {
+            Completion::Normal(v) => gen_for_in_after_rhs(
+              evaluator,
+              scope,
+              stmt,
+              label_vec,
+              v.unwrap_or(Value::Undefined),
+            ),
+            abrupt => Ok(GenEval::Complete(abrupt)),
+          }
+        }
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::RestoreLexEnv { outer: old_lex },
+          )?;
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ForInAfterRhs {
+              stmt: stmt as *const ForInStmt,
+              label_set: label_vec,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      };
+    }
+  }
+
+  match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_for_in_after_rhs(
+        evaluator,
+        scope,
+        stmt,
+        label_vec,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ForInAfterRhs {
+          stmt: stmt as *const ForInStmt,
+          label_set: label_vec,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_for_in_after_rhs(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  rhs_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if is_nullish(rhs_value) {
+    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+  }
+
+  let mut iter_scope = scope.reborrow();
+  // Root the RHS value and any boxed wrapper objects across enumeration and loop execution.
+  iter_scope.push_root(rhs_value)?;
+
+  let object = match iter_scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    rhs_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut iter_scope, err,
+      )?));
+    }
+  };
+  iter_scope.push_root(Value::Object(object))?;
+
+  let enumerator = ForInEnumerator::new(object);
+
+  // Root `V` across the loop so it can't be collected between iterations. Use a stack root so it
+  // does not survive across yields.
+  let v_root_idx = iter_scope.heap().root_stack.len();
+  iter_scope.push_root(Value::Undefined)?;
+  let v = Value::Undefined;
+
+  let outer_lex = evaluator.env.lexical_env;
+  gen_for_in_loop(
+    evaluator,
+    &mut iter_scope,
+    stmt,
+    label_set,
+    enumerator,
+    outer_lex,
+    v_root_idx,
+    v,
+  )
+}
+
+fn gen_for_in_loop(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  mut enumerator: ForInEnumerator,
+  outer_lex: GcEnv,
+  v_root_idx: usize,
+  mut v: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  loop {
+    let next_key = match enumerator.next_key(
+      evaluator.vm,
+      scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+    ) {
+      Ok(v) => v,
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+      }
+    };
+
+    let Some(key_s) = next_key else {
+      return Ok(GenEval::Complete(Completion::normal(v)));
+    };
+
+    // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
+    evaluator.tick()?;
+
+    let mut iter_env_created = false;
+    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if matches!(
+        *mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) {
+        let env = scope.env_create(Some(outer_lex))?;
+        evaluator.env.set_lexical_env(scope.heap_mut(), env);
+        iter_env_created = true;
+      }
+    }
+
+    let value = Value::String(key_s);
+
+    let bind_eval = match &stmt.lhs {
+      ForInOfLhs::Decl((mode, pat_decl)) => {
+        let kind = match *mode {
+          VarDeclMode::Var => BindingKind::Var,
+          VarDeclMode::Let => BindingKind::Let,
+          VarDeclMode::Const => BindingKind::Const,
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
+        };
+        gen_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)?
+      }
+      ForInOfLhs::Assign(pat) => {
+        gen_bind_pattern(evaluator, scope, &pat.stx, value, BindingKind::Assignment)?
+      }
+    };
+
+    match bind_eval {
+      GenEval::Complete(bind_completion) => {
+        if bind_completion.is_abrupt() {
+          if iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          }
+          return Ok(GenEval::Complete(bind_completion));
+        }
+      }
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForInAfterBind {
+            stmt: stmt as *const ForInStmt,
+            label_set,
+            enumerator,
+            outer_lex,
+            v,
+            iter_env_created,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+
+    let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
+    let body_eval = match body_eval {
+      Ok(v) => v,
+      Err(err) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+        return Err(err);
+      }
+    };
+
+    match body_eval {
+      GenEval::Complete(body_completion) => {
+        if iter_env_created {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        }
+
+        if !Evaluator::loop_continues(&body_completion, &label_set) {
+          let completion = body_completion.update_empty(Some(v));
+          let result = Evaluator::normalise_iteration_break(completion);
+          return Ok(GenEval::Complete(result));
+        }
+
+        if let Some(value) = body_completion.value() {
+          v = value;
+          scope.heap_mut().root_stack[v_root_idx] = value;
+        }
+      }
+      GenEval::Suspend(mut suspend) => {
+        if iter_env_created {
+          gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+        }
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForInAfterBody {
+            stmt: stmt as *const ForInStmt,
+            label_set,
+            enumerator,
+            outer_lex,
+            v,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+}
+
+fn gen_for_in_after_bind(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  enumerator: ForInEnumerator,
+  outer_lex: GcEnv,
+  v_root_idx: usize,
+  mut v: Value,
+  iter_env_created: bool,
+  bind_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  if bind_completion.is_abrupt() {
+    if iter_env_created {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+    }
+    return Ok(GenEval::Complete(bind_completion));
+  }
+
+  let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
+  let body_eval = match body_eval {
+    Ok(v) => v,
+    Err(err) => {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+      return Err(err);
+    }
+  };
+
+  match body_eval {
+    GenEval::Complete(body_completion) => {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+
+      if !Evaluator::loop_continues(&body_completion, &label_set) {
+        let completion = body_completion.update_empty(Some(v));
+        let result = Evaluator::normalise_iteration_break(completion);
+        return Ok(GenEval::Complete(result));
+      }
+
+      if let Some(value) = body_completion.value() {
+        v = value;
+        scope.heap_mut().root_stack[v_root_idx] = value;
+      }
+
+      gen_for_in_loop(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        enumerator,
+        outer_lex,
+        v_root_idx,
+        v,
+      )
+    }
+    GenEval::Suspend(mut suspend) => {
+      if iter_env_created {
+        gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+      }
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ForInAfterBody {
+          stmt: stmt as *const ForInStmt,
+          label_set,
+          enumerator,
+          outer_lex,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_for_in_after_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForInStmt,
+  label_set: Vec<String>,
+  enumerator: ForInEnumerator,
+  outer_lex: GcEnv,
+  v_root_idx: usize,
+  mut v: Value,
+  body_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  if !Evaluator::loop_continues(&body_completion, &label_set) {
+    let completion = body_completion.update_empty(Some(v));
+    let result = Evaluator::normalise_iteration_break(completion);
+    return Ok(GenEval::Complete(result));
+  }
+
+  if let Some(value) = body_completion.value() {
+    v = value;
+    scope.heap_mut().root_stack[v_root_idx] = value;
+  }
+
+  gen_for_in_loop(
+    evaluator,
+    scope,
+    stmt,
+    label_set,
+    enumerator,
+    outer_lex,
+    v_root_idx,
+    v,
+  )
 }
 
 fn gen_eval_for_of(
@@ -45081,11 +45028,10 @@ fn gen_resume_from_frames(
       GenFrame::ForInAfterBind {
         stmt,
         label_set,
-        object,
-        keys,
-        next_key_index,
-        v,
+        enumerator,
         outer_lex,
+        v,
+        iter_env_created,
       } => {
         let v_root_idx = scope.heap().root_stack.len();
         scope.push_root(v)?;
@@ -45095,12 +45041,11 @@ fn gen_resume_from_frames(
           scope,
           stmt,
           label_set,
-          object,
-          keys,
-          next_key_index,
+          enumerator,
+          outer_lex,
           v_root_idx,
           v,
-          outer_lex,
+          iter_env_created,
           state,
         )? {
           GenEval::Complete(c) => state = c,
@@ -45114,11 +45059,9 @@ fn gen_resume_from_frames(
       GenFrame::ForInAfterBody {
         stmt,
         label_set,
-        object,
-        keys,
-        next_key_index,
-        v,
+        enumerator,
         outer_lex,
+        v,
       } => {
         let v_root_idx = scope.heap().root_stack.len();
         scope.push_root(v)?;
@@ -45128,12 +45071,10 @@ fn gen_resume_from_frames(
           scope,
           stmt,
           label_set,
-          object,
-          keys,
-          next_key_index,
+          enumerator,
+          outer_lex,
           v_root_idx,
           v,
-          outer_lex,
           state,
         )? {
           GenEval::Complete(c) => state = c,
@@ -45295,8 +45236,10 @@ fn gen_root_values_for_continuation(
       | GenFrame::ForTripleAfterPost { .. } => {
         needed = needed.saturating_add(1);
       }
-      GenFrame::ForInAfterBind { keys, .. } | GenFrame::ForInAfterBody { keys, .. } => {
-        needed = needed.saturating_add(2).saturating_add(keys.len());
+      GenFrame::ForInAfterBind { enumerator, .. } | GenFrame::ForInAfterBody { enumerator, .. } => {
+        needed = needed
+          .saturating_add(enumerator.root_values_len())
+          .saturating_add(1); // `v`.
       }
       GenFrame::ForOfAfterBind { .. } | GenFrame::ForOfAfterBody { .. } => {
         needed = needed.saturating_add(3);
@@ -45415,11 +45358,10 @@ fn gen_root_values_for_continuation(
       | GenFrame::ForTripleAfterTest { v, .. }
       | GenFrame::ForTripleAfterBody { v, .. }
       | GenFrame::ForTripleAfterPost { v, .. } => values.push(*v),
-      GenFrame::ForInAfterBind { object, keys, v, .. }
-      | GenFrame::ForInAfterBody { object, keys, v, .. } => {
-        values.push(*object);
+      GenFrame::ForInAfterBind { enumerator, v, .. }
+      | GenFrame::ForInAfterBody { enumerator, v, .. } => {
+        enumerator.push_root_values(&mut values);
         values.push(*v);
-        values.extend_from_slice(keys);
       }
       GenFrame::ForOfAfterBind {
         iterator_record, v, ..

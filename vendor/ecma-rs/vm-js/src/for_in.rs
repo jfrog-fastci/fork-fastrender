@@ -1,4 +1,5 @@
 use crate::property::PropertyKey;
+use crate::heap::{Trace, Tracer};
 use crate::{GcObject, GcString, Heap, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::HashMap;
 
@@ -171,6 +172,42 @@ impl ForInEnumerator {
       }
     }
   }
+
+  /// Number of GC-managed `Value`s held in this enumerator that must be treated as roots when the
+  /// enumerator is stored outside of the heap (e.g. inside a generator continuation during
+  /// resumption).
+  pub(crate) fn root_values_len(&self) -> usize {
+    1usize // `original_object`
+      .saturating_add(usize::from(self.current_obj.is_some()))
+      .saturating_add(
+        self
+          .current_keys
+          .iter()
+          .filter(|k| matches!(k, PropertyKey::String(_)))
+          .count(),
+      )
+      .saturating_add(self.visited.total_len())
+  }
+
+  /// Pushes all GC-managed values held by this enumerator into `out`.
+  ///
+  /// Callers should reserve at least [`ForInEnumerator::root_values_len`] elements in `out` before
+  /// calling this.
+  pub(crate) fn push_root_values(&self, out: &mut Vec<Value>) {
+    out.push(Value::Object(self.original_object));
+    if let Some(obj) = self.current_obj {
+      out.push(Value::Object(obj));
+    }
+    for key in &self.current_keys {
+      match key {
+        PropertyKey::String(s) => out.push(Value::String(*s)),
+        // `for..in` ignores symbol keys; do not treat them as roots so we don't require symbol
+        // handles in `current_keys` to remain GC-valid across yields.
+        PropertyKey::Symbol(_) => {}
+      }
+    }
+    self.visited.push_root_values(out);
+  }
 }
 
 #[derive(Debug, Default)]
@@ -181,6 +218,21 @@ struct VisitedStringKeys {
 }
 
 impl VisitedStringKeys {
+  fn total_len(&self) -> usize {
+    self
+      .by_hash
+      .values()
+      .fold(0usize, |acc, bucket| acc.saturating_add(bucket.len()))
+  }
+
+  fn push_root_values(&self, out: &mut Vec<Value>) {
+    for bucket in self.by_hash.values() {
+      for s in bucket {
+        out.push(Value::String(*s));
+      }
+    }
+  }
+
   fn contains(&self, vm: &mut Vm, heap: &Heap, key: GcString) -> Result<bool, VmError> {
     const BUCKET_SCAN_TICK_EVERY: usize = 256;
 
@@ -219,5 +271,33 @@ impl VisitedStringKeys {
     bucket.push(key);
     self.by_hash.insert(hash, bucket);
     Ok(())
+  }
+}
+
+impl Trace for ForInEnumerator {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_value(Value::Object(self.original_object));
+    if let Some(obj) = self.current_obj {
+      tracer.trace_value(Value::Object(obj));
+    }
+    for key in &self.current_keys {
+      match key {
+        PropertyKey::String(s) => tracer.trace_value(Value::String(*s)),
+        // `for..in` ignores symbol keys; avoid tracing them so we don't require symbol handles in
+        // `current_keys` to remain GC-valid across yields.
+        PropertyKey::Symbol(_) => {}
+      }
+    }
+    self.visited.trace(tracer);
+  }
+}
+
+impl Trace for VisitedStringKeys {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    for bucket in self.by_hash.values() {
+      for s in bucket {
+        tracer.trace_value(Value::String(*s));
+      }
+    }
   }
 }
