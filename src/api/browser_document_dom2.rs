@@ -14,6 +14,7 @@ use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxType, FormControlKind, ReplacedType, SelectItem};
 use crate::web::dom::DocumentVisibilityState;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::alloc::{alloc, Layout};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
@@ -22,6 +23,30 @@ use std::time::Duration;
 
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
+
+/// Fallible `Box::new` that returns `None` on allocator OOM instead of aborting the process.
+///
+/// `BrowserDocumentDom2` creation is fallible (`Result<_, Error>`) and the document content is
+/// derived from untrusted input; we must not abort on OOM.
+#[inline]
+fn box_try_new<T>(value: T) -> Option<Box<T>> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Some(Box::new(value));
+  }
+
+  let layout = Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return None;
+    }
+    ptr.write(value);
+    Some(Box::from_raw(ptr))
+  }
+}
 
 /// Counters describing how `BrowserDocumentDom2` satisfied invalidations over time.
 ///
@@ -223,7 +248,8 @@ impl BrowserDocumentDom2 {
     };
     let dom = crate::dom2::Document::from_renderer_dom(&dom);
     let last_seen_dom_mutation_generation = dom.mutation_generation();
-    let dom = Box::new(dom);
+    // Avoid `Box::new`, which can abort the process on allocator OOM.
+    let dom = box_try_new(dom).ok_or_else(|| Error::Other(String::new()))?;
     Ok(Self {
       renderer,
       dom,
@@ -412,8 +438,8 @@ impl BrowserDocumentDom2 {
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
     self.current_script.reset();
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
-    let dom = Box::new(dom);
-    self.dom = dom;
+    // Reuse the existing `Box` allocation (avoid `Box::new`, which can abort on OOM).
+    *self.dom = dom;
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
@@ -441,8 +467,8 @@ impl BrowserDocumentDom2 {
     let author_has_has = prepared.stylesheet().contains_has_selectors();
     let dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
-    let dom = Box::new(dom);
-    self.dom = dom;
+    // Reuse the existing `Box` allocation (avoid `Box::new`, which can abort on OOM).
+    *self.dom = dom;
     self.options = options;
     self.prepared = Some(prepared);
     self.last_dom_mapping = Some(self.dom.as_ref().to_renderer_dom_with_mapping().mapping);
