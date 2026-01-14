@@ -43,21 +43,13 @@ impl MediaBackend for NativeBackend {
   }
 
   fn open(&self, bytes: Arc<[u8]>) -> MediaResult<Box<dyn MediaSession>> {
-    let mp4_res = try_open_mp4(Arc::clone(&bytes));
-    if let Ok(p) = mp4_res {
-      return Ok(Box::new(p));
-    }
-    let mp4_err = match mp4_res {
-      Ok(_) => unreachable!("mp4_res handled Ok above"), // fastrender-allow-unwrap
+    let mp4_err = match try_open_mp4(Arc::clone(&bytes)) {
+      Ok(p) => return Ok(Box::new(p)),
       Err(err) => err,
     };
 
-    let webm_res = try_open_webm(bytes);
-    if let Ok(p) = webm_res {
-      return Ok(Box::new(p));
-    }
-    let webm_err = match webm_res {
-      Ok(_) => unreachable!("webm_res handled Ok above"), // fastrender-allow-unwrap
+    let webm_err = match try_open_webm(bytes) {
+      Ok(p) => return Ok(Box::new(p)),
       Err(err) => err,
     };
 

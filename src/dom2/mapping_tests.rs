@@ -10,13 +10,23 @@ fn find_node_id_by_attr_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> 
   for index in 0..doc.nodes_len() {
     let node_id = NodeId::from_index(index);
     let node = doc.node(node_id);
-    let attributes = match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+    let (namespace, attributes) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace, attributes),
       _ => continue,
     };
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     if attributes
       .iter()
-      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
     {
       return Some(node_id);
     }

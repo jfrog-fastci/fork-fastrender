@@ -1,5 +1,4 @@
 use super::{Document, NodeId, NodeKind};
-use crate::dom::HTML_NAMESPACE;
 
 fn find_node_by_id_attribute(doc: &Document, id: &str) -> Option<NodeId> {
   if id.is_empty() {
@@ -20,7 +19,7 @@ fn find_node_by_id_attribute(doc: &Document, id: &str) -> Option<NodeId> {
       _ => return None,
     };
 
-    let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     attributes
       .iter()
       .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)

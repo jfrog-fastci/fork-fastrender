@@ -14,10 +14,22 @@ fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-        .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
-        .then_some(NodeId(idx)),
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => {
+        let is_html = doc.is_html_case_insensitive_namespace(namespace);
+        attributes
+          .iter()
+          .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
+          .then_some(NodeId(idx))
+      }
       _ => None,
     })
     .unwrap_or_else(|| panic!("missing element with id={id}"))
@@ -41,10 +53,21 @@ fn find_descendant_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeI
   let mut stack = vec![root];
   while let Some(node_id) = stack.pop() {
     let node = doc.node(node_id);
-    if let NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } = &node.kind {
+    if let NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } = &node.kind
+    {
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
       if attributes
         .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
+        .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
       {
         return Some(node_id);
       }

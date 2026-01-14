@@ -438,13 +438,23 @@ fn find_node_by_id_attribute(doc: &Document, needle: &str) -> Option<NodeId> {
     return None;
   }
   doc.nodes().iter().enumerate().find_map(|(idx, node)| {
-    let attrs = match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+    let (namespace, attrs) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace, attributes),
       _ => return None,
     };
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     attrs
       .iter()
-      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == needle)
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == needle)
       .then_some(NodeId(idx))
   })
 }

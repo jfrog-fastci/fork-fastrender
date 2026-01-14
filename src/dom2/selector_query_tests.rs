@@ -9,13 +9,23 @@ use super::{Attribute, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn attr_value<'a>(doc: &'a Document, node: NodeId, name: &str) -> Option<&'a str> {
   let node = doc.node(node);
-  let attrs = match &node.kind {
-    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+  let (namespace, attrs) = match &node.kind {
+    NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    }
+    | NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => (namespace, attributes),
     _ => return None,
   };
+  let is_html = doc.is_html_case_insensitive_namespace(namespace);
   attrs
     .iter()
-    .find(|attr| attr.qualified_name().eq_ignore_ascii_case(name))
+    .find(|attr| attr.qualified_name_matches(name, is_html))
     .map(|attr| attr.value.as_str())
 }
 
@@ -25,10 +35,22 @@ fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
-        .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
-        .then_some(NodeId(idx)),
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => {
+        let is_html = doc.is_html_case_insensitive_namespace(namespace);
+        attributes
+          .iter()
+          .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
+          .then_some(NodeId(idx))
+      }
       _ => None,
     })
     .unwrap_or_else(|| panic!("element with id={id:?} not found"))
@@ -40,10 +62,23 @@ fn find_inert_descendant_with_class(doc: &Document, class: &str) -> NodeId {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => {
+        let is_html = doc.is_html_case_insensitive_namespace(namespace);
         let has_class = attributes.iter().any(|attr| {
-          attr.qualified_name().eq_ignore_ascii_case("class")
-            && attr.value.split_ascii_whitespace().any(|c| c == class)
+          attr.qualified_name_matches("class", is_html)
+            && attr
+              .value
+              .split_ascii_whitespace()
+              .any(|c| c == class)
         });
         let id = NodeId(idx);
         (has_class && doc.is_descendant_of_inert_template(id)).then_some(id)

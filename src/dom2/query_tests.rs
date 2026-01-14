@@ -18,13 +18,23 @@ fn find_node_by_id_attr(doc: &Document, id: &str) -> NodeId {
     .iter()
     .enumerate()
     .find_map(|(idx, node)| {
-      let attrs = match &node.kind {
-        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+      let (namespace, attrs) = match &node.kind {
+        NodeKind::Element {
+          namespace,
+          attributes,
+          ..
+        }
+        | NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => (namespace, attributes),
         _ => return None,
       };
+      let is_html = doc.is_html_case_insensitive_namespace(namespace);
       attrs
         .iter()
-        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
+        .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
         .then_some(doc.node_id_from_index(idx).expect("index from enumerate"))
     })
     .unwrap_or_else(|| panic!("node with id={id:?} not found"))
@@ -397,19 +407,29 @@ fn selector_apis_work_for_inert_template_subtrees() {
   let mut scope: Option<NodeId> = None;
   let mut target: Option<NodeId> = None;
   for (idx, node) in doc.nodes().iter().enumerate() {
-    let attrs = match &node.kind {
-      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+    let (namespace, attrs) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace, attributes),
       _ => continue,
     };
+    let is_html = doc.is_html_case_insensitive_namespace(namespace);
     if attrs
       .iter()
-      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "scope")
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == "scope")
     {
       scope = Some(NodeId(idx));
     }
     if attrs
       .iter()
-      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "target")
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == "target")
     {
       target = Some(NodeId(idx));
     }

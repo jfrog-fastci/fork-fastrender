@@ -823,6 +823,45 @@ mod tests {
     );
   }
 
+  #[test]
+  fn cursor_for_form_control_text_input_is_text() {
+    let dom = crate::dom::parse_html("<html><body><input></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let index = DomIndex::new(&dom);
+    let node = index.node(input_id).expect("input node");
+    assert_eq!(cursor_for_form_control(node), CursorKind::Text);
+  }
+
+  #[test]
+  fn cursor_for_form_control_checkbox_input_is_default() {
+    let dom =
+      crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let index = DomIndex::new(&dom);
+    let node = index.node(input_id).expect("input node");
+    assert_eq!(cursor_for_form_control(node), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_for_form_control_textarea_is_text() {
+    let dom =
+      crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&dom, "textarea");
+    let index = DomIndex::new(&dom);
+    let node = index.node(textarea_id).expect("textarea node");
+    assert_eq!(cursor_for_form_control(node), CursorKind::Text);
+  }
+
+  #[test]
+  fn cursor_for_form_control_disabled_text_input_is_default() {
+    let dom =
+      crate::dom::parse_html("<html><body><input disabled></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let index = DomIndex::new(&dom);
+    let node = index.node(input_id).expect("input node");
+    assert_eq!(cursor_for_form_control(node), CursorKind::Default);
+  }
+
   fn prepare_for_hit_testing(html: &str) -> crate::api::PreparedDocument {
     let mut renderer = crate::api::FastRender::new().expect("renderer");
     let options = crate::api::RenderOptions::new().with_viewport(256, 128);
