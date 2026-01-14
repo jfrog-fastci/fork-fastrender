@@ -19200,12 +19200,20 @@ impl App {
           {
             // Best-effort: renderer-chrome uses stable `chrome://favicon/<tab_id>` URLs instead
             // of re-encoding large data URLs each frame.
-            let _ = self.chrome_dynamic_fetcher.set_tab_favicon_png(
-              favicon_ready.tab_id,
-              png_bytes,
-              favicon_ready.width,
-              favicon_ready.height,
-            );
+            let stored_for_renderer_chrome = self
+              .chrome_dynamic_fetcher
+              .set_tab_favicon_png(
+                favicon_ready.tab_id,
+                png_bytes,
+                favicon_ready.width,
+                favicon_ready.height,
+              )
+              .is_ok();
+            if stored_for_renderer_chrome {
+              if let Some(doc) = self.chrome_frame_doc.as_mut() {
+                doc.invalidate_tab_favicon(favicon_ready.tab_id);
+              }
+            }
           }
           if let Some(tex) = self.tab_favicons.get_mut(&favicon_ready.tab_id) {
             tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);

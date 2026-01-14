@@ -460,6 +460,19 @@ impl ChromeFrameDocument {
     Ok(false)
   }
 
+  /// Notify the chrome document that a tab's favicon bytes have changed.
+  ///
+  /// Renderer-chrome uses stable `chrome://favicon/<tab_id>` URLs for favicons so the HTML does not
+  /// need to be rebuilt when the favicon changes. Since FastRender caches decoded images by URL,
+  /// callers must explicitly invalidate the cached favicon decode so the next render fetches the
+  /// updated bytes.
+  pub fn invalidate_tab_favicon(&mut self, tab_id: TabId) {
+    let url = ChromeDynamicAssetFetcher::favicon_url(tab_id);
+    self.doc.invalidate_image_cache_for_url(&url);
+    // Ensure `render_if_needed` repaints even if no DOM/state invalidations occurred.
+    self.doc.invalidate_paint();
+  }
+
   pub fn render_if_needed(&mut self) -> Result<Option<crate::Pixmap>> {
     self.doc.render_if_needed()
   }

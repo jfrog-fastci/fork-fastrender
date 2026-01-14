@@ -1460,6 +1460,37 @@ impl<K: Eq + Hash, V> SizedLruCache<K, V> {
   fn current_bytes(&self) -> usize {
     self.current_bytes
   }
+
+  /// Remove all entries for which `predicate(key)` returns true.
+  ///
+  /// Returns the number of entries removed.
+  fn remove_matching(&mut self, mut predicate: impl FnMut(&K) -> bool) -> usize {
+    let mut removed: usize = 0;
+    let mut retained: Vec<(K, CacheEntry<V>)> = Vec::with_capacity(self.inner.len());
+    let mut retained_bytes: usize = 0;
+
+    // Drain in LRU→MRU order so reinsertion preserves the original ordering.
+    while let Some((key, entry)) = self.inner.pop_lru() {
+      if predicate(&key) {
+        removed = removed.saturating_add(1);
+        continue;
+      }
+      retained_bytes = retained_bytes.saturating_add(entry.bytes);
+      retained.push((key, entry));
+    }
+
+    self.inner = LruCache::unbounded();
+    self.current_bytes = 0;
+    for (key, entry) in retained {
+      self.current_bytes = self.current_bytes.saturating_add(entry.bytes);
+      self.inner.put(key, entry);
+    }
+
+    // The caller removed entries; we should never exceed limits, but keep invariants conservative.
+    self.current_bytes = retained_bytes;
+    self.evict_if_needed();
+    removed
+  }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -7253,6 +7284,68 @@ impl ImageCache {
     url.to_string()
   }
 
+  /// Evict any cached decode/pixmap state for a single image request.
+  ///
+  /// This is intended for dynamic in-memory resources (e.g. `chrome://favicon/<tab_id>`) whose
+  /// bytes can change while the URL stays stable.
+  ///
+  /// Returns `true` when any cached entry was removed.
+  pub(crate) fn invalidate_url_with_crossorigin_and_referrer_policy(
+    &self,
+    url: &str,
+    crossorigin: CrossOriginAttribute,
+    referrer_policy: Option<ReferrerPolicy>,
+  ) -> bool {
+    let trimmed = trim_ascii_whitespace(url);
+    if trimmed.is_empty() {
+      return false;
+    }
+
+    // Avoid triggering expensive work for about: placeholder URLs.
+    if is_about_url(trimmed) {
+      return false;
+    }
+
+    let resolved_url = self.resolve_url(trimmed);
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, crossorigin, referrer_policy);
+    self.invalidate_cache_key(&cache_key)
+  }
+
+  fn invalidate_cache_key(&self, cache_key: &str) -> bool {
+    let mut changed = false;
+
+    if let Ok(mut cache) = self.cache.lock() {
+      if cache.take(cache_key).is_some() {
+        changed = true;
+      }
+    }
+    if let Ok(mut cache) = self.meta_cache.lock() {
+      if cache.take(cache_key).is_some() {
+        changed = true;
+      }
+    }
+    if let Ok(mut cache) = self.raw_cache.lock() {
+      if cache.take(cache_key).is_some() {
+        changed = true;
+      }
+    }
+
+    // Clear any derived pixmap entries keyed by this cache key so paints won't reuse stale pixels.
+    let mut hasher = DefaultHasher::new();
+    cache_key.hash(&mut hasher);
+    let url_hash = hasher.finish();
+    let len = cache_key.len();
+    if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
+      let removed =
+        cache.remove_matching(|key| key.url_hash == url_hash && key.len == len);
+      if removed > 0 {
+        changed = true;
+      }
+    }
+
+    changed
+  }
+
   fn cache_key_for_crossorigin(
     &self,
     resolved_url: &str,
@@ -12943,6 +13036,67 @@ mod tests_inline {
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.current_bytes(), 4);
     assert_eq!(cache.get_cloned("a"), Some(2));
+  }
+
+  #[test]
+  fn image_cache_invalidation_for_chrome_favicon_clears_raster_pixmap_cache() -> Result<()> {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        panic!("inner fetcher should not be called for {url}");
+      }
+    }
+
+    let inner: Arc<dyn ResourceFetcher> = Arc::new(PanicFetcher);
+    let dynamic = crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher::new(inner);
+    let cache = ImageCache::with_fetcher(Arc::new(dynamic.clone()));
+
+    let tab_id = crate::ui::TabId(1);
+    let url = crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher::favicon_url(tab_id);
+
+    // Prime both the decoded-image cache and the derived raster-pixmap cache.
+    let first = cache
+      .load_raster_pixmap(&url, OrientationTransform::IDENTITY, false)?
+      .expect("expected raster pixmap for chrome favicon");
+    assert_eq!(&first.data()[..4], &[0, 0, 0, 0], "expected transparent placeholder favicon");
+
+    // Install a new favicon payload (opaque red).
+    let mut pixmap = tiny_skia::Pixmap::new(1, 1).expect("pixmap"); // fastrender-allow-unwrap
+    pixmap.data_mut().copy_from_slice(&[255, 0, 0, 255]);
+    let png_bytes = crate::image_output::encode_image(&pixmap, crate::OutputFormat::Png)?;
+    dynamic.set_tab_favicon_png(tab_id, png_bytes, 1, 1)?;
+
+    // Without invalidation the derived pixmap cache would keep returning the old transparent entry.
+    let still_cached = cache
+      .load_raster_pixmap(&url, OrientationTransform::IDENTITY, false)?
+      .expect("expected cached raster pixmap");
+    assert_eq!(
+      &still_cached.data()[..4],
+      &[0, 0, 0, 0],
+      "expected raster pixmap cache to reuse old favicon before invalidation"
+    );
+
+    assert!(
+      cache.invalidate_url_with_crossorigin_and_referrer_policy(
+        &url,
+        CrossOriginAttribute::None,
+        None
+      ),
+      "expected invalidation to remove cached favicon entry"
+    );
+
+    let updated = cache
+      .load_raster_pixmap(&url, OrientationTransform::IDENTITY, false)?
+      .expect("expected raster pixmap after invalidation");
+    assert_eq!(
+      &updated.data()[..4],
+      &[255, 0, 0, 255],
+      "expected favicon pixmap to reflect updated bytes after invalidation"
+    );
+
+    Ok(())
   }
 
   #[test]

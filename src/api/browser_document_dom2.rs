@@ -430,6 +430,21 @@ impl BrowserDocumentDom2 {
     self.renderer.resource_fetcher()
   }
 
+  /// Drop any cached decoded image state for the given URL in this document's renderer.
+  ///
+  /// This is intended for trusted embeddings with *dynamic* in-memory resources where the URL is
+  /// stable but the underlying bytes can change (e.g. `chrome://favicon/<tab_id>`).
+  pub(crate) fn invalidate_image_cache_for_url(&mut self, url: &str) {
+    let _changed = self
+      .renderer
+      .image_cache
+      .invalidate_url_with_crossorigin_and_referrer_policy(
+        url,
+        crate::tree::box_tree::CrossOriginAttribute::None,
+        None,
+      );
+  }
+
   pub fn options(&self) -> &RenderOptions {
     &self.options
   }

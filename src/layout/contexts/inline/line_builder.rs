@@ -1760,7 +1760,9 @@ impl TextItem {
       }
 
       let mut prev_cluster: Option<ClusterLite> = None;
-      let mut apply_run = |run_idx: usize| {
+      let mut apply_run = |runs: &mut [ShapedRun],
+                           run_idx: usize,
+                           prev_cluster: &mut Option<ClusterLite>| {
         let run_len = runs[run_idx].glyphs.len();
         if run_len == 0 {
           return;
@@ -1786,7 +1788,7 @@ impl TextItem {
               is_space,
             };
 
-            if let Some(prev) = prev_cluster {
+            if let Some(prev) = *prev_cluster {
               let extra = letter_spacing + if prev.is_space { word_spacing } else { 0.0 };
               if extra != 0.0 {
                 let prev_key = (prev.run_idx, prev.glyph_end);
@@ -1800,7 +1802,7 @@ impl TextItem {
               }
             }
 
-            prev_cluster = Some(current);
+            *prev_cluster = Some(current);
           }
         } else {
           let mut idx = run_len;
@@ -1821,7 +1823,7 @@ impl TextItem {
               is_space,
             };
 
-            if let Some(prev) = prev_cluster {
+            if let Some(prev) = *prev_cluster {
               let extra = letter_spacing + if prev.is_space { word_spacing } else { 0.0 };
               if extra != 0.0 {
                 let prev_key = (prev.run_idx, prev.glyph_end);
@@ -1835,22 +1837,22 @@ impl TextItem {
               }
             }
 
-            prev_cluster = Some(current);
+            *prev_cluster = Some(current);
           }
         }
       };
 
       if run_starts_increasing {
         for run_idx in 0..run_count {
-          apply_run(run_idx);
+          apply_run(runs, run_idx, &mut prev_cluster);
         }
       } else if run_starts_decreasing {
         for run_idx in (0..run_count).rev() {
-          apply_run(run_idx);
+          apply_run(runs, run_idx, &mut prev_cluster);
         }
       } else {
         for &run_idx in &sorted_run_indices {
-          apply_run(run_idx);
+          apply_run(runs, run_idx, &mut prev_cluster);
         }
       }
 
