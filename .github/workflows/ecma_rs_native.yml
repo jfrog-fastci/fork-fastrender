@@ -104,7 +104,9 @@ jobs:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
         run: |
           set -euo pipefail
-          bash scripts/run_vm_js_generator_yield_tests.sh
+          # Defensive: the invoked script wraps each `cargo test` in `timeout -k`, but also apply an
+          # outer wall-clock timeout so a wrapper/harness hang can't burn the entire job.
+          timeout -k 10 1800 bash scripts/run_vm_js_generator_yield_tests.sh
 
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
