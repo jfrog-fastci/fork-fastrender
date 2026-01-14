@@ -133,6 +133,77 @@ fn compiled_script_async_generator_supports_return_and_throw() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_script_async_generator_unsupported_body_can_fall_back_per_function() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  // This async generator body contains a nested `yield` (inside a loop). The current compiled (HIR)
+  // async generator executor intentionally supports only a conservative subset of `yield`
+  // statement-list shapes, so this should fall back at *function allocation time* without forcing a
+  // full-script AST interpreter fallback.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_generators_per_function_fallback.js",
+    r#"
+      var result = 0;
+      // Keep a reference to the function so Rust can inspect it.
+      var f;
+
+      async function* g() {
+        for (var i = 0; i < 1; i++) {
+          yield 1;
+        }
+      }
+      f = g;
+
+      g().next().then(r => { result = r.value; });
+    "#,
+  )?;
+
+  assert!(
+    !script.requires_ast_fallback,
+    "async generators should not force a full-script AST fallback; unsupported bodies should fall back per-function"
+  );
+
+  rt.exec_compiled_script(script)?;
+
+  // The function should either:
+  // - execute via per-function AST fallback (`CallHandler::Ecma`), or
+  // - execute via HIR if support expands in the future (`CallHandler::User`).
+  let func_value = rt.exec_script("f")?;
+  let Value::Object(func_obj) = func_value else {
+    panic!("expected function object in global `f`, got {func_value:?}");
+  };
+  let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+  match call_handler {
+    CallHandler::Ecma(_) => {}
+    CallHandler::User(func_ref) => {
+      assert!(
+        func_ref.ast_fallback.is_none(),
+        "expected async generator function to have no call-time AST fallback metadata, got ast_fallback={:?}",
+        func_ref.ast_fallback
+      );
+      let func_data = rt.heap.get_function_data(func_obj)?;
+      assert!(
+        matches!(func_data, FunctionData::None),
+        "expected async generator function to execute via HIR (no per-function AST fallback), got {func_data:?}"
+      );
+    }
+    other => {
+      panic!("unexpected call handler for async generator function: {other:?}");
+    }
+  }
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("result")?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_script_with_host_and_hooks_executes_async_generators_via_hir() -> Result<(), VmError> {
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
