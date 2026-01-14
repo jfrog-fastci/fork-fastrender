@@ -8439,6 +8439,10 @@ impl InlineFormattingContext {
             let applied_hang = (t.advance_for_layout - target).max(0.0);
             if applied_hang > 0.0 {
               t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+              // Fullwidth middle-dot punctuation is typically centered in a square advance box.
+              // When collapsing it to half-width, shift it by half the trimmed amount so it stays
+              // centered between surrounding glyphs (avoids overlapping the next glyph).
+              t.layout_shift -= applied_hang * 0.5;
             }
             true
           }

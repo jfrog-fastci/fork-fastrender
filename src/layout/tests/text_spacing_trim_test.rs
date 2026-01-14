@@ -511,9 +511,15 @@ fn text_spacing_trim_trim_all_trims_middle_dot_punctuation() {
     "A・B",
   );
 
+  let both_dot_x = text_x_in_line(&trim_both[0], "・").expect("x for middle dot (trim-both)");
+  let all_dot_x = text_x_in_line(&trim_all[0], "・").expect("x for middle dot (trim-all)");
   let both_b_x = text_x_in_line(&trim_both[0], "B").expect("x for B (trim-both)");
   let all_b_x = text_x_in_line(&trim_all[0], "B").expect("x for B (trim-all)");
 
+  assert!(
+    all_dot_x < both_dot_x - 0.1,
+    "expected trim-all to shift the middle-dot punctuation itself (trim-both x={both_dot_x:.3} trim-all x={all_dot_x:.3})"
+  );
   assert!(
     all_b_x < both_b_x - 0.1,
     "expected trim-all to trim middle-dot punctuation (trim-both x={both_b_x:.3} trim-all x={all_b_x:.3})"
