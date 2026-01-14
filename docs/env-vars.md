@@ -280,6 +280,9 @@ the stdout JSONL stream to a file), see
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`
   UI event loop (winit input handling, worker message draining, egui frame build, GPU submission,
   and present). The trace is written when the browser process exits.
+  - When audio output is active, the trace can also include audio pipeline spans such as
+    `audio.callback` (output callback CPU time), `audio.mix` (mixing), and `audio.resample`
+    (decoder-side resampling).
   - Legacy alias: `FASTR_PERF_TRACE_OUT=/path/to/trace.json`.
 
 ### Appearance / accessibility / debugging (browser UX)

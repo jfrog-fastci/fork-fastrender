@@ -84,15 +84,16 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
 }
 
 #[cfg(all(feature = "browser_ui", feature = "audio_cpal"))]
-fn maybe_play_startup_test_tone() {
+fn maybe_play_startup_test_tone(trace: fastrender::debug::trace::TraceHandle) {
   if !parse_env_bool(std::env::var(ENV_AUDIO_TEST_TONE).ok().as_deref()) {
     return;
   }
 
-  std::thread::spawn(|| {
-    use fastrender::media::audio::{test_signal, AudioBackend, CpalAudioBackend};
+  std::thread::spawn(move || {
+    use fastrender::media::audio::{audio_engine_config, test_signal, AudioBackend, CpalAudioBackend};
 
-    let backend = match CpalAudioBackend::new() {
+    let engine_cfg = audio_engine_config();
+    let backend = match CpalAudioBackend::new_with_config_and_trace(engine_cfg.as_ref(), trace) {
       Ok(backend) => backend,
       Err(err) => {
         eprintln!("warning: {ENV_AUDIO_TEST_TONE}=1 but failed to init audio backend: {err}");
@@ -6670,8 +6671,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let perf_log_start = std::time::Instant::now();
   let cli = BrowserCliArgs::parse();
 
+  // Prefer the explicit browser UI trace env var, but accept the older `FASTR_PERF_TRACE_OUT` as an
+  // alias so existing perf-logging docs/scripts continue to work.
+  let browser_trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
+    .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
+    .and_then(|raw| {
+      if raw.to_string_lossy().trim().is_empty() {
+        None
+      } else {
+        Some(std::path::PathBuf::from(raw))
+      }
+    });
+  let browser_trace = if browser_trace_out.is_some() {
+    fastrender::debug::trace::TraceHandle::enabled()
+  } else {
+    fastrender::debug::trace::TraceHandle::disabled()
+  };
+
   #[cfg(feature = "audio_cpal")]
-  maybe_play_startup_test_tone();
+  maybe_play_startup_test_tone(browser_trace.clone());
 
   let hud_enabled = browser_hud_enabled_from_cli_or_env(
     cli.hud,
@@ -7394,23 +7412,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let worker_wake_coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::new(
     AtomicBool::new(false),
   )));
-
-  // Prefer the explicit browser UI trace env var, but accept the older `FASTR_PERF_TRACE_OUT` as an
-  // alias so existing perf-logging docs/scripts continue to work.
-  let browser_trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
-    .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
-    .and_then(|raw| {
-      if raw.to_string_lossy().trim().is_empty() {
-        None
-      } else {
-        Some(std::path::PathBuf::from(raw))
-      }
-    });
-  let browser_trace = if browser_trace_out.is_some() {
-    fastrender::debug::trace::TraceHandle::enabled()
-  } else {
-    fastrender::debug::trace::TraceHandle::disabled()
-  };
 
   let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
   let mut rss_sampler = ProcessRssSampler::new(perf_log_writer.clone(), hud_enabled);

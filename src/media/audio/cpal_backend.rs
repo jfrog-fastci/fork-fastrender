@@ -287,7 +287,7 @@ impl CpalAudioBackend {
     )
   }
 
-  pub(crate) fn new_with_config_and_trace(
+  pub fn new_with_config_and_trace(
     engine_cfg: &AudioEngineConfig,
     trace: TraceHandle,
   ) -> Result<Self, AudioError> {
@@ -1523,6 +1523,9 @@ where
 
           let ts = info.timestamp();
           let latency = ts.playback.duration_since(&ts.callback);
+          if let (Some(span), Some(latency)) = (callback_span.as_mut(), latency) {
+            span.arg_u64("latency_nanos", duration_to_nanos_u64(latency));
+          }
 
           match mixer.mix_for_callback(output.len()) {
             MixerCallbackAction::Mix => {
