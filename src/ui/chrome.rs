@@ -91,6 +91,209 @@ impl LoadingTextWidthCache {
   }
 }
 
+#[derive(Debug, Clone, Default)]
+struct AddressBarDisplayGalleyCache {
+  // Key: the displayed URL parts (so we can cheaply detect when the label needs rebuild).
+  security_state: AddressBarSecurityState,
+  display_host_prefix: String,
+  display_host_domain: String,
+  display_host_suffix: String,
+  display_path_query_fragment: Option<String>,
+  // Style keys: changes here should invalidate the cached galley.
+  font_id: Option<egui::FontId>,
+  text_color: egui::Color32,
+  weak_text_color: egui::Color32,
+  warn_text_color: egui::Color32,
+  // Layout key: max width influences truncation.
+  max_width_bits: u32,
+  // Cached output.
+  galley: Option<std::sync::Arc<egui::Galley>>,
+}
+
+impl AddressBarDisplayGalleyCache {
+  fn update(
+    &mut self,
+    ui: &egui::Ui,
+    formatted_url: &crate::ui::address_bar::AddressBarDisplayParts,
+    display_path_query_fragment: Option<&str>,
+    max_width: f32,
+  ) {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    let weak_text_color = ui.visuals().weak_text_color();
+    let warn_text_color = ui.visuals().warn_fg_color;
+
+    let path_changed = match (
+      self.display_path_query_fragment.as_deref(),
+      display_path_query_fragment,
+    ) {
+      (None, None) => false,
+      (Some(a), Some(b)) => a != b,
+      _ => true,
+    };
+    let max_width_bits = max_width.to_bits();
+
+    let needs_rebuild = self.galley.is_none()
+      || self.security_state != formatted_url.security_state
+      || self.display_host_prefix != formatted_url.display_host_prefix
+      || self.display_host_domain != formatted_url.display_host_domain
+      || self.display_host_suffix != formatted_url.display_host_suffix
+      || path_changed
+      || self.font_id.as_ref() != Some(&font_id)
+      || self.text_color != text_color
+      || self.weak_text_color != weak_text_color
+      || self.warn_text_color != warn_text_color
+      || self.max_width_bits != max_width_bits;
+
+    if !needs_rebuild {
+      return;
+    }
+
+    self.security_state = formatted_url.security_state;
+    self
+      .display_host_prefix
+      .clone_from(&formatted_url.display_host_prefix);
+    self
+      .display_host_domain
+      .clone_from(&formatted_url.display_host_domain);
+    self
+      .display_host_suffix
+      .clone_from(&formatted_url.display_host_suffix);
+    self.display_path_query_fragment = display_path_query_fragment.map(|s| s.to_string());
+
+    self.font_id = Some(font_id.clone());
+    self.text_color = text_color;
+    self.weak_text_color = weak_text_color;
+    self.warn_text_color = warn_text_color;
+    self.max_width_bits = max_width_bits;
+
+    let mut job = egui::text::LayoutJob::default();
+
+    // Mirror the previous display-mode label logic: show a security warning prefix for HTTP.
+    if formatted_url.security_state == AddressBarSecurityState::Http {
+      job.append(
+        "Not secure ",
+        0.0,
+        egui::text::TextFormat {
+          font_id: font_id.clone(),
+          color: warn_text_color,
+          ..Default::default()
+        },
+      );
+    }
+
+    if !formatted_url.display_host_prefix.is_empty() {
+      job.append(
+        &formatted_url.display_host_prefix,
+        0.0,
+        egui::text::TextFormat {
+          font_id: font_id.clone(),
+          color: weak_text_color,
+          ..Default::default()
+        },
+      );
+    }
+
+    job.append(
+      &formatted_url.display_host_domain,
+      0.0,
+      egui::text::TextFormat {
+        font_id: font_id.clone(),
+        color: text_color,
+        ..Default::default()
+      },
+    );
+
+    if !formatted_url.display_host_suffix.is_empty() {
+      job.append(
+        &formatted_url.display_host_suffix,
+        0.0,
+        egui::text::TextFormat {
+          font_id: font_id.clone(),
+          color: weak_text_color,
+          ..Default::default()
+        },
+      );
+    }
+
+    if let Some(rest) = display_path_query_fragment {
+      job.append(
+        rest,
+        0.0,
+        egui::text::TextFormat {
+          font_id,
+          color: weak_text_color,
+          ..Default::default()
+        },
+      );
+    }
+
+    // Match `Label::truncate(true)` behaviour.
+    job.wrap.max_width = max_width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.halign = ui.layout().horizontal_placement();
+    job.justify = ui.layout().horizontal_justify();
+
+    self.galley = Some(ui.fonts(|f| f.layout_job(job)));
+  }
+
+  fn galley(&self) -> std::sync::Arc<egui::Galley> {
+    self
+      .galley
+      .as_ref()
+      .expect("AddressBarDisplayGalleyCache::update must be called before galley()")
+      .clone()
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AddressBarPlaceholderGalleyCache {
+  font_id: Option<egui::FontId>,
+  color: egui::Color32,
+  max_width_bits: u32,
+  galley: Option<std::sync::Arc<egui::Galley>>,
+}
+
+impl AddressBarPlaceholderGalleyCache {
+  fn update(&mut self, ui: &egui::Ui, max_width: f32) {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().weak_text_color();
+    let max_width_bits = max_width.to_bits();
+
+    let needs_rebuild = self.galley.is_none()
+      || self.font_id.as_ref() != Some(&font_id)
+      || self.color != color
+      || self.max_width_bits != max_width_bits;
+
+    if !needs_rebuild {
+      return;
+    }
+
+    self.font_id = Some(font_id.clone());
+    self.color = color;
+    self.max_width_bits = max_width_bits;
+
+    let mut job =
+      egui::text::LayoutJob::simple("Enter URL…".to_string(), font_id, color, max_width);
+    // Match `Label::truncate(true)` behaviour.
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.halign = ui.layout().horizontal_placement();
+    job.justify = ui.layout().horizontal_justify();
+
+    self.galley = Some(ui.fonts(|f| f.layout_job(job)));
+  }
+
+  fn galley(&self) -> std::sync::Arc<egui::Galley> {
+    self
+      .galley
+      .as_ref()
+      .expect("AddressBarPlaceholderGalleyCache::update must be called before galley()")
+      .clone()
+  }
+}
+
 mod tab_strip;
 
 fn show_menu_bar_env_override() -> Option<bool> {
@@ -1765,76 +1968,24 @@ pub fn chrome_ui_with_bookmarks(
               });
               text_edit_response = Some(response);
             } else if active_url_trim.is_empty() {
-              ui.add(
-                egui::Label::new(
-                  egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color()),
-                )
-                .wrap(false)
-                .truncate(true),
-              );
+              let max_width = ui.available_width().max(0.0);
+              let placeholder_galley = ctx.data_mut(|d| {
+                let cache_id = address_bar_id.with("placeholder_galley_cache");
+                let cache =
+                  d.get_temp_mut_or_default::<AddressBarPlaceholderGalleyCache>(cache_id);
+                cache.update(ui, max_width);
+                cache.galley()
+              });
+              ui.add(egui::Label::new(placeholder_galley));
             } else {
-              let font_id = egui::TextStyle::Body.resolve(ui.style());
-              let mut job = egui::text::LayoutJob::default();
-
-              if formatted_url.security_state == AddressBarSecurityState::Http {
-                job.append(
-                  "Not secure ",
-                  0.0,
-                  egui::text::TextFormat {
-                    font_id: font_id.clone(),
-                    color: ui.visuals().warn_fg_color,
-                    ..Default::default()
-                  },
-                );
-              }
-
-              if !formatted_url.display_host_prefix.is_empty() {
-                job.append(
-                  &formatted_url.display_host_prefix,
-                  0.0,
-                  egui::text::TextFormat {
-                    font_id: font_id.clone(),
-                    color: ui.visuals().weak_text_color(),
-                    ..Default::default()
-                  },
-                );
-              }
-
-              job.append(
-                &formatted_url.display_host_domain,
-                0.0,
-                egui::text::TextFormat {
-                  font_id: font_id.clone(),
-                  color: ui.visuals().text_color(),
-                  ..Default::default()
-                },
-              );
-
-              if !formatted_url.display_host_suffix.is_empty() {
-                job.append(
-                  &formatted_url.display_host_suffix,
-                  0.0,
-                  egui::text::TextFormat {
-                    font_id: font_id.clone(),
-                    color: ui.visuals().weak_text_color(),
-                    ..Default::default()
-                  },
-                );
-              }
-
-              if let Some(rest) = display_path_query_fragment {
-                job.append(
-                  rest,
-                  0.0,
-                  egui::text::TextFormat {
-                    font_id,
-                    color: ui.visuals().weak_text_color(),
-                    ..Default::default()
-                  },
-                );
-              }
-
-              ui.add(egui::Label::new(job).wrap(false).truncate(true));
+              let max_width = ui.available_width().max(0.0);
+              let galley = ctx.data_mut(|d| {
+                let cache_id = address_bar_id.with("display_galley_cache");
+                let cache = d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id);
+                cache.update(ui, formatted_url, display_path_query_fragment, max_width);
+                cache.galley()
+              });
+              ui.add(egui::Label::new(galley));
             }
           });
         });
