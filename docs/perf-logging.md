@@ -159,7 +159,8 @@ gating flags (`--output`, `--baseline`, `--threshold`, `--fail-on-regression`).
 For deterministic CI-friendly timings, `ui_perf_smoke` defaults to a single Rayon thread when
 neither `--rayon-threads` nor `RAYON_NUM_THREADS` are set. Override with `--rayon-threads <N>` (or
 `RAYON_NUM_THREADS=<N>`) when you explicitly want more parallelism. The JSON summary records the
-resolved value as `run_config.effective_rayon_threads`.
+resolved value as `run_config.effective_rayon_threads` and the source as
+`run_config.rayon_threads_source` (`cli`, `env`, or `harness_default`).
 
 Examples:
 

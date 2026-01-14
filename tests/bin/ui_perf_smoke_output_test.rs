@@ -55,6 +55,11 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     "run_config.rayon_threads should be present"
   );
   assert_eq!(
+    summary["run_config"]["rayon_threads_source"].as_str(),
+    Some("env"),
+    "run_config.rayon_threads_source should record whether the thread count came from --rayon-threads, RAYON_NUM_THREADS, or the harness default"
+  );
+  assert_eq!(
     summary["run_config"]["effective_rayon_threads"].as_u64(),
     Some(1),
     "ui_perf_smoke should default to a deterministic single Rayon thread (override with --rayon-threads or RAYON_NUM_THREADS)"

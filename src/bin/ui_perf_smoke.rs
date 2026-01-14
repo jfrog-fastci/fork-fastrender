@@ -167,6 +167,8 @@ struct ScenarioSummary {
 #[derive(Clone, Serialize, Deserialize)]
 struct RunConfig {
   rayon_threads: usize,
+  #[serde(default)]
+  rayon_threads_source: RayonThreadsSource,
   #[serde(default = "default_rayon_threads")]
   effective_rayon_threads: usize,
   #[serde(default)]
@@ -183,6 +185,7 @@ impl Default for RunConfig {
   fn default() -> Self {
     Self {
       rayon_threads: 1,
+      rayon_threads_source: RayonThreadsSource::Unknown,
       effective_rayon_threads: 1,
       warmup: 0,
       isolate: false,
@@ -244,8 +247,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   }
-  let effective_rayon_threads =
-    apply_rayon_threads_config(resolve_requested_rayon_threads(args.rayon_threads));
+  let rayon_threads_decision = resolve_requested_rayon_threads(args.rayon_threads);
+  let effective_rayon_threads = apply_rayon_threads_config(rayon_threads_decision);
 
   let scenario_names = selected_scenarios(args.only.as_deref())?;
 
@@ -271,6 +274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut scenarios = Vec::new();
   let run_config = RunConfig {
     rayon_threads: effective_rayon_threads,
+    rayon_threads_source: rayon_threads_decision.source,
     effective_rayon_threads,
     warmup: args.warmup,
     isolate,
@@ -640,11 +644,20 @@ fn parse_env_threads() -> Option<usize> {
   raw.parse::<usize>().ok().filter(|v| *v > 0)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum RayonThreadsSource {
   Cli,
   Env,
   HarnessDefault,
+  #[serde(other)]
+  Unknown,
+}
+
+impl Default for RayonThreadsSource {
+  fn default() -> Self {
+    Self::Unknown
+  }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -682,7 +695,9 @@ fn apply_rayon_threads_config(decision: RayonThreadsDecision) -> usize {
   // best-effort; we detect and warn below.
   let should_set_env = match decision.source {
     RayonThreadsSource::Cli => true,
-    RayonThreadsSource::HarnessDefault => !env_var_is_nonempty(RAYON_NUM_THREADS_ENV),
+    RayonThreadsSource::HarnessDefault | RayonThreadsSource::Unknown => {
+      !env_var_is_nonempty(RAYON_NUM_THREADS_ENV)
+    }
     RayonThreadsSource::Env => false,
   };
   if should_set_env {
@@ -1855,6 +1870,10 @@ mod tests {
 
     let value = serde_json::to_value(&summary).expect("serialize JSON");
     assert_eq!(value["run_config"]["rayon_threads"].as_u64(), Some(1));
+    assert_eq!(
+      value["run_config"]["rayon_threads_source"].as_str(),
+      Some("unknown")
+    );
     assert_eq!(
       value["run_config"]["effective_rayon_threads"].as_u64(),
       Some(1)
