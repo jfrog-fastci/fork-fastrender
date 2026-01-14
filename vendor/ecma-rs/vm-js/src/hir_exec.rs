@@ -14933,3 +14933,124 @@ mod hir_async_await_try_catch_finally_compiled_tests {
   // This module was superseded by `compiled_hir_async_await_semantics_tests` which asserts the async
   // function executes via the compiled (HIR) async evaluator (not the call-time AST fallback).
 }
+
+#[cfg(test)]
+mod hir_async_await_eval_order_compiled_tests {
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  fn assert_compiled_promise_fulfills_true(source: &str) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let promise = rt.exec_compiled_script(script)?;
+    let promise_root = rt.heap.add_root(promise)?;
+
+    let res = (|| {
+      rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+      let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+        panic!("expected script to return a Promise object, got {promise:?}");
+      };
+
+      assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+      assert_eq!(rt.heap.promise_result(promise_obj)?, Some(Value::Bool(true)));
+      Ok(())
+    })();
+
+    rt.heap.remove_root(promise_root);
+    res
+  }
+
+  #[test]
+  fn logical_and_short_circuits_over_await_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let side = false;
+          let v = false && await (side = true, Promise.resolve(1));
+          return v === false && side === false;
+        }
+        f()
+      "#,
+    )
+  }
+
+  #[test]
+  fn logical_or_short_circuits_over_await_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let side = false;
+          let v = true || await (side = true, Promise.resolve(1));
+          return v === true && side === false;
+        }
+        f()
+      "#,
+    )
+  }
+
+  #[test]
+  fn nullish_coalescing_short_circuits_over_await_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let side = false;
+          let a = 0 ?? await (side = true, Promise.resolve(1));
+          return a === 0 && side === false;
+        }
+        f()
+      "#,
+    )
+  }
+
+  #[test]
+  fn conditional_only_evaluates_selected_branch_with_await_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let side = '';
+          let v = true
+            ? await (side += 't', Promise.resolve(1))
+            : await (side += 'f', Promise.resolve(2));
+          return v === 1 && side === 't';
+        }
+        f()
+      "#,
+    )
+  }
+
+  #[test]
+  fn assignment_computed_member_key_evaluated_before_rhs_await_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let order = '';
+          let obj = {};
+          function k(){ order += 'k'; return Promise.resolve('p'); }
+          function v(){ order += 'v'; return Promise.resolve(1); }
+          obj[await k()] = await v();
+          return order === 'kv' && obj.p === 1;
+        }
+        f()
+      "#,
+    )
+  }
+
+  #[test]
+  fn assignment_rhs_await_happens_before_setter_call_compiled() -> Result<(), VmError> {
+    assert_compiled_promise_fulfills_true(
+      r#"
+        async function f() {
+          let order = '';
+          let obj = { set x(v) { order += 's'; } };
+          async function rhs() { order += 'r'; return 1; }
+          obj.x = await rhs();
+          return order === 'rs';
+        }
+        f()
+      "#,
+    )
+  }
+}
