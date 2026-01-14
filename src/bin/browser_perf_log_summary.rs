@@ -191,6 +191,8 @@ struct Samples {
   worker_msgs_forwarded_per_sec: Vec<f64>,
   worker_msgs_processed_per_sec: Vec<f64>,
   worker_wakes_handled_per_sec: Vec<f64>,
+  worker_followup_wakes_per_sec: Vec<f64>,
+  worker_empty_wakes_per_sec: Vec<f64>,
   worker_wake_events_sent_per_sec: Vec<f64>,
   worker_wake_events_coalesced_per_sec: Vec<f64>,
   worker_pending_msgs_estimate: Vec<f64>,
@@ -220,6 +222,8 @@ struct Summary {
   worker_msgs_forwarded_per_sec: ScalarStats,
   worker_msgs_processed_per_sec: ScalarStats,
   worker_wakes_handled_per_sec: ScalarStats,
+  worker_followup_wakes_per_sec: ScalarStats,
+  worker_empty_wakes_per_sec: ScalarStats,
   worker_wake_events_sent_per_sec: ScalarStats,
   worker_wake_events_coalesced_per_sec: ScalarStats,
   worker_pending_msgs_estimate: ScalarStats,
@@ -435,6 +439,22 @@ fn print_table(summary: &Summary) {
     fmt_opt_f64(summary.worker_wakes_handled_per_sec.min, 2),
     fmt_opt_f64(summary.worker_wakes_handled_per_sec.mean, 2),
     fmt_opt_f64(summary.worker_wakes_handled_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_followup_wakes_per_sec",
+    summary.worker_followup_wakes_per_sec.count,
+    fmt_opt_f64(summary.worker_followup_wakes_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_followup_wakes_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_followup_wakes_per_sec.max, 2),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "worker_empty_wakes_per_sec",
+    summary.worker_empty_wakes_per_sec.count,
+    fmt_opt_f64(summary.worker_empty_wakes_per_sec.min, 2),
+    fmt_opt_f64(summary.worker_empty_wakes_per_sec.mean, 2),
+    fmt_opt_f64(summary.worker_empty_wakes_per_sec.max, 2),
   );
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
@@ -701,6 +721,8 @@ fn run(cli: Cli) -> Result<(), String> {
               worker_msgs_forwarded_per_sec,
               worker_msgs_processed_per_sec,
               worker_wakes_handled_per_sec,
+              worker_followup_wakes_per_sec,
+              worker_empty_wakes_per_sec,
               worker_wake_events_sent_per_sec,
               worker_wake_events_coalesced_per_sec,
               worker_pending_msgs_estimate,
@@ -716,6 +738,12 @@ fn run(cli: Cli) -> Result<(), String> {
               }
               if let Some(v) = worker_wakes_handled_per_sec.filter(|v| v.is_finite()) {
                 samples.worker_wakes_handled_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_followup_wakes_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_followup_wakes_per_sec.push(f64::from(v));
+              }
+              if let Some(v) = worker_empty_wakes_per_sec.filter(|v| v.is_finite()) {
+                samples.worker_empty_wakes_per_sec.push(f64::from(v));
               }
               if let Some(v) = worker_wake_events_sent_per_sec.filter(|v| v.is_finite()) {
                 samples.worker_wake_events_sent_per_sec.push(f64::from(v));
@@ -844,6 +872,8 @@ fn run(cli: Cli) -> Result<(), String> {
     worker_msgs_forwarded_per_sec: scalar_stats(&mut samples.worker_msgs_forwarded_per_sec),
     worker_msgs_processed_per_sec: scalar_stats(&mut samples.worker_msgs_processed_per_sec),
     worker_wakes_handled_per_sec: scalar_stats(&mut samples.worker_wakes_handled_per_sec),
+    worker_followup_wakes_per_sec: scalar_stats(&mut samples.worker_followup_wakes_per_sec),
+    worker_empty_wakes_per_sec: scalar_stats(&mut samples.worker_empty_wakes_per_sec),
     worker_wake_events_sent_per_sec: scalar_stats(&mut samples.worker_wake_events_sent_per_sec),
     worker_wake_events_coalesced_per_sec: scalar_stats(
       &mut samples.worker_wake_events_coalesced_per_sec,
