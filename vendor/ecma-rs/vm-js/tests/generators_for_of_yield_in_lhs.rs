@@ -316,6 +316,30 @@ fn generator_for_of_yield_in_let_lhs_preserves_per_iteration_env() {
 }
 
 #[test]
+fn generator_for_of_yield_in_let_object_pattern_default_preserves_per_iteration_env() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let fs = [];
+          for (let {0: a = yield 1} of ["", "x"]) {
+            fs.push(() => a);
+          }
+          return fs[0]() + "," + fs[1]();
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === "42,x"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_iterator_is_closed_on_return_while_suspended_in_lhs() {
   let mut rt = new_runtime();
   let value = rt
@@ -616,6 +640,27 @@ fn generator_for_of_let_default_initializer_has_tdz_across_yield() {
         var a = 99;
         function* g() {
           for (let [a = (yield 1, a)] of [[undefined]]) { return a; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var threw = false;
+        try { it.next(0); } catch (e) { threw = e && e.name === "ReferenceError"; }
+        r1.done === false && r1.value === 1 && threw === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_let_object_default_initializer_has_tdz_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = 99;
+        function* g() {
+          for (let {a = (yield 1, a)} of [{}]) { return a; }
         }
         var it = g();
         var r1 = it.next();
