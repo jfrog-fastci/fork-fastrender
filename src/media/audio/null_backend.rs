@@ -144,8 +144,6 @@ impl NullAudioBackend {
       engine_cfg.per_stream_max_buffered_duration,
     )
   }
-    )
-  }
 
   /// Creates a null backend driven by an injected monotonic clock.
   ///
