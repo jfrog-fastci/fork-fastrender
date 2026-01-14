@@ -99,6 +99,7 @@ fn legacy_text_input_forces_single_line_value_no_wrap() {
         padding: 0;
         border: none;
         background: transparent;
+        font-family: "Noto Sans", sans-serif;
         /* Ensure author styles would normally allow wrapping in a multi-line context. */
         white-space: pre-wrap;
         text-wrap: wrap;
@@ -167,6 +168,7 @@ fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
         padding: 0;
         border: none;
         background: transparent;
+        font-family: "Noto Sans", sans-serif;
         font-size: 16px;
         color: black;
       }
