@@ -286,6 +286,8 @@ the stdout JSONL stream to a file), see
   - When audio output is active, the trace can also include audio pipeline spans such as
     `audio.callback` (output callback CPU time), `audio.mix` (mixing), and `audio.resample`
     (decoder-side resampling).
+  - Tip: to smoke-test audio tracing in the browser UI, set `FASTR_AUDIO_TEST_TONE=1` (plays a short
+    startup tone; requires the `audio_cpal` build).
   - Legacy alias: `FASTR_PERF_TRACE_OUT=/path/to/trace.json`.
 
 ### Appearance / accessibility / debugging (browser UX)

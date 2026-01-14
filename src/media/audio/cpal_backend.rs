@@ -1531,7 +1531,16 @@ where
             span.arg_u64("latency_nanos", duration_to_nanos_u64(latency));
           }
 
-          match mixer.mix_for_callback(output.len()) {
+          let callback_action = mixer.mix_for_callback(output.len());
+          if let Some(span) = callback_span.as_mut() {
+            span.arg_bool("mixed", matches!(callback_action, MixerCallbackAction::Mix));
+            span.arg_bool(
+              "drain_muted",
+              matches!(callback_action, MixerCallbackAction::SilenceAndDrain),
+            );
+          }
+
+          match callback_action {
             MixerCallbackAction::Mix => {
               // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
               // in the callback; instead, process in bounded chunks using the preallocated mix
