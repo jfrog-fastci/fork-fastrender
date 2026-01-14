@@ -118,3 +118,18 @@ fn yield_in_class_static_block_is_syntax_error() {
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
+
+#[test]
+fn yield_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      function* g() {
+        class C { x = yield 0; }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
