@@ -153,6 +153,7 @@ use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
+use crate::style::types::Overflow;
 use crate::style::types::OrientationTransform;
 use crate::style::types::ResolvedTextDecoration;
 use crate::style::types::TextDecorationLine;
@@ -1078,10 +1079,25 @@ impl DisplayListBuilder {
   }
 
   fn element_scroll_offset(&self, fragment: &FragmentNode) -> Point {
-    fragment
-      .box_id()
-      .and_then(|id| self.scroll_state.elements.get(&id).copied())
-      .unwrap_or(Point::ZERO)
+    let Some(id) = fragment.box_id() else {
+      return Point::ZERO;
+    };
+    let mut offset = self.scroll_state.elements.get(&id).copied().unwrap_or(Point::ZERO);
+    if !offset.x.is_finite() {
+      offset.x = 0.0;
+    }
+    if !offset.y.is_finite() {
+      offset.y = 0.0;
+    }
+    if let Some(style) = fragment.style.as_deref() {
+      if !matches!(style.overflow_x, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+        offset.x = 0.0;
+      }
+      if !matches!(style.overflow_y, Overflow::Hidden | Overflow::Scroll | Overflow::Auto) {
+        offset.y = 0.0;
+      }
+    }
+    offset
   }
 
   fn snap_form_control_caret_rect(&self, rect: Rect) -> Rect {
@@ -17377,6 +17393,63 @@ mod tests {
       // Outer fixed stays pinned at y=2.
       assert_eq!(pixel(&pixmap, 1, 2), (255, 0, 0, 255));
     }
+  }
+
+  #[test]
+  fn element_scroll_offsets_are_ignored_for_overflow_visible_elements() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.overflow_x = Overflow::Visible;
+    parent_style.overflow_y = Overflow::Visible;
+    let parent_style = Arc::new(parent_style);
+
+    let target_color = Rgba::rgb(10, 20, 30);
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.background_color = target_color;
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_with_style(
+      Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+      FragmentContent::Block { box_id: Some(2) },
+      vec![],
+      child_style,
+    );
+    let root = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Block { box_id: Some(1) },
+      vec![child],
+      parent_style,
+    );
+
+    let mut elements = HashMap::new();
+    elements.insert(1usize, Point::new(50.0, 0.0));
+    let scroll_state = ScrollState::from_parts(Point::ZERO, elements);
+
+    let list = DisplayListBuilder::new()
+      .with_scroll_state(scroll_state)
+      .build_checked(&root)
+      .expect("display list build should succeed");
+
+    let child_rect = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::FillRect(fill) if fill.color == target_color => Some(fill.rect),
+        _ => None,
+      })
+      .expect("expected child background fill rect");
+
+    assert!(
+      (child_rect.x() - 10.0).abs() < 0.01,
+      "expected child x to ignore parent's scroll offset; got {:?}",
+      child_rect
+    );
+    assert!(
+      (child_rect.y() - 10.0).abs() < 0.01,
+      "expected child y to remain unchanged; got {:?}",
+      child_rect
+    );
   }
 
   #[test]
