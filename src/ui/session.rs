@@ -402,7 +402,10 @@ impl BrowserSessionDownload {
   }
 
   fn sanitized(mut self) -> Self {
-    self.url = self.url.trim().to_string();
+    let trimmed = self.url.trim();
+    self.url = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_URL_BYTES)
+      .trim()
+      .to_string();
 
     let file_name = self.file_name.trim();
     if file_name.is_empty() {
@@ -1706,6 +1709,47 @@ mod tests {
     assert_eq!(
       window.downloads[0].status,
       BrowserSessionDownloadStatus::Cancelled
+    );
+  }
+
+  #[test]
+  fn session_truncates_download_urls() {
+    let long_url = format!("https://example.com/{}", "a".repeat(MAX_SESSION_URL_BYTES));
+    assert!(
+      long_url.len() > MAX_SESSION_URL_BYTES,
+      "expected long_url to exceed max bytes"
+    );
+
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads: vec![BrowserSessionDownload {
+        url: long_url,
+        file_name: "a.bin".to_string(),
+        path: PathBuf::from("/tmp/a.bin"),
+        status: BrowserSessionDownloadStatus::Completed,
+        error: None,
+      }],
+      tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
+      active_tab_index: 0,
+      bookmarks_bar_visible: false,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.downloads.len(), 1);
+    assert!(
+      window.downloads[0].url.as_bytes().len() <= MAX_SESSION_URL_BYTES,
+      "expected download URL to be truncated to at most {} bytes, got {}",
+      MAX_SESSION_URL_BYTES,
+      window.downloads[0].url.as_bytes().len()
     );
   }
 
