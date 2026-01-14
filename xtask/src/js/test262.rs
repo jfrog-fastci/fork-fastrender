@@ -10,6 +10,7 @@ const DEFAULT_SUMMARY_PATH: &str = "target/js/test262_summary.md";
 const DEFAULT_MANIFEST_PATH: &str = "tests/js/test262_manifest.toml";
 const DEFAULT_CURATED_SUITE_PATH: &str = "tests/js/test262_suites/curated.toml";
 const DEFAULT_SMOKE_SUITE_PATH: &str = "tests/js/test262_suites/smoke.toml";
+const DEFAULT_MODULES_SMOKE_SUITE_PATH: &str = "tests/js/test262_suites/modules_smoke.toml";
 const DEFAULT_LANGUAGE_STATEMENTS_SUITE_PATH: &str = "tests/js/test262_suites/language_statements.toml";
 const DEFAULT_LANGUAGE_FUNCTIONS_SUITE_PATH: &str = "tests/js/test262_suites/language_functions.toml";
 const DEFAULT_LANGUAGE_CLASSES_SUITE_PATH: &str = "tests/js/test262_suites/language_classes.toml";
@@ -61,6 +62,8 @@ pub enum Test262Suite {
   Curated,
   /// Minimal suite intended for quick wiring/smoke checks.
   Smoke,
+  /// Module-focused smoke suite (import/export/import.meta/top-level await/dynamic import/JSON modules).
+  ModulesSmoke,
   /// RegExp engine focused subset (named groups, indices, lookbehind, property escapes, etc).
   Regexp,
   /// RegExp `/v` (Unicode sets) focused subset.
@@ -184,6 +187,7 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
   let suite_path = repo_root.join(match args.suite {
     Test262Suite::Curated => DEFAULT_CURATED_SUITE_PATH,
     Test262Suite::Smoke => DEFAULT_SMOKE_SUITE_PATH,
+    Test262Suite::ModulesSmoke => DEFAULT_MODULES_SMOKE_SUITE_PATH,
     Test262Suite::Regexp => DEFAULT_REGEXP_SUITE_PATH,
     Test262Suite::RegexpUnicodeSets => DEFAULT_REGEXP_UNICODE_SETS_SUITE_PATH,
     Test262Suite::RegexpPropertyEscapesGenerated => DEFAULT_REGEXP_PROPERTY_ESCAPES_GENERATED_SUITE_PATH,

@@ -567,6 +567,10 @@ id = "language/import/dup-bound-names.js"
 status = "pass"
 
 [[expectations]]
+id = "language/import/import-attributes/json-value-string.js"
+status = "pass"
+
+[[expectations]]
 id = "language/module-code/ambiguous-export-bindings/error-export-from-named-as.js"
 status = "pass"
 
@@ -676,6 +680,14 @@ status = "pass"
 
 [[expectations]]
 id = "language/module-code/early-export-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/top-level-await/await-expr-resolution.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/top-level-await/dynamic-import-resolution.js"
 status = "pass"
 
 [[expectations]]
@@ -868,6 +880,95 @@ status = "pass"
 
 [[expectations]]
 id = "language/module-code/instn-local-bndng-var.js"
+status = "pass"
+
+# `import.meta` (meta property exposed only in modules).
+[[expectations]]
+id = "language/expressions/import.meta/distinct-for-each-module.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/import-meta-is-an-ordinary-object.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/not-accessible-from-direct-eval.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/same-object-returned.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/escape-sequence-import.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/escape-sequence-meta.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-async-function-params-or-body.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-async-generator-params-or-body.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-function-params-or-body.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-generator-params-or-body.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-module-nested-function.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-module.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/goal-script.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-array-destructuring-expr.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-array-rest-destructuring-expr.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-assignment-expr.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-for-await-of-loop.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-for-in-loop.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-for-of-loop.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-object-destructuring-expr.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-object-rest-destructuring-expr.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/import.meta/syntax/invalid-assignment-target-update-expr.js"
 status = "pass"
 
 [[expectations]]

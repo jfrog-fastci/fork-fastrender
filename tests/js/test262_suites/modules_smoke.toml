@@ -1,0 +1,55 @@
+# Curated module-only suite intended for quick local checks.
+#
+# This suite intentionally stays small/fast while still exercising real module semantics:
+# - static import/export
+# - `import.meta`
+# - top-level await
+# - dynamic `import()`
+# - JSON modules via import attributes
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+tests = [
+  # Stable baseline module early error.
+  "language/module-code/early-export-unresolvable.js",
+
+  # Top-level await basic semantics.
+  "language/module-code/top-level-await/await-expr-resolution.js",
+  # Dynamic import of an async (top-level await) module.
+  "language/module-code/top-level-await/dynamic-import-resolution.js",
+
+  # Standalone module syntax tests outside `language/module-code/`.
+  "language/import/dup-bound-names.js",
+  # JSON modules via import attributes.
+  "language/import/import-attributes/json-value-string.js",
+  "language/export/escaped-default.js",
+]
+
+include = [
+  # Early errors and syntax restrictions unique to module code.
+  "language/module-code/early-*.js",
+
+  # Basic import/export semantics.
+  "language/module-code/export-default-*.js",
+  "language/module-code/export-expname-*.js",
+
+  # Exercises ambiguous exports / namespace handling (includes some module imports).
+  "language/module-code/ambiguous-export-bindings/*.js",
+
+  # Module-only `import.meta` semantics.
+  "language/expressions/import.meta/*.js",
+
+  # Module instantiation-time bindings.
+  "language/module-code/instn-local-bndng-*.js",
+
+  # Ensure we cover module lexical grammar in comments, etc.
+  "language/module-code/comment-*.js",
+
+  # Small sanity coverage for the standalone import/export directory tests.
+  "language/import/dup-*.js",
+  "language/export/escaped-*.js",
+]
+
+# Exclude helper modules (fixtures) that live alongside tests.
+exclude = [
+  "**/*FIXTURE*.js",
+]
