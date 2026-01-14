@@ -16690,11 +16690,22 @@ impl App {
     self.renderer_backend.shutdown();
 
     // Joining can block for a long time if the worker is stuck; never block the UI thread.
-    let renderer_backend = self.renderer_backend.clone();
-    shutdown_join_tracker.track_blocking(
-      format!("browser worker thread {:?}", self.window.id()),
-      move || renderer_backend.join(),
-    );
+    //
+    // Prefer joining via a raw `JoinHandle` (pollable via `is_finished`) when the backend exposes
+    // it (current in-process worker backend). Fall back to running `RendererBackend::join` on a
+    // detached helper thread for other backend implementations.
+    if let Some(join) = self.renderer_backend.take_join_handle() {
+      shutdown_join_tracker.track_join(
+        format!("browser worker thread {:?}", self.window.id()),
+        join,
+      );
+    } else {
+      let renderer_backend = self.renderer_backend.clone();
+      shutdown_join_tracker.track_blocking(
+        format!("browser worker thread {:?}", self.window.id()),
+        move || renderer_backend.join(),
+      );
+    }
 
     self.destroy_all_textures();
   }

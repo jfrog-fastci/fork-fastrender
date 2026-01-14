@@ -1,6 +1,7 @@
 use super::messages::{UiToWorker, WorkerToUi, WorkerToUiInbox};
 use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// Abstraction over how the browser UI talks to its renderer/worker implementation.
@@ -40,6 +41,15 @@ pub trait RendererBackend: Send + Sync {
   ///
   /// Should be idempotent; joining twice should succeed.
   fn join(&self) -> std::thread::Result<()>;
+
+  /// Attempt to extract a raw `JoinHandle` for this backend, if available.
+  ///
+  /// This exists so UI code can track shutdown joins without spawning additional helper threads.
+  ///
+  /// Default implementation returns `None`.
+  fn take_join_handle(&self) -> Option<JoinHandle<()>> {
+    None
+  }
 }
 
 /// Shared renderer backend handle type used by the windowed browser and headless smoke mode.
@@ -49,15 +59,11 @@ pub type RendererBackendHandle = Arc<dyn RendererBackend>;
 pub struct ThreadRendererBackend {
   tx: Mutex<Option<Sender<UiToWorker>>>,
   rx: Mutex<WorkerToUiInbox>,
-  join: Mutex<Option<std::thread::JoinHandle<()>>>,
+  join: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl ThreadRendererBackend {
-  fn new(
-    tx: Sender<UiToWorker>,
-    rx: WorkerToUiInbox,
-    join: std::thread::JoinHandle<()>,
-  ) -> Self {
+  fn new(tx: Sender<UiToWorker>, rx: WorkerToUiInbox, join: JoinHandle<()>) -> Self {
     Self {
       tx: Mutex::new(Some(tx)),
       rx: Mutex::new(rx),
@@ -134,15 +140,19 @@ impl RendererBackend for ThreadRendererBackend {
     let _ = self.tx.lock().unwrap_or_else(|err| err.into_inner()).take();
   }
 
-  fn join(&self) -> std::thread::Result<()> {
-    // Ensure the worker loop can observe channel closure before we block on joining.
+  fn take_join_handle(&self) -> Option<JoinHandle<()>> {
+    // Ensure the worker loop can observe channel closure before we detach/join.
     self.shutdown();
-
-    let join = self
+    self
       .join
       .lock()
       .unwrap_or_else(|err| err.into_inner())
-      .take();
+      .take()
+  }
+
+  fn join(&self) -> std::thread::Result<()> {
+    // Ensure the worker loop can observe channel closure before we block on joining.
+    let join = self.take_join_handle();
     match join {
       Some(join) => join.join(),
       None => Ok(()),
