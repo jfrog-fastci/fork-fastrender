@@ -11134,17 +11134,34 @@ impl HirAsyncState {
               ));
             };
             self.active = None;
+            let stmt_offset = match &self.body_kind {
+              HirAsyncBodyKind::Block { stmts } => stmts
+                .get(self.next_stmt_index)
+                .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                .map(|stmt| stmt.span.start)
+                .unwrap_or(0),
+              HirAsyncBodyKind::Expr { .. } => 0,
+            };
             match resume {
-              Ok(v) => return Ok(HirAsyncResult::CompleteThrow(v)),
+              Ok(v) => {
+                // `throw await <expr>;` must behave like a normal `throw` statement once the awaited
+                // value has resolved: capture a stack trace and attach the `stack` property at the
+                // throw site so user code can inspect it.
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  VmError::Throw(v),
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
               Err(err) => {
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(self.next_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,

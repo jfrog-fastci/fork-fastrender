@@ -361,6 +361,100 @@ fn compiled_async_block_body_await_var_decl_throw_after_resume_has_error_stack()
 }
 
 #[test]
+fn compiled_async_block_body_throw_await_attaches_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Promise/async-await allocates job machinery; use a larger heap to avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `new Error()` does not capture/attach a stack by itself in vm-js; it is attached when the value
+  // is thrown. This exercises `throw await <expr>;` resumption which must still attach `stack`.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "const _ = async () => { throw await Promise.resolve(new Error(\"boom\")); };",
+  )?;
+
+  // Find the async arrow function body so we can invoke it via `CallHandler::User` (compiled path).
+  let func_body = {
+    let hir = script.hir.as_ref();
+    let mut found: Option<hir_js::BodyId> = None;
+    for (body_id, idx) in hir.body_index.iter() {
+      let body = hir
+        .bodies
+        .get(*idx)
+        .ok_or(VmError::InvariantViolation("hir body index out of bounds"))?;
+      if body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let Some(meta) = body.function.as_ref() else {
+        continue;
+      };
+      if !meta.async_ || !meta.is_arrow {
+        continue;
+      }
+      if matches!(meta.body, hir_js::FunctionBody::Block(_)) {
+        found = Some(*body_id);
+        break;
+      }
+    }
+    found.ok_or(VmError::InvariantViolation(
+      "async arrow function block body not found in compiled script",
+    ))?
+  };
+
+  // Define the compiled function on the global object so we can call it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: func_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  rt.exec_script(
+    r#"
+      var captured = "";
+      f().catch(e => { captured = e.stack; });
+    "#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let v = rt.exec_script(
+    r#"typeof captured === "string" && captured.includes("boom") && captured.includes("at ") && captured.includes("test.js:1:")"#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_top_level_await_implicit_throw_has_error_stack() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   // Top-level await allocates Promise/job machinery; use a larger heap to avoid spurious OOMs.
