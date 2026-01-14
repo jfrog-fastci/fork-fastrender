@@ -4266,6 +4266,7 @@ mod browser_app_tests {
     app.apply_worker_msg(WorkerToUi::HoverChanged {
       tab_id,
       hovered_url: Some("javascript:alert(1)".to_string()),
+      tooltip: None,
       cursor: CursorKind::Pointer,
       tooltip: None,
     });
