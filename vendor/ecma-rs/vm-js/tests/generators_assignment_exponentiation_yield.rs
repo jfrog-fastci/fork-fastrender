@@ -204,3 +204,168 @@ fn exponentiation_assignment_on_computed_property_captures_base_key_and_old_valu
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn exponentiation_assignment_on_super_property_captures_base_and_old_value_across_yield_star(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      const log = [];
+
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return 3;
+      }
+
+      class B1 {
+        get x(){ log.push("get1"); return this._x; }
+        set x(v){ log.push("set1:" + v); this._x = v; }
+      }
+      class B2 {
+        get x(){ log.push("get2"); return this._x; }
+        set x(v){ log.push("set2:" + v); this._x = v; }
+      }
+
+      class D extends B1 {
+        constructor(){ super(); this._x = 2; }
+        *gen() {
+          const r = (super.x **= (yield* rhs()));
+          return r === 8 && this._x === 8 && log.join(",") === "get1,set1:8";
+        }
+      }
+
+      const d = new D();
+      const it = d.gen();
+      const r1 = it.next();
+
+      // Mutate the old value and super base after the first delegated yield but before resuming.
+      d._x = 100;
+      Object.setPrototypeOf(D.prototype, B2.prototype);
+
+      const r2 = it.next();
+
+      // Mutate again after the second delegated yield.
+      d._x = 200;
+      Object.setPrototypeOf(D.prototype, B2.prototype);
+
+      const r3 = it.next();
+
+      r1.value === "rhs1" && r1.done === false &&
+      r2.value === "rhs2" && r2.done === false &&
+      r3.value === true && r3.done === true
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_on_super_computed_property_captures_base_key_and_old_value_across_yield_star(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      const log = [];
+
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return 3;
+      }
+
+      var k = "x";
+
+      class B1 {
+        get x(){ log.push("get1x"); return this._x; }
+        set x(v){ log.push("set1x:" + v); this._x = v; }
+        get y(){ log.push("get1y"); return this._y; }
+        set y(v){ log.push("set1y:" + v); this._y = v; }
+      }
+      class B2 {
+        get x(){ log.push("get2x"); return this._x; }
+        set x(v){ log.push("set2x:" + v); this._x = v; }
+        get y(){ log.push("get2y"); return this._y; }
+        set y(v){ log.push("set2y:" + v); this._y = v; }
+      }
+
+      class D extends B1 {
+        constructor(){ super(); this._x = 2; this._y = 10; }
+        *gen() {
+          const r = (super[k] **= (yield* rhs()));
+          return r === 8 &&
+            this._x === 8 &&
+            this._y === 10 &&
+            log.join(",") === "get1x,set1x:8";
+        }
+      }
+
+      const d = new D();
+      const it = d.gen();
+      const r1 = it.next();
+
+      // Mutate the old value, key, and super base after the first delegated yield.
+      d._x = 100;
+      k = "y";
+      Object.setPrototypeOf(D.prototype, B2.prototype);
+
+      const r2 = it.next();
+
+      // Mutate again after the second delegated yield.
+      d._x = 200;
+
+      const r3 = it.next();
+
+      r1.value === "rhs1" && r1.done === false &&
+      r2.value === "rhs2" && r2.done === false &&
+      r3.value === true && r3.done === true
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_on_private_field_captures_old_value_across_yield_star() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return 3;
+      }
+
+      class C {
+        static #x = 2;
+        static getX(){ return this.#x; }
+        static setX(v){ this.#x = v; }
+        static *g(){
+          const r = (this.#x **= (yield* rhs()));
+          return r === 8 && this.#x === 8;
+        }
+      }
+
+      const it = C.g();
+      const r1 = it.next();
+
+      // Mutate after the first delegated yield.
+      C.setX(100);
+
+      const r2 = it.next();
+
+      // Mutate again after the second delegated yield.
+      C.setX(200);
+
+      const r3 = it.next();
+
+      r1.done === false && r1.value === "rhs1" &&
+      r2.done === false && r2.value === "rhs2" &&
+      r3.done === true && r3.value === true &&
+      C.getX() === 8
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
