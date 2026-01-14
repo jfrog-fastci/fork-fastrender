@@ -33682,13 +33682,16 @@ mod hir_async_await_stack_tests {
     };
 
     let stack_string = {
+      let mut host = ();
+      let mut hooks = crate::MicrotaskQueue::new();
       let mut scope = rt.heap.scope();
       scope.push_root(Value::Object(err_obj))?;
 
       let key_s = scope.alloc_string("stack")?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let stack_value = scope.heap().get(err_obj, &key)?;
+      let stack_value =
+        scope.get_with_host_and_hooks(&mut rt.vm, &mut host, &mut hooks, err_obj, key, Value::Object(err_obj))?;
       let Value::String(stack_s) = stack_value else {
         panic!("expected error.stack to be a string, got {stack_value:?}");
       };
@@ -33801,12 +33804,15 @@ mod hir_async_await_stack_tests {
     };
 
     let stack_string = {
+      let mut host = ();
+      let mut hooks = crate::MicrotaskQueue::new();
       let mut scope = rt.heap.scope();
       scope.push_root(Value::Object(err_obj))?;
       let key_s = scope.alloc_string("stack")?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let stack_value = scope.heap().get(err_obj, &key)?;
+      let stack_value =
+        scope.get_with_host_and_hooks(&mut rt.vm, &mut host, &mut hooks, err_obj, key, Value::Object(err_obj))?;
       let Value::String(stack_s) = stack_value else {
         panic!("expected error.stack to be a string, got {stack_value:?}");
       };
@@ -33872,12 +33878,15 @@ mod hir_async_await_stack_tests {
     };
 
     let stack_string = {
+      let mut host = ();
+      let mut hooks = crate::MicrotaskQueue::new();
       let mut scope = rt.heap.scope();
       scope.push_root(Value::Object(err_obj))?;
       let key_s = scope.alloc_string("stack")?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let stack_value = scope.heap().get(err_obj, &key)?;
+      let stack_value =
+        scope.get_with_host_and_hooks(&mut rt.vm, &mut host, &mut hooks, err_obj, key, Value::Object(err_obj))?;
       let Value::String(stack_s) = stack_value else {
         panic!("expected error.stack to be a string, got {stack_value:?}");
       };
@@ -33943,12 +33952,15 @@ mod hir_async_await_stack_tests {
     };
 
     let stack_string = {
+      let mut host = ();
+      let mut hooks = crate::MicrotaskQueue::new();
       let mut scope = rt.heap.scope();
       scope.push_root(Value::Object(err_obj))?;
       let key_s = scope.alloc_string("stack")?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let stack_value = scope.heap().get(err_obj, &key)?;
+      let stack_value =
+        scope.get_with_host_and_hooks(&mut rt.vm, &mut host, &mut hooks, err_obj, key, Value::Object(err_obj))?;
       let Value::String(stack_s) = stack_value else {
         panic!("expected error.stack to be a string, got {stack_value:?}");
       };
