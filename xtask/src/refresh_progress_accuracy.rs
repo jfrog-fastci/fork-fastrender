@@ -78,6 +78,12 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
   pub timeout: u64,
 
+  /// Skip building renderer binaries and reuse existing binaries under the selected Cargo profile.
+  ///
+  /// This forwards `--no-build` to `xtask fixture-chrome-diff`.
+  #[arg(long)]
+  pub no_build: bool,
+
   /// Continue even if some fixtures fail to render during the FastRender step.
   ///
   /// This forwards `--keep-going` to `xtask fixture-chrome-diff` so shard refreshes can be run
@@ -277,6 +283,9 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
 
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
+  if args.no_build {
+    argv.push("--no-build".into());
+  }
   if args.keep_going {
     argv.push("--keep-going".into());
   }
