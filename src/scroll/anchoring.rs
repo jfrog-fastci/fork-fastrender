@@ -791,33 +791,35 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
   // Ensure overflow metadata is available for clamping in the new layout even when no scroll snap
   // containers are currently snapped.
   new_tree.ensure_scroll_metadata();
-  let prev_metadata = prev_tree.scroll_metadata.clone().unwrap_or_default();
-  let snapped_prev = super::apply_scroll_snap(prev_tree, scroll).state;
   let epsilon = 0.1;
   let mut snapped_viewport = false;
   let mut snapped_elements: HashSet<usize> = HashSet::new();
 
-  for container in &prev_metadata.containers {
-    if !container.snap_x && !container.snap_y {
-      continue;
-    }
-    if container.uses_viewport_scroll {
-      if approx_eq_point(scroll.viewport, snapped_prev.viewport, epsilon) {
-        snapped_viewport = true;
+  if let Some(prev_metadata) = prev_tree.scroll_metadata.as_ref() {
+    let snapped_prev = super::apply_scroll_snap_from_metadata(prev_metadata, scroll).state;
+
+    for container in &prev_metadata.containers {
+      if !container.snap_x && !container.snap_y {
+        continue;
       }
-      continue;
-    }
-    let Some(id) = container.box_id else {
-      continue;
-    };
-    let Some(current) = scroll.elements.get(&id) else {
-      continue;
-    };
-    let Some(snapped) = snapped_prev.elements.get(&id) else {
-      continue;
-    };
-    if approx_eq_point(*current, *snapped, epsilon) {
-      snapped_elements.insert(id);
+      if container.uses_viewport_scroll {
+        if approx_eq_point(scroll.viewport, snapped_prev.viewport, epsilon) {
+          snapped_viewport = true;
+        }
+        continue;
+      }
+      let Some(id) = container.box_id else {
+        continue;
+      };
+      let Some(current) = scroll.elements.get(&id) else {
+        continue;
+      };
+      let Some(snapped) = snapped_prev.elements.get(&id) else {
+        continue;
+      };
+      if approx_eq_point(*current, *snapped, epsilon) {
+        snapped_elements.insert(id);
+      }
     }
   }
 
@@ -847,12 +849,8 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
   for offset in next_scroll.elements.values_mut() {
     *offset = sanitize_point(*offset);
   }
-  if let Some(bounds) = super::build_scroll_chain(&new_tree.root, scrollport_viewport, &[])
-    .first()
-    .map(|state| state.bounds)
-  {
-    next_scroll.viewport = bounds.clamp(next_scroll.viewport);
-  }
+  next_scroll.viewport = super::viewport_scroll_bounds(&new_tree.root, scrollport_viewport)
+    .clamp(next_scroll.viewport);
 
   // Mirror paint-time element scroll clamping so layout-only flushes can't leave element scroll
   // offsets outside their new bounds (which would later be corrected during paint).
