@@ -707,7 +707,7 @@ fn tab_search_overlay_ui(
               });
           },
         );
-      let _ = ctx.accesskit_node_builder(results_list.response.id, |builder| {
+      let _ = ctx.accesskit_node_builder(results_list.id, |builder| {
         builder.set_role(accesskit::Role::ListBox);
         builder.set_name("Tab search results".to_string());
       });
@@ -3344,7 +3344,7 @@ pub fn chrome_ui_with_bookmarks(
                 d.insert_temp(scroll_selected_id, scrolled_to_selected);
               });
             });
-          let _ = ctx.accesskit_node_builder(suggestions_list.response.id, |builder| {
+          let _ = ctx.accesskit_node_builder(suggestions_list.id, |builder| {
             builder.set_role(accesskit::Role::ListBox);
             builder.set_name("Omnibox suggestions".to_string());
           });
