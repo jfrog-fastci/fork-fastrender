@@ -2927,87 +2927,6 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(existing.is_some_and(|d| !d.configurable))
   }
 
-  fn instantiate_module_hoisted_function_decl_bindings(
-    &mut self,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    stmts: &[hir_js::StmtId],
-    env: GcEnv,
-  ) -> Result<(), VmError> {
-    // Collect names of top-level function declarations that `instantiate_function_decls` will hoist
-    // in strict mode (modules are always strict).
-    //
-    // Note: do not recurse into blocks; block function declarations are block-scoped in modules.
-    let mut names: HashSet<String> = HashSet::new();
-    for stmt_id in stmts {
-      self.vm.tick()?;
-      let stmt = self.get_stmt(body, *stmt_id)?;
-      let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
-        continue;
-      };
-      let def = self
-        .hir()
-        .def(*def_id)
-        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
-      let Some(body_id) = def.body else {
-        continue;
-      };
-      let decl_body = self.get_body(body_id)?;
-      if decl_body.kind != hir_js::BodyKind::Function {
-        continue;
-      }
-
-      let name = self.resolve_name(def.name)?;
-
-      // `export default function() {}` is represented as a function declaration whose name is the
-      // sentinel `"<anonymous>"`. Do not create a binding for that string.
-      if def.is_default_export && name == "<anonymous>" {
-        continue;
-      }
-
-      names.insert(name);
-    }
-
-    // Create+initialize the bindings so hoisting can safely assign via `set_var`/`SetMutableBinding`.
-    for name in names {
-      self.vm.tick()?;
-
-      if !scope.heap().env_has_binding(env, name.as_str())? {
-        scope.env_create_mutable_binding(env, name.as_str())?;
-        scope
-          .heap_mut()
-          .env_initialize_binding(env, name.as_str(), Value::Undefined)?;
-        continue;
-      }
-
-      // Binding exists: ensure it is initialized, since `env_set_mutable_binding` rejects TDZ
-      // bindings.
-      match scope
-        .heap()
-        .env_get_binding_value(env, name.as_str(), /* strict */ false)
-      {
-        Ok(_) => {}
-        // TDZ sentinel from `Heap::env_get_binding_value`.
-        Err(VmError::Throw(Value::Null)) => {
-          scope
-            .heap_mut()
-            .env_initialize_binding(env, name.as_str(), Value::Undefined)?;
-        }
-        // Keep the engine robust against malformed env records: if the binding lookup failed even
-        // though `env_has_binding` returned true, fall back to creating it.
-        Err(VmError::Unimplemented("unbound identifier")) => {
-          scope.env_create_mutable_binding(env, name.as_str())?;
-          scope
-            .heap_mut()
-            .env_initialize_binding(env, name.as_str(), Value::Undefined)?;
-        }
-        Err(err) => return Err(err),
-      }
-    }
-
-    Ok(())
-  }
-
   fn collect_pat_idents(
     &mut self,
     body: &hir_js::Body,
@@ -18236,15 +18155,6 @@ fn instantiate_compiled_module_decls_inner(
     // Create lexical bindings (`let`/`const`/`using`/`await using`/`class`) up-front in the module
     // environment so TDZ + shadowing semantics are correct.
     evaluator.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), module_env)?;
-
-    // Pre-create+initialize bindings for hoisted top-level function declarations so
-    // `instantiate_function_decls` can assign into the module environment.
-    evaluator.instantiate_module_hoisted_function_decl_bindings(
-      scope,
-      body,
-      body.root_stmts.as_slice(),
-      module_env,
-    )?;
 
     // Hoist function declarations so they can be called before their declaration statement.
     evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)

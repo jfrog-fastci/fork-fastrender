@@ -322,3 +322,118 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
 
   result
 }
+
+#[test]
+fn compiled_module_async_function_fallback_preserves_closure_env() -> Result<(), VmError> {
+  // Async function bodies execute via call-time AST fallback; ensure module evaluation can still
+  // invoke those async bodies and read captured lexical bindings correctly.
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        const x = 21;
+
+        export async function f() {
+          await Promise.resolve(0);
+          return this === undefined ? x : -100;
+        }
+
+        export const g = async () => {
+          await Promise.resolve(0);
+          return this === undefined ? (x + 1) : -100;
+        };
+      "#,
+    )?;
+    assert!(
+      script_a.contains_async_functions,
+      "test module should contain at least one async function"
+    );
+    assert!(
+      !script_a.requires_ast_fallback && !script_a.contains_async_generators,
+      "modules that only *define* async functions should be executable via the compiled evaluator"
+    );
+
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.clear_ast();
+    let a = graph.add_module_with_specifier("a.js", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import { f, g } from "a.js";
+          export let result = 0;
+          f().then(v => { result += v; });
+          // Async arrow functions execute via call-time AST fallback; ensure they still use *lexical*
+          // `this` even when invoked via `.call`.
+          g.call({}).then(v => { result += v; });
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled,
+      "module evaluation should complete synchronously"
+    );
+    drop(scope);
+
+    run_microtasks(&mut vm, &mut heap, &mut host, &mut hooks)?;
+
+    let mut scope = heap.scope();
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "result")?,
+      Value::Number(43.0)
+    );
+    drop(scope);
+
+    Ok(())
+  })();
+
+  // Always tear down persistent roots on all return paths (including skips / errors).
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}

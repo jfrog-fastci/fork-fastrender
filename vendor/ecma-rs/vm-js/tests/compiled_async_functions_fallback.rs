@@ -68,3 +68,47 @@ fn compiled_script_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
   assert_eq!(value, Value::Number(28.0));
   Ok(())
 }
+
+#[test]
+fn compiled_script_async_function_fallback_preserves_closure_env() -> Result<(), VmError> {
+  // Async function bodies execute via call-time AST fallback; ensure that fallback still captures
+  // and reads from the correct outer lexical environment.
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_functions_fallback_closure.js",
+    r#"
+      var result = 0;
+      (function () {
+        let x = 21;
+        const f = async function () {
+          await Promise.resolve(0);
+          return x;
+        };
+        const g = async () => {
+          await Promise.resolve(0);
+          return x + 1;
+        };
+        f().then(v => { result += v; });
+        g().then(v => { result += v; });
+      })();
+    "#,
+  )?;
+
+  assert!(
+    script.contains_async_functions,
+    "test script should contain at least one async function"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that only *define* async functions should be able to execute via the compiled (HIR) executor"
+  );
+
+  rt.exec_compiled_script(script)?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("result")?;
+  assert_eq!(value, Value::Number(43.0));
+  Ok(())
+}

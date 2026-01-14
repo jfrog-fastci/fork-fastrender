@@ -82,3 +82,50 @@ fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_def
   assert_eq!(value, Value::Number(28.0));
   Ok(())
 }
+
+#[test]
+fn compiled_script_with_host_and_hooks_async_function_fallback_preserves_closure_env() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_functions_fallback_with_hooks_closure.js",
+    r#"
+      var result = 0;
+      (function () {
+        let x = 21;
+        const f = async function () {
+          await Promise.resolve(0);
+          return x;
+        };
+        const g = async () => {
+          await Promise.resolve(0);
+          return x + 1;
+        };
+        f().then(v => { result += v; });
+        g().then(v => { result += v; });
+      })();
+    "#,
+  )?;
+
+  assert!(
+    script.contains_async_functions,
+    "test script should contain at least one async function"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that only *define* async functions should be able to execute via the compiled (HIR) executor"
+  );
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  rt.exec_compiled_script_with_host_and_hooks(&mut host, &mut hooks, script)?;
+  let errors = hooks.perform_microtask_checkpoint(&mut rt);
+  if let Some(err) = errors.into_iter().next() {
+    return Err(err);
+  }
+
+  let value = rt.exec_script("result")?;
+  assert_eq!(value, Value::Number(43.0));
+  Ok(())
+}
