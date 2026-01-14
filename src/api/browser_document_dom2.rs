@@ -1,10 +1,10 @@
 use crate::animation::TransitionState;
+use crate::clock::{Clock, RealClock};
 use crate::debug::runtime::RuntimeToggles;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Rect, Size};
-use crate::interaction::InteractionState;
 use crate::interaction::state::DocumentSelectionStateDom2;
-use crate::clock::{Clock, RealClock};
+use crate::interaction::InteractionState;
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
 use crate::resource::ReferrerPolicy;
@@ -393,7 +393,10 @@ impl BrowserDocumentDom2 {
   /// Overrides the media provider used during paint (e.g. to supply `<video>` frames).
   ///
   /// Changing the provider only invalidates paint; cached style/layout artifacts remain valid.
-  pub fn set_media_provider(&mut self, provider: Option<Arc<dyn crate::media::MediaFrameProvider>>) {
+  pub fn set_media_provider(
+    &mut self,
+    provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  ) {
     self.media_provider = provider;
     self.paint_dirty = true;
   }
@@ -563,13 +566,14 @@ impl BrowserDocumentDom2 {
     let prepared = self.prepared.as_ref()?;
     let mapping = self.last_dom_mapping.as_ref()?;
 
-    let mut principal_styles: FxHashMap<usize, &crate::style::ComputedStyle> =
-      FxHashMap::default();
+    let mut principal_styles: FxHashMap<usize, &crate::style::ComputedStyle> = FxHashMap::default();
     let mut stack: Vec<&BoxNode> = vec![&prepared.box_tree().root];
     while let Some(node) = stack.pop() {
       if node.generated_pseudo.is_none() {
         if let Some(styled_id) = node.styled_node_id {
-          principal_styles.entry(styled_id).or_insert(node.style.as_ref());
+          principal_styles
+            .entry(styled_id)
+            .or_insert(node.style.as_ref());
         }
       }
       if let Some(body) = node.footnote_body.as_deref() {
@@ -587,7 +591,10 @@ impl BrowserDocumentDom2 {
       return None;
     }
 
-    if matches!(element_style.position, crate::style::position::Position::Fixed) {
+    if matches!(
+      element_style.position,
+      crate::style::position::Position::Fixed
+    ) {
       let mut current = element;
       let mut has_fixed_cb = false;
       while let Some(parent) = dom.parent_node(current) {
@@ -613,8 +620,13 @@ impl BrowserDocumentDom2 {
 
     let is_scroll_container = |style: &crate::style::ComputedStyle| -> bool {
       use crate::style::types::Overflow;
-      matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
-        || matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+      matches!(
+        style.overflow_x,
+        Overflow::Auto | Overflow::Scroll | Overflow::Hidden
+      ) || matches!(
+        style.overflow_y,
+        Overflow::Auto | Overflow::Scroll | Overflow::Hidden
+      )
     };
 
     let mut current = element;
@@ -679,8 +691,7 @@ impl BrowserDocumentDom2 {
     F: FnOnce(&mut crate::dom2::Document) -> bool,
   {
     let generation_before = self.dom.mutation_generation();
-    let generation_in_sync_before =
-      generation_before == self.last_seen_dom_mutation_generation;
+    let generation_in_sync_before = generation_before == self.last_seen_dom_mutation_generation;
     let changed = f(self.dom.as_mut());
     if changed {
       let mutations = self.dom.take_mutations();
@@ -816,7 +827,8 @@ impl BrowserDocumentDom2 {
     self.prepared.is_none()
       || self.style_dirty
       || self.layout_dirty
-      || interaction_state_css_fingerprint(self.interaction_state.as_ref()) != self.interaction_css_hash
+      || interaction_state_css_fingerprint(self.interaction_state.as_ref())
+        != self.interaction_css_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
@@ -846,8 +858,7 @@ impl BrowserDocumentDom2 {
     &mut self,
     request: BrowserDocumentDom2LayoutFlushRequest,
   ) -> Result<BrowserDocumentDom2LayoutFlushKind> {
-    let interaction_css_hash =
-      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    let interaction_css_hash = interaction_state_css_fingerprint(self.interaction_state.as_ref());
     if interaction_css_hash != self.interaction_css_hash {
       // CSS-affecting interaction state affects pseudo-class matching / selector matching, so we
       // must re-run cascade/layout when it changes.
@@ -973,22 +984,22 @@ impl BrowserDocumentDom2 {
       let prev_mapping = self.last_dom_mapping.take();
       let prev_seen_generation = self.last_seen_dom_mutation_generation;
 
-      let (mut prepared, did_incremental_restyle) = match self.prepare_dom_with_options(
-        prev_prepared.as_ref(),
-        prev_mapping.as_ref(),
-      ) {
-        Ok(result) => result,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          self.last_dom_mapping = prev_mapping;
-          self.last_seen_dom_mutation_generation = prev_seen_generation;
-          return Err(err);
-        }
-      };
+      let (mut prepared, did_incremental_restyle) =
+        match self.prepare_dom_with_options(prev_prepared.as_ref(), prev_mapping.as_ref()) {
+          Ok(result) => result,
+          Err(err) => {
+            self.prepared = prev_prepared;
+            self.last_dom_mapping = prev_mapping;
+            self.last_seen_dom_mutation_generation = prev_seen_generation;
+            return Err(err);
+          }
+        };
 
       if did_incremental_restyle {
-        self.invalidation_counters.incremental_restyles =
-          self.invalidation_counters.incremental_restyles.saturating_add(1);
+        self.invalidation_counters.incremental_restyles = self
+          .invalidation_counters
+          .incremental_restyles
+          .saturating_add(1);
       } else {
         self.invalidation_counters.full_restyles =
           self.invalidation_counters.full_restyles.saturating_add(1);
@@ -1351,8 +1362,8 @@ impl BrowserDocumentDom2 {
       crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
     );
 
-    let changed_offsets =
-      next.viewport != current_scroll_state.viewport || next.elements != current_scroll_state.elements;
+    let changed_offsets = next.viewport != current_scroll_state.viewport
+      || next.elements != current_scroll_state.elements;
     if changed_offsets {
       next.update_deltas_from(&current_scroll_state);
       self.set_scroll_state(next);
@@ -1376,8 +1387,16 @@ impl BrowserDocumentDom2 {
     let viewport = prepared.layout_viewport();
 
     let desired = Point::new(
-      if desired.x.is_finite() { desired.x } else { 0.0 },
-      if desired.y.is_finite() { desired.y } else { 0.0 },
+      if desired.x.is_finite() {
+        desired.x
+      } else {
+        0.0
+      },
+      if desired.y.is_finite() {
+        desired.y
+      } else {
+        0.0
+      },
     );
 
     let bounds = crate::scroll::scroll_bounds_for_fragment(
@@ -1402,8 +1421,10 @@ impl BrowserDocumentDom2 {
     let mapping = self.last_dom_mapping.as_ref()?;
     let styled_id = mapping.preorder_for_node_id(node)?;
 
-    let box_ids =
-      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let _principal_box_id = *box_ids.first()?;
 
     let rect_page = crate::interaction::dom_geometry::union_scrolled_absolute_bounds_for_box_ids(
@@ -1416,10 +1437,7 @@ impl BrowserDocumentDom2 {
     // coordinates by applying viewport-scroll cancel semantics. Subtract viewport scroll for all
     // nodes (including viewport-fixed) to convert page → viewport coordinates.
     let viewport_scroll = self.viewport_scroll_offset();
-    Some(rect_page.translate(Point::new(
-      -viewport_scroll.x,
-      -viewport_scroll.y,
-    )))
+    Some(rect_page.translate(Point::new(-viewport_scroll.x, -viewport_scroll.y)))
   }
 
   pub fn offset_rect(&mut self, node: crate::dom2::NodeId) -> Option<Rect> {
@@ -1428,8 +1446,10 @@ impl BrowserDocumentDom2 {
     let mapping = self.last_dom_mapping.as_ref()?;
     let styled_id = mapping.preorder_for_node_id(node)?;
 
-    let box_ids =
-      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let principal_box_id = *box_ids.first()?;
 
     let rect_page = crate::interaction::dom_geometry::union_absolute_bounds_for_box_ids(
@@ -1491,7 +1511,13 @@ impl BrowserDocumentDom2 {
       candidate.or(self.dom().body())
     };
 
-    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+    let sanitize_nonneg = |value: f32| {
+      if value.is_finite() {
+        value.max(0.0)
+      } else {
+        0.0
+      }
+    };
 
     let reference = if let Some(offset_parent) = offset_parent {
       match mapping.preorder_for_node_id(offset_parent) {
@@ -1501,31 +1527,33 @@ impl BrowserDocumentDom2 {
             offset_parent_styled_id,
           );
           match parent_box_ids.first() {
-            Some(&parent_principal_box_id) => crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
-              prepared.fragment_tree(),
-              parent_principal_box_id,
-            )
-            .and_then(|(root_kind, path)| {
-              crate::interaction::dom_geometry::resolve_fragment_path(
+            Some(&parent_principal_box_id) => {
+              crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
                 prepared.fragment_tree(),
-                root_kind,
-                &path,
+                parent_principal_box_id,
               )
-            })
-            .map(|(fragment, origin, _has_fixed_cb_ancestor)| {
-              let (border_left, border_top) = fragment
-                .style
-                .as_deref()
-                .map(|style| {
-                  (
-                    sanitize_nonneg(style.used_border_left_width().to_px()),
-                    sanitize_nonneg(style.used_border_top_width().to_px()),
-                  )
-                })
-                .unwrap_or((0.0, 0.0));
-              Point::new(origin.x + border_left, origin.y + border_top)
-            })
-            .unwrap_or(Point::ZERO),
+              .and_then(|(root_kind, path)| {
+                crate::interaction::dom_geometry::resolve_fragment_path(
+                  prepared.fragment_tree(),
+                  root_kind,
+                  &path,
+                )
+              })
+              .map(|(fragment, origin, _has_fixed_cb_ancestor)| {
+                let (border_left, border_top) = fragment
+                  .style
+                  .as_deref()
+                  .map(|style| {
+                    (
+                      sanitize_nonneg(style.used_border_left_width().to_px()),
+                      sanitize_nonneg(style.used_border_top_width().to_px()),
+                    )
+                  })
+                  .unwrap_or((0.0, 0.0));
+                Point::new(origin.x + border_left, origin.y + border_top)
+              })
+              .unwrap_or(Point::ZERO)
+            }
             None => Point::ZERO,
           }
         }
@@ -1548,7 +1576,13 @@ impl BrowserDocumentDom2 {
     let prepared = self.prepared.as_ref()?;
     let fragment_tree = prepared.fragment_tree();
 
-    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+    let sanitize_nonneg = |value: f32| {
+      if value.is_finite() {
+        value.max(0.0)
+      } else {
+        0.0
+      }
+    };
 
     if self.is_root_scrolling_element(node) {
       let viewport = fragment_tree.viewport_size();
@@ -1571,21 +1605,23 @@ impl BrowserDocumentDom2 {
         - border_right
         - sanitize_nonneg(reservation.left)
         - sanitize_nonneg(reservation.right))
-        .max(0.0);
+      .max(0.0);
       let height = (sanitize_nonneg(viewport.height)
         - border_top
         - border_bottom
         - sanitize_nonneg(reservation.top)
         - sanitize_nonneg(reservation.bottom))
-        .max(0.0);
+      .max(0.0);
       return Some(Size::new(width, height));
     }
 
     let mapping = self.last_dom_mapping.as_ref()?;
     let styled_id = mapping.preorder_for_node_id(node)?;
 
-    let box_ids =
-      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let principal_box_id = *box_ids.first()?;
 
     let (fragment, _origin, _has_fixed_cb_ancestor) =
@@ -1601,7 +1637,9 @@ impl BrowserDocumentDom2 {
         )
       })?;
 
-    Some(crate::interaction::dom_geometry::client_size_for_fragment(fragment))
+    Some(crate::interaction::dom_geometry::client_size_for_fragment(
+      fragment,
+    ))
   }
 
   pub fn scroll_size(&mut self, node: crate::dom2::NodeId) -> Option<Size> {
@@ -1609,7 +1647,13 @@ impl BrowserDocumentDom2 {
     let prepared = self.prepared.as_ref()?;
     let fragment_tree = prepared.fragment_tree();
 
-    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+    let sanitize_nonneg = |value: f32| {
+      if value.is_finite() {
+        value.max(0.0)
+      } else {
+        0.0
+      }
+    };
 
     if self.is_root_scrolling_element(node) {
       let viewport = fragment_tree.viewport_size();
@@ -1633,13 +1677,13 @@ impl BrowserDocumentDom2 {
           - border_right
           - sanitize_nonneg(reservation.left)
           - sanitize_nonneg(reservation.right))
-          .max(0.0);
+        .max(0.0);
         let height = (viewport.height
           - border_top
           - border_bottom
           - sanitize_nonneg(reservation.top)
           - sanitize_nonneg(reservation.bottom))
-          .max(0.0);
+        .max(0.0);
         Size::new(width, height)
       };
 
@@ -1659,8 +1703,10 @@ impl BrowserDocumentDom2 {
 
     let mapping = self.last_dom_mapping.as_ref()?;
     let styled_id = mapping.preorder_for_node_id(node)?;
-    let box_ids =
-      crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let principal_box_id = *box_ids.first()?;
 
     let (fragment, origin, has_fixed_cb_ancestor) =
@@ -1705,7 +1751,10 @@ impl BrowserDocumentDom2 {
       return Point::ZERO;
     };
 
-    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let Some(&principal_box_id) = box_ids.first() else {
       return Point::ZERO;
     };
@@ -1728,7 +1777,13 @@ impl BrowserDocumentDom2 {
     );
 
     let _ = self.ensure_layout();
-    let sanitize_nonneg = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+    let sanitize_nonneg = |value: f32| {
+      if value.is_finite() {
+        value.max(0.0)
+      } else {
+        0.0
+      }
+    };
     let desired = Point::new(sanitize_nonneg(offset.x), sanitize_nonneg(offset.y));
 
     if self.is_root_scrolling_element(node) {
@@ -1768,7 +1823,10 @@ impl BrowserDocumentDom2 {
       return Ok(());
     };
 
-    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
+    let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+      prepared.box_tree(),
+      styled_id,
+    );
     let Some(&principal_box_id) = box_ids.first() else {
       return Ok(());
     };
@@ -1807,9 +1865,15 @@ impl BrowserDocumentDom2 {
       .unwrap_or(Point::ZERO);
     if clamped != prev {
       if clamped == Point::ZERO {
-        self.options.element_scroll_offsets.remove(&principal_box_id);
+        self
+          .options
+          .element_scroll_offsets
+          .remove(&principal_box_id);
       } else {
-        self.options.element_scroll_offsets.insert(principal_box_id, clamped);
+        self
+          .options
+          .element_scroll_offsets
+          .insert(principal_box_id, clamped);
       }
 
       let delta = Point::new(clamped.x - prev.x, clamped.y - prev.y);
@@ -1940,11 +2004,7 @@ impl BrowserDocumentDom2 {
   /// - The returned node is guaranteed to be an element (walking up the ancestor chain if needed).
   ///
   /// This ensures style/layout are up to date but does **not** require a paint.
-  pub fn element_from_point(
-    &mut self,
-    x: f32,
-    y: f32,
-  ) -> Result<Option<crate::dom2::NodeId>> {
+  pub fn element_from_point(&mut self, x: f32, y: f32) -> Result<Option<crate::dom2::NodeId>> {
     let Some(mut node_id) = self
       .hit_test_viewport_point(x, y)?
       .map(|result| result.node)
@@ -1977,24 +2037,24 @@ impl BrowserDocumentDom2 {
     if !x.is_finite() || !y.is_finite() {
       return Ok(None);
     }
- 
+
     self.ensure_layout_for_hit_testing()?;
     let Some(prepared) = self.prepared.as_ref() else {
       return Ok(None);
     };
- 
+
     let viewport = prepared.fragment_tree().viewport_size();
     if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
       return Ok(None);
     }
- 
+
     let scroll_state = ScrollState::from_parts_with_deltas(
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
       self.options.scroll_delta,
       self.options.element_scroll_deltas.clone(),
     );
- 
+
     let Some(hit) = crate::interaction::hit_testing::hit_test_dom_viewport_point(
       prepared,
       &scroll_state,
@@ -2002,7 +2062,7 @@ impl BrowserDocumentDom2 {
     ) else {
       return Ok(None);
     };
- 
+
     let Some(mut node) = self.dom2_node_for_hit_test(&hit) else {
       return Ok(None);
     };
@@ -2069,7 +2129,10 @@ impl BrowserDocumentDom2 {
         }
       }
 
-      if matches!(&self.dom().node(node).kind, crate::dom2::NodeKind::Element { .. }) {
+      if matches!(
+        &self.dom().node(node).kind,
+        crate::dom2::NodeKind::Element { .. }
+      ) {
         out.push(Dom2HitTestResult { node, hit });
       }
     }
@@ -2080,11 +2143,7 @@ impl BrowserDocumentDom2 {
   /// Like [`BrowserDocumentDom2::element_from_point`], but returns all hit elements (topmost first).
   ///
   /// This backs `Document.elementsFromPoint()` when needed.
-  pub fn elements_from_point(
-    &mut self,
-    x: f32,
-    y: f32,
-  ) -> Result<Vec<crate::dom2::NodeId>> {
+  pub fn elements_from_point(&mut self, x: f32, y: f32) -> Result<Vec<crate::dom2::NodeId>> {
     let hits = self.hit_test_viewport_point_all(x, y)?;
     let mut out: Vec<crate::dom2::NodeId> = Vec::new();
     for hit in hits {
@@ -2100,7 +2159,10 @@ impl BrowserDocumentDom2 {
         }
       }
 
-      if matches!(&self.dom().node(node_id).kind, crate::dom2::NodeKind::Element { .. }) {
+      if matches!(
+        &self.dom().node(node_id).kind,
+        crate::dom2::NodeKind::Element { .. }
+      ) {
         // `hit_test_dom_*` already de-dupes within the renderer preorder space, but ensure we don't
         // return duplicates after walking to element ancestors.
         if !out.contains(&node_id) {
@@ -2132,8 +2194,7 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<Option<super::PaintedFrame>> {
-    let interaction_css_hash =
-      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    let interaction_css_hash = interaction_state_css_fingerprint(self.interaction_state.as_ref());
     let interaction_paint_hash =
       interaction_state_paint_fingerprint(self.interaction_state.as_ref());
     if !self.is_dirty()
@@ -2164,8 +2225,7 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    let interaction_css_hash =
-      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    let interaction_css_hash = interaction_state_css_fingerprint(self.interaction_state.as_ref());
     let interaction_paint_hash =
       interaction_state_paint_fingerprint(self.interaction_state.as_ref());
     if interaction_css_hash != self.interaction_css_hash {
@@ -2210,7 +2270,10 @@ impl BrowserDocumentDom2 {
   /// and border edges). Scrollbar contributions are currently approximated as 0.
   ///
   /// The return values follow WebIDL `long` semantics (clamped/truncated to i32).
-  pub(crate) fn element_client_border_widths(&mut self, node_id: crate::dom2::NodeId) -> (i32, i32) {
+  pub(crate) fn element_client_border_widths(
+    &mut self,
+    node_id: crate::dom2::NodeId,
+  ) -> (i32, i32) {
     // Ensure style/layout is fresh before reading computed style.
     if self.ensure_layout_for_dom_query().is_err() {
       return (0, 0);
@@ -2332,18 +2395,17 @@ impl BrowserDocumentDom2 {
       self.interaction_state.as_ref(),
     );
 
-    let frame =
-      prepared.paint_with_options_frame_with_animation_state_store_and_fragment_tree(
-        fragment_tree,
-        PreparedPaintOptions {
-          scroll: Some(scroll_state),
-          viewport: None,
-          background: None,
-          animation_time,
-          media_provider: self.media_provider.clone(),
-        },
-        &mut self.animation_state_store,
-      )?;
+    let frame = prepared.paint_with_options_frame_with_animation_state_store_and_fragment_tree(
+      fragment_tree,
+      PreparedPaintOptions {
+        scroll: Some(scroll_state),
+        viewport: None,
+        background: None,
+        animation_time,
+        media_provider: self.media_provider.clone(),
+      },
+      &mut self.animation_state_store,
+    )?;
 
     // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
     // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
@@ -2753,7 +2815,9 @@ impl BrowserDocumentDom2 {
             !(ty.eq_ignore_ascii_case("hidden")
               || ty.eq_ignore_ascii_case("image")
               || ty.eq_ignore_ascii_case("file"))
-          } else if tag_name.eq_ignore_ascii_case("textarea") || tag_name.eq_ignore_ascii_case("select") {
+          } else if tag_name.eq_ignore_ascii_case("textarea")
+            || tag_name.eq_ignore_ascii_case("select")
+          {
             true
           } else if tag_name.eq_ignore_ascii_case("option") {
             // Option selectedness only affects rendering when it participates in a <select>.
@@ -2851,9 +2915,9 @@ impl BrowserDocumentDom2 {
         }
 
         if tag_name.eq_ignore_ascii_case("style") {
-          return attrs.iter().any(|name| {
-            matches!(name.as_str(), "media" | "type" | "nonce" | "disabled")
-          });
+          return attrs
+            .iter()
+            .any(|name| matches!(name.as_str(), "media" | "type" | "nonce" | "disabled"));
         }
 
         if tag_name.eq_ignore_ascii_case("base") {
@@ -3144,7 +3208,10 @@ impl BrowserDocumentDom2 {
     fn attrs_get_ci<'a>(attrs: &'a [crate::dom2::Attribute], name: &str) -> Option<&'a str> {
       attrs
         .iter()
-        .find(|attr| attr.namespace == crate::dom2::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+        .find(|attr| {
+          attr.namespace == crate::dom2::NULL_NAMESPACE
+            && attr.local_name.eq_ignore_ascii_case(name)
+        })
         .map(|attr| attr.value.as_str())
     }
 
@@ -3165,7 +3232,10 @@ impl BrowserDocumentDom2 {
       out
     }
 
-    fn option_label_text(doc: &crate::dom2::Document, option: crate::dom2::NodeId) -> Option<String> {
+    fn option_label_text(
+      doc: &crate::dom2::Document,
+      option: crate::dom2::NodeId,
+    ) -> Option<String> {
       let crate::dom2::NodeKind::Element {
         tag_name,
         namespace,
@@ -3176,7 +3246,9 @@ impl BrowserDocumentDom2 {
         return None;
       };
 
-      if !doc.is_html_case_insensitive_namespace(namespace) || !tag_name.eq_ignore_ascii_case("option") {
+      if !doc.is_html_case_insensitive_namespace(namespace)
+        || !tag_name.eq_ignore_ascii_case("option")
+      {
         return None;
       }
 
@@ -3189,7 +3261,11 @@ impl BrowserDocumentDom2 {
       while let Some(node_id) = stack.pop() {
         match &doc.node(node_id).kind {
           crate::dom2::NodeKind::Text { content } => text.push_str(content),
-          crate::dom2::NodeKind::Element { tag_name, namespace, .. } => {
+          crate::dom2::NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } => {
             if tag_name.eq_ignore_ascii_case("script")
               && (namespace.is_empty()
                 || namespace == crate::dom::HTML_NAMESPACE
@@ -3231,9 +3307,11 @@ impl BrowserDocumentDom2 {
 
       while let Some(parent) = dom.parent_node(current) {
         match &dom.node(parent).kind {
-          crate::dom2::NodeKind::Element { tag_name, namespace, .. }
-            if dom.is_html_case_insensitive_namespace(namespace) =>
-          {
+          crate::dom2::NodeKind::Element {
+            tag_name,
+            namespace,
+            ..
+          } if dom.is_html_case_insensitive_namespace(namespace) => {
             if tag_name.eq_ignore_ascii_case("textarea") {
               found_textarea = Some(parent);
               break;
@@ -3260,8 +3338,15 @@ impl BrowserDocumentDom2 {
       let mut select: Option<crate::dom2::NodeId> = None;
       let mut ancestor = option;
       while let Some(parent) = dom.parent_node(ancestor) {
-        if let crate::dom2::NodeKind::Element { tag_name, namespace, .. } = &dom.node(parent).kind {
-          if dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select") {
+        if let crate::dom2::NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &dom.node(parent).kind
+        {
+          if dom.is_html_case_insensitive_namespace(namespace)
+            && tag_name.eq_ignore_ascii_case("select")
+          {
             select = Some(parent);
             break;
           }
@@ -3428,10 +3513,7 @@ impl BrowserDocumentDom2 {
               let node = &mut *node_ptr;
               node.form_control = Some(form_control);
             }
-            UndoOp::SelectReplaced {
-              node_ptr,
-              items,
-            } => {
+            UndoOp::SelectReplaced { node_ptr, items } => {
               let node = &mut *node_ptr;
               if let BoxType::Replaced(replaced) = &mut node.box_type {
                 if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
@@ -3564,31 +3646,30 @@ impl BrowserDocumentDom2 {
             let mut any_patched = false;
             let mut all_patches_complete = true;
 
-            let patch_select_control =
-              |select: &mut crate::tree::box_tree::SelectControl| -> bool {
-                let mut items = select.items.as_ref().clone();
-                let mut any_label_change = false;
-                let mut found_options: FxHashSet<usize> = FxHashSet::default();
+            let patch_select_control = |select: &mut crate::tree::box_tree::SelectControl| -> bool {
+              let mut items = select.items.as_ref().clone();
+              let mut any_label_change = false;
+              let mut found_options: FxHashSet<usize> = FxHashSet::default();
 
-                for item in items.iter_mut() {
-                  let SelectItem::Option { node_id, label, .. } = item else {
-                    continue;
-                  };
-                  if let Some(new_label) = option_updates.get(node_id) {
-                    found_options.insert(*node_id);
-                    if label != new_label {
-                      *label = new_label.clone();
-                      any_label_change = true;
-                    }
+              for item in items.iter_mut() {
+                let SelectItem::Option { node_id, label, .. } = item else {
+                  continue;
+                };
+                if let Some(new_label) = option_updates.get(node_id) {
+                  found_options.insert(*node_id);
+                  if label != new_label {
+                    *label = new_label.clone();
+                    any_label_change = true;
                   }
                 }
+              }
 
-                let all_found = option_updates.keys().all(|id| found_options.contains(id));
-                if any_label_change {
-                  select.items = Arc::new(items);
-                }
-                all_found
-              };
+              let all_found = option_updates.keys().all(|id| found_options.contains(id));
+              if any_label_change {
+                select.items = Arc::new(items);
+              }
+              all_found
+            };
 
             if let BoxType::Replaced(replaced) = &mut node.box_type {
               if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
@@ -3644,7 +3725,10 @@ impl BrowserDocumentDom2 {
       return Ok(false);
     }
 
-    if select_updates.keys().any(|id| !processed_selects.contains(id)) {
+    if select_updates
+      .keys()
+      .any(|id| !processed_selects.contains(id))
+    {
       undo_all(&mut undo_ops);
       return Ok(false);
     }
@@ -3660,8 +3744,10 @@ impl BrowserDocumentDom2 {
     let layout_result = crate::debug::runtime::with_runtime_toggles(toggles, || {
       let trace = super::TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
-      let _root_span =
-        trace_handle.span("browser_document_dom2_incremental_relayout_form_controls", "pipeline");
+      let _root_span = trace_handle.span(
+        "browser_document_dom2_incremental_relayout_form_controls",
+        "pipeline",
+      );
 
       let shared_diagnostics =
         self
@@ -3827,7 +3913,10 @@ fn principal_box_style_for_styled_node_id(
   None
 }
 
-fn styled_tree_style_for_preorder_id(root: &StyledNode, preorder_id: usize) -> Option<Arc<ComputedStyle>> {
+fn styled_tree_style_for_preorder_id(
+  root: &StyledNode,
+  preorder_id: usize,
+) -> Option<Arc<ComputedStyle>> {
   let mut stack: Vec<&StyledNode> = vec![root];
   while let Some(node) = stack.pop() {
     if node.node_id == preorder_id {
@@ -3920,10 +4009,7 @@ fn build_incremental_restyle_scope(
     // `<slot>` nodes live inside shadow roots, but their attributes affect the composed/rendered
     // tree by changing which light-DOM children are assigned. When a slot mutates we must restyle
     // from the shadow host so host descendants do not reuse stale slot-assignment metadata.
-    if matches!(
-      &dom2.node(dirty).kind,
-      crate::dom2::NodeKind::Slot { .. }
-    ) {
+    if matches!(&dom2.node(dirty).kind, crate::dom2::NodeKind::Slot { .. }) {
       if let Some(shadow_root) = dom2.shadow_root_ancestor(dirty) {
         if let Some(host) = dom2.parent_node(shadow_root) {
           restyle_root = host;
@@ -3999,8 +4085,7 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
     F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
   {
     let generation_before = self.dom.mutation_generation();
-    let generation_in_sync_before =
-      generation_before == self.last_seen_dom_mutation_generation;
+    let generation_in_sync_before = generation_before == self.last_seen_dom_mutation_generation;
     let (result, changed) = f(self.dom.as_mut());
     if changed {
       let mutations = self.dom.take_mutations();
@@ -4024,7 +4109,9 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::interaction::selection_serialize::{DocumentSelectionPointDom2, DocumentSelectionRangeDom2};
+  use crate::interaction::selection_serialize::{
+    DocumentSelectionPointDom2, DocumentSelectionRangeDom2,
+  };
   use crate::interaction::state::{DocumentSelectionRangesDom2, DocumentSelectionStateDom2};
   use crate::tree::box_tree::BoxTree;
   use selectors::context::QuirksMode;
@@ -4118,15 +4205,10 @@ mod tests {
     doc: &crate::dom2::Document,
     parent: crate::dom2::NodeId,
   ) -> Option<crate::dom2::NodeId> {
-    doc
-      .node(parent)
-      .children
-      .iter()
-      .copied()
-      .find(|&child| {
-        doc.node(child).parent == Some(parent)
-          && matches!(doc.node(child).kind, crate::dom2::NodeKind::Text { .. })
-      })
+    doc.node(parent).children.iter().copied().find(|&child| {
+      doc.node(child).parent == Some(parent)
+        && matches!(doc.node(child).kind, crate::dom2::NodeKind::Text { .. })
+    })
   }
 
   fn find_first_textarea_control_value(root: &BoxNode) -> Option<String> {
@@ -4375,7 +4457,8 @@ mod tests {
       .expect("text node should be connected");
 
     let prepared_1 = doc.prepared().expect("prepared document after render");
-    let selected_1 = collect_selected_styled_node_ids(prepared_1.fragment_tree(), prepared_1.box_tree());
+    let selected_1 =
+      collect_selected_styled_node_ids(prepared_1.fragment_tree(), prepared_1.box_tree());
     assert!(
       selected_1.contains(&preorder_1),
       "expected selection highlight to reference preorder {preorder_1}"
@@ -4384,7 +4467,8 @@ mod tests {
     // Insert a new earlier sibling before the selected text node, shifting renderer preorder ids.
     let changed = doc.mutate_dom(|dom| {
       let new_text = dom.create_text("X");
-      dom.insert_before(div, new_text, Some(text))
+      dom
+        .insert_before(div, new_text, Some(text))
         .expect("insert before");
       true
     });
@@ -4392,14 +4476,19 @@ mod tests {
 
     doc.render_frame()?;
 
-    let mapping_2 = doc.last_dom_mapping().expect("dom mapping after second render");
+    let mapping_2 = doc
+      .last_dom_mapping()
+      .expect("dom mapping after second render");
     let preorder_2 = mapping_2
       .preorder_for_node_id(text)
       .expect("text node should still be connected");
     assert_ne!(preorder_1, preorder_2, "expected preorder ids to shift");
 
-    let prepared_2 = doc.prepared().expect("prepared document after second render");
-    let selected_2 = collect_selected_styled_node_ids(prepared_2.fragment_tree(), prepared_2.box_tree());
+    let prepared_2 = doc
+      .prepared()
+      .expect("prepared document after second render");
+    let selected_2 =
+      collect_selected_styled_node_ids(prepared_2.fragment_tree(), prepared_2.box_tree());
     assert!(
       selected_2.contains(&preorder_2),
       "expected selection highlight to reference updated preorder {preorder_2}"
@@ -4420,10 +4509,11 @@ mod tests {
           <a id="link" href="https://example.invalid/" style="display:block;width:50px;height:20px">Link</a>
         </body>
       </html>"#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
- 
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
+
     let link_id = doc.dom().get_element_by_id("link").expect("link element");
- 
+
     let result = doc.hit_test_viewport_point(5.0, 5.0)?;
     let result = result.expect("hit result");
     assert_eq!(result.node, link_id);
@@ -4436,8 +4526,9 @@ mod tests {
   fn hit_test_viewport_point_returns_none_outside_viewport() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = r#"<!doctype html><html><body><div>Hi</div></body></html>"#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
- 
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+
     assert!(doc.hit_test_viewport_point(40.0, 10.0)?.is_none());
     assert!(doc.hit_test_viewport_point(10.0, 40.0)?.is_none());
     Ok(())
@@ -4461,7 +4552,8 @@ mod tests {
           <div id="b"></div>
         </body>
       </html>"#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
 
     let a_id = doc.dom().get_element_by_id("a").expect("a element");
     let b_id = doc.dom().get_element_by_id("b").expect("b element");
@@ -4502,13 +4594,9 @@ mod tests {
     let mut dirty_style_nodes: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
     dirty_style_nodes.insert(dirty_node);
 
-    let scope = build_incremental_restyle_scope(
-      &snapshot.dom,
-      &snapshot.mapping,
-      &dom2,
-      &dirty_style_nodes,
-    )
-    .expect("incremental restyle scope");
+    let scope =
+      build_incremental_restyle_scope(&snapshot.dom, &snapshot.mapping, &dom2, &dirty_style_nodes)
+        .expect("incremental restyle scope");
 
     assert!(
       scope.contains(&1),
@@ -4658,7 +4746,10 @@ html, body { margin: 0; padding: 0; }
       BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(200, 200))?;
     doc.render_frame()?;
 
-    let scroller_node = doc.dom().get_element_by_id("scroller").expect("scroller node");
+    let scroller_node = doc
+      .dom()
+      .get_element_by_id("scroller")
+      .expect("scroller node");
     let scroller_box_id = doc
       .principal_box_id_for_node(scroller_node)?
       .expect("scroller box id");
@@ -4849,11 +4940,8 @@ html { scroll-snap-type: y mandatory; }
   fn form_state_mutations_trigger_rerender_for_out_of_band_dom2_updates() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = "<!doctype html><html><body><input id=i value=foo></body></html>";
-    let mut doc = BrowserDocumentDom2::new(
-      renderer,
-      html,
-      RenderOptions::new().with_viewport(80, 32),
-    )?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(80, 32))?;
     // Prime layout caches.
     doc.render_frame()?;
     assert!(
@@ -4890,8 +4978,11 @@ html { scroll-snap-type: y mandatory; }
       None
     }
 
-    let value0 = input_text_value(&doc.prepared.as_ref().unwrap().box_tree.root, styled_node_id)
-      .expect("missing input form control");
+    let value0 = input_text_value(
+      &doc.prepared.as_ref().unwrap().box_tree.root,
+      styled_node_id,
+    )
+    .expect("missing input form control");
     assert_eq!(value0, "foo");
 
     // Simulate JS shims mutating the live `dom2::Document` through a raw pointer (bypassing
@@ -4908,8 +4999,11 @@ html { scroll-snap-type: y mandatory; }
       doc.render_if_needed()?.is_some(),
       "expected out-of-band form state change to invalidate and repaint"
     );
-    let value1 = input_text_value(&doc.prepared.as_ref().unwrap().box_tree.root, styled_node_id)
-      .expect("missing input form control");
+    let value1 = input_text_value(
+      &doc.prepared.as_ref().unwrap().box_tree.root,
+      styled_node_id,
+    )
+    .expect("missing input form control");
     assert_eq!(value1, "bar");
     Ok(())
   }
@@ -4993,9 +5087,8 @@ html { scroll-snap-type: y mandatory; }
     let counters_before = doc.invalidation_counters();
 
     let mut selected_state = base_state.clone();
-    selected_state.set_document_selection(Some(
-      crate::interaction::state::DocumentSelectionState::All,
-    ));
+    selected_state
+      .set_document_selection(Some(crate::interaction::state::DocumentSelectionState::All));
     doc.set_interaction_state(Some(selected_state));
 
     let pixmap1 = doc
@@ -5152,7 +5245,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
     Ok(())
@@ -5183,7 +5279,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
     Ok(())
@@ -5194,7 +5293,8 @@ html { scroll-snap-type: y mandatory; }
     let renderer = renderer_for_tests();
     let html =
       "<!doctype html><html><body><div id=\"a\">One</div><div id=\"b\">Two</div></body></html>";
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
     doc.render_frame()?;
 
     let a = doc.dom().get_element_by_id("a").expect("<div id=a>");
@@ -5257,7 +5357,10 @@ html { scroll-snap-type: y mandatory; }
 
     // Seed a prepared cache + mapping.
     doc.render_frame()?;
-    let target = doc.dom().get_element_by_id("target").expect("#target element");
+    let target = doc
+      .dom()
+      .get_element_by_id("target")
+      .expect("#target element");
     let text_id = first_text_node_id(doc.dom()).expect("text node");
 
     let start = doc.invalidation_counters();
@@ -5269,7 +5372,10 @@ html { scroll-snap-type: y mandatory; }
     assert!(doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text")));
     doc.ensure_layout_for_dom_queries()?;
     let after_dom_flush = doc.invalidation_counters();
-    assert_eq!(after_dom_flush.incremental_relayouts, start.incremental_relayouts + 1);
+    assert_eq!(
+      after_dom_flush.incremental_relayouts,
+      start.incremental_relayouts + 1
+    );
     assert_eq!(after_dom_flush.full_restyles, start.full_restyles);
     assert_eq!(after_dom_flush.full_relayouts, start.full_relayouts);
 
@@ -5296,8 +5402,14 @@ html { scroll-snap-type: y mandatory; }
       after_hit_flush.incremental_relayouts,
       before_hit_flush.incremental_relayouts + 1
     );
-    assert_eq!(after_hit_flush.full_restyles, before_hit_flush.full_restyles);
-    assert_eq!(after_hit_flush.full_relayouts, before_hit_flush.full_relayouts);
+    assert_eq!(
+      after_hit_flush.full_restyles,
+      before_hit_flush.full_restyles
+    );
+    assert_eq!(
+      after_hit_flush.full_relayouts,
+      before_hit_flush.full_relayouts
+    );
 
     doc.ensure_layout_for_dom_queries()?;
     assert_eq!(
@@ -5334,7 +5446,9 @@ html { scroll-snap-type: y mandatory; }
     let select = doc.dom().get_element_by_id("s").expect("<select id=s>");
 
     let changed = doc.mutate_dom(|dom| {
-      dom.set_input_value(input, "updated").expect("set input value");
+      dom
+        .set_input_value(input, "updated")
+        .expect("set input value");
       dom
         .set_input_checked(checkbox, true)
         .expect("set checkbox checked");
@@ -5372,7 +5486,9 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(select_control.selected.len(), 1);
     let selected_idx = select_control.selected[0];
     match select_control.items.get(selected_idx) {
-      Some(SelectItem::Option { value, selected, .. }) => {
+      Some(SelectItem::Option {
+        value, selected, ..
+      }) => {
         assert_eq!(value, "b");
         assert!(*selected);
       }
@@ -5451,8 +5567,7 @@ html { scroll-snap-type: y mandatory; }
     while let Some(node) = stack.pop() {
       if let BoxType::Replaced(replaced) = &node.box_type {
         if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced.replaced_type {
-          if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control
-          {
+          if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control {
             return Some(value.as_str());
           }
         }
@@ -5476,7 +5591,8 @@ html { scroll-snap-type: y mandatory; }
         <option>Two</option>\
       </select>\
     </body></html>";
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
 
     doc.render_frame()?;
     {
@@ -5519,7 +5635,8 @@ html { scroll-snap-type: y mandatory; }
   fn textarea_text_mutation_falls_back_to_full_pipeline_and_updates_control_value() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = "<!doctype html><html><body><textarea id=\"t\">hello</textarea></body></html>";
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
 
     doc.render_frame()?;
     assert_eq!(
@@ -5629,7 +5746,10 @@ html { scroll-snap-type: y mandatory; }
     assert!(changed);
 
     doc.render_frame()?;
-    let prepared_after = doc.prepared.as_ref().expect("prepared layout after mutation");
+    let prepared_after = doc
+      .prepared
+      .as_ref()
+      .expect("prepared layout after mutation");
 
     let after_color =
       styled_tree_style_for_preorder_id(prepared_after.styled_tree(), zwsp_preorder)
@@ -5676,7 +5796,10 @@ html { scroll-snap-type: y mandatory; }
     let after = doc.invalidation_counters();
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     assert!(
@@ -5706,20 +5829,24 @@ html { scroll-snap-type: y mandatory; }
       .and_then(|mapping| mapping.preorder_for_node_id(option))
       .expect("option preorder id");
     let text_id = first_text_child(doc.dom(), option).expect("option text node");
-    let changed =
-      doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
     assert!(changed);
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     let select = find_first_select_control(&prepared.box_tree().root).expect("select form control");
     let updated_label = select.items.iter().find_map(|item| match item {
-      SelectItem::Option { node_id, label, .. } if *node_id == option_preorder => Some(label.as_str()),
+      SelectItem::Option { node_id, label, .. } if *node_id == option_preorder => {
+        Some(label.as_str())
+      }
       _ => None,
     });
     assert_eq!(updated_label, Some("Updated"));
@@ -5864,13 +5991,20 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(before.incremental_restyles, 0);
 
     let target = doc.dom().get_element_by_id("target").expect("#target");
-    let changed = doc.mutate_dom(|dom| dom.set_attribute(target, "class", "changed").expect("set attribute"));
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(target, "class", "changed")
+        .expect("set attribute")
+    });
     assert!(changed);
 
     doc.render_frame()?;
     let after_attr = doc.invalidation_counters();
     assert_eq!(after_attr.full_restyles, before.full_restyles);
-    assert_eq!(after_attr.incremental_restyles, before.incremental_restyles + 1);
+    assert_eq!(
+      after_attr.incremental_restyles,
+      before.incremental_restyles + 1
+    );
 
     // Structural mutation (child insertion) shifts renderer preorder ids; incremental restyle reuse
     // must be disabled to avoid misaligned node-id reuse.
@@ -5884,7 +6018,10 @@ html { scroll-snap-type: y mandatory; }
     doc.render_frame()?;
     let after_insert = doc.invalidation_counters();
     assert_eq!(after_insert.full_restyles, after_attr.full_restyles + 1);
-    assert_eq!(after_insert.incremental_restyles, after_attr.incremental_restyles);
+    assert_eq!(
+      after_insert.incremental_restyles,
+      after_attr.incremental_restyles
+    );
 
     Ok(())
   }
@@ -5959,7 +6096,8 @@ html { scroll-snap-type: y mandatory; }
   }
 
   #[test]
-  fn slot_name_change_can_cause_slotted_node_to_start_rendering_with_incremental_restyle_reuse() -> Result<()> {
+  fn slot_name_change_can_cause_slotted_node_to_start_rendering_with_incremental_restyle_reuse(
+  ) -> Result<()> {
     use crate::debug::runtime::RuntimeToggles;
     use std::collections::HashMap;
 
@@ -6072,8 +6210,11 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(before.incremental_restyles, 0);
 
     let child = doc.dom().get_element_by_id("child").expect("#child");
-    let changed =
-      doc.mutate_dom(|dom| dom.set_attribute(child, "data-state", "on").expect("set attribute"));
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(child, "data-state", "on")
+        .expect("set attribute")
+    });
     assert!(changed);
 
     doc.render_frame()?;
@@ -6189,12 +6330,10 @@ html { scroll-snap-type: y mandatory; }
   #[test]
   fn form_state_mutation_coalesces_with_text_changes_correctly() -> Result<()> {
     let renderer = renderer_for_tests();
-    let html = "<!doctype html><html><body><input id=i value=foo><div id=d>Hello</div></body></html>";
-    let mut doc = BrowserDocumentDom2::new(
-      renderer,
-      html,
-      RenderOptions::new().with_viewport(80, 32),
-    )?;
+    let html =
+      "<!doctype html><html><body><input id=i value=foo><div id=d>Hello</div></body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(80, 32))?;
     doc.render_frame()?;
 
     let input = doc.dom().get_element_by_id("i").expect("input element");
@@ -6210,7 +6349,9 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let mapping = doc.last_dom_mapping().expect("dom mapping");
-    let styled_node_id = mapping.preorder_for_node_id(input).expect("input preorder id");
+    let styled_node_id = mapping
+      .preorder_for_node_id(input)
+      .expect("input preorder id");
 
     fn input_text_value(root: &BoxNode, styled_node_id: usize) -> Option<String> {
       let mut stack: Vec<&BoxNode> = vec![root];
@@ -6257,7 +6398,8 @@ html { scroll-snap-type: y mandatory; }
         </body>
       </html>
     "#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
 
     let pixmap0 = doc.render_frame()?;
     let before = doc.invalidation_counters();
@@ -6265,7 +6407,10 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(before.full_restyles, 1);
     assert_eq!(before.full_relayouts, 1);
     let c0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
-    assert_eq!((c0.red(), c0.green(), c0.blue(), c0.alpha()), (255, 0, 0, 255));
+    assert_eq!(
+      (c0.red(), c0.green(), c0.blue(), c0.alpha()),
+      (255, 0, 0, 255)
+    );
 
     let target = doc.dom().get_element_by_id("target").expect("#target");
     let changed = doc.mutate_dom(|dom| {
@@ -6281,7 +6426,10 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts + 1);
     let c1 = pixmap1.pixel(5, 5).expect("pixel 5,5");
-    assert_eq!((c1.red(), c1.green(), c1.blue(), c1.alpha()), (0, 255, 0, 255));
+    assert_eq!(
+      (c1.red(), c1.green(), c1.blue(), c1.alpha()),
+      (0, 255, 0, 255)
+    );
     Ok(())
   }
 
@@ -6303,15 +6451,19 @@ html { scroll-snap-type: y mandatory; }
         </body>
       </html>
     "#;
-    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
     doc.render_frame()?;
     let before = doc.invalidation_counters();
     assert_eq!(before.incremental_restyles, 0);
     assert_eq!(before.full_restyles, 1);
 
     let target = doc.dom().get_element_by_id("target").expect("#target");
-    let changed =
-      doc.mutate_dom(|dom| dom.set_attribute(target, "class", "blue").expect("set attribute"));
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(target, "class", "blue")
+        .expect("set attribute")
+    });
     assert!(changed);
 
     doc.render_frame()?;
@@ -6360,7 +6512,12 @@ html { scroll-snap-type: y mandatory; }
       .children
       .iter()
       .copied()
-      .find(|child| matches!(doc.dom().node(*child).kind, crate::dom2::NodeKind::Text { .. }))
+      .find(|child| {
+        matches!(
+          doc.dom().node(*child).kind,
+          crate::dom2::NodeKind::Text { .. }
+        )
+      })
       .expect("text child node");
 
     let changed = doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text"));
@@ -6368,7 +6525,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared.as_ref().expect("prepared layout");
     assert!(
@@ -6419,7 +6579,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     assert!(
@@ -6468,7 +6631,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     let defs = prepared
@@ -6509,7 +6675,10 @@ html { scroll-snap-type: y mandatory; }
       .svg_id_defs
       .as_deref()
       .expect("svg_id_defs should be collected on initial layout");
-    assert!(defs.contains_key("icon"), "expected svg_id_defs to contain icon");
+    assert!(
+      defs.contains_key("icon"),
+      "expected svg_id_defs to contain icon"
+    );
 
     let raw = prepared
       .fragment_tree
@@ -6529,7 +6698,10 @@ html { scroll-snap-type: y mandatory; }
 
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     let defs = prepared
@@ -6613,7 +6785,10 @@ html { scroll-snap-type: y mandatory; }
     assert!(doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text")));
     doc.render_frame()?;
     let after = doc.invalidation_counters();
-    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+    assert_eq!(
+      after.incremental_relayouts,
+      before.incremental_relayouts + 1
+    );
 
     let prepared = doc.prepared().expect("prepared");
     let fragment = prepared
@@ -6642,11 +6817,8 @@ html { scroll-snap-type: y mandatory; }
       <div id=outside>Outside</div>
     "#;
 
-    let mut doc = BrowserDocumentDom2::new(
-      renderer,
-      html,
-      RenderOptions::new().with_viewport(64, 64),
-    )?;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
     let dlg = doc.dom().get_element_by_id("dlg").expect("dlg");
     let outside = doc.dom().get_element_by_id("outside").expect("outside");
 
@@ -6800,7 +6972,11 @@ html { scroll-snap-type: y mandatory; }
 
     // Mutating attributes on a detached node bumps `dom2::Document`'s mutation generation, but must
     // not force a renderer layout/paint.
-    let changed = doc.mutate_dom(|dom| dom.set_attribute(detached, "class", "changed").expect("set attribute"));
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(detached, "class", "changed")
+        .expect("set attribute")
+    });
     assert!(changed);
     assert!(doc.render_if_needed()?.is_none());
     assert_eq!(doc.invalidation_counters(), before);
@@ -6822,8 +6998,11 @@ html { scroll-snap-type: y mandatory; }
     let template_text = first_text_node_in_inert_template(doc.dom()).expect("template text node");
     assert!(!doc.dom().is_connected_for_scripting(template_text));
 
-    let changed = doc
-      .mutate_dom(|dom| dom.set_text_data(template_text, "updated").expect("set text"));
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_text_data(template_text, "updated")
+        .expect("set text")
+    });
     assert!(changed);
 
     assert!(doc.render_if_needed()?.is_none());
@@ -7095,7 +7274,10 @@ html { scroll-snap-type: y mandatory; }
       let _should_run = crate::js::prepare_script_element_dom2(dom, script, &spec);
       false
     });
-    assert!(!changed, "script internal-slot updates are not render-affecting");
+    assert!(
+      !changed,
+      "script internal-slot updates are not render-affecting"
+    );
     assert!(
       !doc.dom().node(script).script_parser_document && doc.dom().node(script).script_force_async,
       "expected prepare_script_element_dom2 to clear parser_document and set force_async"
