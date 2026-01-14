@@ -158,15 +158,27 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
 }
 
 fn create_doctype_node(doc: &mut Document, parent: NodeId, doctype: &ExtractedDoctype) -> NodeId {
-  doc.push_node(
+  // `parse_xml` can insert doctypes after other top-level nodes have already been imported. Keep
+  // live ranges up to date by running the live-range pre-insert steps before mutating the child
+  // list / parent pointer, even though XML documents currently have scripting disabled.
+  let id = doc.push_node(
     NodeKind::Doctype {
       name: doctype.name.clone(),
       public_id: doctype.public_id.clone(),
       system_id: doctype.system_id.clone(),
     },
-    Some(parent),
+    None,
     /* inert_subtree */ false,
-  )
+  );
+  let idx = doc.nodes[parent.index()].children.len();
+  doc.live_range_pre_insert_steps(
+    parent,
+    doc.tree_child_index_from_raw_index_for_range(parent, idx),
+    doc.inserted_tree_children_count_for_range(parent, &[id]),
+  );
+  doc.nodes[parent.index()].children.push(id);
+  doc.nodes[id.index()].parent = Some(parent);
+  id
 }
 
 /// Parse XML into a [`dom2::Document`](crate::dom2::Document) using `roxmltree`.
