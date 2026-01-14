@@ -136,8 +136,8 @@ fn generator_for_body_restores_lex_env_across_yield() -> Result<(), VmError> {
   let value = rt.exec_script(
     r#"
       function* gen(x) {
-        // Use a for-of loop because the generator evaluator currently supports yield-containing
-        // ForOf statements, but not all yield-containing for-triple forms.
+        // Use a for-of loop for simplicity; generator execution supports yield in for-of, for-in
+        // and for(;;) forms.
         for (var i of [0, 1]) {
           let x = "inner" + i;
           yield x;
@@ -440,10 +440,119 @@ fn generator_for_body_restores_env_on_continue_after_yield() -> Result<(), VmErr
   let value = rt.exec_script(
     r#"
       function* gen(x) {
-        // Use for-of because the generator evaluator supports yield-containing for-of, but not all
-        // yield-containing for-triple forms.
+        // Use for-of for simplicity; generator execution supports yield in for-of, for-in and
+        // for(;;) forms.
         var out = [];
         for (var i of [0, 1]) {
+          let x = "inner" + i;
+          yield x;
+          out.push(x);
+          continue;
+        }
+        out.push(x);
+        return out.join(",");
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      a === "inner0" && b === "inner1" && c === "inner0,inner1,outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_triple_body_restores_lex_env_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        for (var i = 0; i < 2; ++i) {
+          let x = "inner" + i;
+          yield x;
+        }
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      a === "inner0" && b === "inner1" && c === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_triple_body_preserves_inner_let_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = [];
+      function* gen(x) {
+        for (var i = 0; i < 2; ++i) {
+          let x = "inner" + i;
+          yield x;
+          out.push(x);
+        }
+        out.push(x);
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      a === "inner0"
+        && b === "inner1"
+        && c === "outer"
+        && out.length === 3
+        && out[0] === "inner0"
+        && out[1] === "inner1"
+        && out[2] === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_triple_body_restores_env_on_break_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        for (var i = 0; i < 2; ++i) {
+          let x = "inner" + i;
+          yield x;
+          break;
+        }
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      a === "inner0" && b === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_triple_body_restores_env_on_continue_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        var out = [];
+        for (var i = 0; i < 2; ++i) {
           let x = "inner" + i;
           yield x;
           out.push(x);
