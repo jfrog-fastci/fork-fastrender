@@ -19,10 +19,10 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn compiled_script_await_using_in_nested_block_is_syntax_error() -> Result<(), VmError> {
+fn compiled_script_await_using_in_nested_block_falls_back() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  let err = CompiledScript::compile_script(
+  let script = CompiledScript::compile_script(
     rt.heap_mut(),
     "compiled_await_using_in_block_fallback.js",
     r#"
@@ -33,9 +33,34 @@ fn compiled_script_await_using_in_nested_block_is_syntax_error() -> Result<(), V
       }
       out
     "#,
-  )
-  .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await using is not yet supported by the HIR async classic-script executor"
+  );
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(result, Value::Number(1.0));
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(out, Value::Number(1.0));
+
+  rt.heap_mut().remove_root(completion_root);
   Ok(())
 }
 
