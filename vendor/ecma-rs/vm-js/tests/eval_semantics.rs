@@ -188,6 +188,38 @@ fn direct_eval_with_awaited_argument_sees_catch_binding() -> Result<(), VmError>
 }
 
 #[test]
+fn direct_eval_with_awaited_argument_assigns_to_catch_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      // Global `e` should not be affected by assignment to the catch binding.
+      var e = 2;
+      async function f() {
+        try { throw 5; }
+        catch (e) {
+          eval(await "e = 6");
+          return e;
+        }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(6.0));
+
+  let value = rt.exec_script("e")?;
+  assert_eq!(value, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn direct_eval_with_awaited_argument_sees_with_binding() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -210,6 +242,67 @@ fn direct_eval_with_awaited_argument_sees_with_binding() -> Result<(), VmError> 
 
   let value = rt.exec_script("out")?;
   assert_eq!(value, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn direct_eval_with_awaited_argument_assigns_to_with_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 2;
+      var obj = { x: 3 };
+      async function f() {
+        with (obj) {
+          eval(await "x = 4");
+          return x;
+        }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(4.0));
+
+  let value = rt.exec_script("x === 2 && obj.x === 4")?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn direct_eval_with_awaited_argument_sees_for_of_let_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 2;
+      async function f() {
+        for (let x of [1]) {
+          return eval(await "x");
+        }
+        return -1;
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(1.0));
+
+  let value = rt.exec_script("x")?;
+  assert_eq!(value, Value::Number(2.0));
   Ok(())
 }
 

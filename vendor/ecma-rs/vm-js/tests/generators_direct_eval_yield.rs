@@ -62,6 +62,35 @@ fn generator_direct_eval_with_yield_argument_sees_catch_binding() {
 }
 
 #[test]
+fn generator_direct_eval_with_yield_argument_assigns_to_catch_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `e` should not be affected by assignment to the catch binding.
+          var e = 2;
+          function* g() {
+            try { throw 5; }
+            catch (e) {
+              eval(yield 0);
+              return e;
+            }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("e = 6");
+          ok = r.done === true && r.value === 6 && e === 2;
+        } catch (err) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_direct_eval_with_yield_argument_sees_with_binding() {
   let mut rt = new_runtime();
   let value = rt
@@ -81,6 +110,61 @@ fn generator_direct_eval_with_yield_argument_sees_with_binding() {
           it.next();
           var r = it.next("x");
           ok = r.done === true && r.value === 3;
+        } catch (err) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_argument_assigns_to_with_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          var obj = { x: 3 };
+          function* g() {
+            with (obj) {
+              eval(yield 0);
+              return x;
+            }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x = 4");
+          ok = r.done === true && r.value === 4 && x === 2 && obj.x === 4;
+        } catch (err) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_argument_sees_for_of_let_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* g() {
+            for (let x of [1]) {
+              return eval(yield 0);
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          ok = r.done === true && r.value === 1 && x === 2;
         } catch (err) { ok = false; }
         ok
       "#,
