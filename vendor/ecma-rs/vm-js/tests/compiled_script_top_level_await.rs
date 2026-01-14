@@ -135,3 +135,59 @@ fn compiled_script_top_level_await_in_assignment_suspends_and_resumes() -> Resul
   rt.heap_mut().remove_root(result_root);
   Ok(())
 }
+
+#[test]
+fn compiled_script_top_level_await_in_computed_member_assignment_preserves_eval_order() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var obj = {};
+      obj[(log.push("key"), "k")] = await Promise.resolve((log.push("rhs"), "v"));
+      log.push("after");
+      obj.k
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member assignment should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "supported top-level await scripts should not trigger the general compiled-script AST fallback"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // The assignment should not have executed yet, but the assignment *reference* (including the
+  // computed key) and the await argument should have been evaluated in order.
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "key,rhs");
+
+  let before_k = rt.exec_script("obj.k")?;
+  assert_eq!(before_k, Value::Undefined);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let after_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, after_log), "key,rhs,after");
+
+  let after_k = rt.exec_script("obj.k")?;
+  assert_eq!(value_to_utf8(&rt, after_k), "v");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
