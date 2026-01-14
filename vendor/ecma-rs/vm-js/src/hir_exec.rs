@@ -10621,13 +10621,44 @@ impl HirAsyncState {
         let HirAsyncBodyKind::Expr { expr } = &self.body_kind else {
           return Err(VmError::InvariantViolation("missing compiled async body kind"));
         };
+        let expr_span_start = evaluator.get_expr(body, *expr)?.span.start;
+        let (source_name, line, col) = {
+          let source = evaluator.script.source.as_ref();
+          let (line, col) = source.line_col(expr_span_start);
+          (source.name.clone(), line, col)
+        };
+        let update_top_frame = |stack: &mut Vec<StackFrame>| {
+          if let Some(top) = stack.first_mut() {
+            top.source = source_name.clone();
+            top.line = line;
+            top.col = col;
+          } else {
+            stack.push(StackFrame {
+              function: None,
+              source: source_name.clone(),
+              line,
+              col,
+            });
+          }
+        };
+
         let expr_res = evaluator.eval_expr(scope, body, *expr);
         return match expr_res {
           Ok(v) => Ok(HirAsyncResult::CompleteOk(v)),
           Err(err) => {
             let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
             match err {
-              VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+              VmError::Throw(value) => {
+                let mut stack = evaluator.vm.capture_stack();
+                update_top_frame(&mut stack);
+                crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+                Ok(HirAsyncResult::CompleteThrow(value))
+              }
+              VmError::ThrowWithStack { value, mut stack } => {
+                if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
+                  update_top_frame(&mut stack);
+                }
+                crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
                 Ok(HirAsyncResult::CompleteThrow(value))
               }
               other => Err(other),
