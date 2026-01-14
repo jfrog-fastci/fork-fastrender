@@ -1037,10 +1037,7 @@ mod tests {
 
   #[test]
   fn session_window_sanitizes_closed_tabs_urls_titles_and_schemes() {
-    let long_url = format!(
-      "https://example.com/{}",
-      "a".repeat(MAX_SESSION_URL_BYTES)
-    );
+    let long_url = format!("https://example.com/{}", "a".repeat(MAX_SESSION_URL_BYTES));
     assert!(
       long_url.len() > MAX_SESSION_URL_BYTES,
       "expected long_url to exceed max bytes"
@@ -1076,7 +1073,11 @@ mod tests {
     }
     .sanitized();
 
-    assert_eq!(window.closed_tabs.len(), 1, "invalid schemes should be dropped");
+    assert_eq!(
+      window.closed_tabs.len(),
+      1,
+      "invalid schemes should be dropped"
+    );
     let restored = &window.closed_tabs[0];
     assert!(restored.pinned);
     assert!(
@@ -1089,7 +1090,10 @@ mod tests {
       restored.url
     );
     assert!(
-      restored.title.as_ref().is_some_and(|t| t.as_bytes().len() <= MAX_TITLE_BYTES),
+      restored
+        .title
+        .as_ref()
+        .is_some_and(|t| t.as_bytes().len() <= MAX_TITLE_BYTES),
       "closed tab title should be clamped"
     );
   }
@@ -1877,11 +1881,7 @@ mod tests {
     })
     .to_string();
 
-    let parsed: BrowserSessionFile = serde_json::from_str(&raw).expect("deserialize session file");
-    let BrowserSessionFile::V2(session) = parsed else {
-      panic!("expected v2 session file");
-    };
-
+    let session: BrowserSession = serde_json::from_str(&raw).expect("deserialize session v2");
     assert_eq!(session.windows.len(), MAX_SESSION_WINDOWS);
     assert_eq!(session.windows[0].tabs.len(), MAX_SESSION_TABS_PER_WINDOW);
     assert_eq!(
@@ -1905,10 +1905,7 @@ mod tests {
       .collect();
     let raw = json!({"tabs": tabs, "active_tab_index": 0}).to_string();
 
-    let parsed: BrowserSessionFile = serde_json::from_str(&raw).expect("deserialize legacy v1");
-    let BrowserSessionFile::V1(v1) = parsed else {
-      panic!("expected v1 session file");
-    };
+    let v1: BrowserSessionV1 = serde_json::from_str(&raw).expect("deserialize legacy v1");
     assert_eq!(v1.tabs.len(), MAX_SESSION_TABS_PER_WINDOW);
   }
 
@@ -2481,7 +2478,7 @@ pub fn session_path() -> PathBuf {
       .join(SESSION_FILE_NAME);
   }
 
-PathBuf::from(format!("./{SESSION_FILE_NAME}"))
+  PathBuf::from(format!("./{SESSION_FILE_NAME}"))
 }
 
 fn session_backup_path(path: &Path) -> PathBuf {
@@ -2680,13 +2677,6 @@ struct BrowserSessionV1 {
   active_tab_index: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(untagged)]
-enum BrowserSessionFile {
-  V2(BrowserSession),
-  V1(BrowserSessionV1),
-}
-
 fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
   BrowserSession {
     version: SESSION_VERSION,
@@ -2711,12 +2701,15 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
 
 /// Parse a session JSON payload (v2 or legacy v1) into the in-memory [`BrowserSession`] model.
 pub fn parse_session_json(raw: &str) -> Result<BrowserSession, String> {
-  let parsed: BrowserSessionFile = serde_json::from_str(raw).map_err(|err| err.to_string())?;
-  let session = match parsed {
-    BrowserSessionFile::V2(session) => session,
-    BrowserSessionFile::V1(v1) => v1_into_v2(v1),
-  };
-  Ok(session.sanitized())
+  match serde_json::from_str::<BrowserSession>(raw) {
+    Ok(session) => Ok(session.sanitized()),
+    Err(v2_err) => match serde_json::from_str::<BrowserSessionV1>(raw) {
+      Ok(v1) => Ok(v1_into_v2(v1).sanitized()),
+      Err(v1_err) => Err(format!(
+        "failed to parse session JSON as v2 ({v2_err}) or legacy v1 ({v1_err})"
+      )),
+    },
+  }
 }
 
 /// A best-effort advisory file lock used to ensure only one `browser` process writes a session file.
