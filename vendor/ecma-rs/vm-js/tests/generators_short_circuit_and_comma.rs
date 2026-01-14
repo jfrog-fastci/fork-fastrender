@@ -333,6 +333,90 @@ fn generator_short_circuit_evaluates_rhs_yield_star_when_needed() {
 }
 
 #[test]
+fn generator_short_circuit_inside_comma_operand() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      // Short-circuit should still apply when nested inside a comma expression operand.
+      function* g_and(){ return (false && (yield 1), 2); }
+      var it_and = g_and();
+      var a = it_and.next();
+
+      function* g_or(){ return (true || (yield 1), 2); }
+      var it_or = g_or();
+      var b = it_or.next();
+
+      function* g_nullish_skip(){ return (0 ?? (yield 1), 2); }
+      var it_ns = g_nullish_skip();
+      var c = it_ns.next();
+
+      // When the inner operator evaluates its RHS (and yields), the comma operator still discards
+      // that value and returns its own RHS.
+      function* g_nullish_eval(){ return (null ?? (yield 1), 2); }
+      var it_ne = g_nullish_eval();
+      var d1 = it_ne.next();      // yields 1
+      var d2 = it_ne.next(99);    // resumes inner yield, then returns 2 from comma
+
+      a.done === true && a.value === 2 &&
+      b.done === true && b.value === 2 &&
+      c.done === true && c.value === 2 &&
+      d1.done === false && d1.value === 1 &&
+      d2.done === true && d2.value === 2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_short_circuit_in_comma_rhs_after_yield_in_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      // The comma operator must evaluate its LHS first (including yields), then evaluate its RHS.
+      // Short-circuiting inside the RHS should be based on the RHS's own evaluation.
+      function* g_and_skip(){ return (yield 1, false && (yield 2)); }
+      var it_as = g_and_skip();
+      var as1 = it_as.next();        // yields 1
+      var as2 = it_as.next(123);     // short-circuit in RHS, no yield 2
+
+      function* g_or_skip(){ return (yield 1, true || (yield 2)); }
+      var it_os = g_or_skip();
+      var os1 = it_os.next();
+      var os2 = it_os.next(123);
+
+      function* g_nullish_skip(){ return (yield 1, 0 ?? (yield 2)); }
+      var it_ns = g_nullish_skip();
+      var ns1 = it_ns.next();
+      var ns2 = it_ns.next(123);
+
+      function* g_nullish_eval(){ return (yield 1, null ?? (yield 2)); }
+      var it_ne = g_nullish_eval();
+      var ne1 = it_ne.next();        // yields 1
+      var ne2 = it_ne.next(123);     // yields 2
+      var ne3 = it_ne.next(456);     // resumes yield 2 => 456
+
+      as1.done === false && as1.value === 1 &&
+      as2.done === true && as2.value === false &&
+
+      os1.done === false && os1.value === 1 &&
+      os2.done === true && os2.value === true &&
+
+      ns1.done === false && ns1.value === 1 &&
+      ns2.done === true && ns2.value === 0 &&
+
+      ne1.done === false && ne1.value === 1 &&
+      ne2.done === false && ne2.value === 2 &&
+      ne3.done === true && ne3.value === 456
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_comma_operator_with_yield_on_lhs() {
   let mut rt = new_runtime();
   let value = rt
