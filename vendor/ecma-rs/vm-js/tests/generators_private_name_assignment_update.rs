@@ -123,6 +123,48 @@ fn generator_private_field_prefix_update_yield_in_base() {
 }
 
 #[test]
+fn generator_private_field_decrement_yield_in_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static #x = 2;
+        static getX() { return this.#x; }
+        static *g() { return (yield this).#x--; }
+      }
+      var it = C.g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r2.done === true && r2.value === 2 && C.getX() === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_private_field_prefix_decrement_yield_in_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static #x = 2;
+        static getX() { return this.#x; }
+        static *g() { return --(yield this).#x; }
+      }
+      var it = C.g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r2.done === true && r2.value === 1 && C.getX() === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_private_field_assignment_to_proxy_throws() {
   let mut rt = new_runtime();
   let value = rt

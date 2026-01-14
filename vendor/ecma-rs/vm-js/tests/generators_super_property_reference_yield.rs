@@ -182,3 +182,33 @@ fn generator_super_computed_member_update_yield_in_key() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_super_computed_member_decrement_yield_in_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B {
+          get x(){ return this._x; }
+          set x(v){ this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 3; }
+          *gen(){
+            let a = super[yield "x"]--;
+            let b = --super[yield "x"];
+            return String(a) + "," + String(b) + "," + String(this._x);
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        const r3 = it.next("x");
+        r1.value === "x" && r1.done === false
+          && r2.value === "x" && r2.done === false
+          && r3.value === "3,1,1" && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

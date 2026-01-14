@@ -340,6 +340,89 @@ fn generator_yield_in_update_expression_base_and_key_both_yield() {
 }
 
 #[test]
+fn generator_yield_in_update_expression_computed_key_to_numeric_error_is_throw_completion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = { a: Symbol("s") };
+          try {
+            obj[(yield 0)]++;
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("a");
+        r1.value === 0 && r1.done === false &&
+        r2.value === "TypeError" && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_update_expression_computed_key_strict_putvalue_error_is_throw_completion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(obj) {
+          "use strict";
+          try {
+            obj[(yield 0)]++;
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+        var obj = {};
+        Object.defineProperty(obj, "a", { value: 1, writable: false });
+        var it = g(obj);
+        var r1 = it.next();
+        var r2 = it.next("a");
+        r1.value === 0 && r1.done === false &&
+        r2.value === "TypeError" && r2.done === true &&
+        obj.a === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_update_expression_computed_key_evaluates_to_property_key_before_nullish_base_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function* g() {
+          try {
+            null[(yield (side = 1, "yielded"))]++;
+            return "no";
+          } catch (e) {
+            return String(side) + ":" + e.name;
+          }
+        }
+        var it = g();
+        var r1 = it.next();
+        var key = { toString() { side = side + 1; return "x"; } };
+        var r2 = it.next(key);
+        r1.value === "yielded" && r1.done === false &&
+        side === 2 &&
+        r2.value === "2:TypeError" && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_new_expression_arguments() {
   let mut rt = new_runtime();
   let value = rt
