@@ -29986,6 +29986,111 @@ pub(crate) fn event_target_dispatch_event_dom2(
   Ok(Value::Bool(result))
 }
 
+pub(crate) fn dispatch_dom_event_with<F>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target_obj: GcObject,
+  type_: &str,
+  init_obj: Option<GcObject>,
+  configure_event: F,
+) -> Result<Option<GcObject>, VmError>
+where
+  F: FnOnce(&mut Vm, &mut Scope<'_>, GcObject) -> Result<(), VmError>,
+{
+  let mut scope = scope.reborrow();
+
+  // Root the target across allocations and dispatch.
+  scope.push_root(Value::Object(target_obj))?;
+  if let Some(init_obj) = init_obj {
+    scope.push_root(Value::Object(init_obj))?;
+  }
+
+  // Use the resolved window object to locate the realm's `Event` constructor.
+  let resolved = resolve_event_target(vm, &mut scope, vm_host, target_obj)?;
+  let window_obj = resolved.resolved.window_obj;
+  scope.push_root(Value::Object(window_obj))?;
+
+  let event_ctor_key = alloc_key(&mut scope, "Event")?;
+  let event_ctor =
+    vm.get_with_host_and_hooks(vm_host, &mut scope, hooks, window_obj, event_ctor_key)?;
+  scope.push_root(event_ctor)?;
+
+  if !scope.heap().is_constructor(event_ctor).unwrap_or(false) {
+    return Ok(None);
+  }
+
+  let type_s = scope.alloc_string(type_)?;
+  scope.push_root(Value::String(type_s))?;
+
+  // `vm.construct_with_host_and_hooks` may allocate/GC; keep all inputs rooted.
+  let event_value = if let Some(init_obj) = init_obj {
+    vm.construct_with_host_and_hooks(
+      vm_host,
+      &mut scope,
+      hooks,
+      event_ctor,
+      &[Value::String(type_s), Value::Object(init_obj)],
+      event_ctor,
+    )?
+  } else {
+    vm.construct_with_host_and_hooks(
+      vm_host,
+      &mut scope,
+      hooks,
+      event_ctor,
+      &[Value::String(type_s)],
+      event_ctor,
+    )?
+  };
+
+  let Value::Object(event_obj) = event_value else {
+    // Best-effort: ignore non-object results.
+    return Ok(None);
+  };
+  scope.push_root(Value::Object(event_obj))?;
+
+  configure_event(vm, &mut scope, event_obj)?;
+
+  // Ignore the boolean return value; host-driven dispatch is notification-only.
+  let _ = event_target_dispatch_event_dom2(
+    vm,
+    &mut scope,
+    vm_host,
+    hooks,
+    target_obj,
+    &[Value::Object(event_obj)],
+  )?;
+
+  Ok(Some(event_obj))
+}
+
+/// Convenience wrapper around [`dispatch_dom_event_with`] for `new Event(type_)` events without
+/// additional payload fields.
+///
+/// Best-effort: missing/non-constructible `Event` results in a no-op (`Ok(())`).
+pub(crate) fn dispatch_simple_dom_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  vm_host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target_obj: GcObject,
+  type_: &str,
+) -> Result<(), VmError> {
+  let _ = dispatch_dom_event_with(
+    vm,
+    scope,
+    vm_host,
+    hooks,
+    target_obj,
+    type_,
+    None,
+    |_vm, _scope, _event_obj| Ok(()),
+  )?;
+  Ok(())
+}
+
 fn event_target_add_event_listener_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -64485,6 +64590,79 @@ mod tests {
       })()",
     )?;
     assert_eq!(dispatched, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_simple_dom_event_dispatches_when_event_exists() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__calls = 0;\n\
+       globalThis.__et = new EventTarget();\n\
+       __et.addEventListener('x', () => { __calls++; });",
+    )?;
+
+    let dataset_ctx = realm.dataset_exotic_context();
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    })?;
+
+    let global = realm_ref.global_object();
+    let et_obj = match get_prop(&mut vm, &mut scope, global, "__et")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected EventTarget object, got {other:?}"),
+    };
+
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
+
+    let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
+    assert_eq!(calls, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_simple_dom_event_is_noop_when_event_deleted() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let mut host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__calls = 0;\n\
+       globalThis.__et = new EventTarget();\n\
+       __et.addEventListener('x', () => { __calls++; });\n\
+       delete globalThis.Event;",
+    )?;
+
+    let dataset_ctx = realm.dataset_exotic_context();
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    })?;
+
+    let global = realm_ref.global_object();
+    let et_obj = match get_prop(&mut vm, &mut scope, global, "__et")? {
+      Value::Object(obj) => obj,
+      other => panic!("expected EventTarget object, got {other:?}"),
+    };
+
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
+
+    let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
+    assert_eq!(calls, Value::Number(0.0));
     Ok(())
   }
 
