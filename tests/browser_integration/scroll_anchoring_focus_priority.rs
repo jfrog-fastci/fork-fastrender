@@ -81,10 +81,8 @@ fn scroll_anchoring_focus_priority_candidate_keeps_focused_input_stable() -> Res
   let scroll_y = (geom.border_box.y() - desired_viewport_y).max(0.0);
   doc.set_scroll(0.0, scroll_y);
 
-  let interaction_state = InteractionState {
-    focused: Some(input_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.set_focused(Some(input_id));
 
   doc.render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))?;
   let before_scroll_y = doc.scroll_state().viewport.y;
@@ -128,4 +126,3 @@ fn scroll_anchoring_focus_priority_candidate_keeps_focused_input_stable() -> Res
 
   Ok(())
 }
-

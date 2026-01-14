@@ -3199,7 +3199,13 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
         .interaction_state
         .and_then(|state| state.form_state().value_for(node.node_id))
       {
-        return Some(value.to_string());
+        // Treat live form-state overrides as the current control value, including HTML value
+        // sanitization for input types like color/date/time/etc.
+        let mut override_node = node.node.clone();
+        override_node.set_attribute("value", value);
+        return ElementRef::new(&override_node)
+          .accessibility_value()
+          .or_else(|| Some(value.to_string()));
       }
       // Fall back to the DOM layer's value computation so accessibility matches HTML sanitization
       // (e.g. color/date/time inputs) instead of exposing the raw `value=` attribute.
