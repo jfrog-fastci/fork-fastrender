@@ -497,6 +497,106 @@ fn compiled_script_top_level_await_computed_member_assignment_rejection_does_not
 }
 
 #[test]
+fn compiled_script_top_level_await_computed_member_assignment_null_base_throws_before_await_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      null[(log.push("key"), "k")] = await Promise.resolve((log.push("rhs"), "v"));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // `RequireObjectCoercible(null)` throws *after* evaluating the computed key (per spec), but
+  // before evaluating the RHS/await operand.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(error_name(&mut rt, reason)?, "TypeError");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "key");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_computed_member_assignment_key_to_property_key_throw_happens_before_await_rhs(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var obj = {};
+      var key = { toString() { log.push("toString"); throw "boom"; } };
+      obj[key] = await Promise.resolve((log.push("rhs"), "v"));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // Key conversion (`ToPropertyKey`) throws before the RHS/await operand is evaluated, so the async
+  // classic-script should reject synchronously without suspension.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(value_to_utf8(&rt, reason), "boom");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "toString");
+
+  let keys = rt.exec_script("Object.keys(obj).join(',')")?;
+  assert_eq!(value_to_utf8(&rt, keys), "");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_unresolvable_binding_assignment_strict_mode_throws_after_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
