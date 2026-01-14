@@ -46,6 +46,11 @@ use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
 use url::Url;
 
+/// Canonical scheme name for chrome-action URLs.
+///
+/// Kept as a standalone constant because it is used by tests and a small amount of UI glue code.
+pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
+
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
@@ -145,8 +150,13 @@ impl ChromeActionUrl {
   /// - Parsing is strict: unknown actions and malformed args fail closed.
   /// - Only the opaque form `chrome-action:<action>` is accepted (no `chrome-action://...`).
   pub fn parse(raw: &str) -> Result<Self, String> {
-    let raw = trim_ascii_whitespace(raw);
-    let url = Url::parse(raw).map_err(|err| format!("invalid chrome-action URL {raw:?}: {err}"))?;
+    let trimmed = trim_ascii_whitespace(raw);
+    if trimmed != raw {
+      return Err("chrome-action URLs must not contain leading or trailing whitespace".to_string());
+    }
+
+    let url =
+      Url::parse(trimmed).map_err(|err| format!("invalid chrome-action URL {trimmed:?}: {err}"))?;
 
     if !url.scheme().eq_ignore_ascii_case(Self::SCHEME) {
       return Err(format!(
@@ -162,8 +172,8 @@ impl ChromeActionUrl {
       return Err("chrome-action URLs must not include a fragment".to_string());
     }
 
-    let action = trim_ascii_whitespace(url.path()).trim_start_matches('/');
-    if action.is_empty() {
+    let action = trim_ascii_whitespace(url.path());
+    if action.is_empty() || action.starts_with('/') {
       return Err("chrome-action URL missing action".to_string());
     }
     let action = action.to_ascii_lowercase();
