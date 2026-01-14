@@ -9,6 +9,19 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn host_gc(
+  _vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn vm_js::VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  scope.heap_mut().collect_garbage();
+  Ok(Value::Undefined)
+}
+
 /// Minimal host hook implementation that completes `HostLoadImportedModule` immediately with an
 /// error *as a throw completion* so dynamic `import()` returns a rejected promise instead of
 /// throwing synchronously.
@@ -190,6 +203,39 @@ fn generator_dynamic_import_options_frame_specifier_is_traced_across_gc() -> Res
   )?;
   hooks.teardown_jobs(&mut rt);
 
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
+  Ok(())
+}
+
+#[test]
+fn generator_dynamic_import_options_frame_specifier_is_rooted_across_resume_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("__gc", host_gc, 0)?;
+
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        // The specifier is stored only in the ImportAfterOptions continuation frame after the first
+        // yield. Trigger a GC during resumption (while the continuation is temporarily stored
+        // outside the heap) to ensure the specifier is included in `gen_root_values_for_continuation`.
+        return import({ toString() { return "./m.js"; } }, ((yield 0), __gc(), undefined));
+      }
+
+      var it = g();
+      var first = it.next();
+      var second = it.next(undefined);
+
+      first.value === 0 &&
+        first.done === false &&
+        second.done === true &&
+        second.value &&
+        typeof second.value.then === "function"
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
   assert_eq!(value, Value::Bool(true));
   assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
   Ok(())
