@@ -362,8 +362,7 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       if state.creating_folder.is_some() {
         {
-          let folder_options = folder_cache.folder_options.as_slice();
-          create_folder_card(ui, state, store, folder_options, &mut out);
+          create_folder_card(ui, state, store, &folder_cache, &mut out);
         }
         folder_cache.ensure_up_to_date(store);
         ui.add_space(ui.spacing().item_spacing.y.max(8.0));
@@ -371,8 +370,7 @@ pub fn bookmarks_manager_side_panel(
 
       if state.editing_bookmark.is_some() {
         {
-          let folder_options = folder_cache.folder_options.as_slice();
-          edit_bookmark_card(ui, state, store, folder_options, &mut out);
+          edit_bookmark_card(ui, state, store, &folder_cache, &mut out);
         }
         folder_cache.ensure_up_to_date(store);
         ui.add_space(ui.spacing().item_spacing.y.max(8.0));
@@ -743,7 +741,7 @@ fn create_folder_card(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
   store: &mut BookmarkStore,
-  folder_options: &[(Option<BookmarkId>, String)],
+  folder_cache: &BookmarksFolderCache,
   out: &mut BookmarksManagerOutput,
 ) {
   let Some(mut create) = state.creating_folder.take() else {
@@ -786,7 +784,7 @@ fn create_folder_card(
     folder_combo_box(
       ui,
       "create_folder_parent",
-      folder_options,
+      folder_cache,
       &mut create.parent,
       "Parent folder",
     );
@@ -834,7 +832,7 @@ fn edit_bookmark_card(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
   store: &mut BookmarkStore,
-  folder_options: &[(Option<BookmarkId>, String)],
+  folder_cache: &BookmarksFolderCache,
   out: &mut BookmarksManagerOutput,
 ) {
   let Some(mut edit) = state.editing_bookmark.take() else {
@@ -893,7 +891,7 @@ fn edit_bookmark_card(
     folder_combo_box(
       ui,
       format!("edit_parent_{}", edit.id.0),
-      folder_options,
+      folder_cache,
       &mut edit.parent,
       "Folder",
     );
@@ -1493,17 +1491,13 @@ fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
 fn folder_combo_box(
   ui: &mut egui::Ui,
   id_source: impl std::hash::Hash,
-  options: &[(Option<BookmarkId>, String)],
+  folder_cache: &BookmarksFolderCache,
   value: &mut Option<BookmarkId>,
   a11y_label: &'static str,
 ) {
   // Ensure a stable ID for both the combo box and its virtualized scroll area.
   let combo_id = ui.make_persistent_id(id_source);
-  let selected = options
-    .iter()
-    .find(|(id, _)| id == value)
-    .map(|(_, label)| label.as_str())
-    .unwrap_or("Root");
+  let selected = folder_cache.label_for_parent(*value);
   let selected = truncate_middle(selected, 48);
   let response = egui::ComboBox::from_id_source(combo_id)
     .selected_text(selected)
@@ -1515,9 +1509,9 @@ fn folder_combo_box(
         .auto_shrink([false, false])
         .max_height(row_height * 12.0)
         .id_source((combo_id, "popup"))
-        .show_rows(ui, row_height, options.len(), |ui, row_range| {
+        .show_rows(ui, row_height, folder_cache.folder_options.len(), |ui, row_range| {
           for idx in row_range {
-            let (id, label) = &options[idx];
+            let (id, label) = &folder_cache.folder_options[idx];
             ui.selectable_value(value, *id, label);
           }
         });
