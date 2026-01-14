@@ -172,17 +172,6 @@ pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
     .unwrap_or(0)
 }
 
-/// Return the legacy `DOMException` numeric code for a given exception name.
-///
-/// Accepts both legacy constant names (e.g. `HIERARCHY_REQUEST_ERR`) and modern DOMException names
-/// (e.g. `HierarchyRequestError`).
-///
-/// This is used by handwritten `vm-js` DOM shims that need to synthesize a DOMException instance
-/// with a legacy `code` field.
-pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
-  legacy_dom_exception_code_from_name(name)
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
