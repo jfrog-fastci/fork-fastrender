@@ -44,9 +44,15 @@ pub trait MediaClock: Send + Sync + 'static {
 ///
 /// This is useful when media clocking needs to reuse the host's injectable clock
 /// (e.g. deterministic JS tests with [`crate::clock::VirtualClock`]).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClockMediaClock {
   clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for ClockMediaClock {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ClockMediaClock").finish_non_exhaustive()
+  }
 }
 
 impl ClockMediaClock {

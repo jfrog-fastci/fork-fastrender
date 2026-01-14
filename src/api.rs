@@ -2203,6 +2203,13 @@ pub struct ResourceContext {
   pub iframe_embedder: Option<Arc<dyn crate::paint::iframe::IframeEmbedder>>,
 }
 
+type PrevResourceContexts = (
+  Option<ResourceContext>,
+  Option<ResourceContext>,
+  Option<ResourceContext>,
+  Option<ResourceContext>,
+);
+
 fn extract_status_from_message(message: &str) -> Option<u16> {
   let lower = message.to_ascii_lowercase();
   let mut search_start = 0usize;
@@ -17134,12 +17141,7 @@ impl FastRender {
   fn push_resource_context(
     &mut self,
     context: Option<ResourceContext>,
-  ) -> (
-    Option<ResourceContext>,
-    Option<ResourceContext>,
-    Option<ResourceContext>,
-    Option<ResourceContext>,
-  ) {
+  ) -> PrevResourceContexts {
     let prev_self = self.resource_context.clone();
     let prev_image = self.image_cache.resource_context();
     let prev_layout_image = self.layout_engine.image_cache().resource_context();

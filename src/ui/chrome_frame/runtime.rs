@@ -304,7 +304,8 @@ impl ChromeFrameRuntime {
         // other actions.
       }
       InteractionAction::Navigate { href }
-      | InteractionAction::OpenInNewTab { href } => {
+      | InteractionAction::OpenInNewTab { href }
+      | InteractionAction::OpenInNewWindow { href } => {
         out.push_action(self.chrome_action_from_href(&href)?);
       }
       InteractionAction::NavigateRequest { request }

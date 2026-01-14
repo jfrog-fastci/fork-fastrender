@@ -600,7 +600,7 @@ impl WindowRealmUserData {
     &mut self,
     key: DomNodeKey,
   ) -> &mut crate::js::window_media::MediaElementState {
-    let master: Arc<dyn crate::media::clock::MediaClock> = Arc::clone(&self.media_master_clock);
+    let master: Arc<dyn crate::media::clock::MediaClock> = self.media_master_clock.clone();
     self
       .media_element_state_registry
       .get_or_create(key, &master)

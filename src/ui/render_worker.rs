@@ -1060,22 +1060,6 @@ impl TabState {
   ) -> Option<Arc<crate::FragmentTree>> {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
-
-  fn desired_next_tick(&mut self) -> Option<Duration> {
-    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
-    let css_tick = self
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
-    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
-
-    match (css_tick, js_tick) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
-  }
 }
 
 fn hit_test_fragment_tree_for_scroll_cached(
@@ -2915,9 +2899,14 @@ struct BrowserRuntime {
 impl BrowserRuntime {
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
-  fn emit_scroll_state_updated(ui_tx: &WorkerToUiSender, tab_id: TabId, tab: &mut TabState) {
-    let scroll = tab.scroll_state.clone();
-    tab.last_reported_scroll_state = scroll.clone();
+  fn emit_scroll_state_updated(
+    ui_tx: &WorkerToUiSender,
+    tab_id: TabId,
+    scroll_state: &ScrollState,
+    last_reported_scroll_state: &mut ScrollState,
+  ) {
+    let scroll = scroll_state.clone();
+    *last_reported_scroll_state = scroll.clone();
     let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated { tab_id, scroll }));
   }
 
@@ -3147,10 +3136,15 @@ impl BrowserRuntime {
         // frame was in-flight), we still want the UI model to learn about any scroll changes that
         // occurred while that frame was cancelled. `FrameReady` carries `scroll_state`, but in this
         // case no `FrameReady` is emitted, so send a standalone scroll update when needed.
-        if matches!(output.snapshot_kind, SnapshotKind::Paint) {
+          if matches!(output.snapshot_kind, SnapshotKind::Paint) {
           if let Some(tab) = self.tabs.get_mut(&output.tab_id) {
             if tab.scroll_state != tab.last_reported_scroll_state {
-              Self::emit_scroll_state_updated(&self.ui_tx, output.tab_id, tab);
+              Self::emit_scroll_state_updated(
+                &self.ui_tx,
+                output.tab_id,
+                &tab.scroll_state,
+                &mut tab.last_reported_scroll_state,
+              );
             }
           }
         }
@@ -4094,7 +4088,12 @@ impl BrowserRuntime {
                   .history
                   .update_scroll_state(&tab.scroll_state);
               }
-              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+              Self::emit_scroll_state_updated(
+                &self.ui_tx,
+                tab_id,
+                &tab.scroll_state,
+                &mut tab.last_reported_scroll_state,
+              );
             }
             return;
           };
@@ -4289,7 +4288,12 @@ impl BrowserRuntime {
             if scroll_changed && emit_scroll_state_updated {
               // Emit an early scroll-state update so UIs can async-scroll the last painted texture
               // while waiting for the repaint.
-              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+              Self::emit_scroll_state_updated(
+                &self.ui_tx,
+                tab_id,
+                &tab.scroll_state,
+                &mut tab.last_reported_scroll_state,
+              );
             }
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
@@ -4342,7 +4346,12 @@ impl BrowserRuntime {
               tab.scroll_state = effective;
               viewport_scrolled = tab.scroll_state.viewport != current.viewport;
               TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
-              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+              Self::emit_scroll_state_updated(
+                &self.ui_tx,
+                tab_id,
+                &tab.scroll_state,
+                &mut tab.last_reported_scroll_state,
+              );
               if !tab.needs_repaint || tab.next_paint_is_scroll {
                 tab.next_paint_is_scroll = true;
               }
@@ -6218,7 +6227,12 @@ impl BrowserRuntime {
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
-      Self::emit_scroll_state_updated(ui_tx, tab_id, tab);
+      Self::emit_scroll_state_updated(
+        ui_tx,
+        tab_id,
+        &tab.scroll_state,
+        &mut tab.last_reported_scroll_state,
+      );
     }
   }
 
@@ -6676,7 +6690,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_scroll;
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         tab.history.update_scroll_state(&tab.scroll_state);
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
         scroll_changed = true;
       }
     }
@@ -6708,7 +6727,12 @@ impl BrowserRuntime {
         tab.scroll_state = next;
         tab.sync_js_scroll_state();
         tab.history.update_scroll_state(&tab.scroll_state);
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
         scroll_changed = true;
       }
     }
@@ -7544,7 +7568,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
 
       (
@@ -9184,7 +9213,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9380,7 +9414,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9465,7 +9504,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9571,7 +9615,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9640,7 +9689,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9720,7 +9774,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
     }
 
@@ -9768,7 +9827,12 @@ impl BrowserRuntime {
         tab.scroll_state = next;
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
         tab.scroll_coalesce = true;
@@ -9784,7 +9848,11 @@ impl BrowserRuntime {
       return;
     };
 
-    let base_url = base_url_for_links(tab).to_string();
+    let base_url = base_url_for_links(
+      tab.last_base_url.as_deref(),
+      tab.last_committed_url.as_deref(),
+    )
+    .to_string();
     let document_url = tab
       .last_committed_url
       .as_deref()
@@ -10083,7 +10151,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
       }
       if let Some((textarea_box_id, next_y)) = caret_scroll {
         let mut next_state = tab.scroll_state.clone();
@@ -10098,7 +10171,12 @@ impl BrowserRuntime {
           tab.scroll_state = next_state;
           doc.set_scroll_state(tab.scroll_state.clone());
           scroll_changed = true;
-          Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+          Self::emit_scroll_state_updated(
+            &self.ui_tx,
+            tab_id,
+            &tab.scroll_state,
+            &mut tab.last_reported_scroll_state,
+          );
         }
       }
 
@@ -10997,7 +11075,12 @@ impl BrowserRuntime {
                         scroll_changed = true;
                         tab.scroll_coalesce = true;
                         tab.next_paint_is_scroll = true;
-                        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
+                        Self::emit_scroll_state_updated(
+                          &self.ui_tx,
+                          tab_id,
+                          &tab.scroll_state,
+                          &mut tab.last_reported_scroll_state,
+                        );
                         keyboard_scroll_hover_update_pos_css = tab.last_pointer_pos_css;
 
                         if tab.scroll_state.viewport != current_scroll.viewport {

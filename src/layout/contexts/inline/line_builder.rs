@@ -1670,10 +1670,10 @@ impl TextItem {
     let mut last_offset: Option<usize> = None;
     let mut needs_sort = false;
 
-    let mut check_run = |run_idx: usize| {
+    let mut check_run = |run_idx: usize| -> bool {
       let run_len = runs[run_idx].glyphs.len();
       if run_len == 0 {
-        return;
+        return false;
       }
       let run_start = runs[run_idx].start;
       let scan_forward = runs[run_idx].glyphs[0].cluster
@@ -1690,8 +1690,7 @@ impl TextItem {
           cluster_count = cluster_count.saturating_add(1);
           if let Some(prev) = last_offset {
             if offset < prev {
-              needs_sort = true;
-              break;
+              return true;
             }
           }
           last_offset = Some(offset);
@@ -1709,33 +1708,34 @@ impl TextItem {
           cluster_count = cluster_count.saturating_add(1);
           if let Some(prev) = last_offset {
             if offset < prev {
-              needs_sort = true;
-              break;
+              return true;
             }
           }
           last_offset = Some(offset);
         }
       }
+
+      false
     };
 
     if run_starts_increasing {
       for run_idx in 0..runs.len() {
-        check_run(run_idx);
-        if needs_sort {
+        if check_run(run_idx) {
+          needs_sort = true;
           break;
         }
       }
     } else if run_starts_decreasing {
       for run_idx in (0..runs.len()).rev() {
-        check_run(run_idx);
-        if needs_sort {
+        if check_run(run_idx) {
+          needs_sort = true;
           break;
         }
       }
     } else {
       for &run_idx in &sorted_run_indices {
-        check_run(run_idx);
-        if needs_sort {
+        if check_run(run_idx) {
+          needs_sort = true;
           break;
         }
       }
@@ -1762,6 +1762,7 @@ impl TextItem {
       }
 
       let mut prev_cluster: Option<ClusterLite> = None;
+      let run_count = runs.len();
 
       let mut apply_run = |run_idx: usize| {
         let run_len = runs[run_idx].glyphs.len();
@@ -1844,11 +1845,11 @@ impl TextItem {
       };
 
       if run_starts_increasing {
-        for run_idx in 0..runs.len() {
+        for run_idx in 0..run_count {
           apply_run(run_idx);
         }
       } else if run_starts_decreasing {
-        for run_idx in (0..runs.len()).rev() {
+        for run_idx in (0..run_count).rev() {
           apply_run(run_idx);
         }
       } else {
