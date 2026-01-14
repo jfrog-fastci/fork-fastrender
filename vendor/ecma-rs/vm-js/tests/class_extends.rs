@@ -16,6 +16,10 @@ fn new_runtime_aggressive_gc() -> JsRuntime {
 
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<class_extends>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   rt.exec_compiled_script(script)
 }
 

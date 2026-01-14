@@ -10,6 +10,10 @@ fn new_runtime() -> JsRuntime {
 
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   rt.exec_compiled_script(script)
 }
 
