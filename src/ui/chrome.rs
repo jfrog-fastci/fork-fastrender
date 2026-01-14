@@ -4037,19 +4037,13 @@ pub fn chrome_ui_with_bookmarks(
           if resp.changed() {
             app.appearance.accent_color = Some(format_hex_color(RgbaColor::from(custom)));
           }
-          let tooltip = if let Some(hex) = app.appearance.accent_color.as_deref() {
-            format!("Custom accent color: {hex}")
-          } else {
-            "Custom accent color: Default".to_string()
-          };
-          // Avoid cloning the tooltip string every frame unless we actually need it for a keyboard
-          // focus tooltip.
-          let show_focus_tooltip = resp.has_focus() && !resp.hovered();
-          if show_focus_tooltip {
-            resp = resp.on_hover_text(tooltip.clone());
-            show_tooltip_on_focus(ui, &resp, &tooltip);
-          } else {
-            resp = resp.on_hover_text(tooltip);
+          if resp.hovered() || resp.has_focus() {
+            let tooltip = if let Some(hex) = app.appearance.accent_color.as_deref() {
+              format!("Custom accent color: {hex}")
+            } else {
+              "Custom accent color: Default".to_string()
+            };
+            show_tooltip_on_hover_or_focus(ui, &resp, &tooltip);
           }
           paint_focus_ring(ui, &resp, focus_ring);
           if let Some(hex) = app.appearance.accent_color.as_deref() {
