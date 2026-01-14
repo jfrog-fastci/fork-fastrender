@@ -2177,3 +2177,327 @@ fn ime_preedit_commit_cancel_routes_through_browser_tab_controller() -> Result<(
 
   Ok(())
 }
+
+#[test]
+fn input_maxlength_clamps_typed_and_pasted_ascii() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 200px; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" maxlength="5" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(support::text_input(tab_id, "abcdefg"))?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("abcde"));
+
+  // Pasting should be clamped as well (replace selection).
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::SelectAll))?;
+  let _ = controller.handle_message(UiToWorker::Paste {
+    tab_id,
+    text: "1234567".to_string(),
+  })?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("12345"));
+
+  Ok(())
+}
+
+#[test]
+fn input_maxlength_clamps_paste_replacement_to_selection_capacity() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 200px; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" maxlength="5" value="abcde">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  // Move caret between "d" and "e", then select "cd".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowLeft))?;
+
+  // "abcde", replace "cd" with "ZZZ" under maxlength=5 should clamp to "ZZ".
+  let _ = controller.handle_message(UiToWorker::Paste {
+    tab_id,
+    text: "ZZZ".to_string(),
+  })?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("abZZe"));
+  Ok(())
+}
+
+#[test]
+fn input_maxlength_enforces_utf16_code_unit_length() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 140);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #i2 { position: absolute; left: 0; top: 0; width: 200px; height: 30px; }
+          #i1 { position: absolute; left: 0; top: 50px; width: 200px; height: 30px; }
+        </style>
+      </head>
+      <body>
+        <input id="i2" maxlength="2" value="">
+        <input id="i1" maxlength="1" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let emoji = "😀"; // U+1F600, 2 UTF-16 code units.
+
+  // maxlength=2 should accept a single emoji.
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::text_input(tab_id, emoji))?;
+  let input = find_element_by_id(controller.document().dom(), "i2");
+  assert_eq!(input.get_attribute_ref("value"), Some(emoji));
+
+  // maxlength=1 should reject a single emoji (cannot split the surrogate pair).
+  let click = (10.0, 65.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::text_input(tab_id, emoji))?;
+  let input = find_element_by_id(controller.document().dom(), "i1");
+  assert_eq!(input.get_attribute_ref("value").unwrap_or(""), "");
+
+  Ok(())
+}
+
+#[test]
+fn textarea_maxlength_clamps_typed_and_pasted_ascii() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 200px; height: 120px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta" maxlength="5"></textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(support::text_input(tab_id, "abcdefg"))?;
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some("abcde"));
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::SelectAll))?;
+  let _ = controller.handle_message(UiToWorker::Paste {
+    tab_id,
+    text: "1234567".to_string(),
+  })?;
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some("12345"));
+
+  Ok(())
+}
+
+#[test]
+fn textarea_maxlength_clamps_paste_replacement_to_selection_capacity() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 200px; height: 120px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta" maxlength="5">abcde</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  // Move caret between "d" and "e", then select "cd".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowLeft))?;
+
+  let _ = controller.handle_message(UiToWorker::Paste {
+    tab_id,
+    text: "ZZZ".to_string(),
+  })?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some("abZZe"));
+  Ok(())
+}
+
+#[test]
+fn textarea_maxlength_enforces_utf16_code_unit_length() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 220);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #t2 { position: absolute; left: 0; top: 0; width: 200px; height: 60px; }
+          #t1 { position: absolute; left: 0; top: 100px; width: 200px; height: 60px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="t2" maxlength="2"></textarea>
+        <textarea id="t1" maxlength="1"></textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let emoji = "😀"; // U+1F600, 2 UTF-16 code units.
+
+  // maxlength=2 should accept a single emoji.
+  let click = (10.0, 15.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::text_input(tab_id, emoji))?;
+  let textarea = find_element_by_id(controller.document().dom(), "t2");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some(emoji));
+
+  // maxlength=1 should reject a single emoji (cannot split the surrogate pair).
+  let click = (10.0, 115.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::text_input(tab_id, emoji))?;
+  let textarea = find_element_by_id(controller.document().dom(), "t1");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value").unwrap_or(""), "");
+
+  Ok(())
+}
