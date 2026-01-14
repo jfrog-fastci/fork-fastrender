@@ -46,3 +46,15 @@ fn await_using_inside_async_function_does_not_set_has_tla() {
   let record = parse("async function f(){ await using x = null; } export {};");
   assert!(!record.has_tla);
 }
+
+#[test]
+fn await_in_class_static_block_sets_has_tla() {
+  let record = parse("class C { static { await 1; } } export {};");
+  assert!(record.has_tla);
+}
+
+#[test]
+fn for_await_of_in_class_static_block_sets_has_tla() {
+  let record = parse("class C { static { for await (const x of y) {} } } export {};");
+  assert!(record.has_tla);
+}

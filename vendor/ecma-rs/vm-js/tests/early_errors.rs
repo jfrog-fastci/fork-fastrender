@@ -304,11 +304,12 @@ fn await_expression_in_class_static_block_in_async_function_is_allowed() {
 #[test]
 fn await_expression_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  SourceTextModuleRecord::parse(
+  let record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "class C { static { await 0; } } export {};",
   )
   .unwrap();
+  assert!(record.has_tla);
 }
 
 #[test]
@@ -331,11 +332,12 @@ fn for_await_of_in_class_static_block_in_async_function_is_allowed() {
 #[test]
 fn for_await_of_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  SourceTextModuleRecord::parse(
+  let record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "class C { static { for await (const x of []) {} } } export {};",
   )
   .unwrap();
+  assert!(record.has_tla);
 }
 
 #[test]
