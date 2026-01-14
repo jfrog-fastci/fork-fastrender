@@ -296,7 +296,7 @@ def main(argv: list[str]) -> int:
         "  `vendor/ecma-rs/test262-semantic/src/vm_js_executor.rs`) so deep-recursion tests should fail"
     )
     out_lines.append(
-        "  cleanly with `execution terminated: stack overflow` rather than aborting the host process."
+        "  cleanly with a JS `RangeError` (call-stack exhaustion) rather than aborting the host process."
     )
     out_lines.append(
         "  `LIMIT_STACK=64M` (consumed by `scripts/run_limited.sh`) is still available as a safety net for"
