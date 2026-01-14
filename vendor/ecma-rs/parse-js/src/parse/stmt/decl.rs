@@ -80,18 +80,17 @@ impl<'a> Parser<'a> {
       let mode_tok = p.peek();
       let mode = p.var_decl_mode()?;
       if p.is_strict_ecmascript() && matches!(mode, VarDeclMode::AwaitUsing) {
-        // `await using` is only allowed when `await` is a reserved word *and* `await` expressions
-        // are permitted (ECMA-262 grammar parameters `Await` / `AwaitExpression`), i.e. in modules
-        // (top-level await) and inside async functions.
-        //
-        // Note: `vm-js` also supports "async classic scripts" by retrying parse with top-level
-        // `await` enabled; that mode does *not* reserve `await` as an identifier. We keep
-        // `await using` disallowed there to match spec Script grammar and `vm-js` early-error
-        // expectations.
-        let await_using_allowed = ctx.rules.await_expr_allowed && !ctx.rules.await_allowed;
+        // `await using` is valid only when `await` expressions are permitted (ECMA-262 grammar
+        // parameter `AwaitExpression`), i.e.:
+        // - at module top-level (top-level await),
+        // - inside async functions, and
+        // - in async classic scripts (top-level await enabled by an embedder).
+        let await_using_allowed = ctx.rules.await_expr_allowed;
         if !await_using_allowed {
           return Err(mode_tok.loc.error(
-            SyntaxErrorType::ExpectedSyntax("`await using` is only valid in modules or async functions"),
+            SyntaxErrorType::ExpectedSyntax(
+              "`await using` is only valid in modules, async functions, or async scripts",
+            ),
             Some(TT::KeywordAwait),
           ));
         }
