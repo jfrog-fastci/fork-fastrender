@@ -1770,24 +1770,27 @@ pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollStat
 /// features that can keep parts of the page anchored to the viewport or otherwise depend on scroll
 /// position.
 pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
-  fn scan(node: &FragmentNode, has_fixed_cb_ancestor: bool) -> bool {
+  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
+  let mut stack: Vec<(&FragmentNode, bool)> = Vec::new();
+  stack.push((&tree.root, false));
+  for fragment in tree.additional_fragments.iter() {
+    stack.push((fragment, false));
+  }
+
+  while let Some((node, has_fixed_cb_ancestor)) = stack.pop() {
     match &node.content {
       FragmentContent::RunningAnchor { snapshot, .. }
       | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-        if !scan(snapshot, has_fixed_cb_ancestor) {
-          return false;
-        }
+        stack.push((snapshot, has_fixed_cb_ancestor));
       }
       _ => {}
     }
 
     let Some(style) = node.style.as_deref() else {
       for child in node.children.iter() {
-        if !scan(child, has_fixed_cb_ancestor) {
-          return false;
-        }
+        stack.push((child, has_fixed_cb_ancestor));
       }
-      return true;
+      continue;
     };
 
     if crate::paint::scroll_blit::style_uses_scroll_linked_timelines(style)
@@ -1822,21 +1825,10 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
     let establishes_fixed_cb = style.establishes_fixed_containing_block();
     let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
     for child in node.children.iter() {
-      if !scan(child, has_fixed_cb_ancestor_for_children) {
-        return false;
-      }
+      stack.push((child, has_fixed_cb_ancestor_for_children));
     }
-    true
   }
 
-  if !scan(&tree.root, false) {
-    return false;
-  }
-  for fragment in tree.additional_fragments.iter() {
-    if !scan(fragment, false) {
-      return false;
-    }
-  }
   true
 }
 
