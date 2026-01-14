@@ -4126,10 +4126,12 @@ impl BrowserRuntime {
           if tab.document.is_some() {
             tab.request_non_scroll_repaint();
             tab.force_repaint = true;
-          }
-          if let Some(doc) = tab.document.as_mut() {
-            doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
-            doc.set_device_pixel_ratio(tab.dpr);
+            let viewport_css = tab.viewport_css;
+            let dpr = tab.dpr;
+            if let Some(doc) = tab.document.as_mut() {
+              doc.set_viewport(viewport_css.0, viewport_css.1);
+              doc.set_device_pixel_ratio(dpr);
+            }
           }
           tab.sync_js_viewport_state();
 
