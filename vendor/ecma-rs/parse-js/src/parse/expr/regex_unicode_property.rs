@@ -39,8 +39,12 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
     // in backticks (e.g. `Script`, `General_Category`) for documentation. Skip HTML comments so we
     // only extract the actual table identifiers.
     if bytes[i..].starts_with(b"<!--") {
-      if let Some(end_rel) = slice[i + 4..].find("-->") {
-        i += 4 + end_rel + 3;
+      let comment_body_start = i + 4;
+      let Some(rest) = slice.get(comment_body_start..) else {
+        break;
+      };
+      if let Some(end_rel) = rest.find("-->") {
+        i = comment_body_start + end_rel + 3;
         continue;
       }
       break;
