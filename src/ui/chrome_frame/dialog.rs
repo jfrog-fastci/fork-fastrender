@@ -189,11 +189,16 @@ button.dialog-btn {
 
 fn dialog_html(kind: &DialogKind, message: &str) -> String {
   let safe_message = escape_html(message);
+  let dialog_label = match kind {
+    DialogKind::Alert => "Alert",
+    DialogKind::Confirm => "Confirm",
+    DialogKind::Prompt { .. } => "Prompt",
+  };
 
   let inner = match kind {
     DialogKind::Alert => format!(
       r#"<p id="dialog-message" class="dialog-message">{message}</p>
-<div class="dialog-actions">
+ <div class="dialog-actions">
   <a id="dialog-ok" class="dialog-btn primary" href="chrome-dialog:accept">OK</a>
 </div>"#,
       message = safe_message
@@ -211,7 +216,7 @@ fn dialog_html(kind: &DialogKind, message: &str) -> String {
       format!(
         r#"<form id="dialog-form" action="chrome-dialog:accept" method="get">
   <p id="dialog-message" class="dialog-message">{message}</p>
-  <input id="dialog-input" class="dialog-input" type="text" name="value" value="{default}" autofocus>
+  <input id="dialog-input" class="dialog-input" type="text" name="value" value="{default}" aria-labelledby="dialog-message" autofocus>
   <div class="dialog-actions">
     <a id="dialog-cancel" class="dialog-btn" href="chrome-dialog:cancel">Cancel</a>
     <button id="dialog-ok" class="dialog-btn primary" type="submit">OK</button>
@@ -232,15 +237,16 @@ fn dialog_html(kind: &DialogKind, message: &str) -> String {
     <style>{css}</style>
   </head>
   <body>
-    <div class="dialog-backdrop"></div>
+    <div class="dialog-backdrop" aria-hidden="true"></div>
     <div class="dialog-root">
-      <div class="dialog-modal" role="dialog" aria-modal="true">
+      <div class="dialog-modal" role="dialog" aria-modal="true" aria-label="{label}" aria-describedby="dialog-message">
         {inner}
       </div>
     </div>
   </body>
 </html>"#,
     css = DIALOG_CSS,
+    label = dialog_label,
     inner = inner
   )
 }
@@ -264,6 +270,26 @@ fn escape_html(text: &str) -> String {
 mod tests {
   use super::*;
   use crate::dom::{enumerate_dom_ids, DomNode};
+
+  #[test]
+  fn dialog_html_has_accessible_role_and_labels() {
+    let alert = dialog_html(&DialogKind::Alert, "Hello");
+    assert!(alert.contains(r#"role="dialog""#));
+    assert!(alert.contains(r#"aria-modal="true""#));
+    assert!(alert.contains(r#"aria-label="Alert""#));
+    assert!(alert.contains(r#"aria-describedby="dialog-message""#));
+    assert!(alert.contains(r#"class="dialog-backdrop" aria-hidden="true""#));
+
+    let prompt = dialog_html(
+      &DialogKind::Prompt {
+        default: "World".to_string(),
+      },
+      "Enter value",
+    );
+    assert!(prompt.contains(r#"aria-label="Prompt""#));
+    assert!(prompt.contains(r#"id="dialog-input""#));
+    assert!(prompt.contains(r#"aria-labelledby="dialog-message""#));
+  }
 
   fn find_by_id<'a>(root: &'a DomNode, html_id: &str) -> Option<&'a DomNode> {
     let mut stack = vec![root];
