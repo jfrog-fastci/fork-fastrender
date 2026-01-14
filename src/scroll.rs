@@ -636,6 +636,25 @@ fn clip_rect_from_style(
 
 fn annotate_overflow(node: &mut FragmentNode, has_fixed_cb_ancestor: bool, viewport: Size) -> Rect {
   let mut overflow = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+
+  // `FragmentContent::RunningAnchor` / `FootnoteAnchor` store an out-of-flow snapshot subtree
+  // outside of the normal `children` list. These snapshots do not participate in ancestor
+  // overflow propagation, but downstream code (display-list culling, scroll bounds for the snapshot
+  // itself, etc.) still expects their `scroll_overflow` fields to be populated.
+  //
+  // Compute their overflow eagerly here without unioning it into `overflow`.
+  match &mut node.content {
+    FragmentContent::RunningAnchor { snapshot, .. }
+    | FragmentContent::FootnoteAnchor { snapshot, .. } => {
+      annotate_overflow(
+        std::sync::Arc::make_mut(snapshot),
+        has_fixed_cb_ancestor,
+        viewport,
+      );
+    }
+    _ => {}
+  }
+
   let has_fixed_cb_ancestor = has_fixed_cb_ancestor
     || node
       .style
@@ -2047,9 +2066,9 @@ pub(crate) fn scroll_bounds_for_fragment(
   container: &FragmentNode,
   _origin: Point,
   viewport: Size,
-  viewport_for_units: Size,
+  _viewport_for_units: Size,
   treat_as_root: bool,
-  has_fixed_cb_ancestor: bool,
+  _has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
   // Scroll bounds are defined over the scrollport (the viewport through which descendants are
   // scrolled). `FragmentNode::bounds` describes the element's border box, so we must account for:
@@ -2116,26 +2135,46 @@ pub(crate) fn scroll_bounds_for_fragment(
     ));
   }
 
-  let establishes_fixed_cb = container
-    .style
-    .as_deref()
-    .is_some_and(|style| style.establishes_fixed_containing_block());
-  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-  for child in container.children.iter() {
-    let child_origin = Point::new(
-      child.bounds.x() - scrollport_origin.x,
-      child.bounds.y() - scrollport_origin.y,
-    );
-    collect_bounds(
-      child,
-      child_origin,
-      &mut bounds,
-      AxisClipRect::unbounded(),
-      false,
-      viewport_for_units,
-      Transform3D::identity(),
-      has_fixed_cb_ancestor_for_children,
-    );
+  // Layout computes `FragmentNode::scroll_overflow` (via `FragmentTree::ensure_scroll_metadata`)
+  // which already accounts for transforms and intermediate overflow clipping. Avoid re-traversing
+  // the fragment subtree here and instead translate the precomputed overflow into scrollport-local
+  // coordinates.
+  let overflow = container.scroll_overflow;
+
+  if overflow.min_x().is_finite() && overflow.min_x() < 0.0 {
+    bounds.min_x = bounds.min_x.min(overflow.min_x() - scrollport_origin.x);
+  }
+  if overflow.min_y().is_finite() && overflow.min_y() < 0.0 {
+    bounds.min_y = bounds.min_y.min(overflow.min_y() - scrollport_origin.y);
+  }
+
+  let overflow_max_x = overflow.max_x();
+  if overflow_max_x.is_finite() {
+    let translated_max_x = overflow_max_x - scrollport_origin.x;
+    if treat_as_root
+      && container.scrollbar_reservation
+        == crate::tree::fragment_tree::ScrollbarReservation::default()
+    {
+      bounds.max_x = bounds.max_x.max(translated_max_x);
+    } else if container.bounds.width().is_finite() && overflow_max_x > container.bounds.width() {
+      // Ignore the container's own border box when it is larger than the scrollport (borders +
+      // reserved gutters), but preserve descendant overflow that actually extends beyond the
+      // border box.
+      bounds.max_x = bounds.max_x.max(translated_max_x);
+    }
+  }
+
+  let overflow_max_y = overflow.max_y();
+  if overflow_max_y.is_finite() {
+    let translated_max_y = overflow_max_y - scrollport_origin.y;
+    if treat_as_root
+      && container.scrollbar_reservation
+        == crate::tree::fragment_tree::ScrollbarReservation::default()
+    {
+      bounds.max_y = bounds.max_y.max(translated_max_y);
+    } else if container.bounds.height().is_finite() && overflow_max_y > container.bounds.height() {
+      bounds.max_y = bounds.max_y.max(translated_max_y);
+    }
   }
 
   // Scroll offsets are expressed relative to the scrollport start edge (the padding edge after
@@ -2794,9 +2833,9 @@ mod tests {
   mod effective_scroll_state_test;
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
-  mod scroll_blit_supported_test;
   mod scroll_anchoring_missing_anchor_test;
   mod scroll_anchoring_writing_mode_test;
+  mod scroll_blit_supported_test;
 
   fn container_style(axis: ScrollSnapAxis, strictness: ScrollSnapStrictness) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
@@ -3221,7 +3260,9 @@ mod tests {
   #[test]
   fn overscroll_contain_blocks_chaining() {
     let outer = make_vertical_nested(OverscrollBehavior::Contain);
-    let mut chain = build_scroll_chain(&outer, Size::new(100.0, 100.0), &[0]);
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let mut chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
     let result = apply_scroll_chain(&mut chain, Point::new(0.0, 400.0), ScrollOptions::default());
 
     assert_eq!(chain.len(), 2, "inner and outer should both participate");
@@ -3242,7 +3283,9 @@ mod tests {
   #[test]
   fn overscroll_auto_chains_to_parent() {
     let outer = make_vertical_nested(OverscrollBehavior::Auto);
-    let mut chain = build_scroll_chain(&outer, Size::new(100.0, 100.0), &[0]);
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let mut chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
     let result = apply_scroll_chain(&mut chain, Point::new(0.0, 400.0), ScrollOptions::default());
 
     assert!(
@@ -3262,7 +3305,9 @@ mod tests {
   #[test]
   fn overscroll_none_suppresses_indicator() {
     let outer = make_vertical_nested(OverscrollBehavior::None);
-    let mut chain = build_scroll_chain(&outer, Size::new(100.0, 100.0), &[0]);
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let mut chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
     let mut options = ScrollOptions::default();
     options.simulate_overscroll = true;
     let result = apply_scroll_chain(&mut chain, Point::new(0.0, 300.0), options);
@@ -3302,7 +3347,9 @@ mod tests {
       Arc::new(outer_style),
     );
 
-    let mut chain = build_scroll_chain(&outer, Size::new(100.0, 100.0), &[0]);
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let mut chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[0]);
     let result = apply_scroll_chain(&mut chain, Point::new(400.0, 0.0), ScrollOptions::default());
 
     assert!(
@@ -3369,7 +3416,9 @@ mod tests {
       Arc::new(outer_style),
     );
 
-    let mut chain = build_scroll_chain(&outer, Size::new(100.0, 100.0), &[1]);
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let mut chain = build_scroll_chain(&tree.root, tree.viewport_size(), &[1]);
     let result = apply_scroll_chain(&mut chain, Point::new(0.0, 180.0), ScrollOptions::default());
 
     assert!(result.remaining.y.abs() < 1e-3);
