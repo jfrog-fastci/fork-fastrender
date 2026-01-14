@@ -300,7 +300,13 @@ pub fn parse_xml(xml: &str) -> Result<Document> {
       None,
       /* inert_subtree */ false,
     );
-    doc.live_range_pre_insert_steps(doc_root, idx, 1);
+    if !doc.ranges.is_empty() {
+      doc.live_range_pre_insert_steps(
+        doc_root,
+        doc.tree_child_index_from_raw_index_for_range(doc_root, idx),
+        doc.inserted_tree_children_count_for_range(doc_root, &[id]),
+      );
+    }
     doc.nodes[doc_root.index()].children.insert(idx, id);
     doc.nodes[id.index()].parent = Some(doc_root);
     idx += 1;
