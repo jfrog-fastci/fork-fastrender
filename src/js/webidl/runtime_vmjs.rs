@@ -6,6 +6,31 @@ use vm_js::{
   VmError, VmHost, VmHostHooks,
 };
 
+/// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+///
+/// WebIDL binding installation is reachable from untrusted JS (e.g. realm creation) and uses
+/// fallible `Result<_, VmError>` APIs. Rust's default `Box::new` aborts the process on allocator
+/// OOM, so use a manual allocation.
+#[inline]
+fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = std::alloc::Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = std::alloc::alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
+
 use webidl::WebIdlHooks;
 use webidl_vm_js::bindings_runtime::DataPropertyAttributes;
 use webidl_vm_js::CallbackHandle;
@@ -477,13 +502,18 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
     }
   }
 
-  fn alloc_dispatch_record(&self, call: usize, construct: usize) -> *const NativeDispatchRecord {
+  fn alloc_dispatch_record(
+    &self,
+    call: usize,
+    construct: usize,
+  ) -> Result<*const NativeDispatchRecord, VmError> {
     let mut records = self.dispatch_records.borrow_mut();
-    let record = Box::new(NativeDispatchRecord { call, construct });
+    records.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    let record = box_try_new_vm(NativeDispatchRecord { call, construct })?;
     let ptr: *const NativeDispatchRecord = record.as_ref();
     // SAFETY: boxed value has a stable address even if `records` reallocates.
     records.push(record);
-    ptr
+    Ok(ptr)
   }
 }
 
@@ -1499,7 +1529,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       .heap_mut()
       .object_set_prototype(func, Some(intr.function_prototype()))?;
 
-    let dispatch_ptr = self.state.alloc_dispatch_record(f as usize, f as usize);
+    let dispatch_ptr = self.state.alloc_dispatch_record(f as usize, f as usize)?;
     let slots = HostSlots {
       a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
       b: dispatch_ptr as u64,
@@ -1566,7 +1596,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       } else {
         construct as usize
       },
-    );
+    )?;
     let slots = HostSlots {
       a: (self.state as *const VmJsWebIdlBindingsState<Host>) as u64,
       b: dispatch_ptr as u64,

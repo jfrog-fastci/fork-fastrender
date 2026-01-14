@@ -9,6 +9,30 @@ use std::rc::Rc;
 use vm_js::{GcObject, PropertyKey, RootId, Value, VmError, WeakGcObject};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
+/// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+///
+/// Event creation/dispatch is reachable from untrusted JS and uses fallible `Result<_, VmError>`
+/// APIs. Rust's default `Box::new` aborts the process on allocator OOM, so use a manual allocation.
+#[inline]
+fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = std::alloc::Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = std::alloc::alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ListenerEntry {
   callback: Value,
@@ -212,7 +236,9 @@ impl DomEventsContext {
         "register_event_object: value is not an object",
       ));
     };
-    self.events.borrow_mut().insert(handle, Box::new(event));
+    let mut events = self.events.borrow_mut();
+    events.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    events.insert(handle, box_try_new_vm(event)?);
     Ok(())
   }
 

@@ -2,11 +2,37 @@ use super::event_loop::EventLoop;
 use crate::error::{Error, Result};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::alloc::{alloc, Layout};
 
 type PromiseResult<T> = Result<T>;
 
 type Reaction<Host, T> =
   Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, PromiseResult<T>) -> Result<()> + 'static>;
+
+/// Fallible `Box::new` that returns `Error::Other` on allocator OOM instead of aborting the process.
+///
+/// Promise reactions can be registered by untrusted JS (e.g. via `fetch().then(...)`), and the
+/// promise APIs are fallible (`Result<_, Error>`). Rust's default OOM behavior is to abort the
+/// process, so use a manual allocation.
+#[inline]
+fn box_try_new<T>(value: T) -> Result<Box<T>> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(Error::Other(String::new()));
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
 
 struct PromiseState<Host: 'static, T: Clone + 'static> {
   result: Option<PromiseResult<T>>,
@@ -82,7 +108,12 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
       return Ok(());
     }
 
-    self.state.borrow_mut().reactions.push(reaction);
+    let mut state = self.state.borrow_mut();
+    state
+      .reactions
+      .try_reserve(1)
+      .map_err(|_| Error::Other(String::new()))?;
+    state.reactions.push(reaction);
     Ok(())
   }
 
@@ -99,7 +130,7 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
 
     self.add_reaction(
       event_loop,
-      Box::new(move |host, event_loop, result| {
+      box_try_new(move |host, event_loop, result| {
         match result {
           Ok(value) => match on_fulfilled(host, event_loop, value)? {
             JsPromiseValue::Value(v) => next_resolver.resolve(event_loop, v)?,
@@ -109,20 +140,20 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
               let next_resolver = next_resolver.clone();
               p.add_reaction(
                 event_loop,
-                Box::new(move |_host, event_loop, result| {
+                box_try_new(move |_host, event_loop, result| {
                   match result {
                     Ok(v) => next_resolver.resolve(event_loop, v)?,
                     Err(err) => next_resolver.reject(event_loop, err)?,
                   }
                   Ok(())
-                }),
+                })?,
               )?;
             }
           },
           Err(err) => next_resolver.reject(event_loop, err)?,
         }
         Ok(())
-      }),
+      })?,
     )?;
 
     Ok(next)

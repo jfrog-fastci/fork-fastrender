@@ -969,13 +969,14 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
   {
-    let mut maybe = Some(Box::new(callback) as Runnable<Host>);
-    let callback: TimerCallback<Host> = Box::new(move |host, event_loop| {
+    let mut maybe = Some(try_box_runnable(callback)?);
+    let callback: TimerCallback<Host> = box_try_new(move |host, event_loop| {
       let runnable = maybe
         .take()
         .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
       runnable(host, event_loop)
-    });
+    })
+    .ok_or_else(|| Error::Other(String::new()))?;
     Ok(self.add_timer(TimerKind::Timeout, delay, None, callback)?)
   }
 
@@ -983,11 +984,13 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
   {
+    let callback: TimerCallback<Host> =
+      box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
     Ok(self.add_timer(
       TimerKind::Interval,
       interval,
       Some(interval),
-      Box::new(callback),
+      callback,
     )?)
   }
 
@@ -1034,17 +1037,27 @@ impl<Host: 'static> EventLoop<Host> {
     let schedule_seq = self.next_idle_callback_seq;
     self.next_idle_callback_seq = self.next_idle_callback_seq.wrapping_add(1);
 
-    let mut maybe =
-      Some(Box::new(callback)
-        as Box<
-          dyn FnOnce(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()>,
-        >);
-    let callback: IdleCallback<Host> = Box::new(move |host, event_loop, did_timeout, remaining_ms| {
+    self
+      .idle_callbacks
+      .try_reserve(1)
+      .map_err(|_| Error::Other(String::new()))?;
+    self
+      .idle_callback_queue
+      .try_reserve(1)
+      .map_err(|_| Error::Other(String::new()))?;
+
+    let mut maybe: Option<
+      Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()> + 'static>,
+    > = Some(
+      box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?,
+    );
+    let callback: IdleCallback<Host> = box_try_new(move |host, event_loop, did_timeout, remaining_ms| {
       let runnable = maybe.take().ok_or_else(|| {
         Error::Other("requestIdleCallback callback invoked more than once".to_string())
       })?;
       runnable(host, event_loop, did_timeout, remaining_ms)
-    });
+    })
+    .ok_or_else(|| Error::Other(String::new()))?;
 
     self.idle_callbacks.insert(
       id,
@@ -1097,18 +1110,27 @@ impl<Host: 'static> EventLoop<Host> {
       }
     };
 
-    let mut maybe =
-      Some(Box::new(callback)
-        as Box<
-          dyn FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()>,
-        >);
-    let callback: AnimationFrameCallback<Host> = Box::new(move |host, event_loop, timestamp| {
+    let mut maybe: Option<
+      Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static>,
+    > = Some(
+      box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?,
+    );
+    let callback: AnimationFrameCallback<Host> = box_try_new(move |host, event_loop, timestamp| {
       let runnable = maybe.take().ok_or_else(|| {
         Error::Other("requestAnimationFrame callback invoked more than once".to_string())
       })?;
       runnable(host, event_loop, timestamp)
-    });
+    })
+    .ok_or_else(|| Error::Other(String::new()))?;
 
+    self
+      .animation_frame_callbacks
+      .try_reserve(1)
+      .map_err(|_| Error::Other(String::new()))?;
+    self
+      .animation_frame_queue
+      .try_reserve(1)
+      .map_err(|_| Error::Other(String::new()))?;
     self.animation_frame_callbacks.insert(id, callback);
     self.animation_frame_queue.push_back(id);
     Ok(id)
