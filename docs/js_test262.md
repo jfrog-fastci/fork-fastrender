@@ -3,6 +3,11 @@
 FastRender tracks JavaScript language conformance via a **curated**, offline-friendly subset of
 test262 (the upstream ECMAScript conformance suite).
 
+Note: the default curated/thematic suites intentionally **exclude ES module tests**
+(`flags: [module]`, including `language/import/**`, `language/export/**`, and `language/module-code/**`)
+so we can track module progress separately. Use `--suite modules_smoke` for a small module-focused
+smoke run.
+
 This page documents the end-to-end workflow contributors should follow to run the suite locally,
 under deterministic resource limits, and interpret the output.
 

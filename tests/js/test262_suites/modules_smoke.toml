@@ -8,48 +8,38 @@
 # - JSON modules via import attributes
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+#
+# Keep this suite small and deterministic (explicit list; no broad globs) so it remains
+# CI-friendly and always exercises `Variant::Module` on vm-js.
 tests = [
-  # Stable baseline module early error.
-  "language/module-code/early-export-unresolvable.js",
-
-  # Top-level await basic semantics.
-  "language/module-code/top-level-await/await-expr-resolution.js",
-  # Dynamic import of an async (top-level await) module.
-  "language/module-code/top-level-await/dynamic-import-resolution.js",
-
-  # Standalone module syntax tests outside `language/module-code/`.
+  # --- language/import ---
   "language/import/dup-bound-names.js",
+  "language/import/escaped-as-import-specifier.js",
+  "language/import/escaped-as-namespace-import.js",
+  "language/import/escaped-from.js",
   # JSON modules via import attributes.
   "language/import/import-attributes/json-value-string.js",
+
+  # --- language/export ---
+  "language/export/escaped-as-export-specifier.js",
   "language/export/escaped-default.js",
-]
+  "language/export/escaped-from.js",
 
-include = [
-  # Early errors and syntax restrictions unique to module code.
-  "language/module-code/early-*.js",
+  # --- language/module-code ---
+  "language/module-code/eval-this.js",
+  "language/module-code/eval-export-fun-semi.js",
+  "language/module-code/eval-export-cls-semi.js",
+  "language/module-code/eval-export-gen-semi.js",
+  "language/module-code/eval-gtbndng-local-bndng-var.js",
+  "language/module-code/eval-gtbndng-local-bndng-let.js",
+  "language/module-code/eval-gtbndng-local-bndng-const.js",
+  "language/module-code/early-strict-mode.js",
+  "language/module-code/early-export-unresolvable.js",
 
-  # Basic import/export semantics.
-  "language/module-code/export-default-*.js",
-  "language/module-code/export-expname-*.js",
+  # --- top-level await / dynamic import ---
+  "language/module-code/top-level-await/await-expr-resolution.js",
+  "language/module-code/top-level-await/dynamic-import-resolution.js",
 
-  # Exercises ambiguous exports / namespace handling (includes some module imports).
-  "language/module-code/ambiguous-export-bindings/*.js",
-
-  # Module-only `import.meta` semantics.
-  "language/expressions/import.meta/*.js",
-
-  # Module instantiation-time bindings.
-  "language/module-code/instn-local-bndng-*.js",
-
-  # Ensure we cover module lexical grammar in comments, etc.
-  "language/module-code/comment-*.js",
-
-  # Small sanity coverage for the standalone import/export directory tests.
-  "language/import/dup-*.js",
-  "language/export/escaped-*.js",
-]
-
-# Exclude helper modules (fixtures) that live alongside tests.
-exclude = [
-  "**/*FIXTURE*.js",
+  # --- import.meta ---
+  "language/expressions/import.meta/same-object-returned.js",
 ]
