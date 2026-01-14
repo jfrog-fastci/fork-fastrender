@@ -8989,6 +8989,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         request_autosave(&windows, &window_order, active_window_id, &download_dir);
       }
       Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
+        let report_new_window_error =
+          |windows: &mut HashMap<WindowId, BrowserWindow>, err: std::fmt::Arguments| {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win.app.toast_new_window_error(err);
+            } else {
+              eprintln!("[new-window] failed to open a new window: {err}");
+            }
+          };
+
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
         let inherit_pos = windows.get(&from_id).and_then(|win| {
           win
@@ -9034,11 +9043,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(window) => window,
           Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("create window: {err}"));
-            }
+            report_new_window_error(&mut windows, format_args!("create window: {err}"));
             return;
           }
         };
@@ -9079,11 +9084,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             Ok(v) => v,
             Err(err) => {
-              if let Some(win) = windows.get_mut(&from_id) {
-                win
-                  .app
-                  .toast_new_window_error(format_args!("spawn worker: {err}"));
-              }
+              report_new_window_error(&mut windows, format_args!("spawn worker: {err}"));
               return;
             }
           };
@@ -9091,11 +9092,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
           enabled: debug_log_ui_enabled(),
         }) {
-          if let Some(win) = windows.get_mut(&from_id) {
-            win
-              .app
-              .toast_new_window_error(format_args!("send debug log setting: {err}"));
-          }
+          report_new_window_error(
+            &mut windows,
+            format_args!("send debug log setting: {err}"),
+          );
           return;
         }
 
@@ -9105,11 +9105,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: inherited_download_dir.clone(),
         }) {
-          if let Some(win) = windows.get_mut(&from_id) {
-            win
-              .app
-              .toast_new_window_error(format_args!("send download directory: {err}"));
-          }
+          report_new_window_error(
+            &mut windows,
+            format_args!("send download directory: {err}"),
+          );
           return;
         }
 
@@ -9140,11 +9139,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(app) => app,
           Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("init window UI: {err}"));
-            }
+            report_new_window_error(&mut windows, format_args!("init window UI: {err}"));
             return;
           }
         };
@@ -9207,6 +9202,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         from_id,
         window: session_window,
       }) => {
+        let report_new_window_error =
+          |windows: &mut HashMap<WindowId, BrowserWindow>, err: std::fmt::Arguments| {
+            if let Some(win) = windows.get_mut(&from_id) {
+              win.app.toast_new_window_error(err);
+            } else {
+              eprintln!("[new-window] failed to open a new window: {err}");
+            }
+          };
+
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
         let inherit_pos = windows.get(&from_id).and_then(|win| {
           win
@@ -9247,11 +9251,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(window) => window,
           Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("create window: {err}"));
-            }
+            report_new_window_error(&mut windows, format_args!("create window: {err}"));
             return;
           }
         };
@@ -9292,11 +9292,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             Ok(v) => v,
             Err(err) => {
-              if let Some(win) = windows.get_mut(&from_id) {
-                win
-                  .app
-                  .toast_new_window_error(format_args!("spawn worker: {err}"));
-              }
+              report_new_window_error(&mut windows, format_args!("spawn worker: {err}"));
               return;
             }
           };
@@ -9304,11 +9300,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
           enabled: debug_log_ui_enabled(),
         }) {
-          if let Some(win) = windows.get_mut(&from_id) {
-            win
-              .app
-              .toast_new_window_error(format_args!("send debug log setting: {err}"));
-          }
+          report_new_window_error(
+            &mut windows,
+            format_args!("send debug log setting: {err}"),
+          );
           return;
         }
 
@@ -9318,11 +9313,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: inherited_download_dir.clone(),
         }) {
-          if let Some(win) = windows.get_mut(&from_id) {
-            win
-              .app
-              .toast_new_window_error(format_args!("send download directory: {err}"));
-          }
+          report_new_window_error(
+            &mut windows,
+            format_args!("send download directory: {err}"),
+          );
           return;
         }
 
@@ -9353,11 +9347,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
           Ok(app) => app,
           Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("init window UI: {err}"));
-            }
+            report_new_window_error(&mut windows, format_args!("init window UI: {err}"));
             return;
           }
         };
@@ -19682,20 +19672,23 @@ impl App {
   }
 
   fn toast_new_window_error(&mut self, err: impl std::fmt::Display) {
-    let detail = format_new_window_error_detail(&err.to_string());
+    let raw_err = err.to_string();
+    let detail = format_new_window_error_detail(&raw_err);
     let (kind, text) = new_window_failure_toast((!detail.is_empty()).then_some(detail.as_str()));
     self.show_chrome_toast_kind(kind, text);
 
-    let debug_line = if detail.is_empty() {
+    // Always preserve the full error on stderr for diagnostics (toast detail is sanitized +
+    // truncated).
+    let stderr_line = if raw_err.trim().is_empty() {
       "[new-window] failed to open a new window".to_string()
     } else {
-      format!("[new-window] failed to open a new window: {detail}")
+      format!("[new-window] failed to open a new window: {raw_err}")
     };
 
     // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
     {
       use std::io::Write;
-      let _ = writeln!(std::io::stderr(), "{debug_line}");
+      let _ = writeln!(std::io::stderr(), "{stderr_line}");
     }
 
     // Preserve diagnostics in the in-app debug log when enabled.
@@ -19703,7 +19696,12 @@ impl App {
       if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
         self.debug_log.pop_front();
       }
-      self.debug_log.push_back(debug_line);
+      let ui_line = if detail.is_empty() {
+        "[new-window] failed to open a new window".to_string()
+      } else {
+        format!("[new-window] failed to open a new window: {detail}")
+      };
+      self.debug_log.push_back(ui_line);
     }
 
     self.window.request_redraw();
