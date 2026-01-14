@@ -54,6 +54,41 @@ fn direct_eval_allows_super_in_instance_field_initializer_compiled() {
 }
 
 #[test]
+fn direct_eval_allows_super_set_in_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { set x(v) { this.marker = v; } }
+        class A extends B {
+          marker = 0;
+          y = eval("super.x = 321");
+        }
+        (new A()).marker
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(321.0));
+}
+
+#[test]
+fn direct_eval_allows_super_set_in_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { set x(v) { this.marker = v; } }
+      class A extends B {
+        marker = 0;
+        y = eval("super.x = 321");
+      }
+      (new A()).marker
+    "#,
+  );
+  assert_eq!(value, Value::Number(321.0));
+}
+
+#[test]
 fn direct_eval_allows_super_in_private_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -108,6 +143,41 @@ fn direct_eval_allows_super_in_static_field_initializer_compiled() {
     "#,
   );
   assert_eq!(value, Value::Number(789.0));
+}
+
+#[test]
+fn direct_eval_allows_super_set_in_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static set x(v) { this.marker = v; } }
+        class A extends B {
+          static marker = 0;
+          static y = eval("super.x = 654");
+        }
+        A.marker
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(654.0));
+}
+
+#[test]
+fn direct_eval_allows_super_set_in_static_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { static set x(v) { this.marker = v; } }
+      class A extends B {
+        static marker = 0;
+        static y = eval("super.x = 654");
+      }
+      A.marker
+    "#,
+  );
+  assert_eq!(value, Value::Number(654.0));
 }
 
 #[test]
