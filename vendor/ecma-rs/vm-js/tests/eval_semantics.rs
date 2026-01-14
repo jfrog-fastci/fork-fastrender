@@ -550,3 +550,41 @@ fn direct_eval_with_multiple_awaited_arguments_is_direct() -> Result<(), VmError
   assert_eq!(value, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn direct_eval_with_multiple_awaits_is_still_direct_if_eval_is_overwritten_between_awaits() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var outside = 0;
+      async function f() {
+        let x = 1;
+        // This call suspends twice while evaluating arguments.
+        return eval(await "x", await "ignored");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+
+      // Enqueue a microtask that runs after the first `await` resumes but before the second `await`
+      // resumes. If the call incorrectly re-resolves `eval` after resumption, it will observe the
+      // overwritten binding and stop being a direct eval.
+      Promise.resolve().then(function () {
+        globalThis.eval = function(_) { return 123; };
+        outside = eval("0");
+      });
+
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("outside")?;
+  assert_eq!(value, Value::Number(123.0));
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
+}

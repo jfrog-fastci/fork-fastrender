@@ -457,3 +457,35 @@ fn generator_direct_eval_with_multiple_yield_arguments_is_direct() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_multiple_yields_is_still_direct_if_eval_is_overwritten_between_yields() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* g(){ let x = 1; return eval(yield 0, yield 1); }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next("x");
+
+          // Mutate the global eval binding while the generator is suspended at the second `yield`.
+          // The call must still use the callee value that was evaluated *before* yielding.
+          globalThis.eval = function(_) { return 123; };
+          var outside = eval("0");
+
+          var r3 = it.next("ignored");
+          ok = r1.done === false && r1.value === 0 &&
+               r2.done === false && r2.value === 1 &&
+               outside === 123 &&
+               r3.done === true && r3.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
