@@ -441,6 +441,99 @@ mod scroll_paint_backoff_gate_tests {
   }
 }
 
+#[cfg(test)]
+mod scroll_burst_coalescing_tests {
+  use super::*;
+
+  #[test]
+  fn drain_scroll_burst_coalesces_viewport_scroll_deltas() {
+    let factory = default_ui_worker_factory().expect("expected default ui worker factory");
+
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let worker_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    runtime.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+
+    const SCROLL_BURST: usize = 100;
+    for _ in 0..SCROLL_BURST {
+      ui_tx
+        .send(UiToWorker::Scroll {
+          tab_id,
+          delta_css: (0.0, 10.0),
+          pointer_css: None,
+        })
+        .expect("send Scroll");
+    }
+
+    runtime.drain_scroll_burst();
+
+    let tab = runtime.tabs.get(&tab_id).expect("tab exists");
+    assert_eq!(
+      tab.scroll_state.viewport.y,
+      10.0 * SCROLL_BURST as f32,
+      "expected scroll burst to sum viewport scroll offsets"
+    );
+    assert_eq!(
+      tab.scroll_state.viewport_delta.y,
+      10.0 * SCROLL_BURST as f32,
+      "expected coalesced scroll burst to preserve the total viewport delta (not just the final delta)"
+    );
+  }
+
+  #[test]
+  fn drain_scroll_burst_scroll_to_overrides_pending_deltas() {
+    let factory = default_ui_worker_factory().expect("expected default ui worker factory");
+
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let worker_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    runtime.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+
+    ui_tx
+      .send(UiToWorker::Scroll {
+        tab_id,
+        delta_css: (0.0, 10.0),
+        pointer_css: None,
+      })
+      .expect("send Scroll");
+    ui_tx
+      .send(UiToWorker::Scroll {
+        tab_id,
+        delta_css: (0.0, 20.0),
+        pointer_css: None,
+      })
+      .expect("send Scroll");
+    ui_tx
+      .send(UiToWorker::ScrollTo {
+        tab_id,
+        pos_css: (0.0, 123.0),
+      })
+      .expect("send ScrollTo");
+
+    runtime.drain_scroll_burst();
+
+    let tab = runtime.tabs.get(&tab_id).expect("tab exists");
+    assert_eq!(
+      tab.scroll_state.viewport.y, 123.0,
+      "expected ScrollTo to override earlier Scroll deltas within a coalescing window"
+    );
+    assert_eq!(
+      tab.scroll_state.viewport_delta.y, 123.0,
+      "expected ScrollTo delta to be computed from the original scroll state (not after applying earlier Scroll deltas)"
+    );
+  }
+}
+
 /// Handle to the browser worker thread.
 ///
 /// The UI thread sends [`UiToWorker`] messages over `tx`, and receives [`WorkerToUi`] updates on
