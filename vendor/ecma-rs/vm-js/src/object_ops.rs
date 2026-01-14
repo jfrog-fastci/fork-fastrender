@@ -3356,12 +3356,14 @@ impl<'a> Scope<'a> {
             // array object itself.
             if let Value::Object(receiver_obj) = receiver {
               if receiver_obj == current {
-                // `TypedArraySetElement` always performs `ToNumber(value)` before checking
-                // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `\"-1\"`,
-                // `\"1.5\"`, `\"NaN\"`, `\"Infinity\"`, `\"-0\"`). This matters because
-                // `ToNumber(Symbol)` / `ToNumber(BigInt)` throw.
+                // `TypedArraySetElement` always performs numeric conversion before checking
+                // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
+                // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because:
+                // - `ToNumber(Symbol)` / `ToNumber(BigInt)` throw for Number typed arrays, and
+                // - `ToBigInt(1)` throws for BigInt typed arrays.
                 //
                 // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
+                let kind = scope.heap().typed_array_kind(current)?;
                 let index = if numeric_index.is_finite()
                   && numeric_index.fract() == 0.0
                   && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
@@ -3377,16 +3379,25 @@ impl<'a> Scope<'a> {
                   None
                 };
 
-                match index {
-                  Some(index) => {
+                if kind.is_bigint() {
+                  // Convert via ToBigInt; supports string/boolean/null/undefined, throws on
+                  // Number/Symbol/object.
+                  let bits = scope.heap().typed_array_to_bigint_bits(kind, value)?;
+                  if let Some(index) = index {
                     // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
                     let _ = scope
                       .heap_mut()
-                      .typed_array_set_element_value(current, index, value)?;
+                      .typed_array_set_element_u64_bits(current, index, bits)?;
                   }
-                  None => {
-                    // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
-                    let _ = scope.heap_mut().to_number(value)?;
+                } else {
+                  // Convert via ToNumber; supports string/boolean/null/undefined, throws on
+                  // Symbol/BigInt/object.
+                  let n = scope.heap_mut().to_number(value)?;
+                  if let Some(index) = index {
+                    // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
+                    let _ = scope
+                      .heap_mut()
+                      .typed_array_set_element_number(current, index, n)?;
                   }
                 }
                 return Ok(true);
@@ -3549,12 +3560,14 @@ impl<'a> Scope<'a> {
           // array object itself.
           if let Value::Object(receiver_obj) = receiver {
             if receiver_obj == obj {
-              // `TypedArraySetElement` always performs `ToNumber(value)` before checking
+              // `TypedArraySetElement` always performs numeric conversion before checking
               // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
-              // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
-              // / `ToNumber(BigInt)` throw.
+              // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because:
+              // - `ToNumber(Symbol)` / `ToNumber(BigInt)` throw for Number typed arrays, and
+              // - `ToBigInt(1)` throws for BigInt typed arrays.
               //
               // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
+              let kind = self.heap().typed_array_kind(obj)?;
               let index = if numeric_index.is_finite()
                 && numeric_index.fract() == 0.0
                 && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
@@ -3570,16 +3583,21 @@ impl<'a> Scope<'a> {
                 None
               };
 
-              match index {
-                Some(index) => {
+              if kind.is_bigint() {
+                let bi = self.to_bigint(vm, host, hooks, value)?;
+                if let Some(index) = index {
                   // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
                   let _ = self
                     .heap_mut()
-                    .typed_array_set_element_value(obj, index, value)?;
+                    .typed_array_set_element_bigint(obj, index, bi)?;
                 }
-                None => {
-                  // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
-                  let _ = self.heap_mut().to_number(value)?;
+              } else {
+                let n = self.to_number(vm, host, hooks, value)?;
+                if let Some(index) = index {
+                  // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
+                  let _ = self
+                    .heap_mut()
+                    .typed_array_set_element_number(obj, index, n)?;
                 }
               }
               return Ok(true);

@@ -6361,9 +6361,12 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       Value::Undefined => Err(VmError::TypeError("Cannot convert undefined to a BigInt"))?,
       Value::Null => Err(VmError::TypeError("Cannot convert null to a BigInt"))?,
       Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a BigInt"))?,
-      Value::Object(_) => Err(VmError::Unimplemented(
-        "ToBigInt on objects requires ToPrimitive/built-ins",
-      ))?,
+      // Full `ToBigInt` for objects requires `ToPrimitive`, which can invoke user code; that
+      // conversion is implemented at the `Scope` layer (`Scope::to_bigint`). Heap-level operations
+      // that need BigInt conversion should either:
+      // - ensure the input is already primitive, or
+      // - perform conversion via `Scope::to_bigint` before calling into the heap.
+      Value::Object(_) => Err(VmError::TypeError("Cannot convert object to a BigInt"))?,
     };
 
     let i128 = wrapped.try_to_i128().ok_or(VmError::InvariantViolation(

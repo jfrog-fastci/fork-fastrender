@@ -108,4 +108,49 @@ fn bigint_typed_arrays_basic_construction_and_element_access() {
     .unwrap(),
     Value::Bool(true)
   );
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+      (() => {
+        // ToBigInt performs ToPrimitive(hint Number) on objects.
+        const a = new BigInt64Array([0n]);
+        const calls = [];
+        const obj = {
+          valueOf() { calls.push("valueOf"); return {}; },
+          toString() { calls.push("toString"); return "42"; },
+        };
+        a[0] = obj;
+        const ok_to_primitive = a[0] === 42n && calls.join(",") === "valueOf,toString";
+
+        // If ToPrimitive produces a Number, ToBigInt must throw TypeError (and must not consult
+        // toString after valueOf succeeds).
+        const b = new BigInt64Array([0n]);
+        const obj2 = {
+          valueOf() { return 1; },
+          toString() { throw new Error("toString called"); },
+        };
+        let ok_type_error = false;
+        try {
+          b[0] = obj2;
+        } catch (e) {
+          ok_type_error = e instanceof TypeError;
+        }
+
+        // Even for invalid numeric indices, TypedArraySetElement must perform ToBigInt.
+        const c = new BigInt64Array([0n]);
+        let ok_invalid_index = false;
+        try {
+          c[-1] = 1;
+        } catch (e) {
+          ok_invalid_index = e instanceof TypeError;
+        }
+
+        return ok_to_primitive && ok_type_error && ok_invalid_index;
+      })()
+    "#,
+    )
+    .unwrap(),
+    Value::Bool(true)
+  );
 }

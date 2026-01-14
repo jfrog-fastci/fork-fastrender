@@ -1,4 +1,5 @@
-use crate::{GcObject, GcString, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::bigint::JsBigInt;
+use crate::{GcBigInt, GcObject, GcString, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// ECMAScript `ToPrimitive` hint / preferred type.
 ///
@@ -218,6 +219,60 @@ impl<'a> Scope<'a> {
     debug_assert!(!matches!(prim, Value::Object(_)), "ToPrimitive returned object");
 
     scope.heap_mut().to_number_with_tick(prim, || vm.tick())
+  }
+
+  /// ECMAScript `ToBigInt(argument)`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-tobigint>
+  ///
+  /// This implements object-to-BigInt coercion via `ToPrimitive(argument, hint Number)`, which can
+  /// invoke user code.
+  pub fn to_bigint(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<GcBigInt, VmError> {
+    // 1. Let prim be ? ToPrimitive(argument, hint Number).
+    // 2. If Type(prim) is BigInt, return prim.
+    // 3. If Type(prim) is Boolean, return 1n or 0n.
+    // 4. If Type(prim) is String, parse via StringToBigInt; on failure, throw SyntaxError.
+    // 5. Otherwise, throw TypeError.
+    //
+    // Root `value` across `ToPrimitive`, which can allocate / GC and can invoke user JS.
+    let mut scope = self.reborrow();
+    scope.push_root(value)?;
+
+    let prim = match value {
+      Value::Object(_) => scope.to_primitive(vm, host, hooks, value, ToPrimitiveHint::Number)?,
+      other => other,
+    };
+    scope.push_root(prim)?;
+    debug_assert!(!matches!(prim, Value::Object(_)), "ToPrimitive returned object");
+
+    match prim {
+      Value::BigInt(b) => Ok(b),
+      Value::Bool(true) => scope.alloc_bigint_from_u128(1),
+      Value::Bool(false) => scope.alloc_bigint_from_u128(0),
+      Value::String(s) => {
+        let units = scope.heap().get_string(s)?.as_code_units();
+        let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || vm.tick())?;
+        let Some(bi) = parsed else {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let err = crate::error_object::new_syntax_error_object(&mut scope, &intr, "Cannot convert string to a BigInt")?;
+          return Err(VmError::Throw(err));
+        };
+        scope.alloc_bigint(bi)
+      }
+      Value::Number(_) => Err(VmError::TypeError("Cannot convert a Number value to a BigInt")),
+      Value::Undefined => Err(VmError::TypeError("Cannot convert undefined to a BigInt")),
+      Value::Null => Err(VmError::TypeError("Cannot convert null to a BigInt")),
+      Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a BigInt")),
+      Value::Object(_) => Err(VmError::InvariantViolation("ToPrimitive returned object")),
+    }
   }
 
   /// ECMAScript `ToObject(argument)`.
