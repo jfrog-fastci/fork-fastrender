@@ -191,30 +191,7 @@ fn date_picker_day_a11y_label(year: i32, month: u32, day: u32, selected: bool) -
 /// Apply browser-like Shift+wheel semantics (treat vertical wheel deltas as horizontal scrolling).
 #[cfg(any(test, feature = "browser_ui"))]
 fn remap_wheel_delta_for_shift(delta: (f32, f32), shift: bool) -> (f32, f32) {
-  if !shift {
-    return delta;
-  }
-
-  // Only reinterpret the scroll when the wheel delta is primarily vertical.
-  //
-  // Many platforms report classic mouse wheels as vertical-only even with Shift held, while
-  // trackpads can report true horizontal deltas. Preserve explicit horizontal deltas, while still
-  // allowing "mostly vertical" deltas to be reinterpreted as horizontal scrolling.
-  const DX_EPSILON: f32 = 1e-3;
-  let (dx, dy) = delta;
-  if !dx.is_finite() || !dy.is_finite() || dy == 0.0 {
-    return delta;
-  }
-
-  let abs_dx = dx.abs();
-  let abs_dy = dy.abs();
-  if abs_dx < DX_EPSILON || abs_dy > abs_dx {
-    // Preserve any existing horizontal delta (e.g. from a trackpad) while reinterpreting vertical
-    // scrolling as horizontal.
-    (dx + dy, 0.0)
-  } else {
-    delta
-  }
+  fastrender::ui::remap_wheel_delta_for_shift(delta, shift)
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -4192,7 +4169,7 @@ mod wheel_delta_shift_mapping_tests {
   #[test]
   fn shift_wheel_preserves_existing_horizontal_delta() {
     assert_eq!(remap_wheel_delta_for_shift((3.0, 0.0), true), (3.0, 0.0));
-    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (10.0, 0.0));
+    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (3.0, 7.0));
     // If the delta is primarily horizontal already, leave it unchanged.
     assert_eq!(remap_wheel_delta_for_shift((7.0, 3.0), true), (7.0, 3.0));
   }

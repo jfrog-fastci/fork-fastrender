@@ -74,6 +74,7 @@ pub mod render_worker;
 pub mod renderer_backend;
 pub mod renderer_process_id;
 mod router_coalescer;
+mod wheel_modifiers;
 pub mod scrollbars;
 pub mod shortcuts;
 pub mod scroll_blit;
@@ -240,6 +241,7 @@ pub use messages::{
 pub use cancel::CancelGens;
 pub use renderer_process_id::RendererProcessId;
 pub use shutdown_join_tracker::ShutdownJoinTracker;
+pub use wheel_modifiers::remap_wheel_delta_for_shift;
 
 pub use process_assignment::{ProcessAssignmentEvent, ProcessAssignmentState, ProcessModel};
 
