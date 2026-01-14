@@ -17,9 +17,10 @@ use crate::geometry::Point;
 use crate::paint::painter::{paint_backend_from_env, PaintBackend};
 use crate::scroll::ScrollState;
 use crate::style::position::Position;
-use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use crate::{PreparedDocument, Size};
 
+use crate::style::types::BackgroundAttachment;
 /// Reasons why the scroll blit fast-path could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScrollBlitFallbackReason {
@@ -122,19 +123,62 @@ fn approx_integer(v: f32) -> Option<i32> {
 }
 
 fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
-  let mut stack: Vec<&FragmentNode> = Vec::new();
-  stack.push(&tree.root);
-  for root in &tree.additional_fragments {
-    stack.push(root);
-  }
-  while let Some(node) = stack.pop() {
-    if let Some(style) = node.style.as_deref() {
-      if matches!(style.position, Position::Fixed | Position::Sticky) {
+  fn scan(node: &FragmentNode, has_fixed_cb_ancestor: bool) -> bool {
+    match &node.content {
+      FragmentContent::RunningAnchor { snapshot, .. }
+      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
+        if scan(snapshot, has_fixed_cb_ancestor) {
+          return true;
+        }
+      }
+      _ => {}
+    }
+
+    let Some(style) = node.style.as_deref() else {
+      for child in node.children.iter() {
+        if scan(child, has_fixed_cb_ancestor) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Sticky positioning is scroll-dependent; always treat as unsupported.
+    if matches!(style.position, Position::Sticky) {
+      return true;
+    }
+
+    // A `position: fixed` element is only viewport-fixed when it has no fixed-containing-block
+    // ancestor. This mirrors the logic in `scroll::scroll_blit_supported`.
+    if matches!(style.position, Position::Fixed) && !has_fixed_cb_ancestor {
+      return true;
+    }
+
+    // `background-attachment: fixed` keeps the background anchored to the viewport.
+    if style
+      .background_layers
+      .iter()
+      .any(|layer| matches!(layer.attachment, BackgroundAttachment::Fixed))
+    {
+      return true;
+    }
+
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+    for child in node.children.iter() {
+      if scan(child, has_fixed_cb_ancestor_for_children) {
         return true;
       }
     }
-    for child in node.children.iter() {
-      stack.push(child);
+    false
+  }
+
+  if scan(&tree.root, false) {
+    return true;
+  }
+  for root in &tree.additional_fragments {
+    if scan(root, false) {
+      return true;
     }
   }
   false
@@ -498,6 +542,53 @@ mod tests {
       let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
       assert_eq!(plan.delta_device_px, (0, 10));
       assert_eq!(last_scroll_blit_fallback_reason_for_test(), None);
+    });
+  }
+
+  #[test]
+  fn scroll_blit_allows_fixed_inside_fixed_containing_block() {
+    let _guard = test_guard();
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #cb { transform: translate(1px, 1px); }
+          #fixed { position: fixed; top: 0; left: 0; width: 10px; height: 10px; background: red; }
+        </style>
+        <div id="cb"><div id="fixed"></div></div>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
+
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
+      assert_eq!(plan.delta_device_px, (0, 10));
+    });
+  }
+
+  #[test]
+  fn scroll_blit_fallback_reason_background_attachment_fixed() {
+    let _guard = test_guard();
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          body {
+            background-image: linear-gradient(red, blue);
+            background-attachment: fixed;
+          }
+        </style>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
+
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::FixedOrStickyPresent);
     });
   }
 }
