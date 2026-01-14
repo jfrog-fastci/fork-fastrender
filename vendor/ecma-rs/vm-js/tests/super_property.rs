@@ -94,3 +94,47 @@ fn derived_ctor_super_prop_before_super_throws_reference_error() {
     "ReferenceError:Must call super constructor in derived class before accessing 'this'",
   );
 }
+
+#[test]
+fn derived_ctor_super_computed_before_super_does_not_evaluate_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        class B {}
+        class D extends B {
+          constructor() {
+            super[side = 1];
+            super();
+          }
+        }
+        try { new D(); "no"; } catch (e) { String(side) + ":" + e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
+}
+
+#[test]
+fn super_property_with_null_super_base_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class N extends null {
+          constructor() {
+            // `extends null` cannot call `super()`, but derived constructors may return an object
+            // without initializing `this`.
+            return Object.create(new.target.prototype);
+          }
+          m() {
+            return super.toString;
+          }
+        }
+        try { new N().m(); "no"; } catch (e) { e.name + ":" + e.message }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError:Cannot convert undefined or null to object");
+}
