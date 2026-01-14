@@ -716,9 +716,21 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
 
       // If the primary index is out of bounds, then increment the secondary index and reset the primary
       // index back to the start of the grid
-      let primary_out_of_bounds = primary_span.end > primary_axis_grid_end_line;
+      // `resolve_indefinite_grid_lines` clamps spans to the UA-defined overlarge-grid range. If the
+      // search cursor runs past the end of the currently-constructed implicit grid (or saturates at
+      // the representable coordinate limit), the clamped span may still appear in-bounds. Use the
+      // cursor position as an additional out-of-bounds signal so we continue to advance through the
+      // grid rather than getting stuck repeatedly probing the last track.
+      let primary_out_of_bounds =
+        primary_idx >= primary_axis_grid_end_line || primary_span.end > primary_axis_grid_end_line;
       if primary_out_of_bounds {
+        let prev_secondary = secondary_idx;
         secondary_idx += 1;
+        if secondary_idx == prev_secondary {
+          // The search cursor can no longer advance (saturated at i16 bounds). Fall back to the
+          // clamped placement to avoid an infinite loop.
+          return (primary_span, secondary_span);
+        }
         primary_idx = initial_candidate(
           primary_placement_style,
           primary_axis_grid_start_line,
