@@ -89,3 +89,118 @@ fn exponentiation_assignment_on_computed_property_captures_base_and_key_before_y
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn exponentiation_assignment_on_binding_uses_pre_yield_old_value_across_yield_star() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var x = 2;
+      function* rhs() {
+        yield 0;
+        yield 1;
+        return 3;
+      }
+      function* g(){ return x **= (yield* rhs()); }
+      var it = g();
+      var r1 = it.next();
+      x = 10; // mutate after first delegated yield
+      var r2 = it.next();
+      x = 100; // mutate after second delegated yield
+      var r3 = it.next();
+      r1.value === 0 && r1.done === false &&
+      r2.value === 1 && r2.done === false &&
+      r3.done === true && r3.value === 8 && x === 8
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_on_property_captures_reference_and_old_value_across_yield_star() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var o1 = { a: 2 };
+      var o2 = { a: 10 };
+      var o = o1;
+
+      function* rhs() {
+        yield 0;
+        yield 1;
+        return 3;
+      }
+
+      function* g(){ return o.a **= (yield* rhs()); }
+      var it = g();
+      var r1 = it.next();
+
+      // Mutate the original target and also rebind the base after the first delegated yield.
+      o1.a = 4;
+      o = o2;
+
+      var r2 = it.next();
+
+      // Mutate again after the second delegated yield.
+      o1.a = 5;
+      o = o2;
+
+      var r3 = it.next();
+
+      r1.value === 0 && r1.done === false &&
+      r2.value === 1 && r2.done === false &&
+      r3.done === true && r3.value === 8 &&
+      // Must still target the original base and use the pre-yield old value (2).
+      o1.a === 8 && o2.a === 10
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_on_computed_property_captures_base_key_and_old_value_across_yield_star() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var o1 = { a: 2, b: 3 };
+      var o2 = { a: 10, b: 100 };
+      var o = o1;
+      var k = "a";
+
+      function* rhs() {
+        yield 0;
+        yield 1;
+        return 3;
+      }
+
+      function* g(){ return o[k] **= (yield* rhs()); }
+      var it = g();
+      var r1 = it.next();
+
+      // Mutate and rebind base/key after the first delegated yield.
+      o1.a = 4;
+      o = o2;
+      k = "b";
+
+      var r2 = it.next();
+
+      // Mutate again after the second delegated yield.
+      o1.a = 5;
+      o = o2;
+      k = "b";
+
+      var r3 = it.next();
+
+      r1.value === 0 && r1.done === false &&
+      r2.value === 1 && r2.done === false &&
+      r3.done === true && r3.value === 8 &&
+      // Must still target the original base/key pair and use the pre-yield old value (2).
+      o1.a === 8 && o1.b === 3 &&
+      o2.a === 10 && o2.b === 100
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
