@@ -360,7 +360,7 @@ Not all builds implement all of these toggles yet; unsupported values are expect
     settings.
   - Note: the browser may create sidecar files next to the session path:
     - a lock file (same path with `.lock` extension) to prevent multiple `browser` instances from writing the same session, and
-    - a last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`) used to recover if the primary session file is corrupted/unparseable.
+    - a last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`) used to recover if the primary session file is unreadable/corrupted/unparseable (or exceeds size limits).
       - The backup is updated opportunistically on overwrite when the existing session parses successfully (best-effort).
 
 ### Browser bookmarks file

@@ -143,8 +143,9 @@ Startup note:
       - when a window is maximized, the last *normal* (restored) size is preserved for proper
         unmaximize behaviour
       - when a window is minimized, the browser avoids persisting meaningless `0×0` sizes
-- If the primary session file is corrupted/unparseable, the browser can fall back to a retained
-  last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`).
+- If the primary session file is unreadable/corrupted/unparseable (or exceeds size limits), the
+  browser can fall back to a retained last-known-good backup (same filename with a `.bak` suffix,
+  e.g. `fastrender_session.json.bak`).
   - This backup is updated opportunistically on overwrite when the existing session parses
     successfully (best-effort).
 - If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page
