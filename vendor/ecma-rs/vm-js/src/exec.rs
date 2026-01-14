@@ -16411,13 +16411,19 @@ impl<'a> Evaluator<'a> {
 
           // Root `right` across anonymous function name inference + `PutValue`.
           op_scope.push_root(right)?;
-          self.maybe_set_anonymous_function_name_for_assignment(
-            &mut op_scope,
-            &expr.left,
-            &expr.right,
-            &reference,
-            right,
-          )?;
+          // Logical assignment operators (`&&=`, `||=`, `??=`) only participate in anonymous
+          // function name inference for identifier references (binding targets), not property
+          // references. This matches the spec's `IsIdentifierRef` gating and avoids attributing
+          // names like `o.p ||= function () {}` => `"p"`.
+          if matches!(reference, Reference::Binding(_)) {
+            self.maybe_set_anonymous_function_name_for_assignment(
+              &mut op_scope,
+              &expr.left,
+              &expr.right,
+              &reference,
+              right,
+            )?;
+          }
           self.put_value_to_reference(&mut op_scope, &reference, right)?;
           Ok(right)
         }
