@@ -701,8 +701,8 @@ fn session_writer_thread(
     // maximum write interval, persist it now.
     if let Some((session, updated_at, first_pending_at)) = pending.take() {
       let now = Instant::now();
-      if now.duration_since(updated_at) >= debounce
-        || now.duration_since(first_pending_at) >= max_write_interval
+      if now.saturating_duration_since(updated_at) >= debounce
+        || now.saturating_duration_since(first_pending_at) >= max_write_interval
       {
         let mut to_write = session;
         to_write.did_exit_cleanly = false;
