@@ -625,6 +625,8 @@ mod tests {
 
   #[test]
   fn legacy_code_for_dom_exception_name_maps_known_errors() {
+    assert_eq!(legacy_code_for_dom_exception_name("IndexSizeError"), 1);
+    assert_eq!(legacy_code_for_dom_exception_name("INDEX_SIZE_ERR"), 1);
     assert_eq!(legacy_code_for_dom_exception_name("InvalidCharacterError"), 5);
     assert_eq!(legacy_code_for_dom_exception_name("INVALID_CHARACTER_ERR"), 5);
     assert_eq!(legacy_code_for_dom_exception_name("NotSupportedError"), 9);

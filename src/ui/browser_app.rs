@@ -1721,7 +1721,7 @@ impl ChromeAddressBarCache {
     self.url_is_bookmarked
   }
 
-  pub fn loading_text(&mut self, stage: Option<StageHeartbeat>) -> &str {
+  pub fn update_loading_text(&mut self, stage: Option<StageHeartbeat>) {
     let stage = stage.filter(|s| *s != StageHeartbeat::Done);
     if stage != self.loading_stage {
       self.loading_stage = stage;
@@ -1735,11 +1735,18 @@ impl ChromeAddressBarCache {
         }
       }
     }
+  }
 
+  pub fn loading_text_ref(&self) -> &str {
     match self.loading_stage {
       None => "Loading…",
       Some(_) => self.loading_text.as_str(),
     }
+  }
+
+  pub fn loading_text(&mut self, stage: Option<StageHeartbeat>) -> &str {
+    self.update_loading_text(stage);
+    self.loading_text_ref()
   }
 }
 

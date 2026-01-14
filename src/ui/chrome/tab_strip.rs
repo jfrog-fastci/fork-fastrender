@@ -1656,7 +1656,8 @@ fn tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = tab.display_title();
+  let title_owned = tab.display_title().to_string();
+  let title = title_owned.as_str();
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -2077,7 +2078,8 @@ fn pinned_tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = tab.display_title();
+  let title_owned = tab.display_title().to_string();
+  let title = title_owned.as_str();
   let mut response = ui.interact(
     tab_rect,
     tab_id,
