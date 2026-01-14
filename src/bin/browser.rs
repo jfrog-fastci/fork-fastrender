@@ -17173,14 +17173,20 @@ impl App {
     // Joining can block for a long time if the worker is stuck; never block the UI thread.
     //
     // Prefer joining via a raw `JoinHandle` (pollable via `is_finished`) when the backend exposes
-    // it (current in-process worker backend). Fall back to running `RendererBackend::join` on a
-    // detached helper thread for other backend implementations.
+    // it (current in-process worker backend). This also allows dropping the backend (and its
+    // worker→UI receiver) promptly once the window is dropped, preventing unbounded message
+    // accumulation if the worker keeps sending after shutdown.
+    //
+    // Fall back to running `RendererBackend::join` on a detached helper thread for other backend
+    // implementations.
     if let Some(join) = self.renderer_backend.take_join_handle() {
       shutdown_join_tracker.track_join(
         format!("browser worker thread {:?}", self.window.id()),
         join,
       );
     } else {
+      // Fallback: join via the backend abstraction on a helper thread (still non-blocking for the
+      // UI thread, but may keep backend resources alive until the join completes).
       let renderer_backend = self.renderer_backend.clone();
       shutdown_join_tracker.track_blocking(
         format!("browser worker thread {:?}", self.window.id()),

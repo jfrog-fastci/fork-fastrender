@@ -44,7 +44,8 @@ pub trait RendererBackend: Send + Sync {
 
   /// Attempt to extract a raw `JoinHandle` for this backend, if available.
   ///
-  /// This exists so UI code can track shutdown joins without spawning additional helper threads.
+  /// This is used by the windowed browser UI to join workers without blocking the UI thread, while
+  /// allowing the backend (and its worker→UI receiver) to be dropped promptly on window close.
   ///
   /// Default implementation returns `None`.
   fn take_join_handle(&self) -> Option<JoinHandle<()>> {
