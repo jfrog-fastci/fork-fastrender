@@ -154,6 +154,37 @@ fn default_parent_style() -> &'static ComputedStyle {
   DEFAULT_PARENT_STYLE.get_or_init(ComputedStyle::default)
 }
 
+fn fragment_tree_uses_keyframes(tree: &FragmentTree) -> bool {
+  if tree.keyframes.is_empty() {
+    return false;
+  }
+  let keyframes = &tree.keyframes;
+  let mut stack: Vec<&FragmentNode> = Vec::new();
+  stack.push(&tree.root);
+  for extra in &tree.additional_fragments {
+    stack.push(extra);
+  }
+  while let Some(node) = stack.pop() {
+    if let Some(style) = node.style.as_deref() {
+      if style
+        .animation_names
+        .iter()
+        .filter_map(|name| name.as_ref())
+        .any(|name| keyframes.contains_key(name))
+      {
+        return true;
+      }
+    }
+    if let FragmentContent::RunningAnchor { snapshot, .. } = &node.content {
+      stack.push(snapshot.as_ref());
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
+  }
+  false
+}
+
 fn recompute_var_dependent_properties_preserving_animated_color(
   style: &mut ComputedStyle,
   parent_styles: &ComputedStyle,
@@ -8774,6 +8805,9 @@ pub fn apply_animations(
   if tree.keyframes.is_empty() {
     return;
   }
+  if !fragment_tree_uses_keyframes(tree) {
+    return;
+  }
 
   let mut document_timeline = wa_timing::DocumentTimeline::new(0.0);
   if let Some(time) = animation_time {
@@ -8890,6 +8924,10 @@ pub fn apply_animations_with_state(
 ) {
   state.begin_frame();
   if tree.keyframes.is_empty() {
+    state.sweep();
+    return;
+  }
+  if !fragment_tree_uses_keyframes(tree) {
     state.sweep();
     return;
   }

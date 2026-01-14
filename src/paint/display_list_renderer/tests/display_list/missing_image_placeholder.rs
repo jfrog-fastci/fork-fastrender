@@ -253,6 +253,43 @@ fn display_list_img_alt_text_honors_text_align_when_painted_with_broken_icon() {
 }
 
 #[test]
+fn display_list_img_alt_text_inherits_link_color_when_keyframes_present_but_no_animations() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let tmp = tempdir().expect("tempdir");
+  let empty_path = tmp.path().join("empty.bin");
+  std::fs::write(&empty_path, []).expect("write empty image");
+  let empty_url = Url::from_file_path(&empty_path).expect("file URL");
+
+  // Include a dummy @keyframes rule so `FragmentTree::keyframes` is non-empty, matching real pages
+  // where keyframes exist even when animations are effectively disabled (the fixture harness often
+  // injects `animation: none !important`). FastRender must treat this as a no-op and must not
+  // recompute inherited colors based on the fragment tree (floats are reparented during layout).
+  let html = format!(
+    "<!doctype html>\
+     <style>\
+       @keyframes dummy {{ from {{ opacity: 1; }} to {{ opacity: 1; }} }}\
+       html, body {{ margin: 0; background: rgb(0, 0, 0); color: rgb(0, 0, 0); }}\
+       a {{ color: rgb(255, 0, 0); font: 20px/20px sans-serif; }}\
+       .float {{ float: left; }}\
+       img {{ display: block; width: 40px; height: 40px; }}\
+     </style>\
+     <a href=\"#\"><div class=\"float\"><img src=\"{empty_url}\" alt=\"X\"></div></a>"
+  );
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  let pixmap = renderer.render_html(&html, 40, 40).expect("render");
+
+  // Alt text starts to the right of the UA icon (x≈20px for a 40px image box).
+  let red = count_red(&pixmap, 20, 0, 40, 40);
+  assert!(red > 0, "expected red link-colored alt text pixels, got {red}");
+}
+
+#[test]
 fn display_list_img_marked_placeholder_png_renders_ua_broken_image_icon() {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),

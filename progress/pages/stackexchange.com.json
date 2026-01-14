@@ -14,14 +14,15 @@
     "layout": 60.02956612813371,
     "paint": 41.02020352089137
   },
-  "notes": "",
+  "notes": "Fixed a subtle inherited-`color` mismatch caused by the animation pipeline: when the page defines `@keyframes` but no fragments actually reference them (common in fixture runs due to injected `animation: none !important`), FastRender still traversed the fragment tree and re-applied inherited properties based on fragment parents. Floats are reparented during layout, so this clobbered link-blue inherited color for broken-image `<img alt>` text in the Hot Network Questions list (rendering black instead of blue). `animation::apply_animations` now no-ops unless some fragment's `animation-name` matches a collected keyframe rule. Remaining diffs are mainly text rasterization/line-break differences and minor background tint deltas, plus UA broken-image placeholder details for missing assets.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 159927,
-    "diff_percent": 16.6591,
-    "perceptual": 0.1295,
+    "diff_pixels": 104251,
+    "diff_percent": 10.8595,
+    "perceptual": 0.1734,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 331,
+      "x": 337,
       "y": 11,
       "baseline_rgba": [
         12,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        52,
-        56,
-        60,
+        57,
+        63,
+        67,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

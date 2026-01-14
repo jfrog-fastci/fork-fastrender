@@ -1297,7 +1297,6 @@ impl WorkerToUi {
       | WorkerToUi::FrameReady { tab_id, .. }
       | WorkerToUi::TickHint { tab_id, .. }
       | WorkerToUi::PageAccessibility { tab_id, .. }
-      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }
       | WorkerToUi::NavigationStarted { tab_id, .. }
       | WorkerToUi::NavigationCommitted { tab_id, .. }
@@ -1305,7 +1304,6 @@ impl WorkerToUi {
       | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
       | WorkerToUi::RequestOpenInNewWindow { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
-      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }
       | WorkerToUi::LoadingState { tab_id, .. }
       | WorkerToUi::Warning { tab_id, .. }
