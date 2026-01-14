@@ -232,6 +232,9 @@ jobs:
         shell: bash
         run: bash scripts/ci_check_no_merge_conflicts.sh
 
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
       - name: Assert TypeScript conformance suite is present
         shell: bash
         run: |
@@ -245,6 +248,9 @@ jobs:
             echo "::error::TypeScript conformance suite appears empty (${suite}). Did the submodule checkout fail?" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install Rust toolchain (vendor/ecma-rs)
         uses: dtolnay/rust-toolchain@master
@@ -282,12 +288,6 @@ jobs:
           key: ${{ runner.os }}-typecheck-ts-upstream-conformance-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-typecheck-ts-upstream-conformance-target-1.92.0-
-
-      - name: Init ecma-rs checkout (vendored/submodule compatibility)
-        run: bash scripts/ci_init_ecma_rs_submodule.sh
-
-      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
-        run: bash scripts/check_no_conflict_markers.sh
 
       - name: TypeScript version sync (vendor/ecma-rs)
         working-directory: vendor/ecma-rs

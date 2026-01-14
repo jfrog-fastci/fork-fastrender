@@ -26,27 +26,6 @@ jobs:
         shell: bash
         run: bash scripts/ci_check_no_merge_conflicts.sh
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: test262-parser-${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: test262-parser-${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: test262-parser-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         shell: bash
         run: bash scripts/ci_init_ecma_rs_submodule.sh
@@ -82,6 +61,27 @@ jobs:
             echo "::error::test262 parser corpus directory vendor/ecma-rs/test262/data is missing after submodule init." >&2
             exit 1
           fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: test262-parser-${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: test262-parser-${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: test262-parser-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run test262 parser harness
         shell: bash

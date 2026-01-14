@@ -52,6 +52,24 @@ jobs:
         shell: bash
         run: bash scripts/ci_check_no_merge_conflicts.sh
 
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -72,24 +90,6 @@ jobs:
         with:
           path: target
           key: fixture-chrome-diff-${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Init ecma-rs submodule
-        shell: bash
-        run: bash scripts/ci_init_ecma_rs_submodule.sh
-
-      - name: Assert ecma-rs is checked out
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
-            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
-            echo "Run: git submodule update --init vendor/ecma-rs" >&2
-            exit 1
-          fi
-
-      - name: "CI guardrails: no merge conflict markers (Rust sources, ecma-rs aware)"
-        shell: bash
-        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install Chrome
         id: setup_chrome
