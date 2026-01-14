@@ -10273,77 +10273,22 @@ impl BrowserRuntime {
       };
 
       let scroll_snapshot = tab.scroll_state.clone();
-      let engine = &mut tab.interaction;
-      let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let (dom_changed, action) = engine.key_activate_with_layout_artifacts(
-          dom,
-          Some(box_tree),
-          fragment_tree,
-          key,
-          document_url,
-          base_url,
-        );
-        let visited_candidate = engine.take_last_visited_candidate();
-        let (submitter, submitter_element_id) =
-          engine.take_last_form_submitter_with_element_id();
-        let focused = engine.focused_node_id();
-        let (
-          focused_element_id,
-          focused_is_text_input,
-          focused_is_input,
-          focused_is_textarea,
-          focused_is_select,
-          focused_is_button,
-          focused_is_video_controls,
-          focused_media_kind,
-        ) = focused
-          .and_then(|focused_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
-              let media_kind = dom_media_controls_kind(node);
-              (
-                node.get_attribute_ref("id").map(|id| id.to_string()),
-                dom_is_text_input(node),
-                dom_is_input(node),
-                dom_is_textarea(node),
-                dom_is_select(node),
-                dom_is_button(node),
-                media_kind.is_some(),
-                media_kind,
-              )
-            })
-          })
-          .unwrap_or((None, false, false, false, false, false, false, None));
-        let focus_scroll = match &action {
-          InteractionAction::FocusChanged {
-            node_id: Some(node_id),
-          } => crate::interaction::focus_scroll::scroll_state_for_focus(
-            box_tree,
-            fragment_tree,
-            &scroll_snapshot,
-            *node_id,
-          ),
-          _ => None,
-        };
-        let caret_scroll =
-          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+      let result = {
+        let engine = &mut tab.interaction;
+        doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let (dom_changed, action) = engine.key_activate_with_layout_artifacts(
             dom,
-            engine.interaction_state(),
-            box_tree,
+            Some(box_tree),
             fragment_tree,
-            focus_scroll.as_ref().unwrap_or(&scroll_snapshot),
+            key,
+            document_url,
+            base_url,
           );
-        (
-          dom_changed,
-          (
-            dom_changed,
-            action,
-            focus_scroll,
-            caret_scroll,
-            visited_candidate,
-            submitter,
-            submitter_element_id,
-            focused,
-            focused_element_id,
+          let visited_candidate = engine.take_last_visited_candidate();
+          let (submitter, submitter_element_id) =
+            engine.take_last_form_submitter_with_element_id();
+          let focused = engine.focused_node_id();
+          let (
             focused_is_text_input,
             focused_is_input,
             focused_is_textarea,
@@ -10351,9 +10296,63 @@ impl BrowserRuntime {
             focused_is_button,
             focused_is_video_controls,
             focused_media_kind,
-          ),
-        )
-      });
+          ) = focused
+            .and_then(|focused_id| {
+              crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+                let media_kind = dom_media_controls_kind(node);
+                (
+                  dom_is_text_input(node),
+                  dom_is_input(node),
+                  dom_is_textarea(node),
+                  dom_is_select(node),
+                  dom_is_button(node),
+                  media_kind.is_some(),
+                  media_kind,
+                )
+              })
+            })
+            .unwrap_or((false, false, false, false, false, false, None));
+          let focus_scroll = match &action {
+            InteractionAction::FocusChanged {
+              node_id: Some(node_id),
+            } => crate::interaction::focus_scroll::scroll_state_for_focus(
+              box_tree,
+              fragment_tree,
+              &scroll_snapshot,
+              *node_id,
+            ),
+            _ => None,
+          };
+          let caret_scroll =
+            crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+              dom,
+              engine.interaction_state(),
+              box_tree,
+              fragment_tree,
+              focus_scroll.as_ref().unwrap_or(&scroll_snapshot),
+            );
+          (
+            dom_changed,
+            (
+              dom_changed,
+              action,
+              focus_scroll,
+              caret_scroll,
+              visited_candidate,
+              submitter,
+              submitter_element_id,
+              focused,
+              focused_is_text_input,
+              focused_is_input,
+              focused_is_textarea,
+              focused_is_select,
+              focused_is_button,
+              focused_is_video_controls,
+              focused_media_kind,
+            ),
+          )
+        })
+      };
       let (
         changed,
         action,
@@ -10363,7 +10362,6 @@ impl BrowserRuntime {
         form_submitter,
         form_submitter_element_id,
         focused,
-        focused_element_id,
         focused_is_text_input,
         focused_is_input,
         focused_is_textarea,
@@ -10379,7 +10377,6 @@ impl BrowserRuntime {
           let mut submitter: Option<usize> = None;
           let mut submitter_element_id: Option<String> = None;
           let mut focused: Option<usize> = None;
-          let mut focused_element_id: Option<String> = None;
           let mut focused_is_text_input = false;
           let mut focused_is_input = false;
           let mut focused_is_textarea = false;
@@ -10392,10 +10389,10 @@ impl BrowserRuntime {
             let (dom_changed, next_action) = engine.key_activate(dom, key, document_url, base_url);
             action = next_action;
             visited_candidate = engine.take_last_visited_candidate();
-            (submitter, submitter_element_id) = engine.take_last_form_submitter_with_element_id();
+            (submitter, submitter_element_id) =
+              engine.take_last_form_submitter_with_element_id();
             focused = engine.focused_node_id();
             let (
-              id,
               is_text_input,
               is_input,
               is_textarea,
@@ -10408,7 +10405,6 @@ impl BrowserRuntime {
                 crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
                   let media_kind = dom_media_controls_kind(node);
                   (
-                    node.get_attribute_ref("id").map(|id| id.to_string()),
                     dom_is_text_input(node),
                     dom_is_input(node),
                     dom_is_textarea(node),
@@ -10419,8 +10415,7 @@ impl BrowserRuntime {
                   )
                 })
               })
-              .unwrap_or((None, false, false, false, false, false, false, None));
-            focused_element_id = id;
+              .unwrap_or((false, false, false, false, false, false, None));
             focused_is_text_input = is_text_input;
             focused_is_input = is_input;
             focused_is_textarea = is_textarea;
@@ -10439,7 +10434,6 @@ impl BrowserRuntime {
             submitter,
             submitter_element_id,
             focused,
-            focused_element_id,
             focused_is_text_input,
             focused_is_input,
             focused_is_textarea,
@@ -10500,6 +10494,7 @@ impl BrowserRuntime {
 
       let mut default_allowed = true;
       let mut dispatched_dom_event = false;
+      let focused_element_id = tab.interaction.focused_element_id();
 
       // Keyboard activation should dispatch a cancelable `"click"` event on the activated element
       // before performing its default action (navigation, open-in-new-tab, submit, ...).
@@ -10526,7 +10521,7 @@ impl BrowserRuntime {
         } else if let Some(focused_id) = focused {
           if !focused_is_text_input {
             click_target_id = Some(focused_id);
-            click_target_element_id = focused_element_id.as_deref();
+            click_target_element_id = focused_element_id;
           }
         }
       }
@@ -10548,7 +10543,7 @@ impl BrowserRuntime {
         )
       {
         submit_source_id = focused;
-        submit_source_element_id = focused_element_id.as_deref();
+        submit_source_element_id = focused_element_id;
       }
 
       // Mirror UI-driven form control changes (dom1) into dom2 before dispatching click/submit.
@@ -10568,7 +10563,7 @@ impl BrowserRuntime {
               mapping,
               dom_snapshot,
               focused_id,
-              focused_element_id.as_deref(),
+              focused_element_id,
             );
           }
           if let Some(target_id) = click_target_id {
