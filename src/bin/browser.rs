@@ -21044,6 +21044,11 @@ impl App {
       PageContextMenuAction::CopyImageAddress(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
           ctx.output_mut(|o| o.copied_text = url);
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to copy an invalid URL",
+          );
         }
       }
       PageContextMenuAction::DownloadImage(url) => {
@@ -21060,16 +21065,31 @@ impl App {
             self.downloads_panel_request_focus = true;
           }
           self.downloads_panel_open = true;
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to download an invalid URL",
+          );
         }
       }
       PageContextMenuAction::OpenImageInNewTab(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
           session_dirty |= self.open_url_in_new_tab(url);
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to open an invalid URL",
+          );
         }
       }
       PageContextMenuAction::CopyLinkAddress(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
           ctx.output_mut(|o| o.copied_text = url);
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to copy an invalid URL",
+          );
         }
       }
       PageContextMenuAction::Reload => {
@@ -21092,11 +21112,21 @@ impl App {
           }
           self.downloads_panel_open = true;
           self.clear_page_focus();
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to download an invalid URL",
+          );
         }
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
           session_dirty |= self.open_url_in_new_tab(url);
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to open an invalid URL",
+          );
         }
       }
       PageContextMenuAction::BookmarkLink(url) => {
@@ -21111,6 +21141,11 @@ impl App {
           if result.bookmarks_changed {
             self.record_bookmark_deltas(result.bookmark_deltas, false);
           }
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to bookmark an invalid URL",
+          );
         }
       }
       PageContextMenuAction::BookmarkPage(url) => {
