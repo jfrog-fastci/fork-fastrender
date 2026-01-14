@@ -5365,7 +5365,70 @@ mod tests {
       1
     );
     assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_any), 1);
-    assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_species_get), 1);
+
+    // The `@@species` getter is shared across multiple intrinsic constructors.
+    //
+    // Do not count registrations by native function pointer: link-time identical-code folding (ICF)
+    // can cause *distinct* builtins to share the same address, which would create false positives
+    // when using `std::ptr::fn_addr_eq`.
+    //
+    // Instead, assert that two different intrinsic `@@species` getters reuse the same native call
+    // handler id (meaning intrinsics setup did not register/cache separate native call entries for
+    // identical semantics).
+    let intr = rt.realm().intrinsics();
+    let species_key = PropertyKey::Symbol(rt.realm().well_known_symbols().species);
+
+    let promise_species_desc = rt
+      .heap
+      .object_get_own_property(intr.promise(), &species_key)?
+      .expect("Promise[@@species] should be an own property");
+    let promise_species_getter = match promise_species_desc.kind {
+      PropertyKind::Accessor {
+        get: Value::Object(get),
+        ..
+      } => get,
+      other => panic!(
+        "expected Promise[@@species] to be an accessor with a getter function, got {other:?}"
+      ),
+    };
+
+    let array_buffer_species_desc = rt
+      .heap
+      .object_get_own_property(intr.array_buffer(), &species_key)?
+      .expect("ArrayBuffer[@@species] should be an own property");
+    let array_buffer_species_getter = match array_buffer_species_desc.kind {
+      PropertyKind::Accessor {
+        get: Value::Object(get),
+        ..
+      } => get,
+      other => panic!(
+        "expected ArrayBuffer[@@species] to be an accessor with a getter function, got {other:?}"
+      ),
+    };
+
+    let promise_species_call_id = match rt
+      .heap
+      .get_function_call_handler(promise_species_getter)?
+    {
+      CallHandler::Native(id) => id,
+      other => panic!(
+        "expected Promise[@@species] getter to be a native function, got {other:?}"
+      ),
+    };
+    let array_buffer_species_call_id = match rt
+      .heap
+      .get_function_call_handler(array_buffer_species_getter)?
+    {
+      CallHandler::Native(id) => id,
+      other => panic!(
+        "expected ArrayBuffer[@@species] getter to be a native function, got {other:?}"
+      ),
+    };
+    assert_eq!(promise_species_call_id, array_buffer_species_call_id);
+    assert!(
+      (promise_species_call_id.0 as usize) < rt.vm.native_calls.len(),
+      "native call id should index into the VM's native call table"
+    );
 
     Ok(())
   }
