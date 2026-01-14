@@ -469,3 +469,214 @@ fn compiled_module_top_level_nested_labeled_for_triple_with_await_in_init_contin
   hooks.teardown(&mut rt);
   result
 }
+
+#[test]
+fn compiled_module_top_level_nested_labeled_for_of_with_await_in_head_default_break_outer_label_executes_and_closes_iterator(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        export let returnCalls = 0;
+
+        const iterable = {};
+        iterable[Symbol.iterator] = function () {
+          return {
+            i: 0,
+            next() {
+              if (this.i++ < 2) return { value: {}, done: false };
+              return { done: true };
+            },
+            return() {
+              returnCalls++;
+              return { done: true };
+            },
+          };
+        };
+
+        outer: inner: for (const { x = await Promise.resolve("a") } of iterable) {
+          actual += x;
+          break outer;
+        }
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "nested labelled top-level for-of with await in the object-pattern head should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    assert!(
+      record.has_tla,
+      "await in a top-level for-of head pattern should mark the module as `[[HasTLA]]`"
+    );
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "adone");
+    assert_eq!(
+      ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "returnCalls")?,
+      Value::Number(1.0),
+      "breaking out of a labelled for-of must call iterator.return()"
+    );
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
+
+#[test]
+fn compiled_module_top_level_nested_labeled_for_of_with_await_in_head_default_continue_outer_label_executes(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        let i = 0;
+
+        const iterable = {};
+        iterable[Symbol.iterator] = function () {
+          return {
+            i: 0,
+            next() {
+              if (this.i++ < 2) return { value: {}, done: false };
+              return { done: true };
+            },
+          };
+        };
+
+        outer: inner: for (const { x = await Promise.resolve("b") } of iterable) {
+          if (i++ === 0) continue outer;
+          actual += x;
+        }
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "nested labelled top-level for-of with await in the object-pattern head should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "bdone");
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}

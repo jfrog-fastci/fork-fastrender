@@ -1097,6 +1097,67 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       .is_none_or(|post| for_triple_head_expr_supported(post, /* allow_assignment */ true))
   }
 
+  fn for_of_stmt_supported_with_async_head(for_of: &Node<ForOfStmt>) -> bool {
+    if for_of.stx.await_ {
+      return false;
+    }
+
+    // The compiled evaluator's `ForOfState` only supports async suspension while binding the loop
+    // head object pattern (computed keys / defaults). It does not support `await` elsewhere in the
+    // loop.
+    if expr_contains_await(&for_of.stx.rhs) {
+      return false;
+    }
+    if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
+      return false;
+    }
+
+    let ForInOfLhs::Decl((_mode, pat_decl)) = &for_of.stx.lhs else {
+      return false;
+    };
+    let Pat::Obj(obj_pat) = &*pat_decl.stx.pat.stx else {
+      return false;
+    };
+    if obj_pat.stx.rest.is_some() {
+      // `AsyncObjectPatternBindingState` does not support rest patterns.
+      return false;
+    }
+
+    let mut has_await: bool = false;
+    for prop in obj_pat.stx.properties.iter() {
+      // Only allow `await` in computed keys and defaults, and only as a direct `await <expr>` with
+      // no nested `await` inside `<expr>`.
+      if let ClassOrObjKey::Computed(expr) = &prop.stx.key {
+        if expr_contains_await(expr) {
+          if !expr_is_direct_await_without_nested_await(expr) {
+            return false;
+          }
+          has_await = true;
+        }
+      }
+
+      // The property binding target pattern must not contain `await` (including nested defaults or
+      // computed keys).
+      if pat_contains_await(&prop.stx.target.stx) {
+        return false;
+      }
+
+      if let Some(default) = prop.stx.default_value.as_ref() {
+        if expr_contains_await(default) {
+          if !expr_is_direct_await_without_nested_await(default) {
+            return false;
+          }
+          has_await = true;
+        }
+      }
+    }
+
+    // Require an actual `await` in the supported head positions (computed key/default). This avoids
+    // accepting `await using` loop heads (which require async semantics even without an
+    // `AwaitExpression`) since `ForOfState` does not currently handle that case.
+    has_await
+  }
+
   for stmt in stmts {
     if !stmt_contains_await(stmt) {
       continue;
@@ -1175,9 +1236,19 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
         }
       }
 
+      // `for (const { x = await p } of xs) { ... }` at top-level.
+      //
+      // This is supported by `ForOfState` (async suspension while binding the object pattern head)
+      // as long as:
+      // - `await` occurs only in computed keys / default values, and only as direct `await <expr>`
+      //   with no nested `await`,
+      // - the RHS and loop body contain no `await`.
+      Stmt::ForOf(for_of) => for_of_stmt_supported_with_async_head(for_of),
+
       // Support `label: for await (...) { ... }` (including nested label chains like
       // `a: b: for await (...) { ... }`) as long as the labelled statement ultimately labels a
-      // supported top-level `for await..of` loop or a supported `for (init; test; update)` loop.
+      // supported top-level `for await..of` loop, `for (init; test; update)` loop, or `for..of`
+      // loop with `await` in the loop head pattern.
       Stmt::Label(label) => {
         let mut inner = &label.stx.statement;
         while let Stmt::Label(label) = &*inner.stx {
@@ -1185,6 +1256,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
         }
         match &*inner.stx {
           Stmt::ForTriple(for_stmt) => for_triple_stmt_supported(for_stmt),
+          Stmt::ForOf(for_of) if !for_of.stx.await_ => for_of_stmt_supported_with_async_head(for_of),
           Stmt::ForOf(for_of) if for_of.stx.await_ => {
             if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
               false

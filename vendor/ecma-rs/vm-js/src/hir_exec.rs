@@ -15434,6 +15434,38 @@ impl HirAsyncState {
       Ok(has_await)
     }
 
+    fn for_of_head_has_await<'a>(
+      evaluator: &HirEvaluator<'a>,
+      body: &hir_js::Body,
+      left: &hir_js::ForHead,
+    ) -> Result<bool, VmError> {
+      let mut has_await_in_head: bool = false;
+      if let hir_js::ForHead::Var(var_decl) = left {
+        if var_decl.declarators.len() == 1 && var_decl.declarators[0].init.is_none() {
+          let declarator = &var_decl.declarators[0];
+          if let hir_js::PatKind::Object(obj_pat) = &evaluator.get_pat(body, declarator.pat)?.kind {
+            for prop in &obj_pat.props {
+              if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+                let expr = evaluator.get_expr(body, *expr_id)?;
+                if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await_in_head = true;
+                  break;
+                }
+              }
+              if let Some(default_expr) = prop.default_value {
+                let expr = evaluator.get_expr(body, default_expr)?;
+                if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await_in_head = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      Ok(has_await_in_head)
+    }
+
     fn collect_label_set<'a>(
       evaluator: &HirEvaluator<'a>,
       body: &hir_js::Body,
@@ -15607,6 +15639,16 @@ impl HirAsyncState {
                 });
               }
               Ok(ForOfPoll::Complete(flow)) => {
+                // `ForOfState::poll` is expected to have cleaned up its persistent roots before
+                // returning `Complete`, but call `teardown` defensively so future changes to the
+                // state machine cannot leak roots.
+                state.teardown(scope.heap_mut());
+                let flow = match flow {
+                  Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                    Flow::Normal(value)
+                  }
+                  other => other,
+                };
                 self.active = None;
                 match flow {
                   Flow::Normal(_) => {
@@ -16249,17 +16291,18 @@ impl HirAsyncState {
       let stmt = evaluator.get_stmt(body, stmt_id)?;
       let stmt_offset = stmt.span.start;
 
-      // Fast-path top-level label chains whose body is a `for await..of` loop or a `for (...)` loop
-      // with `await` in the loop head.
+      // Fast-path top-level label chains whose body is:
+      // - a `for await..of` loop,
+      // - a `for (...)` loop with `await` in the loop head, or
+      // - a `for..of` loop with `await` in the loop head pattern.
       //
       // This supports patterns like:
       //   `outer: for await (const x of iterable) { break outer; }`
       //   `a: b: for await (const x of iterable) { break a; }`
       //   `outer: for (i = await p; i < 10; i++) { break outer; }`
       //
-      // This is intentionally narrow: the compiled async evaluator only supports `for await..of`
-      // loops (and `for` loops with await in the head) at the top statement-list level (not nested
-      // under other statement kinds).
+      // This is intentionally narrow: the compiled async evaluator only supports these loop forms
+      // at the top statement-list level (not nested under other statement kinds).
       if let hir_js::StmtKind::Labeled {
         label: first_label,
         body: first_body,
@@ -16340,6 +16383,35 @@ impl HirAsyncState {
             continue;
           }
         }
+
+        if let hir_js::StmtKind::ForIn {
+          left,
+          right,
+          body: inner,
+          is_for_of: true,
+          await_: false,
+        } = &inner_stmt.kind
+        {
+          if for_of_head_has_await(evaluator, body, left)? {
+            let label_set =
+              collect_label_set(evaluator, body, *first_label, *first_body, label_count)?;
+
+            // Budget once per label statement and once for the loop statement itself, matching the
+            // synchronous evaluator's statement-entry ticks.
+            for _ in 0..label_set.len() {
+              evaluator.vm.tick()?;
+            }
+            evaluator.vm.tick()?;
+
+            self.active = Some(HirAsyncActive::ForOf(ForOfState::new(
+              left.clone(),
+              *right,
+              *inner,
+              label_set.as_slice(),
+            )?));
+            continue;
+          }
+        }
       }
 
       if let hir_js::StmtKind::ForIn {
@@ -16389,32 +16461,9 @@ impl HirAsyncState {
         await_: false,
       } = &stmt.kind
       {
-        let mut has_await_in_head: bool = false;
-        if let hir_js::ForHead::Var(var_decl) = left {
-          if var_decl.declarators.len() == 1 && var_decl.declarators[0].init.is_none() {
-            let declarator = &var_decl.declarators[0];
-            if let hir_js::PatKind::Object(obj_pat) = &evaluator.get_pat(body, declarator.pat)?.kind {
-              for prop in &obj_pat.props {
-                if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
-                  let expr = evaluator.get_expr(body, *expr_id)?;
-                  if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
-                    has_await_in_head = true;
-                    break;
-                  }
-                }
-                if let Some(default_expr) = prop.default_value {
-                  let expr = evaluator.get_expr(body, default_expr)?;
-                  if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
-                    has_await_in_head = true;
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        if has_await_in_head {
+        if for_of_head_has_await(evaluator, body, left)? {
+          // Budget once for the statement entry (matching `eval_stmt_labelled`).
+          evaluator.vm.tick()?;
           self.active = Some(HirAsyncActive::ForOf(ForOfState::new(
             left.clone(),
             *right,
