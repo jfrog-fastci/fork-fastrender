@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, HostDefined, JsString, MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord, Value, Vm, VmError,
+  VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 mod _async_generator_support;
@@ -11,6 +14,38 @@ fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let realm = Realm::new(&mut vm, &mut heap)?;
   Ok((vm, heap, realm))
+}
+
+fn compile_module_record_without_ast(
+  heap: &mut Heap,
+  name: &str,
+  source: &str,
+) -> Result<SourceTextModuleRecord, VmError> {
+  let script = CompiledScript::compile_module(heap, name, source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test module should compile without requiring full AST fallback"
+  );
+  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  record.compiled = Some(script);
+  // Force `ModuleGraph` to instantiate/evaluate via the compiled module path.
+  record.ast = None;
+  Ok(record)
+}
+
+fn get_global_data_property(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+  name: &str,
+) -> Result<Value, VmError> {
+  scope.push_root(Value::Object(global))?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.get_with_host_and_hooks(vm, host, hooks, global, key, Value::Object(global))
 }
 fn ns_get(
   vm: &mut Vm,
@@ -194,6 +229,375 @@ fn supports_compiled_modules(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> boo
   let mut ctx = MicrotaskCtx { vm, heap, host: &mut host };
   hooks.teardown(&mut ctx);
   supported
+}
+
+fn run_compiled_module_local_import_case(consumer_compiled: bool) -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    let a = graph.add_module_with_specifier(
+      "a",
+      compile_module_record_without_ast(&mut heap, "a.js", r#"export const x = 1;"#)?,
+    )?;
+
+    let record_b_src = r#"import { x } from "a"; export const y = x + 1;"#;
+    let b_record = if consumer_compiled {
+      compile_module_record_without_ast(&mut heap, "b.js", record_b_src)?
+    } else {
+      SourceTextModuleRecord::parse(&mut heap, record_b_src)?
+    };
+    let b = graph.add_module_with_specifier("b", b_record)?;
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "y")?,
+      Value::Number(2.0)
+    );
+
+    // Avoid unused variable warnings for `a`.
+    let _ = a;
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
+fn compiled_module_graph_local_exports_import_ast_consumer() -> Result<(), VmError> {
+  run_compiled_module_local_import_case(false)
+}
+
+#[test]
+fn compiled_module_graph_local_exports_import_compiled_consumer() -> Result<(), VmError> {
+  run_compiled_module_local_import_case(true)
+}
+
+#[test]
+fn compiled_module_graph_default_export_expression_is_evaluated_once() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    graph.add_module_with_specifier(
+      "a",
+      compile_module_record_without_ast(
+        &mut heap,
+        "a.js",
+        r#"export default (globalThis.__seen = (globalThis.__seen||0)+1, 10); export const z = 1;"#,
+      )?,
+    )?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      compile_module_record_without_ast(
+        &mut heap,
+        "b.js",
+        r#"import d, { z } from "a"; export const out = d + z;"#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "out")?,
+      Value::Number(11.0)
+    );
+
+    let seen = get_global_data_property(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      realm.global_object(),
+      "__seen",
+    )?;
+    assert_eq!(seen, Value::Number(1.0));
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
+struct SyncDynamicImportHooks {
+  microtasks: MicrotaskQueue,
+  modules: HashMap<JsString, ModuleId>,
+  seen_referrer: Option<ModuleReferrer>,
+}
+
+impl SyncDynamicImportHooks {
+  fn new() -> Self {
+    Self {
+      microtasks: MicrotaskQueue::new(),
+      modules: HashMap::new(),
+      seen_referrer: None,
+    }
+  }
+
+  fn register_module(&mut self, specifier: &str, module: ModuleId) {
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
+  }
+
+  fn perform_microtask_checkpoint(&mut self, ctx: &mut dyn VmJobContext) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    let mut errors = Vec::new();
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      if let Err(err) = job.run(ctx, self) {
+        let is_hard_stop = matches!(err, VmError::Termination(_) | VmError::OutOfMemory);
+        errors.push(err);
+        if is_hard_stop {
+          self.microtasks.teardown(ctx);
+          break;
+        }
+      }
+    }
+    self.microtasks.end_checkpoint();
+
+    if let Some(err) = errors.into_iter().next() {
+      Err(err)
+    } else {
+      Ok(())
+    }
+  }
+
+  fn teardown_jobs(&mut self, ctx: &mut dyn VmJobContext) {
+    self.microtasks.teardown(ctx);
+  }
+}
+
+impl VmHostHooks for SyncDynamicImportHooks {
+  fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
+    self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    &[]
+  }
+
+  fn host_call_job_callback(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    callback: &vm_js::JobCallback,
+    this_argument: Value,
+    arguments: &[Value],
+  ) -> Result<Value, VmError> {
+    ctx.call(
+      self,
+      Value::Object(callback.callback_object()),
+      this_argument,
+      arguments,
+    )
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    self.seen_referrer = Some(referrer);
+    let module = *self.modules.get(&module_request.specifier).unwrap_or_else(|| {
+      panic!(
+        "no module registered for specifier {:?}",
+        module_request.specifier
+      )
+    });
+    vm.finish_loading_imported_module(
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(module),
+    )
+  }
+
+  fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    Some(self)
+  }
+}
+
+#[test]
+fn compiled_module_graph_dynamic_import_from_compiled_module_resolves() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut host = ();
+  let mut hooks = SyncDynamicImportHooks::new();
+  let mut graph = ModuleGraph::new();
+
+  // Make the graph available for dynamic `import()` executed after module evaluation.
+  vm.set_module_graph(&mut graph);
+
+  let result = (|| -> Result<(), VmError> {
+    let dep = graph.add_module_with_specifier(
+      "dep",
+      SourceTextModuleRecord::parse(&mut heap, r#"export const v = 42;"#)?,
+    )?;
+    hooks.register_module("dep", dep);
+
+    let entry = graph.add_module_with_specifier(
+      "entry",
+      compile_module_record_without_ast(
+        &mut heap,
+        "entry.js",
+        r#"export async function f(){ return import("dep").then(m => m.v); }"#,
+      )?,
+    )?;
+
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      entry,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_entry = graph.get_module_namespace(entry, &mut vm, &mut scope)?;
+    let f = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_entry, "f")?;
+    let promise = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, f, Value::Undefined, &[])?;
+    let promise_root = scope.heap_mut().add_root(promise)?;
+
+    drop(scope);
+
+    let mut ctx = MicrotaskCtx {
+      vm: &mut vm,
+      heap: &mut heap,
+      host: &mut host,
+    };
+    hooks.perform_microtask_checkpoint(&mut ctx)?;
+
+    let Some(Value::Object(promise_obj)) = heap.get_root(promise_root) else {
+      panic!("expected call to async function to return a Promise object");
+    };
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(heap.promise_result(promise_obj)?, Some(Value::Number(42.0)));
+    heap.remove_root(promise_root);
+
+    assert_eq!(hooks.seen_referrer, Some(ModuleReferrer::Module(entry)));
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown_jobs(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
+fn compiled_module_graph_import_meta_is_cached_within_compiled_module() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut graph = ModuleGraph::new();
+
+  // `import.meta` requires a module graph even after evaluation (when calling exported functions).
+  vm.set_module_graph(&mut graph);
+
+  let result = (|| -> Result<(), VmError> {
+    let m = graph.add_module_with_specifier(
+      "m",
+      compile_module_record_without_ast(
+        &mut heap,
+        "m.js",
+        r#"export function getMeta(){ return import.meta; }"#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_m = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    let get_meta = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_m, "getMeta")?;
+    let v1 = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get_meta, Value::Undefined, &[])?;
+    let v2 = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, get_meta, Value::Undefined, &[])?;
+    let (Value::Object(m1), Value::Object(m2)) = (v1, v2) else {
+      panic!("expected getMeta() to return an object");
+    };
+    assert_eq!(m1, m2);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
 }
 
 #[test]
