@@ -200,6 +200,9 @@ mod test_alloc;
 #[cfg(test)]
 mod regexp_unicode_property_strings_tests;
 
+#[cfg(test)]
+mod hir_async_class_tests;
+
 // Some unit tests are authored as standalone files under `../tests/` so they can also run as
 // integration tests. Alias the crate as `vm_js` so those files can `use vm_js::...` regardless of
 // whether they are compiled as unit or integration tests.
