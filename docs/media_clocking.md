@@ -74,6 +74,13 @@ Key knobs:
 - `FASTR_AUDIO_MAX_STREAMS` — global cap on concurrently active audio sinks (default 32).
 - `FASTR_AUDIO_BUFFER_BUDGET` — global buffered-audio budget across all sinks (default 32 MiB;
   accepts `kb`/`mb`/`gb`/`kib`/`mib`/`gib` suffixes and `_` separators).
+- `FASTR_AUDIO_IDLE_TIMEOUT_MS` — when all streams are idle for this duration, the output backend may
+  stop/pause its device stream (power saving; used by the CPAL backend; default 3000ms).
+- `FASTR_AUDIO_DEFAULT_SAMPLE_RATE_HZ` / `FASTR_AUDIO_DEFAULT_CHANNELS` — default output format for
+  non-device backends (null/WAV; defaults 48kHz stereo).
+- `FASTR_AUDIO_PREROLL_MS` / `FASTR_AUDIO_LOW_BUFFER_MS` / `FASTR_AUDIO_LOW_BUFFER_DEBOUNCE_MS` —
+  buffering thresholds intended for playback state/backpressure. These are currently experimental
+  and may not be fully wired yet.
 
 When the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op sink (push
 accepts 0 samples). The effective limit is:
