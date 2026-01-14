@@ -7490,6 +7490,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // `about:` pages, but rebuilding it requires traversing the entire bookmark tree.
   let mut bookmarks_about_snapshot_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
+  // Throttle expensive `about:processes` tab snapshot rebuilds. Generating the snapshot can require
+  // traversing every open tab across all windows, so avoid doing it every event-loop tick unless
+  // the page is actually visible.
+  let mut open_tabs_about_snapshot_scheduler =
+    fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
   // Revision of the bookmark store used to build the current about-page bookmark snapshot.
   let mut about_page_bookmarks_snapshot_revision = global_bookmarks.revision();
 
@@ -9487,77 +9492,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for win in windows.values_mut() {
           win.app.flush_pending_dropped_files();
         }
-
-        // Keep the `about:processes` snapshot up to date with the current set of open tabs.
-        //
-        // This is best-effort debug state: only compute it while an `about:processes` tab is
-        // actually visible to avoid doing per-tab URL/site-key work on every event-loop cycle.
-        let any_about_processes_visible = windows.values().any(|win| {
-          win
-            .app
-            .browser_state
-            .active_tab()
-            .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
-            .is_some_and(|url| {
-              let base = url
-                .trim()
-                .split(|c| matches!(c, '?' | '#'))
-                .next()
-                .unwrap_or(url);
-              base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES)
-            })
-        });
-
-        if any_about_processes_visible {
-          let mut open_tabs = Vec::new();
-          for (window_id, win) in windows.iter() {
-            let window_debug = format!("{window_id:?}");
-            let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
-            for tab in &win.app.browser_state.tabs {
-              let url = tab
-                .committed_url
-                .as_deref()
-                .or(tab.current_url.as_deref())
-                .unwrap_or("")
-                .trim();
-              if url.is_empty() {
-                continue;
-              }
-              let site_key = fastrender::ui::SiteKey::from_url(url)
-                .ok()
-                .map(|key| key.to_string());
-              let renderer_process = tab.renderer_process.map(|id| id.raw());
-              let is_active = active_tab_id == Some(tab.id.0);
-              let title = tab
-                .committed_title
-                .as_deref()
-                .or(tab.title.as_deref())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-              open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
-                window_id: Some(window_debug.clone()),
-                tab_id: tab.id.0,
-                url: url.to_string(),
-                title,
-                site_key,
-                renderer_process,
-                is_active,
-                loading: tab.loading,
-                crashed: tab.crashed,
-                unresponsive: tab.unresponsive,
-                renderer_crashed: tab.renderer_crashed,
-                crash_reason: tab.crash_reason.clone(),
-                renderer_protocol_violation: tab
-                  .renderer_protocol_violation
-                  .as_ref()
-                  .map(|v| v.to_string()),
-              });
-            }
-          }
-          open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
-          fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
-        }
       }
       _ => {}
     }
@@ -9981,22 +9915,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Flush a debounced session snapshot if it is due.
     let now = std::time::Instant::now();
 
-    let any_about_bookmarks_visible = windows.values().any(|win| {
-      win
+    let mut any_about_bookmarks_visible = false;
+    let mut any_about_processes_visible = false;
+    for win in windows.values() {
+      let Some(url) = win
         .app
         .browser_state
         .active_tab()
         .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
-        .is_some_and(|url| {
-          let base = url
-            .trim()
-            .split(|c| matches!(c, '?' | '#'))
-            .next()
-            .unwrap_or(url);
-          base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
-            || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
-        })
-    });
+      else {
+        continue;
+      };
+      let base = url
+        .trim()
+        .split(|c| matches!(c, '?' | '#'))
+        .next()
+        .unwrap_or(url);
+      any_about_bookmarks_visible |= base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+        || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS);
+      any_about_processes_visible |=
+        base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES);
+      if any_about_bookmarks_visible && any_about_processes_visible {
+        break;
+      }
+    }
 
     // Only rebuild the about-page bookmark snapshot when it is actually needed (i.e. an about page
     // that depends on bookmarks is visible). This avoids repeatedly traversing the entire bookmark
@@ -10033,6 +9975,88 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
           });
         if about_bookmarks_visible {
+          if let Some(active_tab) = win.app.browser_state.active_tab_id() {
+            win.app.trusted_about_rendered_urls.remove(&active_tab);
+            win.app.trusted_about_prepared.remove(&active_tab);
+            if !(win.app.window_occluded || win.app.window_minimized) {
+              win.app.window.request_redraw();
+            }
+          }
+        }
+      }
+    }
+
+    // Keep the `about:processes` tab snapshot reasonably fresh without rebuilding it on every
+    // event-loop tick. Snapshot generation can be expensive (it walks all windows/tabs and allocates
+    // strings), so only do it when `about:processes` is actually visible.
+    if any_about_processes_visible {
+      open_tabs_about_snapshot_scheduler.mark_dirty();
+    }
+    if any_about_processes_visible && open_tabs_about_snapshot_scheduler.take_if_due(now) {
+      let mut open_tabs: Vec<fastrender::ui::about_pages::OpenTabSnapshot> = Vec::new();
+      for (window_id, win) in windows.iter() {
+        let window_debug = format!("{window_id:?}");
+        let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
+        for tab in &win.app.browser_state.tabs {
+          let url = tab
+            .committed_url
+            .as_deref()
+            .or(tab.current_url.as_deref())
+            .unwrap_or("")
+            .trim();
+          if url.is_empty() {
+            continue;
+          }
+          let site_key = tab.renderer_site_key.as_ref().map(|key| key.to_string());
+          let renderer_process = tab.renderer_process.map(|id| id.raw());
+          let is_active = active_tab_id == Some(tab.id.0);
+          let title = tab
+            .committed_title
+            .as_deref()
+            .or(tab.title.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+          open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
+            window_id: Some(window_debug.clone()),
+            tab_id: tab.id.0,
+            url: url.to_string(),
+            title,
+            site_key,
+            renderer_process,
+            is_active,
+            loading: tab.loading,
+            crashed: tab.crashed,
+            unresponsive: tab.unresponsive,
+            renderer_crashed: tab.renderer_crashed,
+            crash_reason: tab.crash_reason.clone(),
+            renderer_protocol_violation: tab
+              .renderer_protocol_violation
+              .as_ref()
+              .map(|v| v.to_string()),
+          });
+        }
+      }
+      open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
+      fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
+
+      // If any window is currently showing `about:processes`, invalidate its cached render so the
+      // next redraw re-renders with the updated snapshot.
+      for win in windows.values_mut() {
+        let about_processes_visible = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(|url| {
+            let base = url
+              .trim()
+              .split(|c| matches!(c, '?' | '#'))
+              .next()
+              .unwrap_or(url);
+            base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES)
+          });
+        if about_processes_visible {
           if let Some(active_tab) = win.app.browser_state.active_tab_id() {
             win.app.trusted_about_rendered_urls.remove(&active_tab);
             win.app.trusted_about_prepared.remove(&active_tab);
@@ -10122,6 +10146,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if any_about_bookmarks_visible {
       for deadline in [bookmarks_about_snapshot_scheduler.next_deadline(now)] {
+        if let Some(deadline) = deadline {
+          next_deadline = Some(match next_deadline {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+          });
+        }
+      }
+    }
+    if any_about_processes_visible {
+      for deadline in [open_tabs_about_snapshot_scheduler.next_deadline(now)] {
         if let Some(deadline) = deadline {
           next_deadline = Some(match next_deadline {
             Some(existing) => existing.min(deadline),
