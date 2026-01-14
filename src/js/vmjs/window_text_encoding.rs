@@ -2383,6 +2383,27 @@ mod tests {
   use crate::js::window_streams::install_window_streams_bindings;
   use vm_js::{Heap, HeapLimits, JsRuntime, VmOptions};
 
+  /// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+  #[inline]
+  fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+    // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+    if std::mem::size_of::<T>() == 0 {
+      return Ok(Box::new(value));
+    }
+
+    let layout = std::alloc::Layout::new::<T>();
+    // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+    // write `value` into it and transfer ownership to `Box`.
+    unsafe {
+      let ptr = std::alloc::alloc(layout) as *mut T;
+      if ptr.is_null() {
+        return Err(VmError::OutOfMemory);
+      }
+      ptr.write(value);
+      Ok(Box::from_raw(ptr))
+    }
+  }
+
   fn get_string(heap: &vm_js::Heap, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string value");
@@ -2394,7 +2415,8 @@ mod tests {
   ) -> Result<(Box<JsRuntime>, TextEncodingBindings), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
-    let mut rt = Box::new(JsRuntime::new(vm, heap)?);
+    let rt = JsRuntime::new(vm, heap)?;
+    let mut rt = box_try_new_vm(rt)?;
 
     let bindings = {
       let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
