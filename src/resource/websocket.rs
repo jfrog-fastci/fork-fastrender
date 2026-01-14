@@ -5,8 +5,8 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -140,7 +140,12 @@ pub(crate) fn connect_with_timeout(
   let port = url
     .port_or_known_default()
     .or_else(|| if tls { Some(443) } else { Some(80) })
-    .ok_or_else(|| tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, "WebSocket URL missing port")))?;
+    .ok_or_else(|| {
+      tungstenite::Error::Io(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "WebSocket URL missing port",
+      ))
+    })?;
 
   let deadline = Instant::now() + timeout;
   let mut last_err: Option<io::Error> = None;
@@ -184,10 +189,8 @@ pub(crate) fn connect_with_timeout(
         let stream = if tls {
           // `ClientConnection` requires an owned `'static` server name; allocate because `host` is
           // borrowed from the URL.
-          let server_name: rustls::pki_types::ServerName<'static> = host
-            .to_string()
-            .try_into()
-            .map_err(|_| {
+          let server_name: rustls::pki_types::ServerName<'static> =
+            host.to_string().try_into().map_err(|_| {
               tungstenite::Error::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "WebSocket host is not a valid TLS server name",
@@ -203,17 +206,17 @@ pub(crate) fn connect_with_timeout(
 
         return tungstenite::client::client(request, stream).map_err(|err| match err {
           tungstenite::handshake::HandshakeError::Failure(err) => err,
-          tungstenite::handshake::HandshakeError::Interrupted(_) => tungstenite::Error::Io(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "WebSocket handshake timed out",
-          )),
+          tungstenite::handshake::HandshakeError::Interrupted(_) => tungstenite::Error::Io(
+            io::Error::new(io::ErrorKind::TimedOut, "WebSocket handshake timed out"),
+          ),
         });
       }
       Err(err) => last_err = Some(err),
     }
   }
 
-  let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "WebSocket connect timed out"));
+  let err = last_err
+    .unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "WebSocket connect timed out"));
   Err(tungstenite::Error::Io(err))
 }
 
@@ -369,10 +372,9 @@ mod tests {
           }
 
           if attempt == 0 {
-            res.headers_mut().append(
-              SET_COOKIE,
-              HeaderValue::from_static("b=2; Path=/"),
-            );
+            res
+              .headers_mut()
+              .append(SET_COOKIE, HeaderValue::from_static("b=2; Path=/"));
           }
           Ok(res)
         })
