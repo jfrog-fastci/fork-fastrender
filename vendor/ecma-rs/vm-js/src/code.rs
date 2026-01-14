@@ -636,9 +636,9 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
             return true;
           }
           match &member.stx.val {
-            // `await` is a syntax error in class static initialization blocks, so they cannot
-            // contribute to top-level-`await` detection.
-            ClassOrObjVal::StaticBlock(_) => false,
+            // Class static blocks execute during class evaluation, so any `await` they contain
+            // contributes to async script/module evaluation.
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
             _ => false,
           }
         })
