@@ -769,30 +769,39 @@ fn generators_yield_in_array_literals() {
 
 #[test]
 fn generators_yield_in_array_literals_gc_safety() {
-  let mut rt = new_runtime();
-  let value = rt
+  let mut rt = new_runtime_with_frequent_gc();
+  rt
     .exec_script(
       r#"
         function churn() {
-          // Allocate enough garbage to trigger a GC while the generator is suspended.
+          // Allocate enough to exceed the GC threshold and force a collection.
           //
-          // Keep references out of scope so the only long-lived root is the generator continuation.
-          // If the partially-constructed array literal is not kept alive by the continuation, the
-          // resume step will fail or produce incorrect results.
-          let base = "x";
-          for (let i = 0; i < 12; i++) base += base; // ~4096 chars
-          for (let i = 0; i < 800; i++) {
-            const s = base + i;
-            if (s === "never") throw 0;
-          }
+          // Use a single large ArrayBuffer-backed TypedArray so this stays fast while still
+          // deterministically triggering a GC due to the small `gc_threshold` configured in the
+          // test runtime.
+          const buf = new Uint8Array(2 * 1024 * 1024);
+          return buf.length;
         }
 
         function* g() { return [1, (yield 2), 3]; }
-        const it = g();
-        const r1 = it.next();
-        churn();
-        const r2 = it.next(10);
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
 
+  let gc_before = rt.heap.gc_runs();
+  rt.exec_script("churn();").unwrap();
+  let gc_after = rt.heap.gc_runs();
+  assert!(
+    gc_after > gc_before,
+    "expected at least one GC cycle while generator is suspended in array literal"
+  );
+
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(10);
         r1.value === 2 && r1.done === false &&
         Array.isArray(r2.value) && r2.value.length === 3 &&
         r2.value[0] === 1 && r2.value[1] === 10 && r2.value[2] === 3 &&
