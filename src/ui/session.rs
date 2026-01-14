@@ -3063,6 +3063,26 @@ mod tests {
   }
 
   #[test]
+  fn load_session_outcome_errors_when_primary_and_backup_are_invalid() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&session_path);
+
+    std::fs::write(&session_path, "{not valid json").expect("write corrupted primary session");
+    std::fs::write(&backup_path, "{also not valid json").expect("write corrupted backup session");
+
+    let err = load_session_outcome(&session_path).expect_err("expected session load to fail");
+    assert!(
+      err.contains("also failed to parse backup"),
+      "expected error to mention backup parse failure, got: {err}"
+    );
+    assert!(
+      err.contains(&backup_path.display().to_string()),
+      "expected error to mention backup path, got: {err}"
+    );
+  }
+
+  #[test]
   fn load_session_outcome_reports_primary_when_primary_is_valid() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session_path = dir.path().join("session.json");
