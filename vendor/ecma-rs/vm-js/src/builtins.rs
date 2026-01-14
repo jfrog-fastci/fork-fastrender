@@ -2690,6 +2690,11 @@ pub fn array_constructor_from(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` and all args up-front for host-call safety: this builtin allocates (root stack
+  // growth, species construction, iterator acquisition) before it has otherwise made `args`
+  // reachable from the heap.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   // `C` is the `this` value (`Array.from` is generic and can be applied to other constructors).
   let c = this;
@@ -8838,9 +8843,15 @@ pub fn promise_constructor_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root `new_target` and all args for host-call safety: `OrdinaryCreateFromConstructor` can
+  // allocate/GC before the executor is invoked.
+  scope.push_roots_with_extra_roots(args, &[new_target], &[])?;
+  scope.push_root(new_target)?;
+
   let executor = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(executor)? {
-    return throw_type_error(vm, scope, hooks, "Promise executor is not callable");
+    return throw_type_error(vm, &mut scope, hooks, "Promise executor is not callable");
   }
 
   // Promise constructor:
@@ -8848,7 +8859,7 @@ pub fn promise_constructor_construct(
   let intr = require_intrinsics(vm)?;
   let promise = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     new_target,
@@ -8864,12 +8875,12 @@ pub fn promise_constructor_construct(
   )?;
   scope.push_root(Value::Object(promise))?;
 
-  let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+  let (resolve, reject) = create_promise_resolving_functions(vm, &mut scope, promise)?;
 
   // Invoke executor(resolve, reject).
   match vm.call_with_host_and_hooks(
     host,
-    scope,
+    &mut scope,
     hooks,
     executor,
     Value::Undefined,
@@ -8880,7 +8891,7 @@ pub fn promise_constructor_construct(
       // If executor throws, reject the promise with the thrown value by calling the resolving
       // function (so it respects `alreadyResolved`).
       let _ =
-        vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+        vm.call_with_host_and_hooks(host, &mut scope, hooks, reject, Value::Undefined, &[reason])?;
     }
     Err(e) => return Err(e),
   }
@@ -9273,12 +9284,17 @@ pub fn promise_reject(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root `this` and `reason` across `NewPromiseCapability`, which allocates/GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, this)?;
   scope.push_roots(&[capability.promise, capability.reject])?;
   let _ = vm.call_with_host_and_hooks(
     host,
-    scope,
+    &mut scope,
     hooks,
     capability.reject,
     Value::Undefined,
@@ -10207,27 +10223,31 @@ pub fn promise_all(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // `Promise.all(iterable)` (ECMA-262).
+  let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, this)?;
 
   // Root the resulting promise and resolving functions so `IfAbruptRejectPromise` can call them
   // even if the iterator acquisition/loop allocates and triggers GC.
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, &mut scope, host, hooks, this) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
 
-  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, scope, iterable) {
+  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable) {
     Ok(r) => r,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   let result = perform_promise_all(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     &mut iterator_record,
@@ -10239,8 +10259,8 @@ pub fn promise_all(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
+      let completion = iterator_close_on_error(vm, &mut scope, host, hooks, &iterator_record, err);
+      if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, completion)
     }
   }
 }
@@ -10294,24 +10314,28 @@ pub fn promise_race(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // `Promise.race(iterable)` (ECMA-262).
+  let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, this)?;
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, &mut scope, host, hooks, this) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
 
-  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, scope, iterable) {
+  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable) {
     Ok(r) => r,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   let result = perform_promise_race(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     &mut iterator_record,
@@ -10323,8 +10347,8 @@ pub fn promise_race(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
+      let completion = iterator_close_on_error(vm, &mut scope, host, hooks, &iterator_record, err);
+      if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, completion)
     }
   }
 }
@@ -10476,24 +10500,28 @@ pub fn promise_all_settled(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // `Promise.allSettled(iterable)` (ECMA-262).
+  let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, this)?;
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, &mut scope, host, hooks, this) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
 
-  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, scope, iterable) {
+  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable) {
     Ok(r) => r,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   let result = perform_promise_all_settled(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     &mut iterator_record,
@@ -10505,8 +10533,8 @@ pub fn promise_all_settled(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
+      let completion = iterator_close_on_error(vm, &mut scope, host, hooks, &iterator_record, err);
+      if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, completion)
     }
   }
 }
@@ -10655,24 +10683,28 @@ pub fn promise_any(
   args: &[Value],
 ) -> Result<Value, VmError> {
   // `Promise.any(iterable)` (ECMA-262).
+  let mut scope = scope.reborrow();
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, this)?;
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, &mut scope, host, hooks, this) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
 
-  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, scope, iterable) {
+  let mut iterator_record = match crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable) {
     Ok(r) => r,
-    Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
+    Err(err) => return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err),
   };
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   let result = perform_promise_any(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     &mut iterator_record,
@@ -10684,8 +10716,8 @@ pub fn promise_any(
   match result {
     Ok(v) => Ok(v),
     Err(err) => {
-      let completion = iterator_close_on_error(vm, scope, host, hooks, &iterator_record, err);
-      if_abrupt_reject_promise(vm, scope, host, hooks, capability, completion)
+      let completion = iterator_close_on_error(vm, &mut scope, host, hooks, &iterator_record, err);
+      if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, completion)
     }
   }
 }
@@ -26998,6 +27030,12 @@ pub fn date_constructor_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root `new_target` and all arguments for host-call safety: argument coercions (`ToNumber` /
+  // `ToPrimitive`) and `OrdinaryCreateFromConstructor` can allocate/GC.
+  scope.push_roots_with_extra_roots(args, &[new_target], &[])?;
+  scope.push_root(new_target)?;
+
   let intr = require_intrinsics(vm)?;
   let time = match args.len() {
     0 => date_time_clip(hooks.host_current_time_millis()),
@@ -27009,7 +27047,7 @@ pub fn date_constructor_construct(
         v
       };
       match prim {
-        Value::String(s) => parse_iso_date_string(vm, scope, s)?,
+        Value::String(s) => parse_iso_date_string(vm, &mut scope, s)?,
         other => date_time_clip(scope.to_number(vm, host, hooks, other)?),
       }
     }
@@ -27064,7 +27102,7 @@ pub fn date_constructor_construct(
   // OrdinaryCreateFromConstructor(newTarget, %Date.prototype%).
   let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     new_target,
@@ -27114,6 +27152,11 @@ pub fn date_utc(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root all args up-front: this builtin coerces multiple arguments in order, and `ToNumber` can
+  // allocate/GC.
+  scope.push_roots(args)?;
+
   let y = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
   let m = scope.to_number(vm, host, hooks, args.get(1).copied().unwrap_or(Value::Undefined))?;
   let dt = scope.to_number(vm, host, hooks, args.get(2).copied().unwrap_or(Value::Number(1.0)))?;
@@ -28858,6 +28901,9 @@ pub fn json_parse(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root all args up-front so GC during `ToString(text)` cannot invalidate the optional reviver
+  // argument when this builtin is invoked directly from the host.
+  scope.push_roots(args)?;
 
   let text = args.get(0).copied().unwrap_or(Value::Undefined);
   let s = scope.to_string(vm, host, hooks, text)?;
@@ -29016,6 +29062,11 @@ pub fn json_parse(
       }
       Ok(Some(alloc_source_string(vm, &mut scope, json_units, info.start, info.end)?))
     })()?;
+    // Root the optional source string immediately: subsequent allocations (array/object traversal,
+    // context object creation) can trigger GC.
+    if let Some(source_s) = source {
+      scope.push_root(Value::String(source_s))?;
+    }
 
     if let Value::Object(obj) = val {
       if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, val)? {
@@ -29174,7 +29225,6 @@ pub fn json_parse(
     let context = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
     scope.push_root(Value::Object(context))?;
     if let Some(source) = source {
-      scope.push_root(Value::String(source))?;
       let source_key = string_key(&mut scope, "source")?;
       scope.create_data_property_or_throw(context, source_key, Value::String(source))?;
     }
@@ -30125,6 +30175,9 @@ pub fn map_constructor_construct(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
+  // Root `new_target` + `iterable` up-front: map allocation and prototype lookup can allocate/GC
+  // before we read `args[0]`.
+  scope.push_roots_with_extra_roots(args, &[new_target], &[])?;
   scope.push_root(new_target)?;
 
   let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
@@ -30432,6 +30485,9 @@ pub fn set_constructor_construct(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
+  // Root `new_target` + `iterable` up-front: set allocation and prototype lookup can allocate/GC
+  // before we read `args[0]` when this builtin is invoked directly from the host.
+  scope.push_roots_with_extra_roots(args, &[new_target], &[])?;
   scope.push_root(new_target)?;
 
   let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
@@ -32144,6 +32200,9 @@ pub fn weak_map_constructor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `iterable` up-front: weak map allocation can allocate/GC before we read `args[0]` when this
+  // builtin is invoked directly from the host.
+  scope.push_roots(args)?;
   let intr = require_intrinsics(vm)?;
 
   let map = scope.alloc_weak_map_with_prototype(Some(intr.weak_map_prototype()))?;
@@ -32278,6 +32337,9 @@ pub fn weak_set_constructor_construct(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `iterable` up-front: weak set allocation can allocate/GC before we read `args[0]` when this
+  // builtin is invoked directly from the host.
+  scope.push_roots(args)?;
   let intr = require_intrinsics(vm)?;
 
   let set = scope.alloc_weak_set_with_prototype(Some(intr.weak_set_prototype()))?;

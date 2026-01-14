@@ -1,4 +1,7 @@
-use crate::{builtins, Heap, HeapLimits, JsRuntime, Job, PropertyKey, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
+use crate::{
+  builtins, Heap, HeapLimits, JsRuntime, Job, PromiseState, PropertyKey, RealmId, Value, Vm, VmError,
+  VmHostHooks, VmOptions,
+};
 
 #[derive(Default)]
 struct NoopHostHooks;
@@ -2192,5 +2195,474 @@ fn string_from_char_code_roots_later_args_across_gc_in_first_tonumber() -> Resul
   let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
   assert_eq!(out_utf8, "AB");
 
+  Ok(())
+}
+
+#[test]
+fn json_parse_roots_reviver_across_gc_in_to_string() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const text = { toString() { ({});
+        return "1";
+      }};
+      function reviver(_k, _v) { return 2; }
+      return [text, reviver, undefined];
+    })()"#,
+  )?;
+
+  let [text_val, reviver_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.json();
+  let args = [text_val, reviver_val];
+
+  // Keep the argument values alive while preparing the host call, then drop the roots so the
+  // builtin is responsible for rooting across any GC it triggers.
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&args)?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::json_parse(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(callee),
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected JSON.parse to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn date_utc_roots_later_args_across_gc_in_first_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const year = { valueOf() { ({});
+        return 1970;
+      }};
+      const month = { valueOf() { return 0; } };
+      const day = { valueOf() { return 1; } };
+      return [year, month, day];
+    })()"#,
+  )?;
+
+  let [year_val, month_val, day_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.date_constructor();
+  let args = [year_val, month_val, day_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&args)?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::date_utc(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(callee),
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Date.UTC to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn map_constructor_roots_iterable_across_gc_before_get_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const iterable = [[1, 2]];
+      return [iterable, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [iterable_val, _, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.map();
+  let new_target = Value::Object(callee);
+  let args = [iterable_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&args)?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::map_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Map constructor to trigger GC under tiny heap limits"
+  );
+
+  scope.push_root(out)?;
+  let Value::Object(map_obj) = out else {
+    return Err(VmError::InvariantViolation("Map constructor returned non-object"));
+  };
+
+  assert_eq!(
+    scope.heap().map_get_with_tick(map_obj, Value::Number(1.0), || Ok(()))?,
+    Some(Value::Number(2.0))
+  );
+  Ok(())
+}
+
+#[test]
+fn set_constructor_roots_iterable_across_gc_before_get_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const iterable = [1, 2];
+      return [iterable, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [iterable_val, _, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.set();
+  let new_target = Value::Object(callee);
+  let args = [iterable_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&args)?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::set_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Set constructor to trigger GC under tiny heap limits"
+  );
+
+  scope.push_root(out)?;
+  let Value::Object(set_obj) = out else {
+    return Err(VmError::InvariantViolation("Set constructor returned non-object"));
+  };
+
+  assert_eq!(scope.heap().set_size(set_obj)?, 2);
+  assert!(scope
+    .heap()
+    .set_has_with_tick(set_obj, Value::Number(1.0), || Ok(()))?);
+  assert!(scope
+    .heap()
+    .set_has_with_tick(set_obj, Value::Number(2.0), || Ok(()))?);
+  Ok(())
+}
+
+#[test]
+fn weak_map_constructor_roots_iterable_across_gc_before_get_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const key = { id: 1 };
+      const iterable = [[key, 2]];
+      return [iterable, key, undefined];
+    })()"#,
+  )?;
+
+  let [iterable_val, key_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.weak_map();
+  let args = [iterable_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&[iterable_val, key_val])?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::weak_map_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    Value::Object(callee),
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected WeakMap constructor to trigger GC under tiny heap limits"
+  );
+
+  scope.push_roots(&[out, key_val])?;
+  let Value::Object(map_obj) = out else {
+    return Err(VmError::InvariantViolation("WeakMap constructor returned non-object"));
+  };
+
+  assert_eq!(
+    scope.heap().weak_map_get(map_obj, key_val)?,
+    Some(Value::Number(2.0))
+  );
+  Ok(())
+}
+
+#[test]
+fn weak_set_constructor_roots_iterable_across_gc_before_get_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const key = { id: 1 };
+      const iterable = [key];
+      return [iterable, key, undefined];
+    })()"#,
+  )?;
+
+  let [iterable_val, key_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.weak_set();
+  let args = [iterable_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&[iterable_val, key_val])?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::weak_set_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    Value::Object(callee),
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected WeakSet constructor to trigger GC under tiny heap limits"
+  );
+
+  scope.push_roots(&[out, key_val])?;
+  let Value::Object(set_obj) = out else {
+    return Err(VmError::InvariantViolation("WeakSet constructor returned non-object"));
+  };
+
+  assert!(scope.heap().weak_set_has(set_obj, key_val)?);
+  Ok(())
+}
+
+#[test]
+fn promise_reject_roots_reason_across_gc_in_new_promise_capability() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const reason = { id: 123 };
+      return [reason, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [reason_val, _, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.promise();
+  let args = [reason_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&args)?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::promise_reject(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(callee),
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Promise.reject to trigger GC under tiny heap limits"
+  );
+
+  scope.push_root(out)?;
+  let Value::Object(promise_obj) = out else {
+    return Err(VmError::InvariantViolation("Promise.reject returned non-object"));
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+
+  let reason = scope
+    .heap()
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation(
+      "missing Promise.reject promise result",
+    ))?;
+  scope.push_root(reason)?;
+
+  // Root the reason object before allocating the `"id"` key string.
+  let id_s = scope.alloc_string("id")?;
+  scope.push_root(Value::String(id_s))?;
+  let id_key = PropertyKey::from_string(id_s);
+
+  let Value::Object(reason_obj) = reason else {
+    return Err(VmError::InvariantViolation(
+      "expected Promise.reject reason to be object",
+    ));
+  };
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(reason_obj, &id_key)?,
+    Some(Value::Number(123.0))
+  );
+  Ok(())
+}
+
+#[test]
+fn promise_constructor_roots_executor_across_gc_in_ordinary_create() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const marker = { called: false };
+      function executor(resolve, _reject) { marker.called = true; resolve(1); }
+      return [executor, marker, undefined];
+    })()"#,
+  )?;
+
+  let [executor_val, marker_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.promise();
+  let new_target = Value::Object(callee);
+  let args = [executor_val];
+
+  {
+    let mut keepalive = heap.scope();
+    keepalive.push_roots(&[executor_val, marker_val])?;
+  }
+
+  let gc_before = heap.gc_runs();
+
+  let mut scope = heap.scope();
+  let out = builtins::promise_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Promise constructor to trigger GC under tiny heap limits"
+  );
+
+  // Root the outputs before allocating the `"called"` key string.
+  scope.push_roots(&[out, marker_val])?;
+
+  let called_s = scope.alloc_string("called")?;
+  scope.push_root(Value::String(called_s))?;
+  let called_key = PropertyKey::from_string(called_s);
+
+  let Value::Object(marker_obj) = marker_val else {
+    return Err(VmError::InvariantViolation("expected marker to be object"));
+  };
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(marker_obj, &called_key)?,
+    Some(Value::Bool(true))
+  );
   Ok(())
 }
