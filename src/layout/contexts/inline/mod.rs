@@ -7869,53 +7869,46 @@ impl InlineFormattingContext {
     // - Adjacent-pairs collapsing is approximated only across inline item boundaries.
     // - `trim-all` is approximated by trimming punctuation at inline-item edges throughout the line.
     fn is_fullwidth_opening_punctuation(ch: char) -> bool {
-      matches!(
-        ch,
-        '\u{3008}' // LEFT ANGLE BRACKET
-          | '\u{300A}' // LEFT DOUBLE ANGLE BRACKET
-          | '\u{300C}' // LEFT CORNER BRACKET
-          | '\u{300E}' // LEFT WHITE CORNER BRACKET
-          | '\u{3010}' // LEFT BLACK LENTICULAR BRACKET
-          | '\u{3014}' // LEFT TORTOISE SHELL BRACKET
-          | '\u{3016}' // LEFT WHITE LENTICULAR BRACKET
-          | '\u{3018}' // LEFT WHITE TORTOISE SHELL BRACKET
-          | '\u{301A}' // LEFT WHITE SQUARE BRACKET
-          | '\u{2018}' // LEFT SINGLE QUOTATION MARK
-          | '\u{201C}' // LEFT DOUBLE QUOTATION MARK
-          | '\u{FF08}' // FULLWIDTH LEFT PARENTHESIS
-          | '\u{FF3B}' // FULLWIDTH LEFT SQUARE BRACKET
-          | '\u{FF5B}' // FULLWIDTH LEFT CURLY BRACKET
-          | '\u{FF5F}' // FULLWIDTH LEFT WHITE PARENTHESIS
-      )
+      // CSS Text 4 defines fullwidth opening punctuation as:
+      // - Ps characters in the CJK Symbols and Punctuation block (U+3000..=U+303F) or East Asian
+      //   Fullwidth forms (we approximate with the Halfwidth and Fullwidth Forms block),
+      // - plus U+2018/U+201C.
+      if matches!(ch, '\u{2018}' | '\u{201C}') {
+        return true;
+      }
+      if !matches!(get_general_category(ch), GeneralCategory::OpenPunctuation) {
+        return false;
+      }
+      let cp = ch as u32;
+      (0x3000..=0x303f).contains(&cp) || (0xff00..=0xffef).contains(&cp)
     }
 
     fn is_fullwidth_closing_punctuation(ch: char) -> bool {
-      matches!(
+      // CSS Text 4 defines fullwidth closing punctuation as:
+      // - Pe characters in the CJK Symbols and Punctuation block (U+3000..=U+303F) or East Asian
+      //   Fullwidth forms (we approximate with the Halfwidth and Fullwidth Forms block),
+      // - plus U+2019/U+201D,
+      // - plus additional ambiguous classes (fullwidth dot/colon punctuation) which we treat as
+      //   closing punctuation for now.
+      if matches!(ch, '\u{2019}' | '\u{201D}') {
+        return true;
+      }
+      if matches!(
         ch,
         '\u{3001}' // IDEOGRAPHIC COMMA
           | '\u{3002}' // IDEOGRAPHIC FULL STOP
-          | '\u{3009}' // RIGHT ANGLE BRACKET
-          | '\u{300B}' // RIGHT DOUBLE ANGLE BRACKET
-          | '\u{300D}' // RIGHT CORNER BRACKET
-          | '\u{300F}' // RIGHT WHITE CORNER BRACKET
-          | '\u{3011}' // RIGHT BLACK LENTICULAR BRACKET
-          | '\u{3015}' // RIGHT TORTOISE SHELL BRACKET
-          | '\u{3017}' // RIGHT WHITE LENTICULAR BRACKET
-          | '\u{3019}' // RIGHT WHITE TORTOISE SHELL BRACKET
-          | '\u{301B}' // RIGHT WHITE SQUARE BRACKET
-          | '\u{2019}' // RIGHT SINGLE QUOTATION MARK
-          | '\u{201D}' // RIGHT DOUBLE QUOTATION MARK
-          | '\u{FF01}' // FULLWIDTH EXCLAMATION MARK
-          | '\u{FF09}' // FULLWIDTH RIGHT PARENTHESIS
           | '\u{FF0C}' // FULLWIDTH COMMA
           | '\u{FF0E}' // FULLWIDTH FULL STOP
           | '\u{FF1A}' // FULLWIDTH COLON
           | '\u{FF1B}' // FULLWIDTH SEMICOLON
-          | '\u{FF1F}' // FULLWIDTH QUESTION MARK
-          | '\u{FF3D}' // FULLWIDTH RIGHT SQUARE BRACKET
-          | '\u{FF5D}' // FULLWIDTH RIGHT CURLY BRACKET
-          | '\u{FF60}' // FULLWIDTH RIGHT WHITE PARENTHESIS
-      )
+      ) {
+        return true;
+      }
+      if !matches!(get_general_category(ch), GeneralCategory::ClosePunctuation) {
+        return false;
+      }
+      let cp = ch as u32;
+      (0x3000..=0x303f).contains(&cp) || (0xff00..=0xffef).contains(&cp)
     }
 
     fn is_fullwidth_middle_dot_punctuation(ch: char) -> bool {
