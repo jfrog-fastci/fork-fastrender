@@ -3032,12 +3032,10 @@ mod tests {
     )
     .expect("write backup session");
 
-    let loaded = load_session_outcome(&session_path)
-      .expect("load session")
-      .expect("expected session");
+    let loaded = load_session_outcome(&session_path).expect("load session");
     assert_eq!(loaded.source, SessionLoadSource::Backup);
     assert_eq!(loaded.primary_error, Some(expected_primary_error));
-    assert_eq!(loaded.session, backup_session);
+    assert_eq!(loaded.session, Some(backup_session));
   }
 
   #[test]
@@ -3058,12 +3056,10 @@ mod tests {
     )
     .expect("write backup session");
 
-    let loaded = load_session_outcome(&session_path)
-      .expect("load session")
-      .expect("expected session");
+    let loaded = load_session_outcome(&session_path).expect("load session");
     assert_eq!(loaded.source, SessionLoadSource::Backup);
     assert_eq!(loaded.primary_error, Some(expected_primary_error));
-    assert_eq!(loaded.session, backup_session);
+    assert_eq!(loaded.session, Some(backup_session));
   }
 
   #[test]
