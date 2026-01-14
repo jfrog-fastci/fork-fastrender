@@ -170,7 +170,7 @@ pub fn accesskit_tree_update_from_accessibility_tree(
 
   let focus = interaction_state
     .and_then(|state| state.focused)
-    .map(|id| encode_page_node_id(tab_id, document_generation, id));
+    .map(|id| encode_page_node_id(tab_id, tree_generation, id));
 
   TreeUpdate {
     nodes,
@@ -207,7 +207,7 @@ pub fn accesskit_tree_update_from_accessibility_tree_with_bounds(
 
   let focus = interaction_state
     .and_then(|state| state.focused)
-    .map(|id| encode_page_node_id(tab_id, tree_generation, id));
+    .map(|id| encode_page_node_id(tab_id, document_generation, id));
 
   TreeUpdate {
     nodes,
