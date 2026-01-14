@@ -4312,6 +4312,9 @@ struct BrowserCliArgs {
   /// Write a Chrome trace of the windowed browser UI event loop to this path
   ///
   /// CLI overrides `FASTR_BROWSER_TRACE_OUT` (and legacy alias `FASTR_PERF_TRACE_OUT`).
+  /// The trace is written when the browser process exits.
+  ///
+  /// Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per trace.
   #[arg(long = "trace-out", value_name = "PATH")]
   trace_out: Option<std::path::PathBuf>,
 
