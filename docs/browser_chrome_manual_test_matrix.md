@@ -482,6 +482,10 @@ See `docs/chrome_accessibility.md` for deeper debugging and the `dump_accesskit`
 
 ### Basic cross-platform expectations
 
+- [ ] Keyboard focus order:
+  - [ ] Tab / Shift+Tab moves focus through chrome controls in the **visual** left-to-right order.
+  - [ ] Focus indicator is clearly visible (no “lost focus”).
+  - [ ] Focus is not trapped in panels/menus; Esc should dismiss transient UI surfaces.
 - [ ] Screen reader can traverse the toolbar and announce labels for:
   - [ ] Back / Forward / Reload / Stop / Home
   - [ ] Address bar (announced as an editable text field)
