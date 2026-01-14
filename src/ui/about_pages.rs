@@ -153,70 +153,67 @@ pub fn about_page_snapshot() -> Arc<AboutPageSnapshot> {
   about_page_snapshot_lock().read().clone()
 }
 
-#[cfg(feature = "browser_ui")]
+/// Return the current about-page snapshot as a cheaply clonable [`Arc`].
+///
+/// This is equivalent to [`about_page_snapshot`] (which also returns an [`Arc`]) and exists for
+/// clarity/consistency with older call sites that previously deep-cloned the snapshot.
+pub fn about_page_snapshot_arc() -> Arc<AboutPageSnapshot> {
+  about_page_snapshot()
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
   *about_page_snapshot_lock().write() = Arc::new(snapshot);
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
-  // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
-  // Similarly, keep optional debug snapshots (open tabs) intact unless explicitly overwritten by
-  // callers.
   let new_bookmarks = bookmark_snapshots_from_store(bookmarks);
   let new_history = history_snapshots_from_global_history_store(history);
 
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.bookmarks = new_bookmarks;
-    snapshot.history = new_history;
-    return;
+  let current = std::mem::take(&mut *guard);
+  match Arc::try_unwrap(current) {
+    Ok(mut snapshot) => {
+      snapshot.bookmarks = new_bookmarks;
+      snapshot.history = new_history;
+      *guard = Arc::new(snapshot);
+    }
+    Err(shared) => {
+      // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot
+      // refreshes. Similarly, keep optional debug snapshots (open tabs) intact unless explicitly
+      // overwritten by callers.
+      let chrome_accent = shared.chrome_accent;
+      let open_tabs = shared.open_tabs.clone();
+      let session_path = shared.session_path.clone();
+      let bookmarks_path = shared.bookmarks_path.clone();
+      let history_path = shared.history_path.clone();
+      let download_dir = shared.download_dir.clone();
+      *guard = Arc::new(AboutPageSnapshot {
+        bookmarks: new_bookmarks,
+        history: new_history,
+        open_tabs,
+        chrome_accent,
+        session_path,
+        bookmarks_path,
+        history_path,
+        download_dir,
+      });
+    }
   }
-
-  let chrome_accent = guard.chrome_accent;
-  let open_tabs = guard.open_tabs.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  let download_dir = guard.download_dir.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks: new_bookmarks,
-    history: new_history,
-    open_tabs,
-    chrome_accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
   let history = history_snapshots_from_global_history_store(store);
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.history = history;
-    return;
-  }
-
-  let chrome_accent = guard.chrome_accent;
-  let bookmarks = guard.bookmarks.clone();
-  let open_tabs = guard.open_tabs.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  let download_dir = guard.download_dir.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks,
-    history,
-    open_tabs,
-    chrome_accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.history = history;
+  *guard = Arc::new(snapshot);
 }
 
 /// Update the cached `about:` history snapshot in response to a history visit delta.
@@ -228,7 +225,13 @@ pub fn apply_history_visit_delta(delta: &HistoryVisitDelta, global_history: &Glo
   let rebuild = |global_history: &GlobalHistoryStore| {
     let history = history_snapshots_from_global_history_store(global_history);
     let mut lock = about_page_snapshot_lock().write();
-    Arc::make_mut(&mut *lock).history = history;
+    let current = std::mem::take(&mut *lock);
+    let mut snapshot = match Arc::try_unwrap(current) {
+      Ok(snapshot) => snapshot,
+      Err(shared) => shared.as_ref().clone(),
+    };
+    snapshot.history = history;
+    *lock = Arc::new(snapshot);
   };
 
   let requested_key = delta.url.trim();
@@ -250,118 +253,63 @@ pub fn apply_history_visit_delta(delta: &HistoryVisitDelta, global_history: &Glo
 
   let snapshot_url = entry.url.trim();
   let mut lock = about_page_snapshot_lock().write();
-  let snapshot_lock = Arc::make_mut(&mut *lock);
+  let current = std::mem::take(&mut *lock);
+  let mut snapshot_lock = match Arc::try_unwrap(current) {
+    Ok(snapshot_lock) => snapshot_lock,
+    Err(shared) => shared.as_ref().clone(),
+  };
   snapshot_lock.history.retain(|e| e.url != snapshot_url);
   snapshot_lock.history.insert(0, snapshot);
   snapshot_lock.history.truncate(MAX_HISTORY_SNAPSHOT);
+  *lock = Arc::new(snapshot_lock);
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.bookmarks = bookmarks;
-    return;
-  }
-
-  let chrome_accent = guard.chrome_accent;
-  let history = guard.history.clone();
-  let open_tabs = guard.open_tabs.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  let download_dir = guard.download_dir.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks,
-    history,
-    open_tabs,
-    chrome_accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.bookmarks = bookmarks;
+  *guard = Arc::new(snapshot);
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.chrome_accent = accent;
-    return;
-  }
-
-  let bookmarks = guard.bookmarks.clone();
-  let history = guard.history.clone();
-  let open_tabs = guard.open_tabs.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  let download_dir = guard.download_dir.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks,
-    history,
-    open_tabs,
-    chrome_accent: accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.chrome_accent = accent;
+  *guard = Arc::new(snapshot);
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 pub fn sync_about_page_snapshot_download_dir(download_dir: Option<String>) {
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.download_dir = download_dir;
-    return;
-  }
-
-  let chrome_accent = guard.chrome_accent;
-  let bookmarks = guard.bookmarks.clone();
-  let history = guard.history.clone();
-  let open_tabs = guard.open_tabs.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks,
-    history,
-    open_tabs,
-    chrome_accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.download_dir = download_dir;
+  *guard = Arc::new(snapshot);
 }
 
 pub fn sync_about_page_snapshot_open_tabs(open_tabs: Vec<OpenTabSnapshot>) {
   let mut guard = about_page_snapshot_lock().write();
-  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
-    snapshot.open_tabs = open_tabs;
-    return;
-  }
-
-  let chrome_accent = guard.chrome_accent;
-  let bookmarks = guard.bookmarks.clone();
-  let history = guard.history.clone();
-  let session_path = guard.session_path.clone();
-  let bookmarks_path = guard.bookmarks_path.clone();
-  let history_path = guard.history_path.clone();
-  let download_dir = guard.download_dir.clone();
-  *guard = Arc::new(AboutPageSnapshot {
-    bookmarks,
-    history,
-    open_tabs,
-    chrome_accent,
-    session_path,
-    bookmarks_path,
-    history_path,
-    download_dir,
-  });
+  let current = std::mem::take(&mut *guard);
+  let mut snapshot = match Arc::try_unwrap(current) {
+    Ok(snapshot) => snapshot,
+    Err(shared) => shared.as_ref().clone(),
+  };
+  snapshot.open_tabs = open_tabs;
+  *guard = Arc::new(snapshot);
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
@@ -2397,16 +2345,58 @@ mod tests {
   static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
   #[test]
-  fn about_page_snapshot_returns_same_arc_when_unchanged() {
+  fn about_page_snapshot_arc_returns_same_arc_when_unchanged() {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let a = about_page_snapshot();
-    let b = about_page_snapshot();
+    let a = about_page_snapshot_arc();
+    let b = about_page_snapshot_arc();
     assert!(
       std::sync::Arc::ptr_eq(&a, &b),
-      "expected about_page_snapshot() to clone the existing Arc when unchanged"
+      "expected about_page_snapshot_arc() to clone the existing Arc when unchanged"
     );
+  }
+
+  #[test]
+  fn about_page_snapshot_arc_updates_replace_arc_and_publish_new_content() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let before = about_page_snapshot_arc();
+
+    // Ensure writers publish a new Arc so existing readers can keep using their snapshot without
+    // deep-cloning.
+    set_about_page_snapshot(AboutPageSnapshot {
+      bookmarks: vec![BookmarkSnapshot {
+        title: Some("Example".to_string()),
+        url: "https://example.test/".to_string(),
+      }],
+      ..Default::default()
+    });
+
+    let after_set = about_page_snapshot_arc();
+    assert!(
+      !std::sync::Arc::ptr_eq(&before, &after_set),
+      "expected set_about_page_snapshot to replace the Arc allocation"
+    );
+    assert_eq!(after_set.bookmarks.len(), 1);
+    assert_eq!(after_set.bookmarks[0].url, "https://example.test/");
+
+    let before_accent = about_page_snapshot_arc();
+    let new_accent = Some(RgbaColor::new(1, 2, 3, 0xFF));
+    sync_about_page_snapshot_chrome_accent(new_accent);
+
+    let after_accent = about_page_snapshot_arc();
+    assert!(
+      !std::sync::Arc::ptr_eq(&before_accent, &after_accent),
+      "expected sync_about_page_snapshot_chrome_accent to replace the Arc allocation"
+    );
+    assert_eq!(after_accent.chrome_accent, new_accent);
+    assert_eq!(after_accent.bookmarks.len(), 1);
+    assert_eq!(after_accent.bookmarks[0].url, "https://example.test/");
+
+    set_about_page_snapshot(before.as_ref().clone());
   }
 
   #[cfg(not(feature = "browser_ui"))]
