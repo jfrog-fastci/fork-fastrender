@@ -948,6 +948,38 @@ fn super_property_assignment_with_null_super_base_throws_type_error_compiled() -
 }
 
 #[test]
+fn super_computed_property_assignment_coerces_key_after_rhs_evaluation() {
+  // `super[expr] = rhs` stores the computed key as a value and defers `ToPropertyKey` until
+  // `PutValue`, which happens after evaluating the RHS.
+  //
+  // This test ensures `ToPropertyKey` side effects are not observed during RHS evaluation (e.g.
+  // via `NamedEvaluation`/`SetFunctionName`).
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        const key = { toString() { log.push("key"); return "x"; } };
+
+        class A {
+          set x(v) { log.push("set"); }
+        }
+        class B extends A {
+          m() {
+            super[key] = class { static y = log.push("rhs"); };
+          }
+        }
+
+        new B().m();
+        log.join(",")
+      "#,
+    )
+    .unwrap();
+
+  assert_value_is_utf8(&rt, value, "rhs,key,set");
+}
+
+#[test]
 fn super_property_update_expression_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(
