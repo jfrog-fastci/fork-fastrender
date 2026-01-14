@@ -176,7 +176,9 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
           const inst = new C();
           f().then(v => { result += v; });
           g().then(v => { result += v; });
-          h().then(v => { result += v; });
+          // Async arrow functions execute via call-time AST fallback; ensure they still use *lexical*
+          // `this` rather than the call-site receiver (even when invoked via `.call`).
+          h.call({}).then(v => { result += v; });
           obj.m().then(v => { result += v; });
           inst.m().then(v => { result += v; });
         "#,
