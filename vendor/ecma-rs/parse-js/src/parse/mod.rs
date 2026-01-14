@@ -392,6 +392,9 @@ impl<'a> Parser<'a> {
   where
     F: FnOnce(&mut Self) -> R,
   {
+    if !self.is_strict_ecmascript() {
+      return f(self);
+    }
     self.disallow_arguments_in_class_init += 1;
     let res = f(self);
     self.disallow_arguments_in_class_init -= 1;
@@ -403,7 +406,7 @@ impl<'a> Parser<'a> {
     loc: Loc,
     name: &str,
   ) -> SyntaxResult<()> {
-    if self.disallow_arguments_in_class_init == 0 {
+    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
       return Ok(());
     }
 
@@ -416,7 +419,7 @@ impl<'a> Parser<'a> {
     if string_value.as_ref() == "arguments" {
       return Err(loc.error(
         SyntaxErrorType::ExpectedSyntax(
-          "`arguments` is not allowed in class field initializers or static initialization blocks",
+          "'arguments' is not allowed in class field initializer or static initialization block",
         ),
         None,
       ));

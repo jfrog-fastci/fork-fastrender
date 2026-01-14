@@ -690,6 +690,62 @@ fn generator_for_in_body_restores_env_on_continue_after_yield() -> Result<(), Vm
 }
 
 #[test]
+fn generator_lexical_for_triple_head_closure_captures_per_iteration_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen() {
+        var fns = [];
+        for (let i = 0; i < 2; ++i) {
+          fns.push(function() { return i; });
+          yield 0;
+        }
+        return fns[0]() === 0 && fns[1]() === 1;
+      }
+      var it = gen();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.done === false && r1.value === 0 &&
+      r2.done === false && r2.value === 0 &&
+      r3.done === true && r3.value === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_lexical_for_in_head_closure_captures_per_iteration_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen() {
+        var fns = [];
+        for (let k in {a: 1, b: 2}) {
+          fns.push(function() { return k; });
+          yield 0;
+        }
+        var out = [fns[0](), fns[1]()];
+        out.sort();
+        return out.join(",") === "a,b";
+      }
+      var it = gen();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.done === false && r1.value === 0 &&
+      r2.done === false && r2.value === 0 &&
+      r3.done === true && r3.value === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn async_for_await_of_body_preserves_inner_let_across_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
