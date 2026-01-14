@@ -1056,7 +1056,6 @@ impl TabState {
     }
   }
 }
-
 fn hit_test_fragment_tree_for_scroll_cached(
   cache: &mut Option<HitTestFragmentTreeCache>,
   doc: &BrowserDocument,
@@ -2301,7 +2300,6 @@ fn scroll_anchoring_priority_candidate_for_find(
     Some(ScrollAnchoringPriorityCandidate::Point(point))
   }
 }
-
 fn base_url_for_links<'a>(
   last_base_url: Option<&'a str>,
   last_committed_url: Option<&'a str>,
@@ -4089,6 +4087,7 @@ impl BrowserRuntime {
                 let changed = step_result.unwrap_or(false);
                 (changed, step_result)
               }) {
+              }) {
               if let Some(dom_changed) = step_result {
                 scroll_handled = true;
                 changed |= dom_changed;
@@ -4157,9 +4156,7 @@ impl BrowserRuntime {
                     next_scroll.update_deltas_from(&current_scroll);
                     doc.set_scroll_state(next_scroll.clone());
                     tab.scroll_state = next_scroll;
-                    if let Some(js_tab) = tab.js_tab.as_mut() {
-                      js_tab.set_scroll_state(tab.scroll_state.clone());
-                    }
+                    TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
                     scroll_changed = true;
                     emit_scroll_state_updated = true;
                     changed = true;
@@ -4308,7 +4305,7 @@ impl BrowserRuntime {
               doc.set_scroll_state(effective.clone());
               tab.scroll_state = effective;
               viewport_scrolled = tab.scroll_state.viewport != current.viewport;
-              tab.sync_js_scroll_state();
+              TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
               let _ = self
                 .ui_tx
                 .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
@@ -4329,7 +4326,7 @@ impl BrowserRuntime {
             doc.set_scroll_state(next.clone());
             viewport_scrolled = next.viewport != current.viewport;
             tab.scroll_state = next;
-            tab.sync_js_scroll_state();
+            TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
             if !tab.needs_repaint || tab.next_paint_is_scroll {
               tab.next_paint_is_scroll = true;
             }
@@ -5197,7 +5194,7 @@ impl BrowserRuntime {
 
     // Keep per-tab scroll state consistent with the render result.
     tab.scroll_state = painted.scroll_state.clone();
-    tab.sync_js_scroll_state();
+    TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
     tab.history.update_scroll_state(&tab.scroll_state);
 
     let png_bytes = match painted.pixmap.encode_png() {
@@ -6569,7 +6566,7 @@ impl BrowserRuntime {
         };
         doc.set_scroll_state(next_scroll.clone());
         tab.scroll_state = next_scroll;
-        tab.sync_js_scroll_state();
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         tab.history.update_scroll_state(&tab.scroll_state);
         let _ = self
           .ui_tx
@@ -9731,7 +9728,7 @@ impl BrowserRuntime {
       if next != tab.scroll_state {
         tab.scroll_state = next;
         doc.set_scroll_state(tab.scroll_state.clone());
-        tab.sync_js_scroll_state();
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         let _ = self
           .ui_tx
           .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
@@ -10196,7 +10193,6 @@ impl BrowserRuntime {
           }
         }
       }
-
       let action_is_none = matches!(action, InteractionAction::None);
       match action {
         InteractionAction::Navigate { href } => {
@@ -13173,7 +13169,7 @@ impl BrowserRuntime {
       tab.scroll_state = frame.scroll_state.clone();
       tab.last_painted_scroll_state = Some(tab.scroll_state.clone());
       viewport_scrolled = tab.scroll_state.viewport != prev_viewport_scroll;
-      tab.sync_js_scroll_state();
+      TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
