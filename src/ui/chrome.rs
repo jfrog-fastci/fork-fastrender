@@ -4223,75 +4223,78 @@ pub fn chrome_ui_with_bookmarks(
   // This is implemented at the chrome layer (egui) using the worker-provided `hovered_url` as the
   // drag payload. We intentionally keep this minimal: if the user doesn't exceed the drag
   // threshold, we do nothing and let the worker handle the normal click navigation.
-  let hovered_url = app.active_tab().and_then(|t| t.hovered_url.clone());
-  let (events, primary_down) = ctx.input(|i| (i.events.clone(), i.pointer.primary_down()));
-  let mut dropped_url: Option<String> = None;
+  let dropped_url: Option<String> = ctx.input(|i| {
+    let mut dropped_url: Option<String> = None;
+    for event in &i.events {
+      match event {
+        egui::Event::PointerButton {
+          pos,
+          button: egui::PointerButton::Primary,
+          pressed: true,
+          ..
+        } => {
+          // Avoid treating address bar interactions as link drags even if the worker hover state is
+          // stale (e.g. pointer moved to chrome without the worker receiving a hover-clear update).
+          let pressed_over_address_bar = address_bar_rect.is_some_and(|r| r.contains(*pos));
+          if pressed_over_address_bar {
+            app.chrome.clear_link_drag();
+            continue;
+          }
 
-  for event in events {
-    match event {
-      egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        ..
-      } => {
-        // Avoid treating address bar interactions as link drags even if the worker hover state is
-        // stale (e.g. pointer moved to chrome without the worker receiving a hover-clear update).
-        let pressed_over_address_bar = address_bar_rect.is_some_and(|r| r.contains(pos));
-        if pressed_over_address_bar {
-          app.chrome.clear_link_drag();
-          continue;
-        }
-
-        if let Some(url) = hovered_url.clone() {
-          app.chrome.link_drag_url = Some(url);
-          app.chrome.link_drag_start_pos = Some((pos.x, pos.y));
-          app.chrome.link_drag_active = false;
-        } else {
-          app.chrome.clear_link_drag();
-        }
-      }
-      egui::Event::PointerMoved(pos) => {
-        if app.chrome.link_drag_url.is_some()
-          && !app.chrome.link_drag_active
-          && app.chrome.link_drag_start_pos.is_some()
-        {
-          let start = app
-            .chrome
-            .link_drag_start_pos
-            .expect("checked is_some above");
-          let dx = pos.x - start.0;
-          let dy = pos.y - start.1;
-          let dist_sq = dx * dx + dy * dy;
-          if dist_sq >= LINK_DRAG_THRESHOLD_POINTS * LINK_DRAG_THRESHOLD_POINTS {
-            app.chrome.link_drag_active = true;
+          // Only clone the hovered URL when the user actually initiates a potential drag.
+          let hovered_url = app.active_tab().and_then(|t| t.hovered_url.clone());
+          if let Some(url) = hovered_url {
+            app.chrome.link_drag_url = Some(url);
+            app.chrome.link_drag_start_pos = Some((pos.x, pos.y));
+            app.chrome.link_drag_active = false;
+          } else {
+            app.chrome.clear_link_drag();
           }
         }
-      }
-      egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        ..
-      } => {
-        if app.chrome.link_drag_url.is_some() {
-          if app.chrome.link_drag_active && address_bar_rect.is_some_and(|r| r.contains(pos)) {
-            dropped_url = app.chrome.link_drag_url.clone();
+        egui::Event::PointerMoved(pos) => {
+          if app.chrome.link_drag_url.is_some()
+            && !app.chrome.link_drag_active
+            && app.chrome.link_drag_start_pos.is_some()
+          {
+            let start = app
+              .chrome
+              .link_drag_start_pos
+              .expect("checked is_some above");
+            let dx = pos.x - start.0;
+            let dy = pos.y - start.1;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq >= LINK_DRAG_THRESHOLD_POINTS * LINK_DRAG_THRESHOLD_POINTS {
+              app.chrome.link_drag_active = true;
+            }
           }
+        }
+        egui::Event::PointerButton {
+          pos,
+          button: egui::PointerButton::Primary,
+          pressed: false,
+          ..
+        } => {
+          if app.chrome.link_drag_url.is_some() {
+            if app.chrome.link_drag_active && address_bar_rect.is_some_and(|r| r.contains(*pos)) {
+              dropped_url = app.chrome.link_drag_url.clone();
+            }
+            app.chrome.clear_link_drag();
+          }
+        }
+        egui::Event::PointerGone => {
           app.chrome.clear_link_drag();
         }
+        _ => {}
       }
-      egui::Event::PointerGone => {
-        app.chrome.clear_link_drag();
-      }
-      _ => {}
     }
-  }
 
-  // Ensure we don't keep drag state alive if egui loses track of the pointer/button state.
-  if !primary_down {
-    app.chrome.clear_link_drag();
-  }
+    // Ensure we don't keep drag state alive if egui loses track of the pointer/button state.
+    if !i.pointer.primary_down() {
+      app.chrome.clear_link_drag();
+    }
+
+    dropped_url
+  });
 
   if let Some(url) = dropped_url {
     actions.push(ChromeAction::NavigateTo(url));
