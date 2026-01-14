@@ -92,3 +92,46 @@ fn compiled_script_top_level_await_in_var_initializer_suspends_and_resumes() -> 
 
   Ok(())
 }
+
+#[test]
+fn compiled_script_top_level_await_in_assignment_suspends_and_resumes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var out = "";
+      out = await Promise.resolve("ok");
+      out
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a simple assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // The assignment after `await` should not have executed yet.
+  let before = rt.exec_script("out")?;
+  assert_eq!(value_to_utf8(&rt, before), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let after = rt.exec_script("out")?;
+  assert_eq!(value_to_utf8(&rt, after), "ok");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}

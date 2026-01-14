@@ -155,7 +155,7 @@ fn compiled_script_falls_back_for_await_in_nested_stmt_list() -> Result<(), VmEr
   assert!(rt.heap().is_promise_object(promise_obj));
   assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
 
-  // Await in the class static block should not have executed until we run microtasks.
+  // The conditional body should not have executed until we run microtasks.
   let out = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, out), "");
 

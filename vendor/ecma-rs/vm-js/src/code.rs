@@ -684,6 +684,9 @@ fn expr_direct_await_arg(expr: &Node<Expr>) -> Option<&Node<Expr>> {
 
 fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
+    // Note: `parse-js` represents identifier assignment targets using the `IdPat` AST node (because
+    // assignment targets can be destructuring patterns). Treat both `Id` and `IdPat` as supported
+    // binding assignment targets for the HIR async script executor.
     Expr::Id(_) | Expr::IdPat(_) | Expr::Member(_) | Expr::ComputedMember(_) => true,
     // TypeScript-only wrappers.
     Expr::Instantiation(inst) => expr_is_supported_assignment_target_for_hir_async_scripts(&inst.stx.expression),
