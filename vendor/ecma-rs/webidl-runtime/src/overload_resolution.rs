@@ -533,6 +533,80 @@ mod tests {
   }
 
   #[test]
+  fn string_object_prefers_domstring_over_sequence_overload_without_probing_iterator_at_nonzero_distinguishing_index(
+  ) {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads:
+    //   f(DOMString, sequence<any>)
+    //   f(DOMString, DOMString)
+    //
+    // The distinguishing argument index here is 1; overload resolution must convert the first
+    // argument, then apply the String-object special-case (d) when resolving the second argument.
+    let overloads = vec![
+      OverloadSig {
+        args: vec![
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+          OverloadArg {
+            ty: IdlType::Sequence(Box::new(IdlType::Any)),
+            optionality: Optionality::Required,
+            default: None,
+          },
+        ],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+        ],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    let first_arg = rt.alloc_string_value("prefix").unwrap();
+
+    // Create a String object wrapper for the second argument.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    // If overload resolution tried to probe @@iterator for sequence matching at argument index 1,
+    // it would trigger this getter and throw. The special-case (d) must treat String objects as
+    // strings when a string overload is present.
+    let throwing_getter = rt
+      .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let iter_key = rt.symbol_iterator().unwrap();
+    rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+      .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[first_arg, string_obj]).unwrap();
+    assert_eq!(out.overload_index, 1);
+
+    let [ConvertedArgument::Value(WebIdlValue::String(first)), ConvertedArgument::Value(WebIdlValue::String(second))] =
+      out.values.as_slice()
+    else {
+      panic!("unexpected resolved values: {:?}", out.values);
+    };
+    assert_eq!(as_utf8_lossy(&rt, *first), "prefix");
+    assert_eq!(as_utf8_lossy(&rt, *second), "hello");
+  }
+
+  #[test]
   fn string_object_prefers_domstring_over_frozen_array_overload_without_probing_iterator() {
     let mut rt = VmJsRuntime::new();
 
