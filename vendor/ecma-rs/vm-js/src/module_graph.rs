@@ -1218,30 +1218,7 @@ impl ModuleGraph {
     }
 
     // exportedNames = module.GetExportedNames()
-    let mut unambiguous_names = self.modules[idx].get_exported_names_with_vm(vm, self, module)?;
-
-    // unambiguousNames = [ name | name in exportedNames, module.ResolveExport(name) is ResolvedBinding ]
-    //
-    // This list can be attacker-controlled (large export lists / `export *` graphs). Avoid
-    // infallible host allocations (which abort the process on allocator OOM) by filtering in place
-    // instead of building a new `Vec` via `push`.
-    let mut resolve_err: Option<VmError> = None;
-    unambiguous_names.retain(|name| {
-      if resolve_err.is_some() {
-        return false;
-      }
-      match self.modules[idx].resolve_export_with_vm(vm, self, module, name) {
-        Ok(ResolveExportResult::Resolved(_)) => true,
-        Ok(_) => false,
-        Err(err) => {
-          resolve_err = Some(err);
-          false
-        }
-      }
-    });
-    if let Some(err) = resolve_err {
-      return Err(err);
-    }
+    let exported_names = self.modules[idx].get_exported_names_with_vm(vm, self, module)?;
 
     // Allocate and cache a placeholder namespace object *before* computing its exports list.
     //
@@ -1261,25 +1238,28 @@ impl ModuleGraph {
     self.torn_down = false;
 
     // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
-    let exports_sorted =
-      match self.module_namespace_create(vm, scope, module, namespace_obj, unambiguous_names) {
-        Ok(exports_sorted) => exports_sorted,
-        Err(err) => {
-          // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
-          scope.heap_mut().remove_root(root);
-          self.modules[idx].namespace = None;
-          return Err(err);
-        }
-      };
+    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, exported_names) {
+      Ok(exports_sorted) => exports_sorted,
+      Err(err) => {
+        // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
+        scope.heap_mut().remove_root(root);
+        self.modules[idx].namespace = None;
+        return Err(err);
+      }
+    };
 
     // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
     // many exports.
     let exports_vec_bytes = exports_sorted
       .capacity()
       .saturating_mul(mem::size_of::<String>());
-    let exports_string_bytes = exports_sorted
-      .iter()
-      .fold(0usize, |acc, s| acc.saturating_add(s.capacity()));
+    let mut exports_string_bytes = 0usize;
+    for (i, s) in exports_sorted.iter().enumerate() {
+      if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
+        vm.tick()?;
+      }
+      exports_string_bytes = exports_string_bytes.saturating_add(s.capacity());
+    }
     let exports_total_bytes = exports_vec_bytes.saturating_add(exports_string_bytes);
 
     // Root the namespace object while charging: `charge_external` can trigger GC.
@@ -1530,25 +1510,32 @@ impl ModuleGraph {
     let mut inner = scope.reborrow();
     let mut export_entries: Vec<ModuleNamespaceExport> = Vec::new();
     export_entries
-      .try_reserve_exact(exports.len())
+      // Best-effort preallocation: `exports` is derived from `GetExportedNames()`, and may include
+      // names that resolve to `null`/ambiguous (which should be skipped per `GetModuleNamespace`).
+      // Avoid reserving for the full list length up-front to prevent failing early under OOM when
+      // only a small subset of exports is actually unambiguous.
+      .try_reserve_exact(exports.len().min(1024))
       .map_err(|_| VmError::OutOfMemory)?;
 
-    for export_name in &exports {
+    // `exports` comes from `GetExportedNames()`, which may include names that resolve to `null` or
+    // `ambiguous`. Per the spec's `GetModuleNamespace`, those names must be excluded from the
+    // namespace rather than causing an exception.
+    let mut out_i: usize = 0;
+    for i in 0..exports.len() {
+      let export_name = std::mem::take(&mut exports[i]);
+
       let resolution = match self.modules[module_index(module)].resolve_export_with_vm(
         vm,
         self,
         module,
-        export_name,
+        &export_name,
       )? {
         ResolveExportResult::Resolved(res) => res,
-        _ => {
-          return Err(VmError::InvariantViolation(
-            "module namespace export list contains a missing/ambiguous name",
-          ))
-        }
+        // Skip missing/ambiguous exports.
+        _ => continue,
       };
 
-      let export_key_s = inner.alloc_string(export_name)?;
+      let export_key_s = inner.alloc_string(&export_name)?;
       inner.push_root(Value::String(export_key_s))?;
 
       let (value, getter_slots, getter_env) = match resolution.binding_name {
@@ -1599,16 +1586,23 @@ impl ModuleGraph {
         .object_set_prototype(getter, Some(intr.function_prototype()))?;
       inner.push_root(Value::Object(getter))?;
 
+      export_entries
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
       export_entries.push(ModuleNamespaceExport {
         name: export_key_s,
         getter,
         value,
       });
+
+      exports[out_i] = export_name;
+      out_i = out_i.saturating_add(1);
     }
+    exports.truncate(out_i);
 
     // Avoid `Vec::into_boxed_slice`, which can perform an infallible reallocation if the vector
     // has spare capacity.
-    let exports_boxed = try_vec_into_boxed_slice(export_entries)?;
+    let exports_boxed = try_vec_into_boxed_slice_with_ticks(export_entries, || vm.tick())?;
 
     // Attach the exports list to the (already-allocated) namespace object.
     //
@@ -4053,8 +4047,16 @@ fn module_request_from_specifier(specifier: &str) -> Result<ModuleRequest, VmErr
   Ok(ModuleRequest::new(specifier_owned, Vec::new()))
 }
 
-fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
-  use std::alloc::{alloc, Layout};
+#[cfg(test)]
+fn try_vec_into_boxed_slice<T>(v: Vec<T>) -> Result<Box<[T]>, VmError> {
+  try_vec_into_boxed_slice_with_ticks(v, || Ok(()))
+}
+
+fn try_vec_into_boxed_slice_with_ticks<T>(
+  mut v: Vec<T>,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<Box<[T]>, VmError> {
+  use std::alloc::{alloc, dealloc, Layout};
   use std::ptr;
 
   // Zero-sized types do not require any backing allocation, and `Vec` uses a special
@@ -4074,6 +4076,11 @@ fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
     // Convert to an exact-length allocation without calling `Vec::shrink_to_fit` /
     // `Vec::into_boxed_slice`, which would reallocate infallibly and can abort the host process on
     // allocator OOM.
+    //
+    // When `len` is attacker-controlled and large (e.g. module namespace export lists), copying can
+    // take substantial time. Tick periodically so fuel/deadline/interrupt budgets are still
+    // enforced.
+    tick()?;
     let layout = Layout::array::<T>(len).map_err(|_| VmError::OutOfMemory)?;
     // SAFETY: we allocate `len` elements with the same alignment/layout as `Box<[T]>` expects.
     unsafe {
@@ -4081,16 +4088,39 @@ fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
       if raw.is_null() {
         return Err(VmError::OutOfMemory);
       }
+      struct DeallocGuard {
+        ptr: *mut u8,
+        layout: Layout,
+      }
+      impl Drop for DeallocGuard {
+        fn drop(&mut self) {
+          unsafe {
+            dealloc(self.ptr, self.layout);
+          }
+        }
+      }
+      let guard = DeallocGuard {
+        ptr: raw as *mut u8,
+        layout,
+      };
 
       // Move elements into the new allocation.
-      for i in 0..len {
-        ptr::write(raw.add(i), ptr::read(v.as_ptr().add(i)));
+      let mut start = 0;
+      while start < len {
+        let end = len.min(start.saturating_add(crate::tick::DEFAULT_TICK_EVERY));
+        ptr::copy_nonoverlapping(v.as_ptr().add(start), raw.add(start), end - start);
+        start = end;
+        if start < len {
+          tick()?;
+        }
       }
 
       // Drop the old allocation without dropping elements (they were moved).
       v.set_len(0);
       drop(v);
 
+      // Disarm deallocation now that the allocation has been transferred to the returned box.
+      std::mem::forget(guard);
       return Ok(Box::from_raw(std::slice::from_raw_parts_mut(raw, len)));
     }
   }
