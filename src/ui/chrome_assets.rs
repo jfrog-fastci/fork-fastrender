@@ -355,6 +355,11 @@ mod tests {
       !res.bytes.is_empty(),
       "about.css should not be empty (embedded test asset)"
     );
+    let text = std::str::from_utf8(&res.bytes).expect("about.css should be UTF-8");
+    assert!(
+      text.contains("FASTR_ABOUT_SHARED_CSS"),
+      "expected FASTR_ABOUT_SHARED_CSS marker in about.css"
+    );
     assert_eq!(res.content_type.as_deref(), Some("text/css"));
     assert_eq!(res.final_url.as_deref(), Some(url));
   }
@@ -369,6 +374,10 @@ mod tests {
     assert!(
       msg.contains("unknown chrome:// asset"),
       "unexpected error message: {msg}"
+    );
+    assert!(
+      msg.contains("chrome://icons/<name>.svg"),
+      "expected supported chrome:// patterns in error message: {msg}"
     );
   }
 
@@ -415,11 +424,11 @@ mod tests {
   fn reject_icon_path_traversal_attempt() {
     let fetcher = ChromeAssetsFetcher::new();
     assert!(
-      fetcher.fetch("chrome://icons/../back.svg").is_err(),
+      fetcher.fetch("chrome://icons/../styles/chrome.css").is_err(),
       "expected dot-segment traversal to error"
     );
     assert!(
-      fetcher.fetch("chrome://icons/%2e%2e/back.svg").is_err(),
+      fetcher.fetch("chrome://icons/%2e%2e/styles/chrome.css").is_err(),
       "expected percent-encoded dot-segment traversal to error"
     );
   }
