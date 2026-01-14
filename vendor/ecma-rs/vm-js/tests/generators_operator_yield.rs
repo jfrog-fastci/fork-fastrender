@@ -113,6 +113,70 @@ fn generator_yield_in_simple_assignment_rhs_happens_after_resume() {
 }
 
 #[test]
+fn generator_yield_in_member_assignment_rhs_happens_after_resume() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var obj = { a: 1 };
+        function* g() { obj.a = (yield 0); return obj.a; }
+        var it = g();
+        var r1 = it.next();
+        obj.a = 100;
+        var r2 = it.next(5);
+        r1.value === 0 && r1.done === false &&
+        r2.value === 5 && r2.done === true &&
+        obj.a === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_member_assignment_rhs_captures_base_before_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 1 };
+        var o2 = { a: 10 };
+        var o = o1;
+        function* g(){ o.a = (yield 0); return o1.a === 5 && o2.a === 10; }
+        var it = g();
+        var r1 = it.next();
+        o = o2;
+        var r2 = it.next(5);
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_computed_member_assignment_rhs_captures_key_before_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o = { a: 1, b: 10 };
+        var k = 'a';
+        function* g(){ o[k] = (yield 0); return o.a === 5 && o.b === 10; }
+        var it = g();
+        var r1 = it.next();
+        k = 'b';
+        var r2 = it.next(5);
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_compound_assignment_rhs_captures_old_value() {
   let mut rt = new_runtime();
   let value = rt
@@ -242,4 +306,3 @@ fn generator_yield_in_delete_expression_computed_key() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-
