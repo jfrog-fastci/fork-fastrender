@@ -4673,12 +4673,16 @@ impl Vm {
 
     let (return_value, final_this) = result?;
     match return_value {
+      // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
+      // construction (regardless of whether `this` was initialized).
       Value::Object(o) => Ok(Value::Object(o)),
-      _ => match final_this {
+
+      // `return;` / no explicit return.
+      Value::Undefined => match final_this {
         Value::Object(o) => Ok(Value::Object(o)),
-        // ECMA-262 requires a ReferenceError when a derived constructor returns a non-object
-        // without having initialized `this` via `super()`.
-        _ => {
+        // ECMA-262 requires a ReferenceError when a derived constructor returns `undefined` without
+        // having initialized `this` via `super()`.
+        _ if is_derived_class_ctor_body => {
           let intr = self
             .intrinsics()
             .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -4689,6 +4693,24 @@ impl Vm {
           )?;
           Err(VmError::Throw(err))
         }
+        // Base/ordinary constructors always allocate `this` up-front.
+        _ => Err(VmError::InvariantViolation(
+          "constructor did not produce an object `this`",
+        )),
+      },
+
+      // ECMA-262 `[[Construct]]` step 13.c: derived constructors must throw if returning a
+      // non-`undefined` non-object value.
+      _ if is_derived_class_ctor_body => Err(VmError::TypeError(
+        "Derived constructors may only return object or undefined",
+      )),
+
+      // Base/ordinary constructor: ignore non-object return and use the allocated `this`.
+      _ => match final_this {
+        Value::Object(o) => Ok(Value::Object(o)),
+        _ => Err(VmError::InvariantViolation(
+          "constructor did not produce an object `this`",
+        )),
       },
     }
   }

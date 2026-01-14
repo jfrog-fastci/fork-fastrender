@@ -187,7 +187,7 @@ fn compiled_constructor_body_construct(
 
     match result? {
       Value::Object(o) => Ok(Value::Object(o)),
-      _ => {
+      Value::Undefined => {
         let state = scope.heap().get_derived_constructor_state(state_obj)?;
         match state.this_value {
           Some(this_obj) => Ok(Value::Object(this_obj)),
@@ -198,6 +198,11 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
+      _ => Err(throw_type_error(
+        vm,
+        &mut scope,
+        "Derived constructors may only return object or undefined",
+      )?),
     }
   }
 }

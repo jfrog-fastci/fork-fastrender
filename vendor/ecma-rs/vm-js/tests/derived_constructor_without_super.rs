@@ -140,6 +140,131 @@ fn derived_constructor_with_super_initializes_this_compiled() -> Result<(), VmEr
 }
 
 #[test]
+fn derived_constructor_return_primitive_after_super_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A { constructor() {} }
+        class B extends A { constructor(){ super(); return 0; } }
+        try { new B(); "no" } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_return_primitive_after_super_throws_type_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A { constructor() {} }
+      class B extends A { constructor(){ super(); return 0; } }
+      try { new B(); "no" } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_return_primitive_is_not_catchable_in_constructor_try_catch() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C extends class {} {
+          constructor() {
+            super();
+            try {
+              return 0;
+            } catch (e) {
+              return;
+            }
+          }
+        }
+        try { new C(); "no" } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_return_primitive_is_not_catchable_in_constructor_try_catch_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class C extends class {} {
+        constructor() {
+          super();
+          try {
+            return 0;
+          } catch (e) {
+            return;
+          }
+        }
+      }
+      try { new C(); "no" } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_return_primitive_is_not_catchable_with_super_in_catch_arrow() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var super_called = false;
+        class C extends class {} {
+          constructor() {
+            var f = () => { super_called = true; super(); };
+            try {
+              return 0;
+            } catch (e) {
+              f();
+            }
+          }
+        }
+        try { new C(); "no" } catch (e) { super_called ? "super" : e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_return_primitive_is_not_catchable_with_super_in_catch_arrow_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var super_called = false;
+      class C extends class {} {
+        constructor() {
+          var f = () => { super_called = true; super(); };
+          try {
+            return 0;
+          } catch (e) {
+            f();
+          }
+        }
+      }
+      try { new C(); "no" } catch (e) { super_called ? "super" : e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_super_call_twice_throws_reference_error() {
   let mut rt = new_runtime();
   let value = rt
