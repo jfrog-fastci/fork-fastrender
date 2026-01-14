@@ -71181,6 +71181,45 @@ mod tests {
   }
 
   #[test]
+  fn window_structured_clone_bigint_typed_arrays() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+          const buf = new ArrayBuffer(32);\n\
+          const a = new BigInt64Array(buf, 8, 2);\n\
+          const b = new BigUint64Array(buf, 24, 1);\n\
+          a[0] = 1n; a[1] = -2n;\n\
+          b[0] = 42n;\n\
+\n\
+          const obj = { a, b };\n\
+          const c = structuredClone(obj);\n\
+\n\
+          const aOk = c.a !== a && (c.a instanceof BigInt64Array)\n\
+            && c.a.length === 2 && c.a.byteOffset === 8\n\
+            && c.a[0] === 1n && c.a[1] === -2n;\n\
+          const bOk = c.b !== b && (c.b instanceof BigUint64Array)\n\
+            && c.b.length === 1 && c.b.byteOffset === 24\n\
+            && c.b[0] === 42n;\n\
+\n\
+          const shared = c.a.buffer === c.b.buffer && c.a.buffer !== buf;\n\
+\n\
+          c.a[0] = 9n;\n\
+          c.b[0] = 100n;\n\
+          const independent = a[0] === 1n && a[1] === -2n && b[0] === 42n\n\
+            && c.a[0] === 9n && c.b[0] === 100n;\n\
+\n\
+          return aOk && bOk && shared && independent;\n\
+        })()",
+      )?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn window_structured_clone_date_and_errors() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
 
