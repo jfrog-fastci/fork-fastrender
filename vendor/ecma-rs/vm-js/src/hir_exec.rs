@@ -3367,14 +3367,67 @@ impl<'vm> HirEvaluator<'vm> {
             // Root the function object while assigning into the environment.
             let mut assign_scope = scope.reborrow();
             assign_scope.push_root(Value::Object(func_obj))?;
-            self.env.set_var(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut assign_scope,
-              name.as_str(),
-              Value::Object(func_obj),
-            )?;
+            match self.env.var_env() {
+              VarEnv::Env(env) if env == self.env.lexical_env() => {
+                // Module environments use a single declarative env record for both `var`/function
+                // bindings and lexical bindings. `RuntimeEnv::set_var` calls `declare_var`, whose
+                // collision checks assume var bindings live in a *separate* environment record from
+                // lexical bindings (like in ordinary function scopes).
+                //
+                // During module instantiation we pre-create+initialize hoisted function declaration
+                // bindings (see `instantiate_module_hoisted_function_decl_bindings`). Calling
+                // `declare_var` here would incorrectly treat that existing binding as a lexical
+                // redeclaration and throw `SyntaxError("Identifier has already been declared")`,
+                // preventing hoisting.
+                //
+                // Assign directly into the module env instead.
+                let name = name.as_str();
+                // Be robust if the binding was not pre-created (malformed HIR or future changes).
+                let set_res = assign_scope
+                  .heap_mut()
+                  .env_set_mutable_binding(env, name, Value::Object(func_obj), /* strict */ false);
+                match set_res {
+                  Ok(()) => {}
+                  // TDZ sentinel: initialize to `undefined` then retry.
+                  Err(VmError::Throw(Value::Null)) => {
+                    assign_scope
+                      .heap_mut()
+                      .env_initialize_binding(env, name, Value::Undefined)?;
+                    assign_scope.heap_mut().env_set_mutable_binding(
+                      env,
+                      name,
+                      Value::Object(func_obj),
+                      /* strict */ false,
+                    )?;
+                  }
+                  // Be robust if the binding lookup failed even though `env_has_binding` might have
+                  // reported true (or if it genuinely doesn't exist): create it.
+                  Err(VmError::Unimplemented("unbound identifier")) => {
+                    assign_scope.env_create_mutable_binding(env, name)?;
+                    assign_scope
+                      .heap_mut()
+                      .env_initialize_binding(env, name, Value::Undefined)?;
+                    assign_scope.heap_mut().env_set_mutable_binding(
+                      env,
+                      name,
+                      Value::Object(func_obj),
+                      /* strict */ false,
+                    )?;
+                  }
+                  Err(err) => return Err(err),
+                }
+              }
+              _ => {
+                self.env.set_var(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut assign_scope,
+                  name.as_str(),
+                  Value::Object(func_obj),
+                )?;
+              }
+            }
           }
         }
         // Strict mode: only top-level function declarations are var-scoped.
