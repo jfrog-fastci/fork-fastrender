@@ -774,7 +774,6 @@ impl InteractionState {
   pub fn is_fullscreen(&self, node_id: usize) -> bool {
     self.fullscreen_element == Some(node_id)
   }
-
   pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
     if self.focus_chain == chain {
       return;
@@ -1555,13 +1554,6 @@ impl InteractionStateDom2 {
   pub fn prune_disconnected(&mut self, dom: &crate::dom2::Document) {
     let is_connected = |id: NodeId| dom.is_connected_for_scripting(id);
 
-    if self
-      .fullscreen_element
-      .is_some_and(|id| !is_connected(id))
-    {
-      self.fullscreen_element = None;
-    }
-
     if self.focused.is_some_and(|id| !is_connected(id)) {
       self.focused = None;
       self.focus_visible = false;
@@ -1770,10 +1762,6 @@ impl InteractionStateDom2 {
       .as_ref()
       .map(|sel| sel.project_to_preorder(mapping));
 
-    let fullscreen_element = self
-      .fullscreen_element
-      .and_then(|id| mapping.preorder_for_node_id(id));
-
     let mut projected = InteractionState::default();
     projected.focused = focused_preorder;
     projected.focus_visible = self.focus_visible && focused_preorder.is_some();
@@ -1787,7 +1775,6 @@ impl InteractionStateDom2 {
     projected.form_state = self.form_state.project_to_preorder(mapping);
     projected.document_selection = document_selection;
     projected.user_validity = user_validity;
-    projected.fullscreen_element = fullscreen_element;
     projected
   }
 }
