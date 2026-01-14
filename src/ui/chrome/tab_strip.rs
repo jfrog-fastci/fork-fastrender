@@ -1217,11 +1217,15 @@ fn group_chip_title(group: &TabGroupState) -> &str {
 }
 
 fn group_chip_a11y_label(title: &str, collapsed: bool) -> String {
-  if collapsed {
-    format!("Expand tab group: {title}")
+  let prefix = if collapsed {
+    "Expand tab group: "
   } else {
-    format!("Collapse tab group: {title}")
-  }
+    "Collapse tab group: "
+  };
+  let mut out = String::with_capacity(prefix.len() + title.len());
+  out.push_str(prefix);
+  out.push_str(title);
+  out
 }
 
 fn group_color_menu_item_a11y_label(color: TabGroupColor) -> &'static str {
