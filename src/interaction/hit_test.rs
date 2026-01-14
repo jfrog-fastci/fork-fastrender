@@ -404,6 +404,10 @@ enum SemanticResolveResult {
     kind: HitTestKind,
     href: Option<String>,
   },
+  /// The starting node (or one of its ancestors) is in an inert subtree.
+  ///
+  /// Inert subtrees must be excluded from user interaction, but they should *not* block hit-testing
+  /// from falling through to underlying content (similar to `pointer-events: none`).
   InertSubtree,
   Invalid,
 }
@@ -426,7 +430,8 @@ fn resolve_semantic_target(
 
     if node.is_element() {
       if node_is_inert_like(node) {
-        // Inert subtrees block interaction target resolution entirely.
+        // Mark inert subtrees so hit-testing can skip these fragments and fall through to any
+        // underlying, non-inert content.
         return SemanticResolveResult::InertSubtree;
       }
 
@@ -512,8 +517,9 @@ pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
           href,
         } => (node_id, kind, href),
         SemanticResolveResult::InertSubtree => {
-          // Stop and return None if the target falls within an inert subtree.
-          return None;
+          // Inert subtrees are excluded from interaction; treat them like a non-interactive
+          // fragment so hit-testing can fall through to any underlying targets.
+          continue;
         }
         SemanticResolveResult::Invalid => continue,
       };
@@ -655,8 +661,9 @@ pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
           href,
         } => (node_id, kind, href),
         SemanticResolveResult::InertSubtree => {
-          // Inert subtrees block interaction target resolution entirely.
-          return Vec::new();
+          // Inert subtrees are excluded from interaction; skip these hits so callers can enumerate
+          // underlying targets (fallthrough semantics).
+          continue;
         }
         SemanticResolveResult::Invalid => continue,
       };
@@ -906,7 +913,7 @@ mod tests {
 #[cfg(test)]
 mod dom_hit_testing_tests {
   use super::{
-    hit_test_dom, hit_test_dom_with_indices, resolve_label_associated_control,
+    hit_test_dom, hit_test_dom_all, hit_test_dom_with_indices, resolve_label_associated_control,
     BoxIndex as HitTestBoxIndex, CursorKind, DomIndex, HitTestKind,
   };
   use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
@@ -1317,8 +1324,11 @@ mod dom_hit_testing_tests {
     let link_box_id = box_tree.root.children[0].id;
     let overlay_box_id = box_tree.root.children[1].id;
 
-    let link_fragment =
-      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), link_box_id, vec![]);
+    let link_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      link_box_id,
+      vec![],
+    );
     let overlay_fragment = FragmentNode::new_block_with_id(
       Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
       overlay_box_id,
@@ -1369,10 +1379,76 @@ mod dom_hit_testing_tests {
     let expected = hit_test_dom(&dom, &box_tree, &fragment_tree, point);
     let actual = hit_test_with_prebuilt_indices(&mut dom, &box_tree, &fragment_tree, point);
     assert_eq!(actual, expected);
-    assert_eq!(
-      expected, None,
-      "fixture should be blocked by inert semantics"
+    assert_eq!(expected, None, "fixture should be blocked by inert semantics");
+  }
+
+  #[test]
+  fn hit_test_dom_skips_inert_overlay_and_falls_through() {
+    let dom = doc(vec![elem(
+      "div",
+      vec![("id", "root")],
+      vec![
+        elem("a", vec![("href", "/ok")], vec![]),
+        elem("div", vec![("id", "overlay"), ("inert", "")], vec![]),
+      ],
+    )]);
+
+    // DOM ids (pre-order):
+    // 1 document
+    // 2 div#root
+    // 3 a[href]
+    // 4 div#overlay[inert]
+    //
+    // Use default styles so the inert skip logic is exercised via DOM attribute resolution rather
+    // than `ComputedStyle::inert`.
+    let style = default_style();
+
+    let mut link_box = BoxNode::new_inline(style.clone(), vec![]);
+    link_box.styled_node_id = Some(3);
+
+    let mut overlay_box = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    overlay_box.styled_node_id = Some(4);
+
+    let mut root_box = BoxNode::new_block(
+      style,
+      FormattingContextType::Block,
+      vec![link_box, overlay_box],
     );
+    root_box.styled_node_id = Some(2);
+
+    let box_tree = BoxTree::new(root_box);
+    let link_box_id = box_tree.root.children[0].id;
+    let overlay_box_id = box_tree.root.children[1].id;
+
+    let link_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      link_box_id,
+      vec![],
+    );
+    let overlay_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      overlay_box_id,
+      vec![],
+    );
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      box_tree.root.id,
+      vec![link_fragment, overlay_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0))
+      .expect("expected a hit result");
+    assert_eq!(result.box_id, link_box_id);
+    assert_eq!(result.dom_node_id, 3);
+    assert_eq!(result.kind, HitTestKind::Link);
+    assert_eq!(result.href.as_deref(), Some("/ok"));
+
+    let all = hit_test_dom_all(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+    assert!(!all.is_empty());
+    assert_eq!(all[0].dom_node_id, 3);
+    assert_eq!(all[0].kind, HitTestKind::Link);
+    assert!(all.iter().all(|hit| hit.dom_node_id != 4));
   }
 
   #[test]
