@@ -121,3 +121,57 @@ fn generator_destructuring_assignment_rhs_from_yield_then_pattern_yields_default
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_destructuring_assignment_rhs_from_yield_resumption_elision_rest_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var assigned;
+          var rest;
+          function* g() {
+            var a = 0;
+            assigned = ([, a = 9, ...rest] = yield 0);
+            return a === 9 && rest.length === 2 && rest[0] === 3 && rest[1] === 4;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 0) return false;
+          var rhs = [1, undefined, 3, 4];
+          var r2 = it.next(rhs);
+          return r2.done === true && r2.value === true && assigned === rhs;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_assignment_rhs_from_yield_resumption_rest_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var assigned;
+          var rest;
+          function* g() {
+            var a = 0;
+            assigned = ({a = 7, ...rest} = yield 0);
+            return a === 7 && rest.b === 2 && !Object.prototype.hasOwnProperty.call(rest, "a");
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 0) return false;
+          var rhs = {b: 2};
+          var r2 = it.next(rhs);
+          return r2.done === true && r2.value === true && assigned === rhs;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
