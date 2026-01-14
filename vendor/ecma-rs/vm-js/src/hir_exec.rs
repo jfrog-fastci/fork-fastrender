@@ -10275,6 +10275,7 @@ impl RootedPending {
 #[derive(Debug)]
 enum ForAwaitOfStage {
   Init,
+  AwaitRhs,
   AwaitNext,
   ClosingAwait { pending: Option<RootedPending> },
 }
@@ -10302,6 +10303,74 @@ enum ForAwaitOfPoll {
 }
 
 impl ForAwaitOfState {
+  fn start_from_iterable(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    iterable: Value,
+  ) -> Result<ForAwaitOfPoll, VmError> {
+    // Root iterable during iterator acquisition.
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(iterable)?;
+
+    let iterator_record = match iterator::get_async_iterator(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      iterable,
+    ) {
+      Ok(r) => r,
+      Err(err) => {
+        let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+        self.cleanup_roots(iter_scope.heap_mut());
+        return Err(err);
+      }
+    };
+
+    // Root iterator + next method while registering persistent roots.
+    let iterator_value = iterator_record.iterator;
+    let next_method_value = iterator_record.next_method;
+
+    let (v_root, iterator_root, next_method_root) = {
+      let mut root_scope = iter_scope.reborrow();
+      root_scope.push_roots(&[iterator_value, next_method_value])?;
+      let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
+      let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
+      let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
+      (v_root, iterator_root, next_method_root)
+    };
+
+    self.v_root = Some(v_root);
+    self.iterator_root = Some(iterator_root);
+    self.next_method_root = Some(next_method_root);
+
+    // First iteration: await next().
+    evaluator.vm.tick()?;
+    let record = self.iterator_record(iter_scope.heap())?;
+    let next_value = match iterator::async_iterator_next(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut iter_scope,
+      &record,
+    ) {
+      Ok(v) => v,
+      Err(err) => {
+        // Spec: do not AsyncIteratorClose on step errors.
+        let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
+        self.cleanup_roots(iter_scope.heap_mut());
+        return Err(err);
+      }
+    };
+
+    self.stage = ForAwaitOfStage::AwaitNext;
+    Ok(ForAwaitOfPoll::Await {
+      kind: crate::exec::AsyncSuspendKind::Await,
+      await_value: next_value,
+    })
+  }
+
   fn new(
     left: hir_js::ForHead,
     right: hir_js::ExprId,
@@ -10391,69 +10460,102 @@ impl ForAwaitOfState {
         let outer_lex = evaluator.env.lexical_env();
         self.outer_lex = Some(outer_lex);
 
+        let rhs = evaluator.get_expr(body, self.right)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+          // The compiled synchronous evaluator does not yet support `await` expressions. However,
+          // `for await..of` must still be able to suspend while evaluating the RHS expression.
+          //
+          // Evaluate the await argument under the same TDZ environment semantics as normal
+          // `ForIn/OfHeadEvaluation`, but *do not* restore the outer lexical environment until the
+          // await has resolved: the continuation after `await` is still part of RHS evaluation.
+          let old_lex = evaluator.env.lexical_env();
+          let mut tdz_env_created = false;
+          if let hir_js::ForHead::Var(var_decl) = &self.left {
+            if matches!(
+              var_decl.kind,
+              hir_js::VarDeclKind::Let
+                | hir_js::VarDeclKind::Const
+                | hir_js::VarDeclKind::Using
+                | hir_js::VarDeclKind::AwaitUsing
+            ) {
+              let tdz_env = scope.env_create(Some(old_lex))?;
+              for declarator in &var_decl.declarators {
+                evaluator.vm.tick()?;
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                evaluator.collect_pat_idents(body, declarator.pat, &mut names)?;
+                for name_id in names {
+                  let name = evaluator.resolve_name(name_id)?;
+                  if scope.heap().env_has_binding(tdz_env, name.as_str())? {
+                    continue;
+                  }
+                  match var_decl.kind {
+                    hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(tdz_env, name.as_str())?,
+                    hir_js::VarDeclKind::Const
+                    | hir_js::VarDeclKind::Using
+                    | hir_js::VarDeclKind::AwaitUsing => {
+                      scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                    }
+                    _ => {
+                      return Err(VmError::InvariantViolation(
+                        "unexpected VarDeclKind in for-await-of head TDZ environment creation",
+                      ));
+                    }
+                  }
+                }
+              }
+              evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+              tdz_env_created = true;
+            }
+          }
+
+          // Evaluate the await argument value. If this throws, the loop has not acquired an
+          // iterator yet, so we can propagate the error directly.
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              if tdz_env_created {
+                evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+              }
+              return Err(err);
+            }
+          };
+
+          self.stage = ForAwaitOfStage::AwaitRhs;
+          return Ok(ForAwaitOfPoll::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
+        }
+
         // Evaluate RHS with TDZ env semantics for lexical loop heads.
         let iterable = evaluator.eval_for_in_of_rhs_with_tdz_env(scope, body, &self.left, self.right)?;
+        self.start_from_iterable(evaluator, scope, iterable)
+      }
 
-        // Root iterable during iterator acquisition.
-        let mut iter_scope = scope.reborrow();
-        iter_scope.push_root(iterable)?;
-
-        let iterator_record = match iterator::get_async_iterator(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          &mut iter_scope,
-          iterable,
-        ) {
-          Ok(r) => r,
-          Err(err) => {
-            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
-            self.cleanup_roots(iter_scope.heap_mut());
-            return Err(err);
-          }
+      ForAwaitOfStage::AwaitRhs => {
+        let Some(resume_value) = resume_value else {
+          return Err(VmError::InvariantViolation(
+            "for-await-of awaiting rhs missing resume value",
+          ));
         };
 
-        // Root iterator + next method while registering persistent roots.
-        let iterator_value = iterator_record.iterator;
-        let next_method_value = iterator_record.next_method;
+        let outer_lex = self
+          .outer_lex
+          .ok_or(VmError::InvariantViolation("missing for-await-of outer lex env"))?;
 
-        let (v_root, iterator_root, next_method_root) = {
-          let mut root_scope = iter_scope.reborrow();
-          root_scope.push_roots(&[iterator_value, next_method_value])?;
-          let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
-          let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
-          let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
-          (v_root, iterator_root, next_method_root)
-        };
+        // Once the await has resolved (or rejected), RHS evaluation is complete and the TDZ env
+        // should be popped before iterator acquisition.
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
 
-        self.v_root = Some(v_root);
-        self.iterator_root = Some(iterator_root);
-        self.next_method_root = Some(next_method_root);
-
-        // First iteration: await next().
-        evaluator.vm.tick()?;
-        let record = self.iterator_record(iter_scope.heap())?;
-        let next_value = match iterator::async_iterator_next(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          &mut iter_scope,
-          &record,
-        ) {
+        let iterable = match resume_value {
           Ok(v) => v,
           Err(err) => {
-            // Spec: do not AsyncIteratorClose on step errors.
-            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut iter_scope, err);
-            self.cleanup_roots(iter_scope.heap_mut());
+            self.cleanup_roots(scope.heap_mut());
             return Err(err);
           }
         };
 
-        self.stage = ForAwaitOfStage::AwaitNext;
-        Ok(ForAwaitOfPoll::Await {
-          kind: crate::exec::AsyncSuspendKind::Await,
-          await_value: next_value,
-        })
+        self.start_from_iterable(evaluator, scope, iterable)
       }
 
       ForAwaitOfStage::AwaitNext => {
