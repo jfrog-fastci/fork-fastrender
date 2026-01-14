@@ -431,10 +431,10 @@ mod tests {
   }
 
   const TEST_TAB_ID: TabId = TabId(1);
-  const TEST_DOCUMENT_GENERATION: u32 = 1;
+  const TEST_TREE_GENERATION: u32 = 1;
 
   fn page_node_id(dom_node_id: usize) -> accesskit::NodeId {
-    crate::ui::encode_page_node_id(TEST_TAB_ID, TEST_DOCUMENT_GENERATION, dom_node_id)
+    crate::ui::encode_page_node_id(TEST_TAB_ID, TEST_TREE_GENERATION, dom_node_id)
   }
 
   #[test]
@@ -466,7 +466,7 @@ mod tests {
     let handled = handle_accesskit_action_request(
       &mut ctx,
       tab_id,
-      TEST_DOCUMENT_GENERATION,
+      TEST_TREE_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::Focus,
         target: page_node_id(button_id),
@@ -511,7 +511,7 @@ mod tests {
     let handled = handle_accesskit_action_request(
       &mut ctx,
       tab_id,
-      TEST_DOCUMENT_GENERATION,
+      TEST_TREE_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target: page_node_id(input_id),
@@ -569,7 +569,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         caret_req
       ));
     }
@@ -616,7 +616,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         range_req
       ));
     }
@@ -664,7 +664,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         reverse_req
       ));
     }
@@ -704,7 +704,7 @@ mod tests {
     let handled = handle_accesskit_action_request(
       &mut ctx,
       tab_id,
-      TEST_DOCUMENT_GENERATION,
+      TEST_TREE_GENERATION,
       accesskit::ActionRequest {
         action: accesskit::Action::Default,
         target: page_node_id(checkbox_id),
@@ -781,7 +781,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
           target: page_node_id(a_id),
@@ -791,7 +791,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
           target: page_node_id(b_id),
@@ -879,7 +879,7 @@ mod tests {
       assert!(handle_accesskit_action_request(
         &mut ctx,
         tab_id,
-        TEST_DOCUMENT_GENERATION,
+        TEST_TREE_GENERATION,
         accesskit::ActionRequest {
           action: accesskit::Action::SetValue,
           target: page_node_id(input_id),
@@ -913,7 +913,7 @@ mod tests {
     let dom_node_id = 1usize;
 
     let tab_id = TEST_TAB_ID;
-    let gen = TEST_DOCUMENT_GENERATION;
+    let gen = TEST_TREE_GENERATION;
     let node_id = crate::ui::encode_page_node_id(tab_id, gen, dom_node_id);
 
     assert_eq!(
@@ -935,7 +935,7 @@ mod tests {
   #[test]
   fn accesskit_decoding_accepts_tagged_page_ids_for_current_tab() {
     let tab_id = TEST_TAB_ID;
-    let gen = TEST_DOCUMENT_GENERATION;
+    let gen = TEST_TREE_GENERATION;
     let dom_node_id = 123usize;
 
     let tagged = page_accesskit_ids::page_node_id(tab_id, dom_node_id);
@@ -955,7 +955,7 @@ mod tests {
   #[test]
   fn action_routing_ignores_requests_for_other_tabs_and_generations() {
     let tab_id = TEST_TAB_ID;
-    let gen = TEST_DOCUMENT_GENERATION;
+    let gen = TEST_TREE_GENERATION;
 
     let mut dom = crate::dom::parse_html("<html><body><button id=\"x\">OK</button></body></html>")
       .expect("parse");
