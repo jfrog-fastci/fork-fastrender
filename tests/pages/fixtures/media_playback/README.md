@@ -16,6 +16,21 @@ This fixture directory contains small, deterministic HTML pages for exercising:
 - `playback_rate.html` – checks that `playbackRate` affects `currentTime` progression (via periodic
   `timeupdate` events)
 
+## Automated tests
+
+Some tests under `tests/browser_integration/` embed these HTML pages via `include_str!` for
+deterministic, non-interactive coverage. These tests are gated behind the `browser_ui` feature
+(`tests/integration.rs` only includes the `browser_integration` module when it is enabled).
+
+- `tests/browser_integration/media_playback_rate.rs` exercises `playback_rate.html` (playbackRate →
+  currentTime progression).
+
+Run the playback-rate integration test:
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration --features browser_ui media_playback_rate
+```
+
 ## Assets
 
 The media files under `assets/` are deliberately tiny and contain only synthetic content

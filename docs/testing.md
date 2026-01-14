@@ -103,6 +103,9 @@ Deterministic, license-clean media assets live in a few places:
   (see [`tests/pages/fixtures/media_playback/README.md`](../tests/pages/fixtures/media_playback/README.md)).
   The shared fixtures (`test_h264_aac.mp4` and `test_vp9_opus.webm`) are kept identical to the
   unit-test versions under `tests/fixtures/media/` (the audio-only `test_opus.webm` is separate).
+- **Browser integration tests** (feature-gated): `tests/browser_integration/` includes deterministic
+  tests that embed some of the `tests/pages/fixtures/media_playback/*.html` pages via `include_str!`
+  (for example `tests/browser_integration/media_playback_rate.rs`).
 - **Reserved** directory for future “golden” media assets used by general offline page fixtures:
   `tests/pages/fixtures/assets/media/` (see
   [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md)).
