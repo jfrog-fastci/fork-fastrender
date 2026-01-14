@@ -23658,6 +23658,23 @@ impl App {
   }
 
   fn sync_about_open_tabs_snapshot(&self) {
+    // `about:processes` is a best-effort debug page. Avoid doing per-tab URL/site-key work during
+    // normal browsing by only syncing the open-tabs snapshot while the page is actually visible.
+    let about_processes_visible = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+      .is_some_and(|url| {
+        let base = url
+          .trim()
+          .split(|c| matches!(c, '?' | '#'))
+          .next()
+          .unwrap_or(url);
+        base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES)
+      });
+    if !about_processes_visible {
+      return;
+    }
     fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(
       about_open_tabs_snapshot_from_browser_state(&self.browser_state),
     );
