@@ -359,6 +359,10 @@ impl ModuleGraph {
   /// This supports execution paths where a module is primarily compiled to HIR, but must retain an
   /// AST for a fallback interpreter path (for example top-level await or async-generator fallback).
   ///
+  /// Note: compiled module records may drop `record.source` to save memory (the compiled payload
+  /// already owns an `Arc<SourceText>`). In that case this helper falls back to
+  /// `record.compiled.source` as the parse input and stores it back onto the record for later use.
+  ///
   /// When parsing/storing an AST into a module record that previously had none, this charges a
   /// conservative estimate of the AST's host memory usage against [`HeapLimits`] via
   /// [`Heap::charge_external`].
