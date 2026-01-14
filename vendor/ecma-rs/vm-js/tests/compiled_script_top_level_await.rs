@@ -169,6 +169,61 @@ fn compiled_script_top_level_await_in_assignment_suspends_and_resumes() -> Resul
 }
 
 #[test]
+fn compiled_script_top_level_await_in_destructuring_assignment_suspends_and_resumes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var x = 0;
+      ({ x } = await Promise.resolve({ x: 1 }));
+      x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a destructuring assignment should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "supported top-level await scripts should not trigger the general compiled-script AST fallback"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The destructuring assignment after `await` should not have executed yet.
+  let before = rt.exec_script("x")?;
+  assert_eq!(value_to_number(before), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_number(promise_result), 1.0);
+
+  let after = rt.exec_script("x")?;
+  assert_eq!(value_to_number(after), 1.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_infers_function_name_for_binding() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

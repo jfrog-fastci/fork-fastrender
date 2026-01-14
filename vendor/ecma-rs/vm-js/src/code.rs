@@ -856,6 +856,7 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `x = await <expr>;`
     // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
     // - `x ||= await <expr>;` / `x &&= await <expr>;` / `x ??= await <expr>;`
+    // - `({ ... } = await <expr>);` / `[ ... ] = await <expr>;` (destructuring assignment patterns)
     // - `throw await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for (init; test; update) { ... }` loops where the head may contain direct `await` (and
@@ -877,6 +878,19 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
       if let Expr::Binary(binary) = &*expr.stx {
         if binary.stx.operator.is_assignment() {
           if let Some(arg) = expr_direct_await_arg(&binary.stx.right) {
+            // Destructuring assignment patterns evaluate the RHS first (unlike plain assignment
+            // targets, which must evaluate the reference before the RHS).
+            //
+            // Restrict this fast-path to plain `=` destructuring assignments only.
+            if matches!(&*binary.stx.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_)) {
+              if binary.stx.operator != OperatorName::Assignment {
+                return true;
+              }
+              // Nested awaits inside the awaited operand (or in computed keys/defaults within the
+              // pattern) are not supported by the compiled executor.
+              return expr_contains_await(&binary.stx.left) || expr_contains_await(arg);
+            }
+
             if !operator_is_supported_assignment_for_hir_async_scripts(binary.stx.operator) {
               return true;
             }

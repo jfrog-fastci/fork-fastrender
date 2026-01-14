@@ -25524,6 +25524,12 @@ enum HirAsyncResumePoint {
   /// Resume an assignment expression statement whose RHS was a direct `await` expression
   /// (`x = await <expr>;` / `x += await <expr>;`).
   Assignment { next_stmt_index: usize },
+  /// Resume a destructuring assignment expression statement whose RHS was a direct `await`
+  /// expression (`({x} = await <expr>);` / `[x] = await <expr>;`).
+  DestructuringAssign {
+    next_stmt_index: usize,
+    pat_id: hir_js::PatId,
+  },
   /// Resume a top-level `throw await <expr>;` statement.
   Throw { stmt_index: usize },
   /// Resume a top-level `for await..of` statement.
@@ -25558,6 +25564,7 @@ fn await_span_start_for_hir_async_resume_point(
   let stmt_index = match resume {
     HirAsyncResumePoint::ExprStmt { next_stmt_index }
     | HirAsyncResumePoint::Assignment { next_stmt_index }
+    | HirAsyncResumePoint::DestructuringAssign { next_stmt_index, .. }
     | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. }
     | HirAsyncResumePoint::ForTriple { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
     HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
@@ -25611,7 +25618,7 @@ fn await_span_start_for_hir_async_resume_point(
         stmt_offset
       }
     }
-    HirAsyncResumePoint::Assignment { .. } => {
+    HirAsyncResumePoint::Assignment { .. } | HirAsyncResumePoint::DestructuringAssign { .. } => {
       let hir_js::StmtKind::Expr(expr_id) = stmt.kind else {
         return Ok(stmt_offset);
       };
@@ -25892,6 +25899,47 @@ fn hir_eval_stmt_list_until_await(
           // Budget once for the statement and once for the await expression itself.
           evaluator.vm.tick()?;
           evaluator.vm.tick()?;
+
+          // Plain assignment targets (identifiers / members) evaluate the LHS reference (including
+          // computed keys) before evaluating the RHS. Destructuring assignment patterns evaluate the
+          // RHS first.
+          let target_is_plain_assignment_target = {
+            let pat = evaluator.get_pat(body, *target)?;
+            matches!(
+              pat.kind,
+              hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+            )
+          };
+
+          if !target_is_plain_assignment_target {
+            // Destructuring assignment: suspend on the await and perform pattern assignment after
+            // resumption.
+            let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+            return Ok(HirAsyncEvalResult::Await {
+              kind: crate::exec::AsyncSuspendKind::Await,
+              await_value,
+              resume: HirAsyncResumePoint::DestructuringAssign {
+                next_stmt_index: i.saturating_add(1),
+                pat_id: *target,
+              },
+              assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
+              for_await_of_state: None,
+              for_triple_state: None,
+            });
+          }
 
           // Evaluate the assignment reference (including computed keys) before evaluating the await
           // argument value, matching `eval_assignment` ordering.
@@ -27915,6 +27963,50 @@ pub(crate) fn hir_async_resume_continuation(
           if let Some(root) = cont.assign_left_root.take() {
             scope.heap_mut().remove_root(root);
           }
+
+          hir_eval_stmt_list_until_await(
+            &mut evaluator,
+            scope,
+            body,
+            body.root_stmts.as_slice(),
+            next_stmt_index,
+            cont.last_value_root,
+            &mut cont.last_value_is_set,
+          )
+        }
+        HirAsyncResumePoint::DestructuringAssign {
+          next_stmt_index,
+          pat_id,
+        } => {
+          let resumed = resume_value?;
+          // Complete the suspended destructuring assignment expression statement (`({x} = await <expr>);` /
+          // `[x] = await <expr>;`).
+          let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
+            "hir async destructuring assignment resume missing statement index",
+          ))?;
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async destructuring assignment resume stmt index out of bounds",
+            ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
+
+          if let Err(err) = evaluator.assign_pattern(scope, body, pat_id, resumed) {
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ));
+          }
+
+          // The assignment expression evaluates to the assigned value and becomes the statement-list
+          // completion value.
+          cont.last_value_is_set = true;
+          scope.heap_mut().set_root(cont.last_value_root, resumed);
 
           hir_eval_stmt_list_until_await(
             &mut evaluator,
