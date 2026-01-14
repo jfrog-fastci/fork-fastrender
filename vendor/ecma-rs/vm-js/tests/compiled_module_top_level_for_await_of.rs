@@ -1111,6 +1111,319 @@ fn compiled_module_top_level_class_decl_with_await_in_computed_member_key_execut
 }
 
 #[test]
+fn compiled_module_top_level_export_default_class_decl_with_await_in_extends_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        globalThis.__resolveExtends = null;
+        const p = new Promise((resolve) => {
+          globalThis.__resolveExtends = () => resolve(Object);
+        });
+
+        export default class extends (await p) {
+          static { actual += this.name; }
+        }
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "default-export class declarations with await in `extends` should be supported by the compiled module TLA executor"
+    );
+    assert!(
+      !compiled.requires_ast_fallback,
+      "supported compiled module TLA shapes should not trigger the general compiled-module AST fallback"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    assert!(
+      record.has_tla,
+      "await in default-export class heritage should mark the module as `[[HasTLA]]`"
+    );
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    // If the promise was rejected due to missing ASTs (compiled module execution disabled in this
+    // configuration), skip.
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    // Drive module evaluation. It should suspend while awaiting class heritage evaluation, so the
+    // evaluation promise remains pending after this checkpoint.
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Pending,
+        "module evaluation should suspend at `await` in default-export class `extends`"
+      );
+
+      let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+      let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+        panic!("expected module export 'actual' to be a string");
+      };
+      assert_eq!(
+        scope.heap().get_string(actual)?.to_utf8_lossy(),
+        "",
+        "default-export class static block should not run before the awaited heritage resolves"
+      );
+
+      // Resolve the pending heritage promise.
+      let resolve_extends =
+        ns_get(vm, &mut host, &mut hooks, &mut scope, global_object, "__resolveExtends")?;
+      let Value::Object(_) = resolve_extends else {
+        panic!("expected globalThis.__resolveExtends to be a function object");
+      };
+      let _ = vm.call_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        resolve_extends,
+        Value::Undefined,
+        &[],
+      )?;
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "defaultdone");
+
+    let default_export = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "default")?;
+    let Value::Object(default_obj) = default_export else {
+      panic!("expected module export 'default' to be an object");
+    };
+    let Value::String(name) = ns_get(vm, &mut host, &mut hooks, &mut scope, default_obj, "name")? else {
+      panic!("expected default export class .name to be a string");
+    };
+    assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "default");
+
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
+
+#[test]
+fn compiled_module_top_level_export_default_class_decl_with_await_in_computed_member_key_executes(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        globalThis.__default = null;
+        globalThis.__resolveKey = null;
+        const p = new Promise((resolve) => {
+          globalThis.__resolveKey = () => resolve("m");
+        });
+
+        export default class {
+          static [await p]() { return "ok"; }
+          static {
+            globalThis.__default = this;
+            actual += "s";
+          }
+        }
+        actual += globalThis.__default.m();
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "default-export class declarations with await in computed member keys should be supported by the compiled module TLA executor"
+    );
+    assert!(
+      !compiled.requires_ast_fallback,
+      "supported compiled module TLA shapes should not trigger the general compiled-module AST fallback"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    assert!(
+      record.has_tla,
+      "await in a default-export class computed key should mark the module as `[[HasTLA]]`"
+    );
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    // If the promise was rejected due to missing ASTs (compiled module execution disabled in this
+    // configuration), skip.
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    // Drive module evaluation. It should suspend while awaiting the computed key, so the evaluation
+    // promise remains pending after this checkpoint.
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Pending,
+        "module evaluation should suspend at `await` in default-export class computed key"
+      );
+
+      let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+      let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+        panic!("expected module export 'actual' to be a string");
+      };
+      assert_eq!(
+        scope.heap().get_string(actual)?.to_utf8_lossy(),
+        "",
+        "default-export class static block should not run before the awaited computed key resolves"
+      );
+
+      // Resolve the pending key promise.
+      let resolve_key = ns_get(vm, &mut host, &mut hooks, &mut scope, global_object, "__resolveKey")?;
+      let Value::Object(_) = resolve_key else {
+        panic!("expected globalThis.__resolveKey to be a function object");
+      };
+      let _ = vm.call_with_host_and_hooks(
+        &mut host,
+        &mut scope,
+        &mut hooks,
+        resolve_key,
+        Value::Undefined,
+        &[],
+      )?;
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "sokdone");
+
+    // Verify the default export binding is initialized and has the correct inferred name.
+    let default_export = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "default")?;
+    let Value::Object(default_obj) = default_export else {
+      panic!("expected module export 'default' to be an object");
+    };
+    let Value::String(name) = ns_get(vm, &mut host, &mut hooks, &mut scope, default_obj, "name")? else {
+      panic!("expected default export class .name to be a string");
+    };
+    assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "default");
+
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
+
+#[test]
 fn compiled_module_top_level_nested_labeled_for_triple_with_await_in_init_break_outer_label_executes(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
