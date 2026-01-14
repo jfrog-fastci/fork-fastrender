@@ -397,16 +397,25 @@ impl VmHostHooks for Test262ModuleHooks {
       Json,
     }
 
+    #[inline]
+    fn js_string_eq_str(js: &vm_js::JsString, s: &str) -> bool {
+      js.as_code_units().iter().copied().eq(s.encode_utf16())
+    }
+
     let kind = if module_request.attributes.is_empty() {
       RequestedModuleKind::JavaScript
     } else {
       // `vm-js` performs `AllImportAttributesSupported` using `host_get_supported_import_attributes`
       // before invoking this hook, but be defensive when called directly.
-      if let Some(attr) = module_request.attributes.iter().find(|a| a.key != "type") {
+      if let Some(attr) = module_request
+        .attributes
+        .iter()
+        .find(|a| !js_string_eq_str(&a.key, "type"))
+      {
         let result = Err(module_load_syntax_error_message(
           vm,
           scope,
-          &format!("Unsupported import attribute: {}", attr.key),
+          &format!("Unsupported import attribute: {}", attr.key.to_utf8_lossy()),
         )?);
         return finish_loading_imported_module(
           vm,
@@ -424,16 +433,16 @@ impl VmHostHooks for Test262ModuleHooks {
       if module_request
         .attributes
         .iter()
-        .all(|a| a.key == "type" && a.value == "json")
+        .all(|a| js_string_eq_str(&a.key, "type") && js_string_eq_str(&a.value, "json"))
       {
         RequestedModuleKind::Json
       } else {
         let typ = module_request
           .attributes
           .iter()
-          .find(|a| a.key == "type" && a.value != "json")
-          .map(|a| a.value.as_str())
-          .unwrap_or("<unknown>");
+          .find(|a| js_string_eq_str(&a.key, "type") && !js_string_eq_str(&a.value, "json"))
+          .map(|a| a.value.to_utf8_lossy())
+          .unwrap_or_else(|| "<unknown>".to_string());
         let result = Err(module_load_syntax_error_message(
           vm,
           scope,
