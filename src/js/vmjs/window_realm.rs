@@ -15314,7 +15314,6 @@ fn document_create_element_native(
     ))?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
-
 fn value_to_rust_utf16_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -33038,33 +33037,38 @@ fn node_is_equal_node_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(wrapper_obj) = this else {
+  let Value::Object(this_obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let this_handle = {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    platform.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?
+  let this_handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), Value::Object(this_obj))
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_obj = match other {
+    Value::Null | Value::Undefined => return Ok(Value::Bool(false)),
+    Value::Object(obj) => obj,
+    _ => return Ok(Value::Bool(false)),
   };
 
-  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  if matches!(other_value, Value::Null | Value::Undefined) {
-    return Ok(Value::Bool(false));
-  }
-
-  let other_handle = {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
-    match platform.require_node_handle(scope.heap(), other_value) {
-      Ok(handle) => handle,
-      Err(_) => return Ok(Value::Bool(false)),
-    }
+  // DOM: If `other` is not a Node, return false (do not throw).
+  let other_handle = match dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), Value::Object(other_obj))
+  {
+    Ok(handle) => handle,
+    Err(_) => return Ok(Value::Bool(false)),
   };
 
   let dom_a_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
     .ok_or(VmError::TypeError("Illegal invocation"))?;
   let dom_b_ptr = dom_ptr_for_document_id_read(vm, host, other_handle.document_id)
     .ok_or(VmError::TypeError("Illegal invocation"))?;
-  // SAFETY: pointers returned by `dom_ptr_for_document_id_read` outlive this native call.
+
+  // SAFETY: pointers returned by `dom_ptr_for_document_id_read` are valid for the duration of this
+  // native call.
   let dom_a = unsafe { dom_a_ptr.as_ref() };
   let dom_b = unsafe { dom_b_ptr.as_ref() };
 
@@ -53609,28 +53613,6 @@ fn init_window_globals(
       data_desc(Value::Object(contains_func)),
     )?;
 
-    let compare_document_position_call_id =
-      vm.register_native_call(node_compare_document_position_native)?;
-    let compare_document_position_name = scope.alloc_string("compareDocumentPosition")?;
-    scope.push_root(Value::String(compare_document_position_name))?;
-    let compare_document_position_func = scope.alloc_native_function(
-      compare_document_position_call_id,
-      None,
-      compare_document_position_name,
-      1,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      compare_document_position_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(compare_document_position_func))?;
-    let compare_document_position_key = alloc_key(&mut scope, "compareDocumentPosition")?;
-    scope.define_property(
-      node_proto,
-      compare_document_position_key,
-      data_desc(Value::Object(compare_document_position_func)),
-    )?;
-
     let is_equal_node_call_id = vm.register_native_call(node_is_equal_node_native)?;
     let is_equal_node_name = scope.alloc_string("isEqualNode")?;
     scope.push_root(Value::String(is_equal_node_name))?;
@@ -60345,6 +60327,130 @@ mod tests {
         document.body.appendChild(sr);
         if (span.parentNode !== document.body) throw new Error('expected span to move into document.body');
         if (sr.childNodes.length !== 0) throw new Error(`expected sr to be empty, got ${sr.childNodes.length}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_is_equal_node_returns_false_for_non_nodes() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const node = document.createElement('div');
+        if (node.isEqualNode(null) !== false) throw new Error('expected null -> false');
+        if (node.isEqualNode() !== false) throw new Error('expected missing arg -> false');
+        if (node.isEqualNode(5) !== false) throw new Error('expected number -> false');
+        let threw = false;
+        let res = true;
+        try { res = node.isEqualNode({}); } catch (e) { threw = true; }
+        if (threw) throw new Error('expected object -> false, not throw');
+        if (res !== false) throw new Error('expected object -> false');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_is_equal_node_compares_attributes_and_children() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const a = document.createElement('div');
+        a.setAttribute('id', 'x');
+        a.setAttribute('class', 'y');
+        a.appendChild(document.createTextNode('t'));
+
+        const b = document.createElement('div');
+        // Reverse attribute insertion order (attributes are order-insensitive for isEqualNode).
+        b.setAttribute('class', 'y');
+        b.setAttribute('id', 'x');
+        b.appendChild(document.createTextNode('t'));
+
+        if (!a.isEqualNode(b)) throw new Error('expected a.isEqualNode(b) to be true');
+
+        const c = document.createElement('div');
+        c.setAttribute('id', 'x');
+        c.setAttribute('class', 'y');
+        c.appendChild(document.createTextNode('different'));
+        if (a.isEqualNode(c)) throw new Error('expected a.isEqualNode(c) to be false');
+
+        const f1 = document.createDocumentFragment();
+        f1.appendChild(document.createTextNode('a'));
+        f1.appendChild(document.createElement('span'));
+        const f2 = document.createDocumentFragment();
+        f2.appendChild(document.createTextNode('a'));
+        f2.appendChild(document.createElement('span'));
+        if (!f1.isEqualNode(f2)) throw new Error('expected fragments to be equal');
+        const f3 = document.createDocumentFragment();
+        f3.appendChild(document.createElement('span'));
+        f3.appendChild(document.createTextNode('a'));
+        if (f1.isEqualNode(f3)) throw new Error('expected fragments with different child order to differ');
+
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_is_equal_node_includes_document_type_fields() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const a = document.implementation.createDocumentType('html', 'p', 's');
+        const b = document.implementation.createDocumentType('html', 'p', 's');
+        const c = document.implementation.createDocumentType('html', 'p', 't');
+        if (!a.isEqualNode(b)) throw new Error('expected doctypes to be equal');
+        if (a.isEqualNode(c)) throw new Error('expected doctypes with different systemId to differ');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_is_equal_node_ignores_shadow_roots_for_element_children() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const host1 = document.createElement('div');
+        const sr1 = host1.attachShadow({ mode: 'open' });
+        sr1.innerHTML = '<span>a</span>';
+
+        const host2 = document.createElement('div');
+        if (!host1.isEqualNode(host2)) {
+          throw new Error('expected host1.isEqualNode(host2) to ignore shadow roots');
+        }
+
+        const host3 = document.createElement('div');
+        const sr3 = host3.attachShadow({ mode: 'open' });
+        sr3.innerHTML = '<span>a</span>';
+        if (!sr1.isEqualNode(sr3)) throw new Error('expected equal shadow roots');
+
+        const host4 = document.createElement('div');
+        const sr4 = host4.attachShadow({ mode: 'closed' });
+        sr4.innerHTML = '<span>a</span>';
+        if (sr1.isEqualNode(sr4)) throw new Error('expected open vs closed shadow roots to differ');
+
         return true;
       })()"#,
     )?;

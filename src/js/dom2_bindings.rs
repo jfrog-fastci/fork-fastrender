@@ -378,7 +378,34 @@ pub(crate) fn is_equal_node_from_dom(
     match (&a_node.kind, &b_node.kind) {
       (NodeKind::Document { .. }, NodeKind::Document { .. }) => {}
       (NodeKind::DocumentFragment, NodeKind::DocumentFragment) => {}
-      (NodeKind::ShadowRoot { .. }, NodeKind::ShadowRoot { .. }) => {}
+      (
+        NodeKind::ShadowRoot {
+          mode: a_mode,
+          delegates_focus: a_delegates_focus,
+          slot_assignment: a_slot_assignment,
+          clonable: a_clonable,
+          serializable: a_serializable,
+          declarative: a_declarative,
+        },
+        NodeKind::ShadowRoot {
+          mode: b_mode,
+          delegates_focus: b_delegates_focus,
+          slot_assignment: b_slot_assignment,
+          clonable: b_clonable,
+          serializable: b_serializable,
+          declarative: b_declarative,
+        },
+      ) => {
+        if a_mode != b_mode
+          || a_delegates_focus != b_delegates_focus
+          || a_slot_assignment != b_slot_assignment
+          || a_clonable != b_clonable
+          || a_serializable != b_serializable
+          || a_declarative != b_declarative
+        {
+          return false;
+        }
+      }
       (
         NodeKind::Doctype {
           name: a_name,
