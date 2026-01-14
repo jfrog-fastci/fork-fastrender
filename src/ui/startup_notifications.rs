@@ -110,6 +110,45 @@ mod tests {
   }
 
   #[test]
+  fn multiline_errors_use_first_non_empty_line() {
+    let path = Path::new("/tmp/fastrender_history.json");
+    let err = "\n  first line\nsecond line\nthird line";
+    let msg =
+      format_profile_store_load_failure_toast("history", path, err).expect("expected toast text");
+    let error_line = msg
+      .lines()
+      .find(|line| line.trim_start().starts_with("Error:"))
+      .expect("expected an Error: line");
+    let error_value = error_line
+      .split_once("Error:")
+      .map(|(_, rest)| rest.trim_start())
+      .unwrap_or("");
+    assert!(error_value.contains("first line"));
+    assert!(
+      !error_value.contains("second line"),
+      "expected only first line to be used, got {error_value:?}"
+    );
+  }
+
+  #[test]
+  fn long_paths_are_truncated_with_ellipsis() {
+    let path_str = "a".repeat(STARTUP_PROFILE_TOAST_PATH_MAX_BYTES.saturating_mul(4));
+    let path = Path::new(&path_str);
+    let msg = format_profile_store_load_failure_toast("bookmarks", path, "oops")
+      .expect("expected toast text");
+    let path_line = msg
+      .lines()
+      .find(|line| line.trim_start().starts_with("Path:"))
+      .expect("expected a Path: line");
+    let path_value = path_line
+      .split_once("Path:")
+      .map(|(_, rest)| rest.trim_start())
+      .unwrap_or("");
+    assert_eq!(path_value.len(), STARTUP_PROFILE_TOAST_PATH_MAX_BYTES);
+    assert!(path_value.ends_with('…'));
+  }
+
+  #[test]
   fn empty_errors_do_not_produce_a_toast() {
     let path = Path::new("/tmp/fastrender_history.json");
     assert!(format_profile_store_load_failure_toast("history", path, "").is_none());
