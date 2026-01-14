@@ -2264,13 +2264,15 @@ impl Vm {
       script: ParseOptions,
       module: ParseOptions,
       allow_enclosing_meta_properties: bool,
+      allow_top_level_yield: bool,
     ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
       let parse = |vm: &mut Vm, src: &str, opts: ParseOptions| {
-        if allow_enclosing_meta_properties {
-          vm.parse_top_level_with_budget_allowing_enclosing_meta_properties(src, opts)
+        let meta_property_context = if allow_enclosing_meta_properties {
+          MetaPropertyContext::ALL
         } else {
-          vm.parse_top_level_with_budget(src, opts)
-        }
+          MetaPropertyContext::SCRIPT
+        };
+        vm.parse_top_level_with_budget_impl(src, opts, meta_property_context, allow_top_level_yield)
       };
 
       match parse(vm, src, script) {
@@ -2299,8 +2301,9 @@ impl Vm {
       // - `import.meta` inside function bodies
       //
       // In that case, parsing as a script will fail with a SyntaxError; retry parsing as a module.
-      EcmaFunctionKind::Decl => parse_top(self, snippet, script_opts, module_opts, false)?,
+      EcmaFunctionKind::Decl => parse_top(self, snippet, script_opts, module_opts, false, false)?,
       EcmaFunctionKind::ObjectMember => {
+        let allow_top_level_yield = true;
         let capacity = snippet.len().checked_add(4).ok_or(VmError::OutOfMemory)?;
         wrapped
           .try_reserve(capacity)
@@ -2308,9 +2311,10 @@ impl Vm {
         wrapped.push_str("({");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
-        parse_top(self, &wrapped, script_opts, module_opts, false)?
+        parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield)?
       }
       EcmaFunctionKind::ClassMember => {
+        let allow_top_level_yield = true;
         let capacity = snippet.len().checked_add(23).ok_or(VmError::OutOfMemory)?;
         wrapped
           .try_reserve(capacity)
@@ -2318,7 +2322,7 @@ impl Vm {
         wrapped.push_str("(class extends null {");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
-        parse_top(self, &wrapped, script_opts, module_opts, false)?
+        parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield)?
       }
       EcmaFunctionKind::ClassFieldInitializer => {
         wrapped.clear();
@@ -2335,7 +2339,7 @@ impl Vm {
         wrapped.push_str(";}})");
         // Field initializers can contain `super` / `new.target` expressions provided by an enclosing
         // class body. Allow parsing them in a permissive enclosing-meta-property context.
-        parse_top(self, &wrapped, script_opts, module_opts, true)?
+        parse_top(self, &wrapped, script_opts, module_opts, true, false)?
       }
       EcmaFunctionKind::Expr => {
         wrapped.clear();
@@ -2358,7 +2362,7 @@ impl Vm {
         //
         // We conservatively allow these meta-properties here since the enclosing context was
         // already validated by the original parse of the full source.
-        parse_top(self, &wrapped, script_opts, module_opts, true)?
+        parse_top(self, &wrapped, script_opts, module_opts, true, false)?
       }
     };
 
@@ -3024,6 +3028,7 @@ impl Vm {
     source: &str,
     opts: ParseOptions,
     meta_property_context: MetaPropertyContext,
+    allow_top_level_yield: bool,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
     let mut parse_once = |allow_top_level_await_in_script: bool| -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
       // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
@@ -3053,6 +3058,7 @@ impl Vm {
               meta_property_context.allow_super_property(),
               meta_property_context.allow_super_call(),
             );
+            p.set_allow_top_level_yield(allow_top_level_yield);
             if allow_top_level_await_in_script {
               p.set_allow_top_level_await_in_script(true);
             }
@@ -3101,7 +3107,7 @@ impl Vm {
     source: &str,
     opts: ParseOptions,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::SCRIPT)
+    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::SCRIPT, false)
   }
 
   pub(crate) fn parse_top_level_with_budget_allowing_enclosing_meta_properties(
@@ -3109,7 +3115,7 @@ impl Vm {
     source: &str,
     opts: ParseOptions,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::ALL)
+    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::ALL, false)
   }
 
   pub(crate) fn parse_top_level_with_budget_with_meta_property_context(
@@ -3118,7 +3124,7 @@ impl Vm {
     opts: ParseOptions,
     meta_property_context: MetaPropertyContext,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    self.parse_top_level_with_budget_impl(source, opts, meta_property_context)
+    self.parse_top_level_with_budget_impl(source, opts, meta_property_context, false)
   }
 
   /// Calls `callee` with the provided `this` value and arguments.

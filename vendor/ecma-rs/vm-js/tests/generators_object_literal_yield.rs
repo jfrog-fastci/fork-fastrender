@@ -109,3 +109,55 @@ fn generator_object_literal_yield_value_then_getter_and_setter_members() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_object_literal_yield_in_computed_method_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return { [yield "k"]() { return 1; } }; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("m");
+      var obj = r2.value;
+      r1.value === "k" && r1.done === false &&
+      r2.done === true &&
+      typeof obj.m === "function" &&
+      obj.m() === 1 &&
+      obj.m.name === "m" &&
+      ("k" in obj) === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_literal_yield_in_computed_getter_and_setter_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        return {
+          get [yield "g"]() { return this._v; },
+          set [yield "s"](v) { this._v = v; }
+        };
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("x");
+      var r3 = it.next("x");
+      var obj = r3.value;
+      obj.x = 20;
+      r1.value === "g" && r1.done === false &&
+      r2.value === "s" && r2.done === false &&
+      r3.done === true &&
+      obj._v === 20 &&
+      obj.x === 20
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

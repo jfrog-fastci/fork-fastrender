@@ -5,6 +5,7 @@ mod type_member;
 mod class_await;
 mod class_static_block;
 mod class_field_initializer;
+mod yield_in_object_literal_computed_key;
 mod regex_unicode_sets;
 mod regexp_unicode_class;
 mod identifier_escapes;

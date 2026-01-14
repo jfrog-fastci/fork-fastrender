@@ -160,6 +160,7 @@ pub struct Parser<'a> {
   options: ParseOptions,
   allow_bare_ts_type_args: bool,
   allow_top_level_await_in_script: bool,
+  allow_top_level_yield: bool,
   strict_mode: u32,
   in_function: u32,
   new_target_allowed: u32,
@@ -206,6 +207,7 @@ impl<'a> Parser<'a> {
       options,
       allow_bare_ts_type_args: false,
       allow_top_level_await_in_script: false,
+      allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
       new_target_allowed: 0,
@@ -234,6 +236,7 @@ impl<'a> Parser<'a> {
       options,
       allow_bare_ts_type_args: false,
       allow_top_level_await_in_script: false,
+      allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
       new_target_allowed: 0,
@@ -282,6 +285,19 @@ impl<'a> Parser<'a> {
   /// Callers should only use this to widen the initial grammar context *before* parsing begins.
   pub fn set_allow_top_level_await_in_script(&mut self, allow: bool) {
     self.allow_top_level_await_in_script = allow;
+  }
+
+  /// Allows parsing top-level `yield` expressions in non-generator contexts.
+  ///
+  /// In standard ECMAScript parsing, `yield` expressions are only permitted inside generator
+  /// functions. This hook exists for embeddings that parse **source snippets** extracted from a
+  /// larger program (for example, `vm-js` lazy function parsing): when parsing an object/class
+  /// member snippet in isolation, a computed property name may contain `yield` that is *actually*
+  /// evaluated in an enclosing generator function body.
+  ///
+  /// Callers should only use this to widen the initial grammar context *before* parsing begins.
+  pub fn set_allow_top_level_yield(&mut self, allow: bool) {
+    self.allow_top_level_yield = allow;
   }
 
   pub fn options(&self) -> ParseOptions {

@@ -45,7 +45,7 @@ impl<'a> Parser<'a> {
         await_allowed: !is_module,
         yield_allowed: !is_module,
         await_expr_allowed: is_module || self.allow_top_level_await_in_script,
-        yield_expr_allowed: false,
+        yield_expr_allowed: self.allow_top_level_yield,
       },
       top_level: true,
       in_namespace: false,
