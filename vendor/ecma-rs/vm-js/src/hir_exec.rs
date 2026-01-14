@@ -25667,6 +25667,175 @@ mod async_function_hir_exec_tests {
   }
 
   #[test]
+  fn compiled_async_function_for_triple_head_await_suspends_via_hir_async_frame() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        // Keep a reference to the async function so we can inspect it from Rust after compilation.
+        var f;
+
+        async function g() {
+          // Suspend in the `for` loop head (test expression).
+          for (; await new Promise(() => {}); ) {}
+        }
+
+        f = g;
+        g();
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(!script.requires_ast_fallback);
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(promise_obj) = result else {
+      panic!("expected Promise from async function call, got {result:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    // The function object should not carry per-function async AST fallback metadata.
+    let func_value = rt.exec_script("f")?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected function object in global `f`, got {func_value:?}");
+    };
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected compiled async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected async function to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    // The suspension should create an async continuation backed by a HIR async frame.
+    let cont_ids = rt.vm.async_continuation_ids();
+    assert_eq!(
+      cont_ids.len(),
+      1,
+      "expected exactly one async continuation after a single suspension, got {cont_ids:?}"
+    );
+    let id = cont_ids[0];
+    let cont = rt
+      .vm
+      .take_async_continuation(id)
+      .expect("expected async continuation to be present in VM");
+    let VmAsyncContinuation::Ast(cont) = cont else {
+      panic!("expected async function suspension to create an AST-style async continuation");
+    };
+    assert!(
+      cont
+        .frames
+        .iter()
+        .any(|f| matches!(f, AsyncFrame::HirAsync { .. })),
+      "expected continuation to contain a HIR async frame, got frames={:?}",
+      cont.frames
+    );
+
+    // Ensure we tear down persistent roots even though the awaited promise will never settle.
+    let mut scope = rt.heap.scope();
+    crate::exec::async_teardown_continuation(&mut scope, cont);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_destructuring_assignment_default_await_suspends_via_hir_async_frame(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        // Keep a reference to the async function so we can inspect it from Rust after compilation.
+        var f;
+
+        async function g() {
+          let x;
+          // Suspend while evaluating the destructuring default value.
+          ({ x = await new Promise(() => {}) } = {});
+          return x;
+        }
+
+        f = g;
+        g();
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(!script.requires_ast_fallback);
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(promise_obj) = result else {
+      panic!("expected Promise from async function call, got {result:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    // The function object should not carry per-function async AST fallback metadata.
+    let func_value = rt.exec_script("f")?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected function object in global `f`, got {func_value:?}");
+    };
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected compiled async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected async function to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    // The suspension should create an async continuation backed by a HIR async frame.
+    let cont_ids = rt.vm.async_continuation_ids();
+    assert_eq!(
+      cont_ids.len(),
+      1,
+      "expected exactly one async continuation after a single suspension, got {cont_ids:?}"
+    );
+    let id = cont_ids[0];
+    let cont = rt
+      .vm
+      .take_async_continuation(id)
+      .expect("expected async continuation to be present in VM");
+    let VmAsyncContinuation::Ast(cont) = cont else {
+      panic!("expected async function suspension to create an AST-style async continuation");
+    };
+    assert!(
+      cont
+        .frames
+        .iter()
+        .any(|f| matches!(f, AsyncFrame::HirAsync { .. })),
+      "expected continuation to contain a HIR async frame, got frames={:?}",
+      cont.frames
+    );
+
+    // Ensure we tear down persistent roots even though the awaited promise will never settle.
+    let mut scope = rt.heap.scope();
+    crate::exec::async_teardown_continuation(&mut scope, cont);
+    Ok(())
+  }
+
+  #[test]
   fn compiled_async_function_assignment_stmt_direct_await_executes_via_hir() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
