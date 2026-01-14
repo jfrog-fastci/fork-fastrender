@@ -420,10 +420,15 @@ impl RealmDocumentRegistry {
     true
   }
 
-  fn register(&mut self, document_obj: GcObject, dom: dom2::Document) {
+  fn register(&mut self, document_obj: GcObject, dom: dom2::Document) -> Result<(), VmError> {
     self
       .documents
-      .insert(vm_js::WeakGcObject::new(document_obj), Box::new(dom));
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .documents
+      .insert(vm_js::WeakGcObject::new(document_obj), box_try_new_vm(dom)?);
+    Ok(())
   }
 
   fn get_dom_ptr_for_events(
@@ -556,8 +561,12 @@ impl WindowRealmUserData {
     }
   }
 
-  pub(crate) fn register_realm_document(&mut self, document_obj: GcObject, dom: dom2::Document) {
-    self.realm_document_registry.register(document_obj, dom);
+  pub(crate) fn register_realm_document(
+    &mut self,
+    document_obj: GcObject,
+    dom: dom2::Document,
+  ) -> Result<(), VmError> {
+    self.realm_document_registry.register(document_obj, dom)
   }
 
   pub(crate) fn document_url(&self) -> &str {
@@ -61345,7 +61354,7 @@ mod tests {
       vm
         .user_data_mut::<WindowRealmUserData>()
         .expect("missing WindowRealmUserData")
-        .register_realm_document(extra_doc_obj, dom2::Document::new(QuirksMode::NoQuirks));
+        .register_realm_document(extra_doc_obj, dom2::Document::new(QuirksMode::NoQuirks))?;
 
       assert_eq!(
         vm.user_data_mut::<WindowRealmUserData>()
