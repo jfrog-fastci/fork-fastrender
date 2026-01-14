@@ -22236,6 +22236,12 @@ impl App {
     }
 
     if output.clear_completed_requested {
+      // Update the per-window snapshot immediately so the panel and downloads badge update on the
+      // next redraw, even before the global downloads state is synced via `UserEvent`.
+      let removed = self.browser_state.downloads.clear_completed();
+      if removed > 0 && !(self.window_occluded || self.window_minimized) {
+        self.window.request_redraw();
+      }
       // Best-effort: if the event loop has already been torn down, ignore failures.
       let _ = self
         .event_loop_proxy
