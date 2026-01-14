@@ -3165,7 +3165,7 @@ pub fn array_buffer_constructor_construct(
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
 
@@ -3276,19 +3276,32 @@ pub fn array_buffer_constructor_construct(
     }
   }
 
-  let ab = match requested_max_byte_length {
-    Some(max_byte_length) => {
-      if byte_length > max_byte_length {
-        let err = crate::error_object::new_range_error(scope, intr, "Invalid array buffer maxByteLength")?;
-        return Err(VmError::Throw(err));
-      }
-      scope.alloc_resizable_array_buffer(byte_length, max_byte_length)?
-    }
-    None => scope.alloc_array_buffer(byte_length)?,
-  };
-  scope
-    .heap_mut()
-    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+  let ab = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.array_buffer_prototype(),
+    &[],
+    |scope| {
+      let ab = match requested_max_byte_length {
+        Some(max_byte_length) => {
+          if byte_length > max_byte_length {
+            let err = crate::error_object::new_range_error(
+              scope,
+              intr,
+              "Invalid array buffer maxByteLength",
+            )?;
+            return Err(VmError::Throw(err));
+          }
+          scope.alloc_resizable_array_buffer(byte_length, max_byte_length)?
+        }
+        None => scope.alloc_array_buffer(byte_length)?,
+      };
+      Ok(ab)
+    },
+  )?;
   Ok(Value::Object(ab))
 }
 
@@ -3564,23 +3577,78 @@ pub fn array_buffer_prototype_slice(
     .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.slice called on incompatible receiver"))?;
 
   let (start, end) = slice_range_from_args(vm, scope, host, hooks, len, args)?;
+  let new_len = end - start;
 
-  let bytes = {
-    let data = scope.heap().array_buffer_data(obj)?;
-    let slice = &data[start..end];
-    let mut out: Vec<u8> = Vec::new();
-    out
-      .try_reserve_exact(slice.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    vec_try_extend_from_slice(&mut out, slice, || vm.tick())?;
-    out
+  // Allocate the destination buffer via the species constructor.
+  let ctor = crate::spec_ops::species_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    obj,
+    Value::Object(intr.array_buffer()),
+  )?;
+  scope.push_root(ctor)?;
+
+  // Allocate the destination buffer via `Construct(ctor, « newLen »)`.
+  let new_len_value = Value::Number(new_len as f64);
+  scope.push_root(new_len_value)?;
+  let new_value = vm.construct_with_host_and_hooks(host, scope, hooks, ctor, &[new_len_value], ctor)?;
+  let Value::Object(new_obj) = new_value else {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice species constructor returned non-object",
+    ));
   };
+  scope.push_root(Value::Object(new_obj))?;
 
-  let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-  Ok(Value::Object(ab))
+  // Per spec, the source ArrayBuffer may become detached during species construction; validate the
+  // source again before accessing its backing store.
+  if scope
+    .heap()
+    .array_buffer_is_detached(obj)
+    .map_err(|_| VmError::TypeError("ArrayBuffer.prototype.slice called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice called on detached ArrayBuffer",
+    ));
+  }
+
+  // Ensure the constructed object is a non-detached ArrayBuffer.
+  if !scope.heap().is_array_buffer_object(new_obj) {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice species constructor returned non-ArrayBuffer",
+    ));
+  }
+  if scope
+    .heap()
+    .array_buffer_is_detached(new_obj)
+    .map_err(|_| VmError::TypeError(
+      "ArrayBuffer.prototype.slice constructed incompatible receiver",
+    ))?
+  {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice constructed detached ArrayBuffer",
+    ));
+  }
+  if new_obj == obj {
+    return Err(VmError::TypeError(
+      "ArrayBuffer.prototype.slice constructed the source ArrayBuffer",
+    ));
+  }
+
+  // Copy the bytes into the destination buffer. Tick periodically to keep budgets responsive.
+  let tick_every_bytes = 1024usize;
+  scope.heap_mut().array_buffer_copy_with_tick(
+    obj,
+    start,
+    new_obj,
+    0,
+    new_len,
+    tick_every_bytes,
+    || vm.tick(),
+  )?;
+
+  Ok(Value::Object(new_obj))
 }
 
 pub fn uint8_array_constructor_call(
@@ -3602,7 +3670,7 @@ pub fn uint8_array_constructor_construct(
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   typed_array_constructor_construct_impl(
@@ -3612,8 +3680,8 @@ pub fn uint8_array_constructor_construct(
     hooks,
     intr,
     TypedArrayKind::Uint8,
-    intr.uint8_array_prototype(),
     args,
+    new_target,
   )
 }
 
@@ -3640,8 +3708,8 @@ fn typed_array_constructor_construct_impl(
   hooks: &mut dyn VmHostHooks,
   intr: crate::Intrinsics,
   kind: TypedArrayKind,
-  prototype: GcObject,
   args: &[Value],
+  new_target: Value,
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let bytes_per_element = kind.bytes_per_element();
@@ -3726,6 +3794,17 @@ fn typed_array_constructor_construct_impl(
       "TypedArray length must be a non-negative integer",
     )?;
 
+    let default_proto = typed_array_prototype_for_kind(&intr, kind);
+    let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      new_target,
+      default_proto,
+    )?;
+    scope.push_root(Value::Object(prototype))?;
+
     let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, length)?;
     return Ok(Value::Object(view));
   }
@@ -3787,6 +3866,17 @@ fn typed_array_constructor_construct_impl(
         }
       };
 
+      let default_proto = typed_array_prototype_for_kind(&intr, kind);
+      let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        new_target,
+        default_proto,
+      )?;
+      scope.push_root(Value::Object(prototype))?;
+
       let view = scope.alloc_typed_array(kind, buffer, byte_offset, length)?;
       scope
         .heap_mut()
@@ -3805,6 +3895,17 @@ fn typed_array_constructor_construct_impl(
         .map_err(|_| VmError::TypeError("TypedArray constructor expects a typed array"))?;
       let (src_buf, src_byte_offset, src_byte_length) = scope.heap().typed_array_view_bytes(buffer)?;
       let src_len = src_byte_length / src_kind.bytes_per_element();
+
+      let default_proto = typed_array_prototype_for_kind(&intr, kind);
+      let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        new_target,
+        default_proto,
+      )?;
+      scope.push_root(Value::Object(prototype))?;
 
       let (dst_buf, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, src_len)?;
 
@@ -3992,6 +4093,17 @@ fn typed_array_constructor_construct_impl(
         i = i.saturating_add(1);
       }
 
+      let default_proto = typed_array_prototype_for_kind(&intr, kind);
+      let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        new_target,
+        default_proto,
+      )?;
+      scope.push_root(Value::Object(prototype))?;
+
       let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, values.len())?;
       scope.push_root(Value::Object(view))?;
 
@@ -4095,6 +4207,17 @@ fn typed_array_constructor_construct_impl(
       i = i.saturating_add(1);
     }
 
+    let default_proto = typed_array_prototype_for_kind(&intr, kind);
+    let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      new_target,
+      default_proto,
+    )?;
+    scope.push_root(Value::Object(prototype))?;
+
     let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, values.len())?;
     scope.push_root(Value::Object(view))?;
 
@@ -4117,6 +4240,17 @@ fn typed_array_constructor_construct_impl(
   let obj = scope.to_object(vm, host, hooks, arg0)?;
   scope.push_root(Value::Object(obj))?;
   let len = crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
+
+  let default_proto = typed_array_prototype_for_kind(&intr, kind);
+  let prototype = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    default_proto,
+  )?;
+  scope.push_root(Value::Object(prototype))?;
 
   let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, len)?;
   scope.push_root(Value::Object(view))?;
@@ -4172,10 +4306,10 @@ macro_rules! typed_array_ctor {
       hooks: &mut dyn VmHostHooks,
       _callee: GcObject,
       args: &[Value],
-      _new_target: Value,
+      new_target: Value,
     ) -> Result<Value, VmError> {
       let intr = require_intrinsics(vm)?;
-      typed_array_constructor_construct_impl(vm, scope, host, hooks, intr, $kind, intr.$proto(), args)
+      typed_array_constructor_construct_impl(vm, scope, host, hooks, intr, $kind, args, new_target)
     }
   };
 }

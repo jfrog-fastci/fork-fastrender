@@ -324,6 +324,8 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
 
   Ok(if intrinsic_default_proto == intr_this.object_prototype() {
     intr_c.object_prototype()
+  } else if intrinsic_default_proto == intr_this.function_prototype() {
+    intr_c.function_prototype()
   } else if intrinsic_default_proto == intr_this.array_prototype() {
     intr_c.array_prototype()
   } else if intrinsic_default_proto == intr_this.promise_prototype() {
@@ -332,14 +334,72 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
     intr_c.suppressed_error_prototype()
   } else if intrinsic_default_proto == intr_this.string_prototype() {
     intr_c.string_prototype()
+  } else if intrinsic_default_proto == intr_this.regexp_prototype() {
+    intr_c.regexp_prototype()
   } else if intrinsic_default_proto == intr_this.number_prototype() {
     intr_c.number_prototype()
   } else if intrinsic_default_proto == intr_this.boolean_prototype() {
     intr_c.boolean_prototype()
+  } else if intrinsic_default_proto == intr_this.bigint_prototype() {
+    intr_c.bigint_prototype()
+  } else if intrinsic_default_proto == intr_this.date_prototype() {
+    intr_c.date_prototype()
+  } else if intrinsic_default_proto == intr_this.symbol_prototype() {
+    intr_c.symbol_prototype()
+  } else if intrinsic_default_proto == intr_this.array_buffer_prototype() {
+    intr_c.array_buffer_prototype()
+  } else if intrinsic_default_proto == intr_this.uint8_array_prototype() {
+    intr_c.uint8_array_prototype()
+  } else if intrinsic_default_proto == intr_this.int8_array_prototype() {
+    intr_c.int8_array_prototype()
+  } else if intrinsic_default_proto == intr_this.uint8_clamped_array_prototype() {
+    intr_c.uint8_clamped_array_prototype()
+  } else if intrinsic_default_proto == intr_this.int16_array_prototype() {
+    intr_c.int16_array_prototype()
+  } else if intrinsic_default_proto == intr_this.uint16_array_prototype() {
+    intr_c.uint16_array_prototype()
+  } else if intrinsic_default_proto == intr_this.int32_array_prototype() {
+    intr_c.int32_array_prototype()
+  } else if intrinsic_default_proto == intr_this.uint32_array_prototype() {
+    intr_c.uint32_array_prototype()
+  } else if intrinsic_default_proto == intr_this.float32_array_prototype() {
+    intr_c.float32_array_prototype()
+  } else if intrinsic_default_proto == intr_this.float64_array_prototype() {
+    intr_c.float64_array_prototype()
+  } else if intrinsic_default_proto == intr_this.bigint64_array_prototype() {
+    intr_c.bigint64_array_prototype()
+  } else if intrinsic_default_proto == intr_this.biguint64_array_prototype() {
+    intr_c.biguint64_array_prototype()
+  } else if intrinsic_default_proto == intr_this.data_view_prototype() {
+    intr_c.data_view_prototype()
   } else if intrinsic_default_proto == intr_this.map_prototype() {
     intr_c.map_prototype()
   } else if intrinsic_default_proto == intr_this.set_prototype() {
     intr_c.set_prototype()
+  } else if intrinsic_default_proto == intr_this.weak_map_prototype() {
+    intr_c.weak_map_prototype()
+  } else if intrinsic_default_proto == intr_this.weak_set_prototype() {
+    intr_c.weak_set_prototype()
+  } else if intrinsic_default_proto == intr_this.weak_ref_prototype() {
+    intr_c.weak_ref_prototype()
+  } else if intrinsic_default_proto == intr_this.finalization_registry_prototype() {
+    intr_c.finalization_registry_prototype()
+  } else if intrinsic_default_proto == intr_this.error_prototype() {
+    intr_c.error_prototype()
+  } else if intrinsic_default_proto == intr_this.type_error_prototype() {
+    intr_c.type_error_prototype()
+  } else if intrinsic_default_proto == intr_this.range_error_prototype() {
+    intr_c.range_error_prototype()
+  } else if intrinsic_default_proto == intr_this.reference_error_prototype() {
+    intr_c.reference_error_prototype()
+  } else if intrinsic_default_proto == intr_this.syntax_error_prototype() {
+    intr_c.syntax_error_prototype()
+  } else if intrinsic_default_proto == intr_this.eval_error_prototype() {
+    intr_c.eval_error_prototype()
+  } else if intrinsic_default_proto == intr_this.uri_error_prototype() {
+    intr_c.uri_error_prototype()
+  } else if intrinsic_default_proto == intr_this.aggregate_error_prototype() {
+    intr_c.aggregate_error_prototype()
   } else {
     intrinsic_default_proto
   })

@@ -5461,6 +5461,34 @@ impl Intrinsics {
       data_desc(Value::Object(array_buffer), true, false, true),
     )?;
 
+    // ArrayBuffer[@@species]
+    {
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter = alloc_rooted_native_function(
+        scope,
+        roots,
+        promise_species_get_call,
+        None,
+        species_name,
+        0,
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        array_buffer,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // ArrayBuffer.isView
     {
       let is_view_call = vm.register_native_call(builtins::array_buffer_is_view)?;
