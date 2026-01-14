@@ -408,6 +408,22 @@ fn new_target_in_arrow_function_without_enclosing_new_target_is_syntax_error() {
 }
 
 #[test]
+fn new_import_call_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("new import('m');").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn new_super_call_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { constructor(){ new super(); } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn super_call_outside_derived_constructor_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
