@@ -1594,6 +1594,9 @@ fn run_tab_switch(
 
   for i in 0..(warmup + samples) {
     let next = if active == tab_a { tab_b } else { tab_a };
+    // Drop any queued messages from previous paints (including buffered frames from a batch)
+    // so the next `wait_for_frame` observes the paint triggered by this tab switch.
+    for _ in rx.try_iter() {}
     let start = Instant::now();
 
     if let Err(err) = tx.send(UiToWorker::SetActiveTab { tab_id: next }) {
