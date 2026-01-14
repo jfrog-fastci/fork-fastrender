@@ -1233,14 +1233,12 @@ impl NullAudioBackend {
 
   #[must_use]
   pub fn render(&self, frames: usize) -> Vec<f32> {
-    if !self.trace.is_enabled() {
+    let Some(mut callback_span) = self.trace.try_span("audio.callback", "audio") else {
       return self.mixer.mix(frames);
-    }
-
-    let mut callback_span = self.trace.span("audio.callback", "audio");
+    };
     callback_span.arg_u64("frames", frames as u64);
     let out = {
-      let _mix_span = self.trace.span("audio.mix", "audio");
+      let _mix_span = self.trace.try_span("audio.mix", "audio");
       self.mixer.mix(frames)
     };
     out

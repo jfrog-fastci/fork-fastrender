@@ -313,11 +313,13 @@ impl NullAudioBackend {
     let mut state = self.state.lock();
 
     if self.trace.is_enabled() {
-      let mut callback_span = self.trace.span("audio.callback", "audio");
-      callback_span.arg_u64("frames", frames_u64);
-      let _mix_span = self.trace.span("audio.mix", "audio");
+      let mut callback_span = self.trace.try_span("audio.callback", "audio");
+      if let Some(span) = callback_span.as_mut() {
+        span.arg_u64("frames", frames_u64);
+      }
+      let mix_span = self.trace.try_span("audio.mix", "audio");
       self.consume_frames_locked(&mut state, frames_u64, Some(out));
-      drop(_mix_span);
+      drop(mix_span);
       drop(callback_span);
     } else {
       self.consume_frames_locked(&mut state, frames_u64, Some(out));

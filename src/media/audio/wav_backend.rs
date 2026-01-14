@@ -123,9 +123,11 @@ impl WavAudioBackend {
 
     let trace_enabled = self.trace.is_enabled();
     let mut callback_span = if trace_enabled {
-      let mut span = self.trace.span("audio.callback", "audio");
-      span.arg_u64("frames", frames as u64);
-      Some(span)
+      let mut span = self.trace.try_span("audio.callback", "audio");
+      if let Some(span) = span.as_mut() {
+        span.arg_u64("frames", frames as u64);
+      }
+      span
     } else {
       None
     };
@@ -136,7 +138,7 @@ impl WavAudioBackend {
 
     let mut mix: Vec<f32> = vec![0.0; samples];
     let mix_span = if trace_enabled {
-      Some(self.trace.span("audio.mix", "audio"))
+      self.trace.try_span("audio.mix", "audio")
     } else {
       None
     };
