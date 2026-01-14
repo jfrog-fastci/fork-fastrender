@@ -310,7 +310,7 @@ if [[ "${scan_root}" == "." && -f src/lib.rs ]]; then
     echo "error: found duplicate module declarations in src/lib.rs:" >&2
     echo "${lib_mod_dups}" | sed 's/^/  - /' >&2
     echo >&2
-    echo "hint: declare each module only once in src/lib.rs (merge conflicts can accidentally duplicate 'pub mod ...;')." >&2
+    echo "hint: declare each module only once in src/lib.rs (merge conflicts can accidentally duplicate \`pub mod ...;\`)." >&2
     exit 1
   fi
 fi
