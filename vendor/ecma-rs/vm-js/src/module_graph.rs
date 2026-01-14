@@ -842,9 +842,11 @@ impl ModuleGraph {
         .is_some()
       {
         pending = pending.saturating_add(1);
-        self.async_eval_states[dep_idx]
-          .async_parent_modules
-          .push(module);
+        let parent_modules = &mut self.async_eval_states[dep_idx].async_parent_modules;
+        parent_modules
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        parent_modules.push(module);
       }
     }
 
@@ -872,9 +874,9 @@ impl ModuleGraph {
       return Err(VmError::invalid_handle());
     }
 
-    // Clone the parent list so we can mutably borrow `self` while iterating.
-    let parents = self.async_eval_states[idx].async_parent_modules.clone();
-    for parent in parents {
+    let parents_len = self.async_eval_states[idx].async_parent_modules.len();
+    for parent_i in 0..parents_len {
+      let parent = self.async_eval_states[idx].async_parent_modules[parent_i];
       if exec_list.contains(&parent) {
         continue;
       }
@@ -894,6 +896,9 @@ impl ModuleGraph {
       self.async_eval_states[parent_idx].pending_async_dependencies = Some(new_pending);
 
       if new_pending == 0 {
+        exec_list
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
         exec_list.push(parent);
         if !self.modules[parent_idx].has_tla {
           self.gather_available_ancestors(parent, exec_list)?;
@@ -992,39 +997,41 @@ impl ModuleGraph {
 
     // Collect SCC roots that are currently in-progress so we can mark them errored and reject their
     // evaluation promises.
-    let mut scc_roots: Vec<ModuleId> = Vec::new();
-    for (root_idx, state) in self.scc_eval_states.iter().enumerate() {
-      if state.is_some() {
-        scc_roots.push(ModuleId::from_raw(root_idx as u64));
-      }
-    }
-
-    // Ensure the entry module's SCC root is included even if it is not currently evaluating.
     let entry_scc_root = self.modules[idx].cycle_root.unwrap_or(module);
-    if !scc_roots.contains(&entry_scc_root) {
-      scc_roots.push(entry_scc_root);
-    }
-    scc_roots.sort_by_key(|m| m.to_raw());
-    scc_roots.dedup();
+    let entry_root_idx = module_index(entry_scc_root);
 
-    for scc_root in &scc_roots {
-      let root_idx = module_index(*scc_root);
+    // Iterate SCC roots in ascending module id order without allocating a separate root list. This
+    // avoids abort-on-OOM behavior in `Vec::push` / stable sort scratch allocations.
+    for root_idx in 0..self.scc_eval_states.len() {
+      let is_in_progress = self
+        .scc_eval_states
+        .get(root_idx)
+        .and_then(|s| s.as_ref())
+        .is_some();
+      if !is_in_progress && root_idx != entry_root_idx {
+        continue;
+      }
+
+      let scc_root = ModuleId::from_raw(root_idx as u64);
       if root_idx >= self.modules.len() {
         continue;
       }
 
       // Mark all members of the SCC as errored with the abort reason.
-      let members = self
-        .scc_members
-        .get(root_idx)
-        .cloned()
-        .unwrap_or_else(Vec::new);
-      let members = if members.is_empty() {
-        vec![*scc_root]
-      } else {
-        members
-      };
-      for member in members {
+      let members_len = self.scc_members.get(root_idx).map(|m| m.len()).unwrap_or(0);
+      if members_len == 0 {
+        // Fall back to the root module itself if SCC members are unexpectedly missing.
+        let midx = module_index(scc_root);
+        if midx < self.modules.len() {
+          self.modules[midx].status = ModuleStatus::Errored;
+          let _ = self.cache_module_error_value(&mut scope, midx, reason);
+          if self.modules[midx].ast_external_memory.is_some() {
+            self.modules[midx].clear_ast();
+          }
+        }
+      }
+      for member_i in 0..members_len {
+        let member = self.scc_members[root_idx][member_i];
         let midx = module_index(member);
         if midx >= self.modules.len() {
           continue;
@@ -2551,16 +2558,19 @@ impl ModuleGraph {
 
     // Mark all members in this SCC as evaluating-async so recursive graph walks treat them as "in
     // progress" until the SCC settles.
-    let members = self
-      .scc_members
-      .get(root_idx)
-      .cloned()
-      .unwrap_or_else(Vec::new);
-    let members = if members.is_empty() {
-      vec![scc_root]
+    let members_len = self.scc_members.get(root_idx).map(|m| m.len()).unwrap_or(0);
+    let mut members: Vec<ModuleId> = Vec::new();
+    if members_len == 0 {
+      members
+        .try_reserve_exact(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      members.push(scc_root);
     } else {
       members
-    };
+        .try_reserve_exact(members_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      members.extend_from_slice(&self.scc_members[root_idx]);
+    }
 
     let scc_has_tla = members
       .iter()
@@ -2585,17 +2595,13 @@ impl ModuleGraph {
     }
 
     // Compute pending SCC dependencies.
-    let deps = self
-      .scc_deps
-      .get(root_idx)
-      .cloned()
-      .unwrap_or_else(Vec::new);
-
     let mut pending_deps: usize = 0;
-    for (i, dep_root) in deps.iter().copied().enumerate() {
-      if i % 32 == 0 && i != 0 {
+    let deps_len = self.scc_deps.get(root_idx).map(|d| d.len()).unwrap_or(0);
+    for dep_i in 0..deps_len {
+      if dep_i % 32 == 0 && dep_i != 0 {
         vm.tick()?;
       }
+      let dep_root = self.scc_deps[root_idx][dep_i];
 
       // Ensure the dependency has an evaluation promise for caching, and start evaluation.
       let _ = self.ensure_scc_promise(vm, scope, host, hooks, dep_root)?;
@@ -2882,7 +2888,7 @@ impl ModuleGraph {
     }
 
     // SCC completed successfully: mark all members as evaluated and resolve the evaluation promise.
-    let members = state.members.clone();
+    let members = state.members;
     self.scc_eval_states[root_idx] = None;
     self.complete_scc(vm, scope, scc_root, host, hooks, &members)?;
     Ok(())
@@ -2924,15 +2930,12 @@ impl ModuleGraph {
     self.resolve_scc_promise(vm, scope, host, hooks, scc_root)?;
 
     // Notify async parents that this SCC is now available.
-    let parents = self
-      .scc_parents
-      .get(root_idx)
-      .cloned()
-      .unwrap_or_else(Vec::new);
-    for (i, parent_root) in parents.into_iter().enumerate() {
-      if i % 32 == 0 && i != 0 {
+    let parents_len = self.scc_parents.get(root_idx).map(|p| p.len()).unwrap_or(0);
+    for parent_i in 0..parents_len {
+      if parent_i % 32 == 0 && parent_i != 0 {
         vm.tick()?;
       }
+      let parent_root = self.scc_parents[root_idx][parent_i];
       let parent_idx = module_index(parent_root);
       let Some(parent_state) = self
         .scc_eval_states
@@ -2982,11 +2985,16 @@ impl ModuleGraph {
         // that become ready while executing will be appended and picked up by the next loop
         // iteration.
         let orders = &self.async_eval_states;
-        self.ready_scc_queue.sort_by_key(|m| {
-          orders
-            .get(module_index(*m))
+        self.ready_scc_queue.sort_unstable_by(|a, b| {
+          let a_order = orders
+            .get(module_index(*a))
             .and_then(|s| s.async_evaluation_order.as_integer())
-            .unwrap_or(u64::MAX)
+            .unwrap_or(u64::MAX);
+          let b_order = orders
+            .get(module_index(*b))
+            .and_then(|s| s.async_evaluation_order.as_integer())
+            .unwrap_or(u64::MAX);
+          a_order.cmp(&b_order).then_with(|| a.to_raw().cmp(&b.to_raw()))
         });
         let next = self.ready_scc_queue.remove(0);
         self.execute_scc(vm, scope, next, host, hooks)?;
@@ -3015,21 +3023,23 @@ impl ModuleGraph {
     let root_idx = module_index(scc_root);
 
     // Mark members as errored and cache a deterministic error value.
-    let members = self
-      .scc_members
-      .get(root_idx)
-      .cloned()
-      .unwrap_or_else(Vec::new);
-    let members = if members.is_empty() {
-      vec![scc_root]
-    } else {
-      members
-    };
-
-    for (i, member) in members.iter().copied().enumerate() {
-      if i % 32 == 0 && i != 0 {
+    let members_len = self.scc_members.get(root_idx).map(|m| m.len()).unwrap_or(0);
+    if members_len == 0 {
+      // Fall back to the root module itself if SCC members are unexpectedly missing.
+      let idx = module_index(scc_root);
+      if idx < self.modules.len() {
+        self.modules[idx].status = ModuleStatus::Errored;
+        let _ = self.cache_module_error_value(scope, idx, reason);
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
+      }
+    }
+    for member_i in 0..members_len {
+      if member_i % 32 == 0 && member_i != 0 {
         vm.tick()?;
       }
+      let member = self.scc_members[root_idx][member_i];
       let idx = module_index(member);
       if idx >= self.modules.len() {
         continue;
@@ -3049,12 +3059,9 @@ impl ModuleGraph {
     self.reject_scc_promise(vm, scope, host, hooks, scc_root, reason, err)?;
 
     // Propagate the rejection to async parents.
-    let parents = self
-      .scc_parents
-      .get(root_idx)
-      .cloned()
-      .unwrap_or_else(Vec::new);
-    for parent_root in parents {
+    let parents_len = self.scc_parents.get(root_idx).map(|p| p.len()).unwrap_or(0);
+    for parent_i in 0..parents_len {
+      let parent_root = self.scc_parents[root_idx][parent_i];
       let parent_idx = module_index(parent_root);
       if parent_idx >= self.modules.len() {
         continue;
