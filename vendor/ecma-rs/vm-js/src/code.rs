@@ -24,7 +24,7 @@ use parse_js::ast::expr::{Expr, IdExpr, MemberExpr};
 use parse_js::ast::func::Func;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::VarDeclMode;
-use parse_js::ast::stmt::{ForInOfLhs, ForTripleStmtInit, Stmt};
+use parse_js::ast::stmt::{ForInOfLhs, ForOfStmt, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
@@ -742,6 +742,32 @@ fn operator_is_supported_assignment_for_hir_async_scripts(op: OperatorName) -> b
 }
 
 fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> bool {
+  fn for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of: &Node<ForOfStmt>) -> bool {
+    if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+      return true;
+    }
+    // `for await (x of await <expr>)` is supported because the loop state machine can suspend while
+    // evaluating the RHS expression.
+    if let Some(arg) = expr_direct_await_arg(&for_of.stx.rhs) {
+      if expr_contains_await(arg) {
+        return true;
+      }
+    } else if expr_contains_await(&for_of.stx.rhs) {
+      return true;
+    }
+    if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
+      return true;
+    }
+
+    if let ForInOfLhs::Decl((mode, _)) = &for_of.stx.lhs {
+      if !matches!(mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
+        return true;
+      }
+    }
+
+    false
+  }
+
   match &*stmt.stx {
     // Supported async classic script forms for the compiled (HIR) executor:
     // - `await <expr>;`
@@ -792,75 +818,28 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
         expr_contains_await(init)
       }
     }),
-    // Support `label: for await (...) { ... }` (including nested label chains like
-    // `a: b: for await (...) { ... }`) as long as the labelled statement ultimately labels a
-    // supported top-level `for await..of` loop.
-    //
-    // Note that `break label;` inside the loop must be handled by the compiled async classic-script
-    // executor (it produces a labelled break completion that the label statement consumes).
-    Stmt::Label(label) => {
-      let mut inner = &label.stx.statement;
-      while let Stmt::Label(label) = &*inner.stx {
-        inner = &label.stx.statement;
-      }
-      match &*inner.stx {
-        Stmt::ForOf(for_of) if for_of.stx.await_ => {
-          if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
-            return true;
-          }
-          // `for await (x of await <expr>)` is supported because the loop state machine can
-          // suspend while evaluating the RHS expression.
-          if let Some(arg) = expr_direct_await_arg(&for_of.stx.rhs) {
-            if expr_contains_await(arg) {
-              return true;
-            }
-          } else if expr_contains_await(&for_of.stx.rhs) {
-            return true;
-          }
-          if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
-            return true;
-          }
-
-          if let ForInOfLhs::Decl((mode, _)) = &for_of.stx.lhs {
-            if !matches!(*mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
-              return true;
-            }
-          }
-
-          false
-        }
-        _ => stmt_contains_await(stmt),
-      }
-    }
     Stmt::ForOf(for_of) => {
       if !for_of.stx.await_ {
         // `for (x of xs) { await ... }` is not supported in the compiled async script executor.
         return stmt_contains_await(stmt);
       }
 
-      if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
-        return true;
+      for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of)
+    }
+    Stmt::Label(label_stmt) => {
+      // Support labelled top-level `for await..of` loops by deferring to the same constraints as an
+      // unlabelled loop.
+      let mut inner = &label_stmt.stx.statement;
+      while let Stmt::Label(nested) = &*inner.stx {
+        inner = &nested.stx.statement;
       }
-      // `for await (x of await <expr>)` is supported because the loop state machine can suspend
-      // while evaluating the RHS expression.
-      if let Some(arg) = expr_direct_await_arg(&for_of.stx.rhs) {
-        if expr_contains_await(arg) {
-          return true;
-        }
-      } else if expr_contains_await(&for_of.stx.rhs) {
-        return true;
+      let Stmt::ForOf(for_of) = &*inner.stx else {
+        return stmt_contains_await(stmt);
+      };
+      if !for_of.stx.await_ {
+        return stmt_contains_await(stmt);
       }
-      if for_of.stx.body.stx.body.iter().any(stmt_contains_await) {
-        return true;
-      }
-
-      if let ForInOfLhs::Decl((mode, _)) = &for_of.stx.lhs {
-        if !matches!(*mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
-          return true;
-        }
-      }
-
-      false
+      for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of)
     }
     // Other statement kinds must not contain `await` / `for await..of`.
     _ => stmt_contains_await(stmt),

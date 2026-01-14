@@ -17700,6 +17700,12 @@ fn hir_eval_stmt_list_until_await(
           });
         }
         Ok(ForAwaitOfPoll::Complete(flow)) => {
+          let flow = match flow {
+            Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+              Flow::Normal(value)
+            }
+            other => other,
+          };
           state.teardown(scope.heap_mut());
           match flow {
             Flow::Normal(v) => {
@@ -18956,6 +18962,12 @@ pub(crate) fn hir_async_resume_continuation(
               for_await_of_state: Some(state),
             }),
             Ok(ForAwaitOfPoll::Complete(flow)) => {
+              let flow = match flow {
+                Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                  Flow::Normal(value)
+                }
+                other => other,
+              };
               // `ForAwaitOfState::poll` is expected to have cleaned up its persistent roots before
               // returning `Complete`, but call `teardown` defensively so future changes to the state
               // machine cannot leak roots.
