@@ -849,12 +849,13 @@ impl Intrinsics {
     //
     // These are consulted by `Object.prototype.toString` via `Get(O, @@toStringTag)`.
     //
-    // Note: many built-ins use `Object.prototype.toString` "builtinTag" logic and therefore do not
-    // have an intrinsic `@@toStringTag` property (e.g. Array / Function / Error / Date / RegExp).
-    // This matches spec and allows instances to override `Symbol.toStringTag` via ordinary
-    // assignment.
-    install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
+    // Note: some built-ins use `Object.prototype.toString` "builtinTag" logic and therefore do not
+    // have an intrinsic `@@toStringTag` property (e.g. Array / Function / Date).
+    //
+    // Others (e.g. RegExp / Error) define `@@toStringTag` on their prototypes so that objects that
+    // inherit from those prototypes (and Proxy-wrapped instances) are tagged consistently.
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
+    install_to_string_tag(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
     install_to_string_tag(
       scope,
@@ -7361,6 +7362,12 @@ impl Intrinsics {
       error_construct,
       "Error",
       1,
+    )?;
+    install_to_string_tag(
+      scope,
+      error_prototype,
+      well_known_symbols.to_string_tag,
+      "Error",
     )?;
 
     // Error.prototype.message
