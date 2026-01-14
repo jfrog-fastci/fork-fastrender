@@ -329,3 +329,45 @@ fn overload_resolution_string_object_special_case_at_nonzero_distinguishing_inde
     // string object and a string type is present at the distinguishing argument index.
     assert_eq!(rt.get_method_calls, 0);
 }
+
+#[test]
+fn overload_resolution_string_object_async_sequence_special_case_at_nonzero_distinguishing_index() {
+    // Overloads:
+    //   f(DOMString, async_sequence<DOMString>)
+    //   f(DOMString, DOMString)
+    //
+    // The distinguishing argument index is 1. String objects are iterable and could appear to
+    // satisfy async_sequence via @@iterator, but requirement (d) forces them to be treated as
+    // strings when a string type is present at that position.
+    let overloads = vec![
+        Overload {
+            id: "async_seq",
+            types: vec![
+                IdlType::DomString,
+                IdlType::AsyncSequence(Box::new(IdlType::DomString)),
+            ],
+            optionality: vec![Optionality::Required, Optionality::Required],
+        },
+        Overload {
+            id: "str",
+            types: vec![IdlType::DomString, IdlType::DomString],
+            optionality: vec![Optionality::Required, Optionality::Required],
+        },
+    ];
+
+    let mut rt = ToyRuntime::default();
+
+    let first_arg = rt.string("prefix");
+
+    let string_obj = rt.string_object("hello");
+    // Model that String objects are iterable so we can detect any incorrect probing for
+    // async_sequence matching (which checks @@asyncIterator and then @@iterator).
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+
+    let res = resolve_overload(&mut rt, &overloads, &[first_arg, string_obj]).unwrap();
+    assert_eq!(res.overload_id, "str");
+    // Special-case (d): do not call GetMethod for async sequence detection when V is a string
+    // object and a string type is present at the distinguishing argument index.
+    assert_eq!(rt.get_method_calls, 0);
+}
