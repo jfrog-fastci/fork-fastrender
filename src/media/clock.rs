@@ -51,13 +51,6 @@ pub trait MediaClock: Send + Sync + 'static {
 /// The audio mixer can share a single instance across all audio streams.
 pub type AudioDeviceClock = dyn MediaClock;
 
-/// High-level playback state for a [`PlaybackClock`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackState {
-  Playing,
-  Paused,
-}
-
 /// Default real-time implementation of [`AudioDeviceClock`], backed by [`Instant`].
 ///
 /// This is a sensible fallback for non-audio environments, but it does **not** account for audio
