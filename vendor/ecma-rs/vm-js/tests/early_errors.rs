@@ -225,6 +225,13 @@ fn await_identifier_reference_in_destructuring_in_module_is_syntax_error() {
 }
 
 #[test]
+fn await_binding_identifier_in_destructuring_declaration_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "let { await } = {};").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn let_newline_await_disambiguates_to_lexical_decl_syntax_error_in_module() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, "let\nawait 0;").unwrap_err();
@@ -338,10 +345,28 @@ fn for_statement_head_const_decl_conflicts_with_body_var_is_syntax_error() {
 }
 
 #[test]
+fn for_statement_head_const_destructuring_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (const { x } = { x: 0 }; false; ) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn for_statement_head_let_decl_conflicts_with_body_var_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("for (let x = 0; false; ) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_statement_head_let_destructuring_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (let { x } = { x: 0 }; false; ) { var x; }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
@@ -356,9 +381,27 @@ fn async_function_param_name_conflicts_with_body_lexical_decl_is_syntax_error() 
 }
 
 #[test]
+fn async_function_param_pattern_name_conflicts_with_body_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function foo({ bar }) { let bar; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn function_param_name_conflicts_with_body_lexical_decl_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function foo(bar) { let bar; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn function_param_pattern_name_conflicts_with_body_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function foo({ bar }) { let bar; }")
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -367,6 +410,15 @@ fn strict_mode_yield_identifier_reference_in_destructuring_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(r#""use strict"; for ({ yield } in [{}]) ;"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_yield_binding_identifier_in_destructuring_declaration_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; let { yield } = {};"#)
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
@@ -381,10 +433,55 @@ fn strict_mode_yield_identifier_reference_in_destructuring_assignment_is_syntax_
 }
 
 #[test]
+fn generator_yield_binding_identifier_in_destructuring_declaration_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function* g(){ let { yield } = {}; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn generator_yield_identifier_reference_in_destructuring_assignment_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function* g(){ ({ yield } = {}); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn await_identifier_reference_in_destructuring_in_async_fn_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("async function f(){ ({ await } = {}); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_binding_identifier_in_destructuring_declaration_in_async_fn_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ let { await } = {}; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_identifier_reference_in_destructuring_in_async_generator_fn_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(){ ({ await } = {}); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_binding_identifier_in_destructuring_declaration_in_async_generator_fn_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(){ let { await } = {}; }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
