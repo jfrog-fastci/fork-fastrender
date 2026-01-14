@@ -159,3 +159,36 @@ impl RendererBackend for ThreadRendererBackend {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::{RendererBackend, RendererBackendHandle, ThreadRendererBackend};
+  use crate::ui::messages::WorkerToUiMsg;
+  use std::sync::mpsc;
+  use std::sync::Arc;
+
+  #[test]
+  fn take_join_handle_is_idempotent_and_works_through_trait_object() {
+    let (ui_tx, _ui_rx) = mpsc::channel();
+    let (_worker_tx, worker_rx) = mpsc::channel::<WorkerToUiMsg>();
+    let inbox = super::WorkerToUiInbox::new(worker_rx);
+    let join = std::thread::spawn(|| {});
+
+    let backend: RendererBackendHandle = Arc::new(ThreadRendererBackend::new(ui_tx, inbox, join));
+
+    let join = backend.take_join_handle();
+    assert!(join.is_some(), "expected a JoinHandle to be extracted");
+
+    // Taking twice should be harmless.
+    assert!(backend.take_join_handle().is_none());
+
+    // Join the extracted handle to avoid leaving threads behind in the test harness.
+    join
+      .unwrap()
+      .join()
+      .expect("expected worker thread to join");
+
+    // Joining after the handle is taken should be a no-op.
+    backend.join().expect("expected join to be idempotent");
+  }
+}
