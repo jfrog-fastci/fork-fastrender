@@ -153,8 +153,6 @@ impl VmError {
       self,
       VmError::Throw(_)
         | VmError::ThrowWithStack { .. }
-        // `Return` is an internal control-flow signal, not a throw completion.
-        | VmError::Unimplemented(_)
         | VmError::TypeError(_)
         | VmError::RangeError(_)
         | VmError::NotCallable

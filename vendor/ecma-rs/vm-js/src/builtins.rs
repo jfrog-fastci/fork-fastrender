@@ -20587,6 +20587,62 @@ pub fn string_prototype_value_of(
   Ok(Value::String(s))
 }
 
+/// `String.prototype[Symbol.toPrimitive]`.
+pub fn string_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+
+  let units = scope.heap().get_string(hint)?.as_code_units();
+  let is_valid_hint = units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ] || units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ] || units
+    == [
+      b'n' as u16,
+      b'u' as u16,
+      b'm' as u16,
+      b'b' as u16,
+      b'e' as u16,
+      b'r' as u16,
+    ];
+  if !is_valid_hint {
+    return Err(VmError::TypeError("Invalid hint"));
+  }
+
+  let s = this_string_value(
+    vm,
+    &mut scope,
+    this,
+    "String.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+  Ok(Value::String(s))
+}
+
 fn this_string_value(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -23722,6 +23778,68 @@ pub fn number_prototype_value_of(
     this,
     "Number.prototype.valueOf called on incompatible receiver",
   )?))
+}
+
+/// `Number.prototype[Symbol.toPrimitive]`.
+pub fn number_prototype_to_primitive(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+
+  let units = scope.heap().get_string(hint)?.as_code_units();
+  let hint_is_string = units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ];
+  let hint_is_number = units
+    == [
+      b'n' as u16,
+      b'u' as u16,
+      b'm' as u16,
+      b'b' as u16,
+      b'e' as u16,
+      b'r' as u16,
+    ];
+  let hint_is_default = units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ];
+  if !hint_is_string && !hint_is_number && !hint_is_default {
+    return Err(VmError::TypeError("Invalid hint"));
+  }
+
+  let x = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+
+  if hint_is_string {
+    return Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?));
+  }
+
+  Ok(Value::Number(x))
 }
 
 fn digit_to_ascii(digit: u32) -> u8 {

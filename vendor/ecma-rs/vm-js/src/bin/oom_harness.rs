@@ -1,6 +1,8 @@
 use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use parse_js::lex::{lex_next, LexMode, Lexer as ParseLexer};
+use parse_js::{Dialect as ParseDialect, SourceType as ParseSourceType};
 use vm_js::{
   format_stack_trace, job_queue::JobQueue, Agent, Budget, HeapLimits, Job, JobKind,
   JsString, LoadedModuleRequest, MicrotaskQueue,
@@ -76,6 +78,31 @@ fn main() {
   };
   let len_code_units = parse_usize(args.next());
   let filler_bytes = parse_usize(args.next());
+
+  // Warm up `parse-js`'s lexer tables before we allocate large filler buffers.
+  //
+  // `parse-js` uses `once_cell::sync::Lazy` to build Aho-Corasick DFAs the first time a script is
+  // lexed. Those DFAs are created via infallible allocations inside `aho_corasick`, which can abort
+  // the process under a tight process-wide RLIMIT_AS.
+  //
+  // The OOM regression harness intentionally allocates large buffers to reduce available headroom
+  // *after* the VM and its dependencies have initialized. Ensure `parse-js` has performed its
+  // one-time lexer initialization while memory is still available so we can reliably reach the
+  // target OOM paths for each scenario.
+  {
+    let mut lexer = ParseLexer::new("/*warmup*/0");
+    loop {
+      let tok = lex_next(
+        &mut lexer,
+        LexMode::Standard,
+        ParseDialect::Ecma,
+        ParseSourceType::Script,
+      );
+      if matches!(tok.typ, parse_js::token::TT::EOF) {
+        break;
+      }
+    }
+  }
 
   fn exhaust_address_space() -> Vec<Vec<u8>> {
     // Allocate blocks of decreasing size until further allocations fail. This is used to drive

@@ -120,10 +120,12 @@ fn proxy_get_trap_observed_for_new_target_prototype_in_string_construct() -> Res
     define_global(&mut scope, global, "P", Value::Object(proxy))?;
   }
 
+  // Per the Proxy `[[Get]]` invariants, `String.prototype` is a non-writable, non-configurable data
+  // property on the target, so the `get` trap must return the target's actual value. Returning a
+  // different prototype object therefore throws a TypeError, but the trap must still be invoked.
   let value = rt.exec_script(
     r#"
-      var o = new P("hi");
-      o.marker === 2 && sawPrototype
+      try { new P("hi"); false; } catch (e) { e.name === "TypeError" && sawPrototype }
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));

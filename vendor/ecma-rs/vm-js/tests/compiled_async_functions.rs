@@ -589,14 +589,13 @@ fn compiled_async_var_decl_await_rejects_without_leaking_env_roots() -> Result<(
 }
 
 #[test]
-fn compiled_async_unimplemented_nested_await_rejects_without_leaking_env_roots() -> Result<(), VmError> {
+fn compiled_async_nested_await_expr_resolves_without_leaking_env_roots() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
-  // Nested `await` within an expression is not yet supported by the compiled/HIR executor. It
-  // should reject the returned Promise (not throw synchronously) and must not leak persistent env
-  // roots.
+  // Nested `await` within an expression should work (via call-time AST fallback for async
+  // suspension points) and must not leak persistent env roots.
   let script = CompiledScript::compile_script(
     rt.heap_mut(),
     "compiled_async_unimplemented_nested_await.js",
@@ -651,9 +650,7 @@ fn compiled_async_unimplemented_nested_await_rejects_without_leaking_env_roots()
   rt.exec_script(
     r#"
       var out = "";
-      f().catch(e => {
-        out = (e && e.message) ? e.message : String(e);
-      });
+      f().then(v => { out = v; }, e => { out = (e && e.message) ? e.message : String(e); });
     "#,
   )?;
   assert_eq!(rt.exec_script("out === ''")?, Value::Bool(true));
@@ -661,13 +658,13 @@ fn compiled_async_unimplemented_nested_await_rejects_without_leaking_env_roots()
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   assert_eq!(
-    rt.exec_script("out.includes('unimplemented')")?,
+    rt.exec_script("out === 2")?,
     Value::Bool(true)
   );
   assert_eq!(
     rt.heap.persistent_env_root_count(),
     baseline_env_roots,
-    "unimplemented nested await should not leak persistent env roots"
+    "nested await should not leak persistent env roots"
   );
   Ok(())
 }

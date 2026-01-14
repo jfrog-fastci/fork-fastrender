@@ -2689,6 +2689,11 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
+    // Reserve a ScriptId up-front so ScriptId assignment is deterministic even when parsing fails.
+    // This lets hosts associate metadata with the ScriptId that would have been used if parsing had
+    // succeeded.
+    let script_id = self.vm.fresh_script_id()?;
+
     let top = match self.parse_classic_script_source_for_exec(&source) {
       Ok(top) => top,
       Err(err) => {
@@ -2710,7 +2715,6 @@ impl JsRuntime {
       col,
     };
 
-    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
       script_or_module: Some(ScriptOrModule::Script(script_id)),
@@ -3279,6 +3283,11 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
+    // Reserve a ScriptId up-front so ScriptId assignment is deterministic even when parsing fails.
+    // This lets hosts associate metadata with the ScriptId that would have been used if parsing had
+    // succeeded.
+    let script_id = self.vm.fresh_script_id()?;
+
     let top = match self.parse_classic_script_source_for_exec(&source) {
       Ok(top) => top,
       Err(err) => {
@@ -3300,7 +3309,6 @@ impl JsRuntime {
       col,
     };
 
-    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
       script_or_module: Some(ScriptOrModule::Script(script_id)),
@@ -58230,7 +58238,7 @@ mod tests {
   }
 
   #[test]
-  fn unimplemented_errors_are_coerced_to_throw_with_stack() -> Result<(), VmError> {
+  fn unimplemented_errors_are_surfaced_as_unimplemented() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -58240,48 +58248,9 @@ mod tests {
     rt.vm.clear_module_graph();
     let err = rt.exec_script("import('./x');").unwrap_err();
 
-    let VmError::ThrowWithStack { value, .. } = err else {
-      panic!("expected ThrowWithStack, got {err:?}");
-    };
-    let Value::Object(thrown_obj) = value else {
-      panic!("expected thrown value to be an object, got {value:?}");
-    };
-
-    let error_prototype = rt.realm().intrinsics().error_prototype();
-
-    // Root the thrown value while allocating property keys / walking the prototype chain.
-    let mut scope = rt.heap_mut().scope();
-    scope.push_root(value)?;
-
-    // Verify `%Error.prototype%` is in the thrown object's prototype chain.
-    let mut current = Some(thrown_obj);
-    let mut found = false;
-    for _ in 0..32 {
-      let Some(obj) = current else {
-        break;
-      };
-      let proto = scope.heap().object_prototype(obj)?;
-      if proto == Some(error_prototype) {
-        found = true;
-        break;
-      }
-      current = proto;
-    }
-    assert!(found, "expected Error.prototype in prototype chain");
-
-    // Verify `message` includes the unimplemented reason.
-    let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-    let message = scope
-      .heap()
-      .object_get_own_data_property_value(thrown_obj, &message_key)?
-      .expect("expected own message property");
-    let Value::String(message_string) = message else {
-      panic!("expected Error.message to be a string, got {message:?}");
-    };
-    let msg = scope.heap().get_string(message_string)?.to_utf8_lossy();
     assert!(
-      msg.contains("dynamic import requires a module graph"),
-      "expected message to include unimplemented reason, got {msg:?}"
+      matches!(err, VmError::Unimplemented("dynamic import requires a module graph")),
+      "expected missing module graph to surface as an uncatchable unimplemented error, got {err:?}"
     );
 
     Ok(())

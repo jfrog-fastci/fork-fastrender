@@ -92,26 +92,6 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
     return err;
   };
   match err {
-    VmError::Unimplemented(reason) => {
-      let message =
-        match crate::fallible_format::try_format_error_message("unimplemented: ", reason, "") {
-          Ok(m) => m,
-          Err(err) => return err,
-        };
-      let value = match crate::error_object::new_error(
-        scope,
-        intr.error_prototype(),
-        "Error",
-        message.as_str(),
-      ) {
-        Ok(value) => value,
-        Err(err) => return err,
-      };
-
-      let stack = vm.capture_stack();
-      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
-      VmError::ThrowWithStack { value, stack }
-    }
     VmError::TypeError(message) => crate::throw_type_error(scope, intr, message),
     VmError::RangeError(message) => crate::throw_range_error(scope, intr, message),
     VmError::NotCallable => crate::throw_type_error(scope, intr, "value is not callable"),
@@ -158,22 +138,6 @@ pub(crate) fn coerce_error_to_throw_with_stack(
       let stack = stack();
       crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
       VmError::ThrowWithStack { value, stack }
-    }
-
-    VmError::Unimplemented(reason) => {
-      let original = VmError::Unimplemented(reason);
-      let message = match crate::fallible_format::try_format_error_message("unimplemented: ", reason, "") {
-        Ok(m) => m,
-        Err(_) => return original,
-      };
-      match crate::error_object::new_error(scope, intr.error_prototype(), "Error", message.as_str()) {
-        Ok(value) => {
-          let stack = stack();
-          crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
-          VmError::ThrowWithStack { value, stack }
-        }
-        Err(_) => original,
-      }
     }
 
     VmError::TypeError(message) => {

@@ -249,14 +249,13 @@ fn eval_script_coerces_instantiation_throw_to_throw_with_stack() -> Result<(), V
 }
 
 #[test]
-fn evaluate_sync_coerces_unimplemented_to_throw_with_stack() -> Result<(), VmError> {
+fn evaluate_sync_surfaces_top_level_await_as_unimplemented() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
 
   let global_object = rt.realm().global_object();
   let realm_id = rt.realm().id();
-  let error_proto = rt.realm().intrinsics().error_prototype();
 
   let (err, mut hooks) = {
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
@@ -281,17 +280,9 @@ fn evaluate_sync_coerces_unimplemented_to_throw_with_stack() -> Result<(), VmErr
     job.discard(&mut rt);
   }
 
-  let thrown_value = match err {
-    VmError::ThrowWithStack { value, .. } => value,
-    other => panic!("expected ThrowWithStack, got {other:?}"),
-  };
-
-  let Value::Object(thrown_obj) = thrown_value else {
-    panic!("expected thrown value to be an object");
-  };
-
-  let mut scope = rt.heap.scope();
-  scope.push_root(thrown_value)?;
-  assert_eq!(scope.heap().object_prototype(thrown_obj)?, Some(error_proto));
+  assert!(
+    matches!(err, VmError::Unimplemented("top-level await")),
+    "expected top-level await to surface as an uncatchable unimplemented error, got {err:?}"
+  );
   Ok(())
 }

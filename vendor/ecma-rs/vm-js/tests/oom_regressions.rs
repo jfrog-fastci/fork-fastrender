@@ -120,6 +120,9 @@ fn array_map_large_length_does_not_abort_on_oom() {
   // Keep this below the input-string allocation failure threshold (observed at ~26M code units
   // with the current RLIMIT_AS and filler settings) so the harness can reliably allocate the
   // initial `S` string before the actual test loop runs.
+  //
+  // This threshold is sensitive to runtime/library initialization overhead (and may vary slightly
+  // across environments), so keep a bit of slack to avoid flakiness.
   run_oom_harness("arrayMap", 25_000_000);
 }
 

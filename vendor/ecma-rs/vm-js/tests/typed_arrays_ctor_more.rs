@@ -19,9 +19,13 @@ fn typed_array_constructors_accept_array_like_iterable_and_typed_array_sources()
       var b = new Uint8Array({ length: 2, 0: "7", 1: 8 });
       var ok_array_like = b.length === 2 && b[0] === 7 && b[1] === 8;
 
-      // Iterable (string iterator).
-      var c = new Uint8Array("12");
-      var ok_string = c.length === 2 && c[0] === 1 && c[1] === 2;
+      // String primitive is treated as a length (TypedArray ( ...args ) step 1).
+      var c1 = new Uint8Array("12");
+      var ok_string_primitive = c1.length === 12 && c1[0] === 0 && c1[11] === 0;
+
+      // Iterable (string iterator) via a String wrapper object.
+      var c = new Uint8Array(Object("12"));
+      var ok_string_object = c.length === 2 && c[0] === 1 && c[1] === 2;
 
       // TypedArray source copies into a new buffer.
       var src = new Uint8Array([9, 10]);
@@ -44,7 +48,7 @@ fn typed_array_constructors_accept_array_like_iterable_and_typed_array_sources()
       var f32 = new Float32Array([1.5]);
       var ok_f32 = f32.length === 1 && f32[0] === 1.5;
 
-      ok_array && ok_array_like && ok_string && ok_typed_array_copy && ok_cross_kind && ok_i16 && ok_f32
+      ok_array && ok_array_like && ok_string_primitive && ok_string_object && ok_typed_array_copy && ok_cross_kind && ok_i16 && ok_f32
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -68,4 +72,3 @@ fn typed_array_constructor_from_array_like_consumes_fuel_in_native_loop() {
     other => panic!("expected Termination(OutOfFuel), got {other:?}"),
   }
 }
-
