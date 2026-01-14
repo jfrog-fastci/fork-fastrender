@@ -850,20 +850,27 @@ fn match_score_url(
   let Some(url) = parsed else {
     return match_score(raw, needle_lower);
   };
-  let prefix_score = raw
+  if raw
     .as_bytes()
     .get(..needle_lower.len())
     .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle_lower.as_bytes()))
-    .then_some(1_200);
+  {
+    // Prefix match is always the maximum possible score.
+    return Some(1_200);
+  }
   let host_score = match_score_http_host(url.host, needle_lower);
+  if host_score == Some(1_200) {
+    // Host-prefix matches are also the maximum possible score. Skip scanning the path/query.
+    return host_score;
+  }
 
   // Score path + query, but keep it lower than host matches.
   let path_score = match_score_pathish(url.path, needle_lower);
   let query_score = url.query.and_then(|q| match_score_pathish(q, needle_lower));
   let path_query_score = path_score.max(query_score);
 
-  let best_structured = host_score.max(path_query_score).max(prefix_score);
-  // If we have any structured/prefix match >= 199, a non-prefix raw match cannot beat it:
+  let best_structured = host_score.max(path_query_score);
+  // If we have any structured match >= 199, a non-prefix raw match cannot beat it:
   // `match_score` without the prefix bonus is at most `200 - 1 = 199`.
   if matches!(best_structured, Some(score) if score >= 199) {
     return best_structured;
