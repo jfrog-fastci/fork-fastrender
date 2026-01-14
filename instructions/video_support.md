@@ -178,7 +178,8 @@ Deterministic, license-clean media fixtures live in a few places:
 - **Playback smoke-test assets** used by HTML fixtures:
   [`tests/pages/fixtures/media_playback/assets/`](../tests/pages/fixtures/media_playback/assets/)
   (see [`tests/pages/fixtures/media_playback/README.md`](../tests/pages/fixtures/media_playback/README.md)).
-  These files are kept in sync with `tests/fixtures/media/`.
+  The shared fixtures (`test_h264_aac.mp4` and `test_vp9_opus.webm`) are kept identical to the
+  unit-test versions under `tests/fixtures/media/` (the audio-only `test_opus.webm` is separate).
 - **Reserved** directory for future “golden” media assets used by general offline page fixtures:
   [`tests/pages/fixtures/assets/media/`](../tests/pages/fixtures/assets/media/)
   (currently contains only docs; no decodable assets yet).
