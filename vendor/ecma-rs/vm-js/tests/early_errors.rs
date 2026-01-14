@@ -319,6 +319,22 @@ fn private_in_operator_without_decl_is_syntax_error() {
 }
 
 #[test]
+fn private_in_operator_without_decl_in_class_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { m(o) { #x in o; } }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_in_operator_with_undeclared_name_in_class_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { #x; m(o) { #y in o; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn parenthesized_private_in_operator_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("(#x) in {};").unwrap_err();
@@ -817,6 +833,24 @@ fn strict_mode_destructuring_assignment_to_arguments_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(r#""use strict"; ({ arguments } = {});"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_restricted_eval_in_destructuring_declaration_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; let { eval } = {};"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_restricted_arguments_in_destructuring_declaration_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; let { arguments } = {};"#)
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
