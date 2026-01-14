@@ -617,3 +617,45 @@ fn async_generator_delete_super_computed_member_evaluates_key_and_to_property_ke
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_arrow_captures_lexical_super_and_observes_dynamic_prototype_across_yield(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      class B1 { m() { return "b1"; } }
+      class D extends B1 {
+        async *gen() {
+          const f = () => super.m();
+          // Suspend so user code can mutate the home object's prototype.
+          yield 0;
+          return f();
+        }
+      }
+
+      var proto2 = { m() { return "p2"; } };
+
+      async function f() {
+        const it = (new D()).gen();
+        const r0 = await it.next();
+        Object.setPrototypeOf(D.prototype, proto2);
+        const r1 = await it.next();
+        return (
+          r0.value === 0 && r0.done === false &&
+          r1.value === "p2" && r1.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
