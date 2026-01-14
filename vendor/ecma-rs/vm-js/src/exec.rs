@@ -44313,7 +44313,7 @@ fn gen_resume_from_frames(
           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
@@ -44339,7 +44339,7 @@ fn gen_resume_from_frames(
           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
@@ -44365,7 +44365,7 @@ fn gen_resume_from_frames(
           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
@@ -44392,7 +44392,7 @@ fn gen_resume_from_frames(
           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
@@ -44426,7 +44426,7 @@ fn gen_resume_from_frames(
           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
