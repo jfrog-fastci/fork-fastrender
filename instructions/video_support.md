@@ -171,14 +171,27 @@ build constraints.
 
 ### Test videos
 
-Deterministic, license-clean media fixtures live under
-[`tests/pages/fixtures/assets/media/`](../tests/pages/fixtures/assets/media/) — see
-[`README.md`](../tests/pages/fixtures/assets/media/README.md) for provenance and regeneration.
+Deterministic, license-clean media fixtures live in a few places:
+
+- **Demux/decode unit-test fixtures**: [`tests/fixtures/media/`](../tests/fixtures/media/)
+  (see [`tests/fixtures/media/README.md`](../tests/fixtures/media/README.md)).
+- **Playback smoke-test assets** used by HTML fixtures:
+  [`tests/pages/fixtures/media_playback/assets/`](../tests/pages/fixtures/media_playback/assets/)
+  (see [`tests/pages/fixtures/media_playback/README.md`](../tests/pages/fixtures/media_playback/README.md)).
+  These files are kept in sync with `tests/fixtures/media/`.
+- **Reserved** directory for future “golden” media assets used by general offline page fixtures:
+  [`tests/pages/fixtures/assets/media/`](../tests/pages/fixtures/assets/media/)
+  (currently contains only docs; no decodable assets yet).
 
 Create/collect test videos in various formats:
-- `test_h264_aac.mp4` - Common web video
-- `test_vp9_opus.webm` - Open format
-- `test_av1_opus.mp4` - Modern format
+
+- `tests/fixtures/media/test_h264_aac.mp4` - MP4 (H.264 + AAC)
+- `tests/fixtures/media/test_vp9_opus.webm` - WebM (VP9 + Opus)
+- `tests/pages/fixtures/media_playback/assets/test_opus.webm` - WebM (audio-only Opus)
+
+Planned/optional:
+
+- `test_av1_opus.mp4` - Modern format (not currently supported in-tree)
 - Various resolutions: 360p, 720p, 1080p, 4K
 
 When importing offline page fixtures that need **playable** media (e.g. to exercise `<video>` in the
