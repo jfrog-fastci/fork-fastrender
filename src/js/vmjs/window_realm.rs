@@ -37712,6 +37712,7 @@ fn range_insert_node_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
   let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -37719,6 +37720,23 @@ fn range_insert_node_native(
     return Err(VmError::TypeError("Range.insertNode requires a node argument"));
   };
   let node_handle = node_handle_from_wrapper_obj(vm, scope, node_obj, "Range.insertNode requires a node argument")?;
+
+  // Cache insertion bookkeeping for the source node so we can keep wrapper-cached live collections
+  // (`childNodes`, `children`, `<select>.options`) consistent when `insert_before` moves nodes.
+  let node_document_obj = node_handle.document_obj;
+  let mut node_dom_ptr = dom_ptr_for_document_id_mut(vm, host, node_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError("Range.insertNode requires a node argument"))?;
+  let (node_is_fragment, node_old_parent) = {
+    // SAFETY: `node_dom_ptr` is valid for the duration of this native call.
+    let node_dom = unsafe { node_dom_ptr.as_ref() };
+    let kind = &node_dom.node(node_handle.node_id).kind;
+    let node_is_fragment = matches!(kind, NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. });
+    let old_parent = (!node_is_fragment)
+      .then(|| node_dom.parent_node(node_handle.node_id))
+      .flatten();
+    (node_is_fragment, old_parent)
+  };
 
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
@@ -37852,11 +37870,12 @@ fn range_insert_node_native(
 
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom_after_adoption = unsafe { dom_ptr.as_ref() };
-  let inserted_count = match &dom_after_adoption.node(adopted.node_id).kind {
+  let (inserted_roots, inserted_count) = match &dom_after_adoption.node(adopted.node_id).kind {
     NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
-      // Use the fragment's tree length.
+      // Record fragment children before insertion: insertion moves the children and empties the
+      // fragment.
       let frag_children = &dom_after_adoption.node(adopted.node_id).children;
-      let mut count = 0usize;
+      let mut roots: Vec<NodeId> = Vec::new();
       for &child in frag_children {
         if child.index() >= dom_after_adoption.nodes_len() {
           continue;
@@ -37864,11 +37883,12 @@ fn range_insert_node_native(
         if dom_after_adoption.node(child).parent != Some(adopted.node_id) {
           continue;
         }
-        count += 1;
+        roots.push(child);
       }
-      count
+      let count = roots.len();
+      (roots, count)
     }
-    _ => 1,
+    _ => (vec![adopted.node_id], 1),
   };
   let new_offset = new_offset_before_increment.saturating_add(inserted_count);
 
@@ -37884,6 +37904,26 @@ fn range_insert_node_native(
   sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
   sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
   sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+  if node_is_fragment {
+    // Inserting a DocumentFragment moves its children and empties the fragment; keep any cached
+    // collections on the fragment wrapper in sync.
+    sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
+    sync_cached_children_for_wrapper(vm, scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
+  } else if let Some(old_parent) = node_old_parent {
+    // `insert_before` moves the node from its previous parent when connected. Keep any cached
+    // collections on that parent in sync (which may live on a different `Document` wrapper).
+    if !(node_handle.document_id == handle.document_id && old_parent == parent) {
+      let old_parent_dom = if node_dom_ptr == dom_ptr {
+        dom
+      } else {
+        // SAFETY: `node_dom_ptr` is valid for the duration of this native call.
+        unsafe { node_dom_ptr.as_ref() }
+      };
+      sync_cached_child_nodes_for_node_id(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
+    }
+  }
 
   if collapsed {
     let _ = unsafe { dom_ptr.as_mut() }.range_set_end(handle.range_id, parent, new_offset);
@@ -37898,13 +37938,17 @@ fn range_insert_node_native(
       hooks,
       handle.document_obj,
       dom_ptr,
-      &[adopted.node_id],
+      &inserted_roots,
     )?;
     run_dynamic_script_children_changed_steps(vm, scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  if node_dom_ptr != dom_ptr {
+    let source_needs_microtask = unsafe { node_dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, node_document_obj, source_needs_microtask)?;
+  }
 
   Ok(Value::Undefined)
 }
@@ -37918,6 +37962,7 @@ fn range_surround_contents_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
   let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
 
   let new_parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -37952,15 +37997,8 @@ fn range_surround_contents_native(
   }
 
   // 1. Extract the contents.
-  let fragment_id = {
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
-    // access for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_mut() };
-    match dom.range_extract_contents(handle.range_id) {
-      Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-    }
-  };
+  let fragment_value = range_extract_contents_native(vm, scope, host, hooks, _callee, this, &[])?;
+  let fragment_value = scope.push_root(fragment_value)?;
 
   // 2. Adopt `newParent` into the range document before inserting.
   let adopted_parent = maybe_adopt_node_into_document(
@@ -37992,6 +38030,14 @@ fn range_surround_contents_native(
       let _ = unsafe { dom_ptr.as_mut() }.remove_child(adopted_parent.node_id, child);
     }
   }
+  {
+    // Keep wrapper-cached collections on `newParent` in sync after clearing its children.
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
+    sync_cached_children_for_wrapper(vm, scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, adopted_parent.node_id)?;
+  }
 
   // 4. Insert `newParent` into the range.
   range_insert_node_native(
@@ -38005,9 +38051,15 @@ fn range_surround_contents_native(
   )?;
 
   // 5. Append extracted fragment to `newParent`.
-  if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(adopted_parent.node_id, fragment_id) {
-    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
-  }
+  let _ = node_append_child_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    _callee,
+    Value::Object(new_parent_obj),
+    &[fragment_value],
+  )?;
 
   // 6. Select `newParent` within the range.
   let (parent, index) = {
@@ -67494,6 +67546,132 @@ mod tests {
         ds.foo = 'x';\n\
         if (wrapper.getAttribute('data-foo') !== 'x') return 'dataset_rebind';\n\
 \n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn range_insert_node_fragment_insertion_clears_cached_live_collections() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = document.implementation.createHTMLDocument('');\n\
+        const range = doc2.createRange();\n\
+        range.setStart(doc2.body, 0);\n\
+        range.setEnd(doc2.body, 0);\n\
+        const frag = doc2.createDocumentFragment();\n\
+        const a = doc2.createElement('span');\n\
+        a.id = 'a';\n\
+        frag.appendChild(a);\n\
+\n\
+        const cachedNodes = frag.childNodes;\n\
+        const cachedChildren = frag.children;\n\
+        if (cachedNodes.length !== 1) return 'pre_len';\n\
+        if (cachedChildren.length !== 1) return 'pre_children_len';\n\
+\n\
+        range.insertNode(frag);\n\
+\n\
+        if (frag.childNodes !== cachedNodes) return 'child_nodes_identity';\n\
+        if (frag.children !== cachedChildren) return 'children_identity';\n\
+        if (cachedNodes.length !== 0) return 'post_len';\n\
+        if (cachedChildren.length !== 0) return 'post_children_len';\n\
+        if (frag.firstChild !== null) return 'post_first_child';\n\
+        if (doc2.body.firstChild !== a) return 'position';\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn range_insert_node_moves_existing_node_updates_cached_old_parent_collections() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = document.implementation.createHTMLDocument('');\n\
+        const c1 = doc2.createElement('div');\n\
+        const c2 = doc2.createElement('div');\n\
+        doc2.body.appendChild(c1);\n\
+        doc2.body.appendChild(c2);\n\
+        const x = doc2.createElement('span');\n\
+        c1.appendChild(x);\n\
+\n\
+        const cachedNodes = c1.childNodes;\n\
+        const cachedChildren = c1.children;\n\
+        if (cachedNodes.length !== 1) return 'pre_len';\n\
+        if (cachedChildren.length !== 1) return 'pre_children_len';\n\
+\n\
+        const range = doc2.createRange();\n\
+        range.setStart(c2, 0);\n\
+        range.setEnd(c2, 0);\n\
+        range.insertNode(x);\n\
+\n\
+        if (c1.childNodes !== cachedNodes) return 'child_nodes_identity';\n\
+        if (c1.children !== cachedChildren) return 'children_identity';\n\
+        if (cachedNodes.length !== 0) return 'post_len';\n\
+        if (cachedChildren.length !== 0) return 'post_children_len';\n\
+        if (c2.firstChild !== x) return 'dest';\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn range_surround_contents_updates_cached_live_collections() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const doc2 = document.implementation.createHTMLDocument('');\n\
+        const a = doc2.createElement('span');\n\
+        const b = doc2.createElement('span');\n\
+        doc2.body.appendChild(a);\n\
+        doc2.body.appendChild(b);\n\
+\n\
+        const cachedBodyNodes = doc2.body.childNodes;\n\
+        const cachedBodyChildren = doc2.body.children;\n\
+        if (cachedBodyNodes.length !== 2) return 'pre_len';\n\
+        if (cachedBodyChildren.length !== 2) return 'pre_children_len';\n\
+\n\
+        const range = doc2.createRange();\n\
+        range.setStart(doc2.body, 0);\n\
+        range.setEnd(doc2.body, 2);\n\
+\n\
+        const wrapper = doc2.createElement('div');\n\
+        const cachedWrapperNodes = wrapper.childNodes;\n\
+        const cachedWrapperChildren = wrapper.children;\n\
+        if (cachedWrapperNodes.length !== 0) return 'wrapper_pre_len';\n\
+        if (cachedWrapperChildren.length !== 0) return 'wrapper_pre_children_len';\n\
+\n\
+        range.surroundContents(wrapper);\n\
+\n\
+        if (doc2.body.childNodes !== cachedBodyNodes) return 'body_child_nodes_identity';\n\
+        if (doc2.body.children !== cachedBodyChildren) return 'body_children_identity';\n\
+        if (cachedBodyNodes.length !== 1) return 'post_len';\n\
+        if (cachedBodyChildren.length !== 1) return 'post_children_len';\n\
+        if (cachedBodyNodes[0] !== wrapper) return 'wrapper_position';\n\
+        if (wrapper.childNodes !== cachedWrapperNodes) return 'wrapper_child_nodes_identity';\n\
+        if (wrapper.children !== cachedWrapperChildren) return 'wrapper_children_identity';\n\
+        if (cachedWrapperNodes.length !== 2) return 'wrapper_len';\n\
+        if (cachedWrapperChildren.length !== 2) return 'wrapper_children_len';\n\
+        if (cachedWrapperNodes[0] !== a || cachedWrapperNodes[1] !== b) return 'wrapper_children';\n\
         return 'ok';\n\
       })()",
     )?;
