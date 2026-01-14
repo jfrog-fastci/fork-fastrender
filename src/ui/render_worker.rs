@@ -105,6 +105,16 @@ static UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT: AtomicUsize = Atomic
 #[cfg(feature = "browser_ui")]
 static UI_WORKER_SCROLL_PAINT_DEADLINE_TIMEOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Debug-only counter for how many full page AccessKit subtrees were rebuilt.
+#[cfg(all(debug_assertions, feature = "browser_ui"))]
+static PAGE_A11Y_FULL_SUBTREE_REBUILDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the number of full page AccessKit subtree rebuilds so far (debug/test hook).
+#[cfg(all(debug_assertions, feature = "browser_ui"))]
+pub fn page_a11y_full_subtree_rebuild_count_for_test() -> usize {
+  PAGE_A11Y_FULL_SUBTREE_REBUILDS.load(Ordering::Relaxed)
+}
+
 /// Returns the number of renderers built by the UI worker so far (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn renderer_build_count_for_test() -> usize {
@@ -1024,6 +1034,22 @@ struct TabState {
   site_mismatch_restarts: u8,
 
   find: FindInPageWorkerState,
+
+  // ---------------------------------------------------------------------------
+  // Page accessibility (AccessKit) state.
+  //
+  // This is feature-gated so core renderer builds do not pull in AccessKit.
+  // ---------------------------------------------------------------------------
+  #[cfg(feature = "browser_ui")]
+  page_a11y_enabled: bool,
+  #[cfg(feature = "browser_ui")]
+  page_a11y_revision: u64,
+  #[cfg(feature = "browser_ui")]
+  page_a11y_last_emitted_revision: Option<u64>,
+  #[cfg(feature = "browser_ui")]
+  page_a11y_last_emitted_tree_generation: Option<u32>,
+  #[cfg(feature = "browser_ui")]
+  page_a11y_last_focus_dom_id: Option<usize>,
 }
 
 impl TabState {
@@ -1078,6 +1104,17 @@ impl TabState {
       site_key: None,
       site_mismatch_restarts: 0,
       find: FindInPageWorkerState::default(),
+
+      #[cfg(feature = "browser_ui")]
+      page_a11y_enabled: false,
+      #[cfg(feature = "browser_ui")]
+      page_a11y_revision: 0,
+      #[cfg(feature = "browser_ui")]
+      page_a11y_last_emitted_revision: None,
+      #[cfg(feature = "browser_ui")]
+      page_a11y_last_emitted_tree_generation: None,
+      #[cfg(feature = "browser_ui")]
+      page_a11y_last_focus_dom_id: None,
     }
   }
 
@@ -3797,10 +3834,34 @@ impl BrowserRuntime {
           if let Some(js_tab) = tab.js_tab.as_mut() {
             js_tab.set_runtime_toggles(Some(Arc::clone(&self.runtime_toggles)));
           }
+          #[cfg(feature = "browser_ui")]
+          {
+            // Media preferences can affect `@media (prefers-*)` query results, which may change page
+            // accessibility semantics (e.g. `display:none` in a high-contrast mode stylesheet).
+            tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+            tab.page_a11y_last_emitted_revision = None;
+            tab.page_a11y_last_emitted_tree_generation = None;
+          }
         }
       }
       UiToWorker::SetDebugLogEnabled { enabled } => {
         self.debug_log_enabled = enabled;
+      }
+      #[cfg(feature = "browser_ui")]
+      UiToWorker::SetPageA11yEnabled { tab_id, enabled } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        if tab.page_a11y_enabled == enabled {
+          return;
+        }
+        tab.page_a11y_enabled = enabled;
+        tab.page_a11y_last_emitted_revision = None;
+        tab.page_a11y_last_emitted_tree_generation = None;
+        tab.page_a11y_last_focus_dom_id = None;
+        // Trigger a paint job so we can emit a subtree update promptly (even if the page itself is
+        // otherwise not dirty).
+        tab.request_non_scroll_repaint();
       }
       UiToWorker::CreateTab {
         tab_id,
@@ -3852,6 +3913,10 @@ impl BrowserRuntime {
           false
         };
         if dom_changed {
+          #[cfg(feature = "browser_ui")]
+          {
+            tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+          }
           tab.cancel.bump_paint();
           tab.request_non_scroll_repaint();
         }
@@ -4049,6 +4114,15 @@ impl BrowserRuntime {
           // the first navigation completes (no document/layout cache yet).
           tab.cancel.bump_paint();
 
+          #[cfg(feature = "browser_ui")]
+          if resized {
+            // Viewport/DPR changes can affect layout and visibility, so ensure the page AccessKit
+            // subtree is refreshed.
+            tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+            tab.page_a11y_last_emitted_revision = None;
+            tab.page_a11y_last_emitted_tree_generation = None;
+          }
+
           if tab.document.is_some() {
             tab.request_non_scroll_repaint();
             tab.force_repaint = true;
@@ -4216,18 +4290,22 @@ impl BrowserRuntime {
                 let result = engine.wheel_step_number_input(
                   dom,
                   box_tree,
-	                  fragment_tree,
-	                  &scroll_snapshot,
-	                  Point::new(pointer_css.0, pointer_css.1),
-	                  delta_y,
-	                );
-	                let changed = result.unwrap_or(false);
-	                (changed, result)
-	              })
-	            {
-	              scroll_handled = true;
-	              changed |= dom_changed;
-	            }
+                  fragment_tree,
+                  &scroll_snapshot,
+                  Point::new(pointer_css.0, pointer_css.1),
+                  delta_y,
+                );
+                let changed = result.unwrap_or(false);
+                (changed, result)
+              })
+            {
+              scroll_handled = true;
+              changed |= dom_changed;
+              #[cfg(feature = "browser_ui")]
+              if dom_changed {
+                tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+              }
+            }
 
             if scroll_handled {
               // Numeric stepping does not update scroll state.
@@ -6532,6 +6610,51 @@ impl BrowserRuntime {
     }
   }
 
+  #[cfg(feature = "browser_ui")]
+  fn maybe_emit_page_a11y_updates(tab_id: TabId, tab: &mut TabState, msgs: &mut Vec<WorkerToUi>) {
+    if !tab.page_a11y_enabled {
+      return;
+    }
+    let focused_dom_id = tab.interaction.interaction_state().focused;
+
+    let revision = tab.page_a11y_revision;
+    let needs_full_rebuild = tab.page_a11y_last_emitted_revision != Some(revision)
+      || tab.page_a11y_last_emitted_tree_generation != Some(tab.tree_generation);
+
+    if needs_full_rebuild {
+      let cancel_snapshot = tab.cancel.snapshot_paint();
+      let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+      let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback) else {
+        return;
+      };
+
+      #[cfg(all(debug_assertions, feature = "browser_ui"))]
+      {
+        PAGE_A11Y_FULL_SUBTREE_REBUILDS.fetch_add(1, Ordering::Relaxed);
+      }
+
+      msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+      tab.page_a11y_last_emitted_revision = Some(revision);
+      tab.page_a11y_last_emitted_tree_generation = Some(tab.tree_generation);
+      tab.page_a11y_last_focus_dom_id = focused_dom_id;
+      return;
+    }
+
+    if tab.page_a11y_last_focus_dom_id != focused_dom_id {
+      tab.page_a11y_last_focus_dom_id = focused_dom_id;
+      let focus_id = focused_dom_id.map(|dom_id| {
+        crate::ui::encode_page_node_id(tab_id, tab.tree_generation, dom_id)
+      });
+      msgs.push(WorkerToUi::PageAccessKitState {
+        tab_id,
+        update: crate::ui::messages::PageAccessKitStateUpdate {
+          focus_id,
+          nodes: Vec::new(),
+        },
+      });
+    }
+  }
+
   fn handle_pointer_move(
     &mut self,
     tab_id: TabId,
@@ -8551,6 +8674,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9024,6 +9151,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9127,6 +9258,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9182,6 +9317,10 @@ impl BrowserRuntime {
           None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
       }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
@@ -9369,6 +9508,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
     }
 
     if changed || scroll_changed {
@@ -9408,6 +9551,10 @@ impl BrowserRuntime {
           None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
       }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
@@ -9485,6 +9632,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9500,6 +9651,10 @@ impl BrowserRuntime {
 
     let changed = doc.mutate_dom(|dom| tab.interaction.ime_preedit(dom, text, cursor));
     if changed {
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9570,6 +9725,10 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
     }
 
     if changed || scroll_changed {
@@ -9588,6 +9747,10 @@ impl BrowserRuntime {
 
     let changed = doc.mutate_dom(|dom| tab.interaction.ime_cancel(dom));
     if changed {
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      }
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }
@@ -9623,6 +9786,11 @@ impl BrowserRuntime {
         None
       }
     };
+
+    #[cfg(feature = "browser_ui")]
+    if changed {
+      tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+    }
 
     let mut scroll_changed = false;
     if let Some((textarea_box_id, next_y)) = caret_scroll {
@@ -9845,6 +10013,10 @@ impl BrowserRuntime {
           None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
+      #[cfg(feature = "browser_ui")]
+      {
+        tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
       }
     }
 
@@ -12935,6 +13107,14 @@ impl BrowserRuntime {
       tab.js_dom_dirty = js_dom_dirty;
       tab.js_dom_mutation_generation = js_dom_mutation_generation;
     }
+    #[cfg(feature = "browser_ui")]
+    {
+      // Navigations replace the entire document; force a fresh page accessibility subtree build.
+      tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      tab.page_a11y_last_emitted_revision = None;
+      tab.page_a11y_last_emitted_tree_generation = None;
+      tab.page_a11y_last_focus_dom_id = None;
+    }
 
     let js_dom_changed =
       Self::pump_js_once_and_sync_dom_after_committed_navigation(tab_id, tab, &mut msgs);
@@ -13017,15 +13197,6 @@ impl BrowserRuntime {
           if let Some((tree, bounds_css)) =
             compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
           {
-            #[cfg(feature = "browser_ui")]
-            {
-              let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
-                tab_id,
-                tab.tree_generation,
-                &tree,
-              );
-              msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
-            }
             msgs.push(WorkerToUi::PageAccessibility {
               tab_id,
               tree_generation: tab.tree_generation,
@@ -13055,6 +13226,11 @@ impl BrowserRuntime {
       tab_id,
       loading: false,
     });
+
+    #[cfg(feature = "browser_ui")]
+    {
+      Self::maybe_emit_page_a11y_updates(tab_id, tab, &mut msgs);
+    }
 
     Some(JobOutput {
       tab_id,
@@ -13280,6 +13456,13 @@ impl BrowserRuntime {
     tab.site_key = Some(site_key_for_navigation(about_pages::ABOUT_ERROR, None));
     tab.site_mismatch_restarts = 0;
     tab.tree_generation = tab.tree_generation.wrapping_add(1);
+    #[cfg(feature = "browser_ui")]
+    {
+      tab.page_a11y_revision = tab.page_a11y_revision.wrapping_add(1);
+      tab.page_a11y_last_emitted_revision = None;
+      tab.page_a11y_last_emitted_tree_generation = None;
+      tab.page_a11y_last_focus_dom_id = None;
+    }
 
     tab.loading = false;
     tab.pending_history_entry = false;
@@ -13316,15 +13499,6 @@ impl BrowserRuntime {
       },
     });
     if let Some((tree, bounds_css)) = page_accessibility {
-      #[cfg(feature = "browser_ui")]
-      {
-        let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
-          tab_id,
-          tab.tree_generation,
-          &tree,
-        );
-        msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
-      }
       msgs.push(WorkerToUi::PageAccessibility {
         tab_id,
         tree_generation: tab.tree_generation,
@@ -13336,6 +13510,11 @@ impl BrowserRuntime {
       tab_id,
       loading: false,
     });
+
+    #[cfg(feature = "browser_ui")]
+    {
+      Self::maybe_emit_page_a11y_updates(tab_id, tab, &mut msgs);
+    }
 
     Some(JobOutput {
       tab_id,
@@ -13600,15 +13779,6 @@ impl BrowserRuntime {
         if let Some((tree, bounds_css)) =
           compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
         {
-          #[cfg(feature = "browser_ui")]
-          {
-            let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
-              tab_id,
-              tab.tree_generation,
-              &tree,
-            );
-            msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
-          }
           msgs.push(WorkerToUi::PageAccessibility {
             tab_id,
             tree_generation: tab.tree_generation,
@@ -13680,6 +13850,11 @@ impl BrowserRuntime {
           },
         );
       }
+    }
+
+    #[cfg(feature = "browser_ui")]
+    {
+      Self::maybe_emit_page_a11y_updates(tab_id, tab, &mut msgs);
     }
 
     Some(JobOutput {

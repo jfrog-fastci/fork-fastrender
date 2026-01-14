@@ -44,6 +44,15 @@ fn worker_emits_page_accesskit_subtree_with_document_and_button() {
     })
     .expect("ViewportChanged");
 
+  // Enable page AccessKit subtree emission.
+  worker
+    .tx
+    .send(UiToWorker::SetPageA11yEnabled {
+      tab_id,
+      enabled: true,
+    })
+    .expect("SetPageA11yEnabled");
+
   worker
     .tx
     .send(UiToWorker::Navigate {
@@ -102,4 +111,3 @@ fn worker_emits_page_accesskit_subtree_with_document_and_button() {
   drop(worker.tx);
   worker.join.join().expect("join worker thread");
 }
-

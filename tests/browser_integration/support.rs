@@ -597,6 +597,16 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       );
       continue;
     }
+    if let WorkerToUi::PageAccessKitState { tab_id, update } = msg {
+      let _ = writeln!(
+        &mut out,
+        "PageAccessKitState(tab={}, nodes={}, focus={:?})",
+        tab_id.0,
+        update.nodes.len(),
+        update.focus_id.as_ref().map(|id| id.0.get())
+      );
+      continue;
+    }
     if let WorkerToUi::Favicon {
       tab_id,
       width,

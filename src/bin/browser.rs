@@ -13773,6 +13773,9 @@ struct App {
   /// Cached prepared documents for trusted `about:` pages, keyed by tab id.
   trusted_about_prepared: std::collections::HashMap<fastrender::ui::TabId, TrustedAboutPrepared>,
 
+  /// Tab currently enabled for page a11y emission on the worker (when AccessKit is active).
+  page_a11y_enabled_tab: Option<fastrender::ui::TabId>,
+
   /// Rect of the central content panel (in egui points) from the last painted frame.
   ///
   /// Used to position transient overlays (toasts/infobars) without affecting layout.
@@ -14861,6 +14864,7 @@ impl App {
       trusted_about_renderer: None,
       trusted_about_rendered_urls: std::collections::HashMap::new(),
       trusted_about_prepared: std::collections::HashMap::new(),
+      page_a11y_enabled_tab: None,
       content_rect_points: None,
       page_rect_points: None,
       page_accesskit_node_id: None,
@@ -16124,6 +16128,7 @@ impl App {
       | UiToWorker::NewTab { tab_id, .. }
       | UiToWorker::CloseTab { tab_id }
       | UiToWorker::SetActiveTab { tab_id }
+      | UiToWorker::SetPageA11yEnabled { tab_id, .. }
       | UiToWorker::Navigate { tab_id, .. }
       | UiToWorker::NavigateRequest { tab_id, .. }
       | UiToWorker::GoBack { tab_id }
@@ -16323,6 +16328,7 @@ impl App {
           // Tab-management messages should not force cancellation.
           UiToWorker::SetMediaPreferences { .. }
           | UiToWorker::SetDebugLogEnabled { .. }
+          | UiToWorker::SetPageA11yEnabled { .. }
           | UiToWorker::ContextMenuRequest { .. }
           | UiToWorker::A11yShowContextMenu { .. }
           | UiToWorker::CreateTab { .. }
@@ -18361,6 +18367,48 @@ impl App {
         self.open_request_in_new_tab(request);
         if let Some(monitor) = self.idle_repaint_monitor.as_mut() {
           monitor.note_worker_activity();
+        }
+        return WorkerMessageResult {
+          request_redraw: true,
+          history_deltas: Vec::new(),
+        };
+      }
+      #[cfg(feature = "browser_ui")]
+      fastrender::ui::WorkerToUi::PageAccessKitSubtree { tab_id, subtree } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.watchdog_armed = false;
+          tab.unresponsive = false;
+        }
+        self.pending_page_subtree_accesskit.insert(
+          tab_id,
+          PendingPageSubtreeAccessKitUpdate {
+            root_id: subtree.root_id,
+            nodes: subtree.nodes,
+            focus_id: subtree.focus_id,
+          },
+        );
+        return WorkerMessageResult {
+          request_redraw: true,
+          history_deltas: Vec::new(),
+        };
+      }
+      #[cfg(feature = "browser_ui")]
+      fastrender::ui::WorkerToUi::PageAccessKitState { tab_id, update } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.watchdog_armed = false;
+          tab.unresponsive = false;
+        }
+        if let Some(entry) = self.pending_page_subtree_accesskit.get_mut(&tab_id) {
+          entry.focus_id = update.focus_id;
+          entry.nodes.extend(update.nodes);
+        } else {
+          // State updates are expected only after an initial subtree update.
+          debug_assert!(
+            false,
+            "received PageAccessKitState for tab {tab_id:?} before any subtree"
+          );
         }
         return WorkerMessageResult {
           request_redraw: true,
@@ -28969,7 +29017,7 @@ impl App {
           tab.page_accessibility.as_ref().map(|snap| {
             fastrender::ui::encode_page_node_id(
               active_tab,
-              snap.document_generation,
+              snap.tree_generation,
               snap.tree.dom_node_id,
             )
           })
@@ -29814,9 +29862,15 @@ impl App {
     }
     let repaint_after = full_output.repaint_after;
 
+    // Whether egui produced an AccessKit update for this frame.
+    //
+    // When AccessKit is inactive/disabled, avoid enabling page a11y on the worker to prevent
+    // rebuilding/sending large trees unnecessarily.
+    let accesskit_active = full_output.platform_output.accesskit_update.is_some();
+
     if let Some(update) = full_output.platform_output.accesskit_update.as_ref() {
-      // Cache the AccessKit id of the page viewport node so we can recognise future
-      // focus/activation requests that target the page (vs browser chrome widgets).
+      // Cache the AccessKit id of the page viewport node so we can recognise future focus/activation
+      // requests that target the page (vs browser chrome widgets).
       if let Some((id, _node)) = update.nodes.iter().find(|(_id, node)| {
         node.role() == accesskit::Role::WebView
           && node
@@ -29851,8 +29905,47 @@ impl App {
       }
     }
 
+    // Enable page accessibility updates from the worker only when egui/AccessKit is active. This
+    // avoids rebuilding and sending huge page accessibility trees on every scroll/paint when no
+    // assistive technology is consuming them.
+    let desired_a11y_tab = if accesskit_active {
+      self.browser_state.active_tab_id().filter(|tab_id| {
+        self
+          .browser_state
+          .tab(*tab_id)
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(|url| !fastrender::ui::about_pages::is_about_url(url))
+      })
+    } else {
+      None
+    };
+    if desired_a11y_tab != self.page_a11y_enabled_tab {
+      use fastrender::ui::UiToWorker;
+
+      if let Some(prev) = self.page_a11y_enabled_tab.take() {
+        let _ = self.send_worker_msg(UiToWorker::SetPageA11yEnabled {
+          tab_id: prev,
+          enabled: false,
+        });
+        // Drop any stale subtree state so switching back doesn't temporarily attach an old root id.
+        self.pending_page_subtree_accesskit.remove(&prev);
+      }
+      if let Some(next) = desired_a11y_tab {
+        let _ = self.send_worker_msg(UiToWorker::SetPageA11yEnabled {
+          tab_id: next,
+          enabled: true,
+        });
+      }
+      self.page_a11y_enabled_tab = desired_a11y_tab;
+    }
+
     if let Some(tab_id) = self.browser_state.active_tab_id() {
-      if let Some(page_subtree) = self.pending_page_subtree_accesskit.remove(&tab_id) {
+      if let Some(state) = self.pending_page_subtree_accesskit.get_mut(&tab_id) {
+        let page_subtree = PendingPageSubtreeAccessKitUpdate {
+          root_id: state.root_id,
+          nodes: std::mem::take(&mut state.nodes),
+          focus_id: state.focus_id,
+        };
         let merged = Self::merge_page_subtree_accesskit_update(
           &mut platform_output,
           page_subtree,

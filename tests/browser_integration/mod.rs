@@ -245,6 +245,7 @@ mod ui_worker_site_isolation_committed_url_mismatch;
 mod ui_worker_robustness;
 mod ui_worker_overscroll_behavior;
 mod ui_worker_overflow_hidden_scroll;
+mod ui_worker_page_a11y_dedup_scroll;
 mod ui_worker_scroll;
 mod ui_worker_event_handler_properties;
 mod ui_worker_scroll_state_early;

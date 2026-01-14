@@ -3198,6 +3198,29 @@ impl BrowserAppState {
         // frame.
         update.request_redraw = true;
       }
+      #[cfg(feature = "browser_ui")]
+      WorkerToUi::PageAccessKitState { tab_id, update: a11y_update } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          if let Some(subtree) = tab.page_accesskit_subtree.as_mut() {
+            subtree.focus_id = a11y_update.focus_id;
+            if !a11y_update.nodes.is_empty() {
+              for (id, node) in a11y_update.nodes {
+                if let Some((_, existing)) =
+                  subtree.nodes.iter_mut().find(|(existing_id, _)| *existing_id == id)
+                {
+                  *existing = node;
+                } else {
+                  subtree.nodes.push((id, node));
+                }
+              }
+            }
+          }
+        }
+        // Accessibility updates can affect assistive tech output even when the visual frame is
+        // unchanged, so request a redraw to ensure the UI layer can flush them alongside the next
+        // frame.
+        update.request_redraw = true;
+      }
       WorkerToUi::OpenSelectDropdown {
         tab_id,
         select_node_id,

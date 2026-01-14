@@ -7,6 +7,8 @@ use crate::style::media::{ColorScheme, ContrastPreference};
 use crate::style::types::CursorKeyword;
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
+#[cfg(feature = "browser_ui")]
+use accesskit::{Node as AccessKitNode, NodeId as AccessKitNodeId};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -397,6 +399,19 @@ pub struct PageAccessKitSubtree {
   pub focus_id: Option<accesskit::NodeId>,
 }
 
+/// Lightweight page AccessKit state update (focus/bounds/etc) emitted by the worker.
+///
+/// This is intended for high-frequency changes (e.g. focus changes) without rebuilding/sending the
+/// entire page subtree.
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+pub struct PageAccessKitStateUpdate {
+  /// Focused node within the subtree, when any.
+  pub focus_id: Option<AccessKitNodeId>,
+  /// Nodes to update (id → node). Each entry replaces the prior node definition for that id.
+  pub nodes: Vec<(AccessKitNodeId, AccessKitNode)>,
+}
+
 /// Messages sent from the UI thread to the render worker.
 #[derive(Debug)]
 pub enum UiToWorker {
@@ -416,6 +431,14 @@ pub enum UiToWorker {
   /// This does **not** affect user-facing error reporting: critical problems should continue to be
   /// surfaced via [`WorkerToUi::Warning`], navigation failure, etc.
   SetDebugLogEnabled {
+    enabled: bool,
+  },
+  /// Enable/disable page accessibility subtree updates for a tab (AccessKit).
+  ///
+  /// When disabled, the worker should avoid rebuilding/sending the page accessibility tree.
+  #[cfg(feature = "browser_ui")]
+  SetPageA11yEnabled {
+    tab_id: TabId,
     enabled: bool,
   },
   CreateTab {
@@ -1029,6 +1052,13 @@ pub enum WorkerToUi {
     tab_id: TabId,
     subtree: PageAccessKitSubtree,
   },
+  /// Lightweight update to the page's AccessKit state (focus/nodes), without replacing the full
+  /// subtree.
+  #[cfg(feature = "browser_ui")]
+  PageAccessKitState {
+    tab_id: TabId,
+    update: PageAccessKitStateUpdate,
+  },
   /// Request that the UI wake up after `after` to drive media/time-based updates for `tab_id`.
   ///
   /// This is primarily intended for tickless media playback scheduling (e.g. video frame
@@ -1316,7 +1346,8 @@ impl WorkerToUi {
   pub fn tab_id(&self) -> TabId {
     match self {
       #[cfg(feature = "browser_ui")]
-      WorkerToUi::PageAccessKitSubtree { tab_id, .. } => *tab_id,
+      WorkerToUi::PageAccessKitSubtree { tab_id, .. }
+      | WorkerToUi::PageAccessKitState { tab_id, .. } => *tab_id,
       WorkerToUi::Stage { tab_id, .. }
       | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
