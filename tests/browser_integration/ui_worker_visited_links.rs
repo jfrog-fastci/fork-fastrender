@@ -14,23 +14,47 @@ fn wait_for_navigation_committed(
   tab_id: TabId,
   expected_url: &str,
 ) {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(
-      msg,
-      WorkerToUi::NavigationCommitted { .. } | WorkerToUi::NavigationFailed { .. }
-    )
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for NavigationCommitted for tab {tab_id:?}"));
+  use std::sync::mpsc::RecvTimeoutError;
+  use std::time::{Duration, Instant};
 
-  match msg {
-    WorkerToUi::NavigationCommitted { url, .. } => {
-      assert_eq!(url, expected_url);
+  let start = Instant::now();
+  let mut seen: Vec<WorkerToUi> = Vec::new();
+  loop {
+    let remaining = TIMEOUT.saturating_sub(start.elapsed());
+    if remaining.is_zero() {
+      panic!(
+        "timed out waiting for NavigationCommitted for tab {tab_id:?} (expected {expected_url}). Messages:\n{}",
+        support::format_messages(&seen)
+      );
     }
-    WorkerToUi::NavigationFailed { url, error, .. } => {
-      panic!("navigation failed for {url}: {error}");
-    }
-    other => {
-      panic!("unexpected WorkerToUi message while waiting for NavigationCommitted: {other:?}")
+    let slice = remaining.min(Duration::from_millis(25));
+    match rx.recv_timeout(slice) {
+      Ok(msg) => match msg {
+        WorkerToUi::NavigationCommitted { tab_id: got, url, .. } if got == tab_id => {
+          assert_eq!(url, expected_url);
+          return;
+        }
+        WorkerToUi::NavigationFailed {
+          tab_id: got,
+          url,
+          error,
+          ..
+        } if got == tab_id => {
+          panic!("navigation failed for {url}: {error}");
+        }
+        other => {
+          if seen.len() < 64 {
+            seen.push(other);
+          }
+        }
+      },
+      Err(RecvTimeoutError::Timeout) => continue,
+      Err(RecvTimeoutError::Disconnected) => {
+        panic!(
+          "worker disconnected while waiting for NavigationCommitted for tab {tab_id:?}. Messages:\n{}",
+          support::format_messages(&seen)
+        );
+      }
     }
   }
 }

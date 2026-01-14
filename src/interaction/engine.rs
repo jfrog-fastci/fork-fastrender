@@ -10158,14 +10158,20 @@ impl InteractionEngine {
               }
             }
           }
-        } else if is_primary_button {
-          if let Some(kind) = index.node(target_id).and_then(media_controls_kind) {
-            action = InteractionAction::OpenMediaControls {
-              media_node_id: target_id,
-              kind,
-            };
-          }
         } else {
+          // `<video controls>` / `<audio controls>`: request native media controls overlay.
+          //
+          // This is only meaningful for primary-button clicks, but it should not suppress other
+          // primary-button default actions for non-media elements (e.g. link navigation).
+          if is_primary_button {
+            if let Some(kind) = index.node(target_id).and_then(media_controls_kind) {
+              action = InteractionAction::OpenMediaControls {
+                media_node_id: target_id,
+                kind,
+              };
+            }
+          }
+
           // If the click happened within a details summary but did not resolve to a focusable target
           // (e.g. `<summary><span>...</span></summary>`), focus the summary like a native button.
           if is_primary_button {
