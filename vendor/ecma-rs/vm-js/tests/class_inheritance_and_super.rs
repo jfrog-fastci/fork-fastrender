@@ -467,7 +467,7 @@ fn super_property_in_derived_constructor_arrow_observes_this_initialization() ->
 #[test]
 fn super_property_reference_semantics_in_derived_method() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       class B {
         get __g() { return this.__x + 1; }
@@ -492,13 +492,7 @@ fn super_property_reference_semantics_in_derived_method() -> Result<(), VmError>
       }
       new D().test()
     "#,
-  ) {
-    Ok(v) => v,
-    // `super.prop` is not implemented on the AST-interpreter path yet; keep this test as a lock-in
-    // for when it is.
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -820,7 +814,7 @@ fn super_property_reference_semantics_in_derived_static_method_compiled() -> Res
 #[test]
 fn super_property_reference_in_base_static_block() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       var out = "";
       Object.defineProperty(Function.prototype, "__acc", {
@@ -838,12 +832,7 @@ fn super_property_reference_in_base_static_block() -> Result<(), VmError> {
       }
       out === "12"
     "#,
-  ) {
-    Ok(v) => v,
-    // `super.prop` is not implemented on the AST-interpreter path yet.
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -883,7 +872,7 @@ fn super_property_reference_in_base_static_block_compiled() -> Result<(), VmErro
 #[test]
 fn super_property_reference_in_derived_static_block() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       var out = "";
       class B {
@@ -900,12 +889,7 @@ fn super_property_reference_in_derived_static_block() -> Result<(), VmError> {
       }
       out === "12"
     "#,
-  ) {
-    Ok(v) => v,
-    // `super.prop` is not implemented on the AST-interpreter path yet.
-    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
