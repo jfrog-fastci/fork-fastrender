@@ -203,6 +203,25 @@ fn install_to_string_tag(
   Ok(())
 }
 
+fn install_to_string_tag_writable(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  to_string_tag: GcSymbol,
+  tag: &str,
+) -> Result<(), VmError> {
+  let tag_value = scope.alloc_string(tag)?;
+  scope.push_root(Value::String(tag_value))?;
+  scope.define_property(
+    obj,
+    PropertyKey::Symbol(to_string_tag),
+    // Some prototypes intentionally use a writable `@@toStringTag` so per-instance overrides via
+    // assignment can create an own `@@toStringTag` property (rather than failing due to inheriting a
+    // non-writable data property).
+    data_desc(Value::String(tag_value), true, false, true),
+  )?;
+  Ok(())
+}
+
 fn alloc_rooted_object(
   scope: &mut Scope<'_>,
   roots: &mut Vec<RootId>,
@@ -879,8 +898,9 @@ impl Intrinsics {
     // inherit from those prototypes (and Proxy-wrapped instances) are tagged consistently.
     install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
-    install_to_string_tag(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
+    install_to_string_tag_writable(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
+    install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
     install_to_string_tag(
       scope,
       array_buffer_prototype,
@@ -2057,9 +2077,23 @@ impl Intrinsics {
 
     // `%GeneratorPrototype%`
     let generator_prototype = alloc_rooted_object(scope, roots)?;
+    // Store the intrinsic `@@toStringTag` on a dedicated object so user overrides on
+    // `%GeneratorPrototype%[@@toStringTag]` can be deleted to reveal the intrinsic "Generator"
+    // tag again (and so the generator prototype chain can still inherit the `%IteratorPrototype%`
+    // "Iterator" tag).
+    let generator_tag_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(generator_prototype, Some(iterator_prototype))?;
+      .object_set_prototype(generator_tag_prototype, Some(iterator_prototype))?;
+    install_to_string_tag(
+      scope,
+      generator_tag_prototype,
+      well_known_symbols.to_string_tag,
+      "Generator",
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_prototype, Some(generator_tag_prototype))?;
 
     // `%GeneratorFunction%`
     let generator_function_name = scope.alloc_string("GeneratorFunction")?;
@@ -2160,13 +2194,7 @@ impl Intrinsics {
         data_desc(Value::Object(func), true, false, true),
       )?;
     }
-    // GeneratorPrototype[@@toStringTag]
-    install_to_string_tag(
-      scope,
-      generator_prototype,
-      well_known_symbols.to_string_tag,
-      "Generator",
-    )?;
+    // GeneratorPrototype[@@toStringTag] is installed on `generator_tag_prototype` above.
 
     // `%Array%`
     let array_call = vm.register_native_call(builtins::array_constructor_call)?;
@@ -7550,12 +7578,7 @@ impl Intrinsics {
       "Error",
       1,
     )?;
-    install_to_string_tag(
-      scope,
-      error_prototype,
-      well_known_symbols.to_string_tag,
-      "Error",
-    )?;
+    install_to_string_tag_writable(scope, error_prototype, well_known_symbols.to_string_tag, "Error")?;
 
     // Error.prototype.message
     //
