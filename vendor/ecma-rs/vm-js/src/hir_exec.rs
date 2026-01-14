@@ -14771,7 +14771,23 @@ mod hir_async_await_in_pattern_binding_regression_tests {
  
 #[cfg(test)]
 mod async_for_await_of_async_iterator_close_tests {
+  use crate::property::{PropertyKey, PropertyKind};
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  fn get_global_data_property(rt: &mut JsRuntime, name: &str) -> Result<Value, VmError> {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key_s = scope.alloc_string(name)?;
+    let key = PropertyKey::from_string(key_s);
+    let desc = scope
+      .heap()
+      .get_own_property(global, key)?
+      .unwrap_or_else(|| panic!("expected global property {name}"));
+    let PropertyKind::Data { value, .. } = desc.kind else {
+      panic!("expected global property {name} to be a data property");
+    };
+    Ok(value)
+  }
 
   #[test]
   fn compiled_async_for_await_of_break_awaits_async_iterator_close() -> Result<(), VmError> {
@@ -14817,6 +14833,93 @@ mod async_for_await_of_async_iterator_close_tests {
 
     let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
       panic!("expected script evaluation to produce a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let result = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("missing promise result"))?;
+    let Value::String(result_s) = result else {
+      panic!("expected promise result to be a string, got {result:?}");
+    };
+    assert_eq!(rt.heap.get_string(result_s)?.to_utf8_lossy(), "RA");
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_top_level_for_await_of_break_awaits_async_iterator_close() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        var log = '';
+        var __resolveClose;
+        var iter = {
+          i: 0,
+          [Symbol.asyncIterator]() { return this; },
+          next() {
+            this.i++;
+            if (this.i === 1) return Promise.resolve({ value: 1, done: false });
+            return Promise.resolve({ value: undefined, done: true });
+          },
+          return() {
+            return new Promise(resolve => {
+              __resolveClose = () => { log += 'R'; resolve({ done: true }); };
+            });
+          }
+        };
+
+        for await (const x of iter) {
+          break;
+        }
+        log += 'A';
+        log;
+      "#,
+    )?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.requires_ast_fallback);
+    assert!(
+      !script.top_level_await_requires_ast_fallback,
+      "top-level for-await-of script should be eligible for compiled async execution",
+    );
+
+    let promise = rt.exec_compiled_script(script)?;
+    let promise_root = rt.heap.add_root(promise)?;
+
+    // Drive the async script until it suspends on the iterator `return()` promise.
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected script evaluation to produce a Promise object");
+    };
+    assert_eq!(
+      rt.heap.promise_state(promise_obj)?,
+      PromiseState::Pending,
+      "script promise should remain pending until AsyncIteratorClose awaits iterator.return()",
+    );
+
+    // `AsyncIteratorClose` should have invoked `return()` and stored the resolver on the global.
+    let resolve_close = get_global_data_property(&mut rt, "__resolveClose")?;
+    let Value::Object(resolve_obj) = resolve_close else {
+      panic!("expected __resolveClose to be a function object, got {resolve_close:?}");
+    };
+    {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(resolve_obj))?;
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(resolve_obj), Value::Undefined, &[])?;
+    }
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected script promise root");
     };
     assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
     let result = rt
@@ -14890,6 +14993,90 @@ mod async_for_await_of_async_iterator_close_tests {
       panic!("expected promise result to be a string, got {result:?}");
     };
     assert_eq!(rt.heap.get_string(result_s)?.to_utf8_lossy(), "RCx");
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_top_level_for_await_of_throw_awaits_async_iterator_close_before_rejecting() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        var log = '';
+        var __resolveClose;
+        var iter = {
+          i: 0,
+          [Symbol.asyncIterator]() { return this; },
+          next() {
+            this.i++;
+            if (this.i === 1) return Promise.resolve({ value: 1, done: false });
+            return Promise.resolve({ value: undefined, done: true });
+          },
+          return() {
+            return new Promise(resolve => {
+              __resolveClose = () => { log += 'R'; resolve({ done: true }); };
+            });
+          }
+        };
+
+        for await (const x of iter) {
+          throw 'x';
+        }
+      "#,
+    )?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.requires_ast_fallback);
+    assert!(
+      !script.top_level_await_requires_ast_fallback,
+      "top-level for-await-of script should be eligible for compiled async execution",
+    );
+
+    let promise = rt.exec_compiled_script(script)?;
+    let promise_root = rt.heap.add_root(promise)?;
+
+    // Drive the async script until it suspends on the iterator `return()` promise.
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected script evaluation to produce a Promise object");
+    };
+    assert_eq!(
+      rt.heap.promise_state(promise_obj)?,
+      PromiseState::Pending,
+      "script promise should remain pending until AsyncIteratorClose awaits iterator.return()",
+    );
+
+    let resolve_close = get_global_data_property(&mut rt, "__resolveClose")?;
+    let Value::Object(resolve_obj) = resolve_close else {
+      panic!("expected __resolveClose to be a function object, got {resolve_close:?}");
+    };
+    {
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(resolve_obj))?;
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(resolve_obj), Value::Undefined, &[])?;
+    }
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected script promise root");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = rt
+      .heap
+      .promise_result(promise_obj)?
+      .ok_or(VmError::InvariantViolation("missing promise rejection reason"))?;
+    let Value::String(reason_s) = reason else {
+      panic!("expected promise rejection reason to be a string, got {reason:?}");
+    };
+    assert_eq!(rt.heap.get_string(reason_s)?.to_utf8_lossy(), "x");
 
     rt.heap.remove_root(promise_root);
     Ok(())
