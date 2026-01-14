@@ -214,6 +214,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     id: &str,
     class: &str,
     label: &str,
+    aria_label: &str,
     href: &str,
     enabled: bool,
   ) {
@@ -222,12 +223,17 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("\" class=\"toolbar-button ");
     out.push_str(class);
     if !enabled {
-      out.push_str(" disabled\" role=\"button\" aria-disabled=\"true\">");
+      out.push_str(" disabled");
+      out.push_str("\" role=\"button\" aria-label=\"");
+      out.push_str(aria_label);
+      out.push_str("\" aria-disabled=\"true\">");
       out.push_str(label);
       out.push_str("</a>\n");
       return;
     }
-    out.push_str("\" role=\"button\" href=\"");
+    out.push_str("\" role=\"button\" aria-label=\"");
+    out.push_str(aria_label);
+    out.push_str("\" href=\"");
     out.push_str(href);
     out.push_str("\">");
     out.push_str(label);
@@ -239,6 +245,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "toolbar-back",
     "back",
     "←",
+    "Back",
     "chrome-action:back",
     can_go_back,
   );
@@ -247,6 +254,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "toolbar-forward",
     "forward",
     "→",
+    "Forward",
     "chrome-action:forward",
     can_go_forward,
   );
@@ -255,6 +263,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "toolbar-reload",
     "reload",
     "↻",
+    "Reload",
     "chrome-action:reload",
     !loading,
   );
@@ -264,10 +273,19 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "toolbar-stop",
     "stop",
     "✕",
+    "Stop loading",
     "chrome-action:stop-loading",
     loading,
   );
-  push_toolbar_button(&mut out, "toolbar-home", "home", "⌂", "chrome-action:home", true);
+  push_toolbar_button(
+    &mut out,
+    "toolbar-home",
+    "home",
+    "⌂",
+    "Home",
+    "chrome-action:home",
+    true,
+  );
 
   // Address bar.
   out.push_str("    <div id=\"address-bar-wrap\" class=\"address-bar-wrap\">\n");
@@ -375,6 +393,19 @@ mod tests {
     assert!(html.contains("id=\"tab-strip\" role=\"tablist\""));
     assert_eq!(html.matches("role=\"tab\"").count(), 3);
     assert_eq!(html.matches("role=\"tab\" aria-selected=\"true\"").count(), 1);
+
+    // Toolbar buttons should have meaningful accessible labels; the visual glyphs are not good
+    // spoken names ("←" etc).
+    assert!(html.contains("id=\"toolbar-back\""));
+    assert!(html.contains("aria-label=\"Back\""));
+    assert!(html.contains("id=\"toolbar-forward\""));
+    assert!(html.contains("aria-label=\"Forward\""));
+    assert!(html.contains("id=\"toolbar-reload\""));
+    assert!(html.contains("aria-label=\"Reload\""));
+    assert!(html.contains("id=\"toolbar-stop\""));
+    assert!(html.contains("aria-label=\"Stop loading\""));
+    assert!(html.contains("id=\"toolbar-home\""));
+    assert!(html.contains("aria-label=\"Home\""));
 
     // The chrome frame should include the content-frame placeholder exactly once so the host can
     // reliably target it for compositing/sync.
