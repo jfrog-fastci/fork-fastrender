@@ -69,6 +69,12 @@ const MAX_SESSION_URL_BYTES: usize = protocol_limits::MAX_URL_BYTES;
 /// Maximum UTF-8 bytes retained for tab group titles stored in the session file.
 const MAX_SESSION_GROUP_TITLE_BYTES: usize = 256;
 
+/// Maximum UTF-8 bytes retained for persisted download file paths.
+///
+/// These paths are displayed in the downloads UI and may be acted upon (open/reveal). Keep them
+/// bounded so a corrupted session file cannot force large allocations.
+const MAX_SESSION_DOWNLOAD_PATH_BYTES: usize = 16 * 1024; // 16 KiB
+
 /// Maximum UTF-8 bytes retained for appearance-theme fields in the session file.
 ///
 /// These values are tiny (theme names + hex colors) so aggressively bounding them avoids allocating
@@ -121,6 +127,18 @@ where
   D: Deserializer<'de>,
 {
   deserialize_string_truncated::<'de, D, MAX_DOWNLOAD_FILE_NAME_BYTES>(deserializer)
+}
+
+fn deserialize_download_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  let path: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
+  let Some(path) = path else {
+    return Ok(PathBuf::new());
+  };
+  let truncated = truncate_utf8_to_max_bytes(path.as_ref(), MAX_SESSION_DOWNLOAD_PATH_BYTES).trim();
+  Ok(PathBuf::from(truncated))
 }
 
 fn deserialize_download_error<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -394,7 +412,7 @@ pub struct BrowserSessionDownload {
   pub url: String,
   #[serde(default, deserialize_with = "deserialize_download_file_name")]
   pub file_name: String,
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_download_path")]
   pub path: PathBuf,
   #[serde(default)]
   pub status: BrowserSessionDownloadStatus,
@@ -2069,6 +2087,7 @@ mod tests {
     );
     let long_title = "€".repeat(MAX_SESSION_GROUP_TITLE_BYTES + 64);
     let long_accent = "a".repeat(MAX_SESSION_ACCENT_COLOR_BYTES + 64);
+    let long_path = "p".repeat(MAX_SESSION_DOWNLOAD_PATH_BYTES + 64);
 
     let tabs: Vec<serde_json::Value> = (0..(MAX_SESSION_TABS_PER_WINDOW + 10))
       .map(|idx| {
@@ -2091,7 +2110,17 @@ mod tests {
       .collect();
 
     let mut windows: Vec<serde_json::Value> = Vec::new();
-    windows.push(json!({"tabs": tabs, "tab_groups": tab_groups, "active_tab_index": 0}));
+    windows.push(json!({
+      "tabs": tabs,
+      "tab_groups": tab_groups,
+      "downloads": [{
+        "url": "https://example.com/file",
+        "file_name": "file.bin",
+        "path": long_path,
+        "status": "completed"
+      }],
+      "active_tab_index": 0
+    }));
     for _ in 0..(MAX_SESSION_WINDOWS + 2) {
       windows.push(json!({"tabs": [{"url": "about:newtab"}], "active_tab_index": 0}));
     }
@@ -2123,6 +2152,12 @@ mod tests {
       .accent_color
       .as_ref()
       .is_some_and(|accent| accent.as_bytes().len() <= MAX_SESSION_ACCENT_COLOR_BYTES));
+    assert!(session.windows[0].downloads.first().is_some_and(|d| d
+      .path
+      .to_string_lossy()
+      .as_bytes()
+      .len()
+      <= MAX_SESSION_DOWNLOAD_PATH_BYTES));
   }
 
   #[test]
