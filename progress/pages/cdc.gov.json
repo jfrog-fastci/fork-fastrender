@@ -19,28 +19,29 @@
   "notes": "Major structure: yes (nav/header, hero carousel, cards/content sections all present and laid out correctly). Diff% is inflated mostly by raster-level differences: downscaled/cover-fit hero + card images (resampling) combined with semi-transparent linear-gradient overlays, plus text rasterization/hinting/AA differences for Poppins/Nunito. Remaining non-raster deltas look minor (a few 1px seams/edge rounding differences on colored bars/dividers; some icon/text pixels flip between adjacent shades). Missing primitives: none obvious from this fixture (gradients, box-shadows, border-radius, SVG/images appear supported).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 519808,
-    "diff_percent": 54.1467,
-    "perceptual": 0.0435,
+    "diff_pixels": 295864,
+    "diff_percent": 30.8192,
+    "perceptual": 0.0401,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 48,
-      "y": 13,
+      "x": 94,
+      "y": 12,
       "baseline_rgba": [
-        29,
-        51,
-        177,
+        152,
+        153,
+        153,
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        184,
+        185,
+        185,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

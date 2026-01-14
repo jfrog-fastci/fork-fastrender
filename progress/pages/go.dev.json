@@ -18,9 +18,10 @@
   "notes": "Fixed major layout shift: non-replaced inline padding/border must not expand line boxes (Chrome lets it overflow instead). Remaining diffs are mostly text rasterization/antialiasing (low perceptual distance).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 241872,
-    "diff_percent": 25.195,
-    "perceptual": 0.063,
+    "diff_pixels": 239623,
+    "diff_percent": 24.9607,
+    "perceptual": 0.0665,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 58,
       "y": 13,
@@ -39,7 +40,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

@@ -17,9 +17,10 @@
   "notes": "High diff% but low perceptual. Visually/structurally looks good; remaining diffs vs Chrome are dominated by raster-level differences (text rasterization/hinting, subtle gradient/shadow rounding). The offline fixture also contains hundreds of intentionally empty `assets/missing_*.bin` resources (0-byte), so UA-specific broken-image placeholder painting/antialiasing can contribute to pixel diffs without indicating major layout/cascade issues.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 292981,
-    "diff_percent": 30.5189,
-    "perceptual": 0.047,
+    "diff_pixels": 56546,
+    "diff_percent": 5.8902,
+    "perceptual": 0.0216,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 101,
       "y": 12,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,
@@ -66,10 +67,10 @@
         "css_inline_imports_cpu_ms": null,
         "css_inline_inject_ms": null,
         "css_parse_ms": 0.353278,
-        "css_parse_used_codepoints_ms": 2.9999999999999997e-05,
+        "css_parse_used_codepoints_ms": 0.000029999999999999997,
         "css_parse_collect_font_faces_ms": 0.351958,
-        "css_parse_load_webfonts_ms": 2.9999999999999997e-05,
-        "css_parse_collect_keyframes_ms": 2e-05,
+        "css_parse_load_webfonts_ms": 0.000029999999999999997,
+        "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 92.030891,
         "box_tree_ms": 6.526541,
         "layout_ms": 137.634828,

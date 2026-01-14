@@ -17,9 +17,10 @@
   "notes": "Mostly raster-level diff: font AA/hinting differences on dense nav/footer link text (white-on-dark) plus subtle near-white background deltas (e.g. #fff vs #f9f9f9). Layout/images look correct; no obvious missing sections.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 132119,
-    "diff_percent": 13.7624,
-    "perceptual": 0.0377,
+    "diff_pixels": 133579,
+    "diff_percent": 13.9145,
+    "perceptual": 0.0175,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 140,
       "y": 121,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        249,
-        249,
-        249,
+        250,
+        250,
+        250,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

@@ -17,9 +17,10 @@
   "notes": "Visually close to Chrome; remaining diffs are dominated by pixel-level rasterization differences. Above-the-fold uses large photos (jumbotron `background-size: cover` + `object-fit: cover` event images) that cover ~35% of the viewport (4 image draw ops in the display list), so small JPEG/PNG decode + resampling/crop rounding deltas inflate diff%. The rest is mostly tiny text AA/hinting (63 text items) + subtle shadow/gradient edge differences. With tolerance=0 these per-pixel deltas look big in diff% even though perceptual score is low.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 447962,
-    "diff_percent": 46.6627,
-    "perceptual": 0.0549,
+    "diff_pixels": 450580,
+    "diff_percent": 46.9354,
+    "perceptual": 0.0345,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 183,
       "y": 17,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        245,
-        245,
-        246,
+        248,
+        248,
+        248,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "paint",
   "failure_stage": null,

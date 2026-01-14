@@ -17,28 +17,29 @@
   "notes": "Visually mostly good. Major page structure (masthead + multi-column headline grid) appears to render correctly; remaining diffs are primarily raster-level. The dominant visible mismatch is in large flat/gradient areas (e.g. masthead/nav blues; first mismatch @ (782,295)) plus filter effects (notably `backdrop-filter: blur(12px) brightness(0.5)` used on feature-card overlays), which can shift colors/blending and produce edge/AA differences (diff~=6.8%, perceptual~=0.05).\n\nRuntime hotspot is paint (706ms), especially rasterization (650ms) with heavy blur work (285ms across 9 calls) and gradients (72ms). Layout (463ms) and cascade (228ms) are the next biggest contributors.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 64932,
-    "diff_percent": 6.7638,
-    "perceptual": 0.0515,
+    "diff_pixels": 62990,
+    "diff_percent": 6.5615,
+    "perceptual": 0.0777,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 782,
-      "y": 295,
+      "x": 1078,
+      "y": 334,
       "baseline_rgba": [
-        80,
-        105,
-        145,
+        4,
+        31,
+        74,
         255
       ],
       "rendered_rgba": [
+        16,
         42,
-        68,
-        110,
+        83,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "paint",
   "failure_stage": null,

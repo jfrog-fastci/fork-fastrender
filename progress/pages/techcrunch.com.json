@@ -17,9 +17,10 @@
   "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/techcrunch.com`) shows correct overall layout/structure; remaining diffs vs Chrome are dominated by text rasterization/hinting and gradient/alpha rounding. The fixture also intentionally contains missing/broken `<img>` `srcset` candidates (Chrome prefers `srcset` over `src`), so UA broken-image placeholder rendering is a noticeable source of pixel diffs. No missing layout primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 274790,
-    "diff_percent": 28.624,
-    "perceptual": 0.0471,
+    "diff_pixels": 325179,
+    "diff_percent": 33.8728,
+    "perceptual": 0.1661,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 42,
       "y": 27,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        33,
-        38,
-        35,
+        144,
+        146,
+        145,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

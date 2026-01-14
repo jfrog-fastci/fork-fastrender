@@ -19,9 +19,10 @@
   "notes": "Perceptually very close; diff% is inflated by tolerance=0 counting tiny per-pixel rasterization differences. ~88% of mismatching pixels are inside the 5 downscaled WebP hero/thumbnail images (resample/color rounding differences vs Chrome). Most remaining diffs are from text rasterization/hinting (glyph edge pixels flipping).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 188339,
-    "diff_percent": 19.6186,
-    "perceptual": 0.0371,
+    "diff_pixels": 178561,
+    "diff_percent": 18.6001,
+    "perceptual": 0.003,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 564,
       "y": 252,
@@ -32,15 +33,15 @@
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        226,
+        226,
+        226,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9e24292ca15621df5a653745fb3bfd6a3ae5d053"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

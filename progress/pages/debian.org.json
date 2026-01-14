@@ -17,11 +17,12 @@
   "notes": "Visually good. Remaining diffs vs Chrome are dominated by pixel-level rasterization differences in the scaled JPEG carousel photos and the #splash SVG background (sampling/antialiasing), not layout/stacking correctness.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 245266,
-    "diff_percent": 25.5485,
-    "perceptual": 0.0509,
+    "diff_pixels": 190445,
+    "diff_percent": 19.838,
+    "perceptual": 0.0319,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 1,
+      "x": 255,
       "y": 0,
       "baseline_rgba": [
         216,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        215,
-        217,
-        226,
+        216,
+        218,
+        227,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "paint",
   "failure_stage": null,

@@ -17,9 +17,10 @@
   "notes": "DOM/layout are present; poor match is dominated by paint of the hero <img> (assets/eff60c86246cce9ba4a7d8eeb04cc7f4.webp, 727x410) upscaled to ~1098x619 at fractional Y (inspect/display_list.json shows dest_rect y≈426.963, h≈619.230, linear filter). Nearly all pixels in the visible hero-image region differ vs Chrome, consistent with non-Skia-exact linear image sampling/rounding for moderate upscales with fractional destination rects (also appears ~3px vertical placement drift). Blocked on implementing Skia-matching image sampling/coordinate rounding for these cases.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 418054,
-    "diff_percent": 43.5473,
-    "perceptual": 0.0498,
+    "diff_pixels": 522720,
+    "diff_percent": 54.45,
+    "perceptual": 0.4533,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 509,
       "y": 13,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "paint",
   "failure_stage": null,

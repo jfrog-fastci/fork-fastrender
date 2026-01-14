@@ -17,28 +17,29 @@
   "notes": "Visually good (overall layout/structure matches Chrome; perceptual distance ~0.05). Remaining ~23% pixel diffs are dominated by rasterization differences: text hinting/subpixel AA (FastRender tiny-skia glyph raster vs Chrome/FreeType) and per-pixel image decode/resample noise (JPEG/WebP), not missing layout/paint primitives.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 222669,
-    "diff_percent": 23.1947,
-    "perceptual": 0.0526,
+    "diff_pixels": 225673,
+    "diff_percent": 23.5076,
+    "perceptual": 0.074,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 79,
+      "x": 78,
       "y": 22,
       "baseline_rgba": [
-        207,
-        207,
-        220,
+        255,
+        255,
+        255,
         255
       ],
       "rendered_rgba": [
-        211,
-        212,
-        223,
+        233,
+        233,
+        239,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "layout",
   "failure_stage": null,

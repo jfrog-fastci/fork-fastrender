@@ -17,9 +17,10 @@
   "notes": "Scattered pixel diffs are mostly minor OKLCH (CSS Color 4) rounding and text rasterization (hinting/subpixel-AA) differences vs Chrome; layout and imagery match closely. Treat as \"good\".",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 89599,
-    "diff_percent": 9.3332,
-    "perceptual": 0.0494,
+    "diff_pixels": 79598,
+    "diff_percent": 8.2915,
+    "perceptual": 0.0306,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 16,
       "y": 16,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "4c5c53b30ed923d28fe0919a238007a0a219e1c3"
   },
   "hotspot": "paint",
   "failure_stage": null,
