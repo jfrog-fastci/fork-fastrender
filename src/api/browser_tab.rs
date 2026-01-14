@@ -36,7 +36,10 @@ use crate::ui::{PointerButton, PointerModifiers};
 use encoding_rs::{Encoding, UTF_8};
 
 #[cfg(feature = "a11y_accesskit")]
-use accesskit::{Action as AccessKitAction, NodeId as AccessKitNodeId};
+use accesskit::{
+  Action as AccessKitAction, ActionData as AccessKitActionData,
+  ActionRequest as AccessKitActionRequest, NodeId as AccessKitNodeId,
+};
 #[cfg(feature = "a11y_accesskit")]
 use std::num::NonZeroU128;
 use std::cell::Cell;
@@ -197,6 +200,58 @@ mod accesskit_expand_collapse_tests {
       "true",
       "expected aria-expanded to update to true"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn accesskit_set_value_action_request_updates_dom_state_and_dispatches_input_event() -> Result<()> {
+    let html = r#"
+      <input id=x value=old>
+      <script>
+        globalThis.__seen = '';
+        const el = document.getElementById('x');
+        el.addEventListener('input', (e) => { globalThis.__seen = e.target.value; });
+      </script>
+    "#;
+    let mut tab = BrowserTab::from_html_with_vmjs(html, options())?;
+    // Ensure the inline script has executed so the input listener is installed.
+    let _ = tab.run_event_loop_until_idle(limits())?;
+    // Ensure we have a renderer↔dom2 mapping so AccessKit NodeIds can be decoded.
+    let _ = tab.render_frame()?;
+
+    let input = tab
+      .dom()
+      .get_element_by_id("x")
+      .expect("input element should exist");
+    let input_accesskit = tab
+      .accesskit_node_id_for_dom2_node(input)
+      .expect("input should map to an AccessKit node");
+
+    let handled = tab.dispatch_accesskit_action_request(accesskit::ActionRequest {
+      action: accesskit::Action::SetValue,
+      target: input_accesskit,
+      data: Some(accesskit::ActionData::Value("new".into())),
+    })?;
+    assert!(handled);
+
+    assert_eq!(tab.dom().input_value(input).expect("input_value"), "new");
+
+    // Verify the JS event handler ran and observed the updated value via `event.target.value`.
+    let realm = tab
+      .host
+      .executor
+      .window_realm_mut()
+      .expect("expected vm-js WindowRealm");
+    let seen = realm
+      .exec_script("globalThis.__seen")
+      .map_err(|err| Error::Other(err.to_string()))?;
+    let vm_js::Value::String(seen_s) = seen else {
+      return Err(Error::Other(format!(
+        "expected globalThis.__seen to be a string, got {seen:?}"
+      )));
+    };
+    assert_eq!(realm.heap().get_string(seen_s).unwrap().to_utf8_lossy(), "new");
 
     Ok(())
   }
@@ -7267,6 +7322,38 @@ impl BrowserTab {
     }
 
     Ok(())
+  }
+
+  /// Route an AccessKit [`ActionRequest`](accesskit::ActionRequest) into a DOM mutation/event.
+  ///
+  /// This is a convenience wrapper around the lower-level action helpers:
+  /// - [`dispatch_accesskit_action`](Self::dispatch_accesskit_action) for actions without payloads
+  ///   (e.g. `ShowContextMenu`, `Expand`, `Collapse`).
+  /// - [`dispatch_set_value_action`](Self::dispatch_set_value_action) for `SetValue`.
+  ///
+  /// Returns `true` when the request was recognized and dispatched.
+  #[cfg(feature = "a11y_accesskit")]
+  pub fn dispatch_accesskit_action_request(
+    &mut self,
+    request: AccessKitActionRequest,
+  ) -> Result<bool> {
+    match request.action {
+      AccessKitAction::SetValue => {
+        let Some(AccessKitActionData::Value(value)) = request.data else {
+          return Ok(false);
+        };
+        let Some(node_id) = self.dom2_node_for_accesskit_node_id(request.target) else {
+          return Ok(false);
+        };
+        self.dispatch_set_value_action(node_id, &value)?;
+        Ok(true)
+      }
+      AccessKitAction::ShowContextMenu | AccessKitAction::Expand | AccessKitAction::Collapse => {
+        self.dispatch_accesskit_action(request.target, request.action)?;
+        Ok(true)
+      }
+      _ => Ok(false),
+    }
   }
 
   #[cfg(feature = "a11y_accesskit")]

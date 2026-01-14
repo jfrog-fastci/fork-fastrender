@@ -739,7 +739,7 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
   }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct OmniboxSuggestionA11yLabelCache {
   labels: std::collections::HashMap<egui::Id, Arc<str>>,
 }

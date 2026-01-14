@@ -27149,7 +27149,7 @@ impl App {
     }
 
     match request.action {
-      accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default => {
+      accesskit::Action::Focus | accesskit::Action::Default => {
         if request.target == compositor_a11y::page_node_id() {
           let focus_changed = apply_page_focus_for_accesskit_action(
             request.action,
@@ -29953,7 +29953,7 @@ fn route_page_accesskit_action_request(
       tab_id,
       node_id: dom_node_id,
     }),
-    accesskit::Action::Click | accesskit::Action::Default => {
+    accesskit::Action::Default => {
       Some(fastrender::ui::UiToWorker::A11yActivate {
         tab_id,
         node_id: dom_node_id,
@@ -29973,7 +29973,7 @@ fn apply_page_focus_for_accesskit_action(
 ) -> bool {
   let is_focus_action = matches!(
     action,
-    accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default
+    accesskit::Action::Focus | accesskit::Action::Default
   );
   if !is_focus_action {
     return false;
@@ -30027,8 +30027,6 @@ fn handle_page_host_accesskit_focus_actions(
   let action = ui.input(|i| {
     if i.has_accesskit_action_request(response.id, accesskit::Action::Focus) {
       Some(accesskit::Action::Focus)
-    } else if i.has_accesskit_action_request(response.id, accesskit::Action::Click) {
-      Some(accesskit::Action::Click)
     } else if i.has_accesskit_action_request(response.id, accesskit::Action::Default) {
       Some(accesskit::Action::Default)
     } else {
@@ -30056,7 +30054,7 @@ fn clear_page_focus_for_non_page_accesskit_action_requests(
   let is_focus_or_activate = |action: accesskit::Action| {
     matches!(
       action,
-      accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default
+      accesskit::Action::Focus | accesskit::Action::Default
     )
   };
 
@@ -30737,7 +30735,7 @@ mod page_host_accesskit_action_tests {
   }
 
   #[test]
-  fn accesskit_click_action_on_page_host_sets_page_focus() {
+  fn accesskit_default_action_on_page_host_sets_page_focus() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
 
@@ -30748,7 +30746,7 @@ mod page_host_accesskit_action_tests {
 
     let node_id = accesskit_node_id_for_page_host(&output);
     let click_request = accesskit::ActionRequest {
-      action: accesskit::Action::Click,
+      action: accesskit::Action::Default,
       target: node_id,
       data: None,
     };
@@ -30756,7 +30754,7 @@ mod page_host_accesskit_action_tests {
     let _ = run_page_host_frame(&ctx, &mut page_has_focus, &mut chrome, vec![click_request]);
     assert!(
       page_has_focus,
-      "expected AccessKit Click action on page host to set page_has_focus"
+      "expected AccessKit Default action on page host to set page_has_focus"
     );
     assert!(
       !chrome.address_bar_has_focus,

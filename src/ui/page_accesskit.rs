@@ -63,9 +63,8 @@ pub fn action_request_to_ui_message(req: &accesskit::ActionRequest) -> Option<Ui
 
   match req.action {
     accesskit::Action::Focus => Some(UiToWorker::A11ySetFocus { tab_id, node_id }),
-    // "Default" is AccessKit's generic "activate" action (click/press). Some platforms use
-    // `Click` instead.
-    accesskit::Action::Click | accesskit::Action::Default => {
+    // "Default" is AccessKit's generic "activate" action (click/press).
+    accesskit::Action::Default => {
       Some(UiToWorker::A11yActivate { tab_id, node_id })
     }
     accesskit::Action::ScrollIntoView => Some(UiToWorker::A11yScrollIntoView { tab_id, node_id }),

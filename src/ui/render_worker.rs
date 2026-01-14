@@ -1060,6 +1060,22 @@ impl TabState {
   ) -> Option<Arc<crate::FragmentTree>> {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
+
+  fn desired_next_tick(&mut self) -> Option<Duration> {
+    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
+    let css_tick = self
+      .document
+      .as_mut()
+      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
+    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
+
+    match (css_tick, js_tick) {
+      (Some(a), Some(b)) => Some(a.min(b)),
+      (Some(a), None) => Some(a),
+      (None, Some(b)) => Some(b),
+      (None, None) => None,
+    }
+  }
 }
 
 fn hit_test_fragment_tree_for_scroll_cached(
@@ -4540,14 +4556,63 @@ impl BrowserRuntime {
         if changed {
           if let Some(js_tab) = tab.js_tab.as_mut() {
             let dom_snapshot = doc.dom();
-            mirror_dom1_form_control_state_into_dom2(
+            let dom_node = dom_node_by_preorder_id(dom_snapshot, node_id);
+            let element_id = dom_node.and_then(|node| node.get_attribute_ref("id"));
+            let Some(dom2_node_id) = js_dom_node_for_preorder_id_with_log(
+              &self.ui_tx,
+              tab_id,
               js_tab,
-              tab.js_dom_mapping.as_ref(),
-              dom_snapshot,
               node_id,
-              None,
-            );
-            tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+              element_id,
+              &mut tab.js_dom_mapping_generation,
+              &mut tab.js_dom_mapping,
+              &mut tab.js_dom_mapping_miss_log_last,
+              "input",
+            ) else {
+              tab.cancel.bump_paint();
+              tab.needs_repaint = true;
+              return;
+            };
+
+            // Mirror the value mutation into dom2's internal form-control state first so the
+            // dispatched `input` event observes the new value via `event.target.value`.
+            let mut dom2_changed = false;
+            if let Some(dom_node) = dom_node {
+              if let Some(tag) = dom_node.tag_name() {
+                if tag.eq_ignore_ascii_case("input") {
+                  let sanitized_value = dom_node.get_attribute_ref("value").unwrap_or("");
+                  dom2_changed = js_tab
+                    .dom_mut()
+                    .set_input_value(dom2_node_id, sanitized_value)
+                    .unwrap_or(false);
+                } else if tag.eq_ignore_ascii_case("textarea") {
+                  let sanitized_value = crate::dom::textarea_current_value(dom_node);
+                  dom2_changed = js_tab
+                    .dom_mut()
+                    .set_textarea_value(dom2_node_id, &sanitized_value)
+                    .unwrap_or(false);
+                }
+              }
+            }
+
+            // Keep the JS dom mutation generation in sync with the value update we already applied
+            // to dom1 so we don't force an expensive full dom2→dom1 resync just for this mutation.
+            let js_generation_before_dispatch = js_tab.dom().mutation_generation();
+            tab.js_dom_mutation_generation = js_generation_before_dispatch;
+
+            if dom2_changed {
+              let _ = js_tab.dispatch_input_event(dom2_node_id);
+              // Release our mutable borrow of `tab.js_tab` before running the follow-up pump (which
+              // borrows it again).
+              let _ = js_tab;
+              Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+                &self.ui_tx,
+                self.debug_log_enabled,
+                tab_id,
+                tab,
+                js_generation_before_dispatch,
+              );
+            }
           }
           tab.cancel.bump_paint();
           tab.needs_repaint = true;

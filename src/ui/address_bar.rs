@@ -11,6 +11,12 @@ pub enum AddressBarSecurityState {
   Other,
 }
 
+impl Default for AddressBarSecurityState {
+  fn default() -> Self {
+    Self::Other
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressBarDisplayParts {
   /// Weakly-emphasised host prefix (subdomains + trailing dot) for HTTP(S) URLs.
