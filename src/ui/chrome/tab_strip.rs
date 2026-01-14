@@ -1332,16 +1332,18 @@ fn group_chip_ui(
     // Title.
     let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
     let title_end_x = chip_rect.max.x - GROUP_CHIP_PADDING_X;
-    if title_end_x > title_start_x + 4.0 {
-      let title_rect = Rect::from_min_max(
-        Pos2::new(title_start_x, chip_rect.min.y),
-        Pos2::new(title_end_x, chip_rect.max.y),
-      );
+  if title_end_x > title_start_x + 4.0 {
+    let title_rect = Rect::from_min_max(
+      Pos2::new(title_start_x, chip_rect.min.y),
+      Pos2::new(title_end_x, chip_rect.max.y),
+    );
+    if ui.is_rect_visible(title_rect) {
       let label = egui::Label::new(egui::RichText::new(title).text_style(egui::TextStyle::Button))
         .truncate(true)
         .wrap(false);
       let _ = ui.put(title_rect, label);
     }
+  }
 
     (collapsed, response, chip_rect)
   };
@@ -1893,17 +1895,19 @@ fn tab_ui(
       Pos2::new(title_start_x, tab_rect.min.y),
       Pos2::new(title_end_x, tab_rect.max.y),
     );
-    let label = {
-      let mut text = egui::RichText::new(title);
-      if is_active {
-        text = text.strong();
-      }
-      if closing {
-        text = text.color(with_alpha(visuals.text_color(), close_opacity));
-      }
-      egui::Label::new(text).truncate(true).wrap(false)
-    };
-    let _ = paint_ui.put(title_rect, label);
+    if paint_ui.is_rect_visible(title_rect) {
+      let label = {
+        let mut text = egui::RichText::new(title);
+        if is_active {
+          text = text.strong();
+        }
+        if closing {
+          text = text.color(with_alpha(visuals.text_color(), close_opacity));
+        }
+        egui::Label::new(text).truncate(true).wrap(false)
+      };
+      let _ = paint_ui.put(title_rect, label);
+    }
   }
 
   if closing {
