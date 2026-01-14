@@ -15238,6 +15238,36 @@ pub fn object_prototype_to_string(
     )
   };
 
+  // Proxy objects are not branded as Error objects directly, but we still want
+  // `Object.prototype.toString` to treat proxies around native Errors as
+  // `"[object Error]"` (tests cover `new Proxy(new TypeError(), {})`).
+  //
+  // This mirrors the behaviour of `IsCallable`, where callable proxies are
+  // still tagged as `Function`.
+  let is_error_or_error_proxy = || -> Result<bool, VmError> {
+    let mut current = o;
+    // Bound the proxy chain walk for DoS resistance; if it gets too deep, fall
+    // back to treating it as a non-Error.
+    let mut remaining = 64usize;
+    loop {
+      if heap.is_error_object(current) {
+        return Ok(true);
+      }
+      let Some(proxy) = heap.get_proxy_data(current)? else {
+        return Ok(false);
+      };
+      let (Some(next), Some(_handler)) = (proxy.target, proxy.handler) else {
+        // Revoked (or malformed) proxy.
+        return Ok(false);
+      };
+      if remaining == 0 {
+        return Ok(false);
+      }
+      remaining -= 1;
+      current = next;
+    }
+  };
+
   let builtin_tag: &[u16] = if is_array {
     &TAG_ARRAY
   } else if scope.heap().is_arguments_object(o) {
@@ -15245,7 +15275,7 @@ pub fn object_prototype_to_string(
   } else if scope.heap().is_callable(receiver)? {
     // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
     &TAG_FUNCTION
-  } else if scope.heap().is_error_object(o) {
+  } else if is_error_or_error_proxy()? {
     &TAG_ERROR
   } else if can_check_markers && has_marker(heap.internal_boolean_data_symbol())? {
     &TAG_BOOLEAN

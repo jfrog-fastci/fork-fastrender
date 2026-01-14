@@ -4621,11 +4621,14 @@ impl Vm {
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
  
-    // The compiled (HIR) executor does not yet support **sync** generator bodies (`yield`, `yield*`).
+    // The compiled (HIR) executor does not yet support **sync** generator bodies (`yield`, `yield*`),
+    // and the compiled async executor supports only a subset of `await` forms.
+    //
     // Generator functions are normally allocated as interpreter-backed ECMAScript functions, but
     // low-level embeddings/tests can allocate them as compiled user functions (`CallHandler::User`).
-    // Detect this case and defer body execution to the AST evaluator at call-time.
-    let ast_fallback_span_kind = (|| -> Result<Option<(u32, u32, EcmaFunctionKind)>, VmError> {
+    // Detect these cases and defer body execution to the AST evaluator at call-time.
+    let ast_fallback_span_kind =
+      (|| -> Result<Option<(u32, u32, EcmaFunctionKind, bool)>, VmError> {
       let func_body = func
         .script
         .hir
@@ -4639,8 +4642,18 @@ impl Vm {
         ));
       };
 
-      // Only fall back for *sync* generator functions. Async generators can execute via HIR.
-      if !func_meta.generator || func_meta.async_ {
+      let is_async_non_generator = func_meta.async_ && !func_meta.generator;
+      let async_needs_ast_fallback = is_async_non_generator
+        && func
+          .script
+          .async_function_body_requires_ast_fallback
+          .contains(&func.body);
+
+      // Only fall back for:
+      // - *sync* generator functions (async generators execute via HIR), and
+      // - async functions whose `await` forms are not supported by the compiled async executor.
+      let sync_generator_needs_ast_fallback = func_meta.generator && !func_meta.async_;
+      if !sync_generator_needs_ast_fallback && !async_needs_ast_fallback {
         return Ok(None);
       }
 
@@ -4691,12 +4704,23 @@ impl Vm {
         EcmaFunctionKind::Decl
       };
 
-      Ok(Some((def_span.start, def_span.end, kind)))
+      Ok(Some((
+        def_span.start,
+        def_span.end,
+        kind,
+        /* is_async_fallback */ async_needs_ast_fallback,
+      )))
     })()?;
 
-    if let Some((span_start, span_end, kind)) = ast_fallback_span_kind {
+    if let Some((span_start, span_end, kind, is_async_fallback)) = ast_fallback_span_kind {
       let code_id =
         self.register_ecma_function(func.script.source.clone(), span_start, span_end, kind)?;
+      // Cache the fallback decision so future calls avoid re-running the HIR async support analysis.
+      if is_async_fallback {
+        scope
+          .heap_mut()
+          .set_function_data(callee, FunctionData::AsyncEcmaFallback { code_id })?;
+      }
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
     let this = match this_mode {

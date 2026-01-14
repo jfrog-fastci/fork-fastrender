@@ -13088,11 +13088,12 @@ impl<'a> Evaluator<'a> {
         // For `super[expr]`, ECMA-262 captures `GetSuperBase()` **before** converting the property
         // name value via `ToPropertyKey` (conversion happens inside `GetValue` / `PutValue`).
         //
-        // Keep the conversion here (after `ToObject(base)`), and cache the converted key on the
-        // reference so compound assignments and update expressions don't re-run `ToPropertyKey`.
+        // Convert the key value here and cache it on the reference so compound assignments and
+        // update expressions don't re-run `ToPropertyKey`.
+        //
+        // Note: this conversion must happen *before* `ToObject(base)` so a `null` super base throws
+        // after running user code in `ToPropertyKey` (matching major engines).
         self.root_reference(scope, &reference_copy)?;
-        let object = self.to_object_operator(scope, base)?;
-        scope.push_root(Value::Object(object))?;
 
         let prop_key = match key_value {
           Value::String(s) => PropertyKey::String(s),
@@ -13118,6 +13119,8 @@ impl<'a> Evaluator<'a> {
           }
         };
 
+        let object = self.to_object_operator(scope, base)?;
+        scope.push_root(Value::Object(object))?;
         scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, prop_key, receiver)
       }
       Reference::Private { base, sym, name } => self.private_get(scope, base, sym, name),
@@ -13178,14 +13181,12 @@ impl<'a> Evaluator<'a> {
       } => {
         let mut set_scope = scope.reborrow();
         self.root_reference(&mut set_scope, &reference_copy)?;
-        // Root `value` across `ToObject(base)` in case boxing triggers a GC.
+        // Root `value` across key conversion / `ToObject(base)` in case allocations trigger a GC.
         set_scope.push_root(value)?;
-        let object = self.to_object_operator(&mut set_scope, base)?;
-        set_scope.push_root(Value::Object(object))?;
 
-        // `ToPropertyKey` conversion is deferred until `PutValue` (spec: `PutValue` step 3.c),
-        // and should happen *after* `ToObject(base)` so `super` with a `null` base throws before
-        // running user code during key conversion.
+        // `ToPropertyKey` conversion is deferred until `PutValue` (spec: `PutValue` step 3.c).
+        // For `super[expr] = rhs`, this conversion must happen after evaluating the RHS, but before
+        // `ToObject(base)` throws on a `null` super base.
         let prop_key = match key_value {
           Value::String(s) => PropertyKey::String(s),
           Value::Symbol(sym) => PropertyKey::Symbol(sym),
@@ -13207,6 +13208,9 @@ impl<'a> Evaluator<'a> {
             pk
           }
         };
+
+        let object = self.to_object_operator(&mut set_scope, base)?;
+        set_scope.push_root(Value::Object(object))?;
 
         let ok = crate::spec_ops::internal_set_with_host_and_hooks(
           self.vm,
