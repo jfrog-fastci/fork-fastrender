@@ -400,6 +400,69 @@ fn derived_ctor_returning_primitive_without_super_throws_type_error_compiled() -
 // === 3. `super.prop` read/write/getter+setter/method receiver. ===
 
 #[test]
+fn super_property_call_in_derived_constructor_after_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class B {
+        __m() { this.__x = 1; }
+      }
+      class D extends B {
+        constructor() { super(); super.__m(); }
+      }
+      const o = new D();
+      o.__x === 1 && o instanceof D
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_set_in_derived_constructor_after_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class B {
+        set __g(v) { this.__x = v; }
+      }
+      class D extends B {
+        constructor() { super(); super.__g = 2; }
+      }
+      const o = new D();
+      o.__x === 2 && o instanceof D
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_in_derived_constructor_arrow_observes_this_initialization() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class B { __m() { return this.__x; } }
+      class D extends B {
+        constructor() {
+          const f = () => super.__m();
+          let out = "";
+          try { f(); } catch (e) { out = e.name; }
+          super();
+          this.__x = 5;
+          this.__r = f();
+          this.__out = out;
+        }
+      }
+      const o = new D();
+      o.__out === "ReferenceError" && o.__r === 5
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_property_reference_semantics_in_derived_method() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match rt.exec_script(

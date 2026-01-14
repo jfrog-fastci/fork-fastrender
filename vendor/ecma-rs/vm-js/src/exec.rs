@@ -10369,12 +10369,11 @@ impl<'a> Evaluator<'a> {
       // `GetThisBinding` must run before any further evaluation (including allocating the property
       // key string) so derived constructors throw before `super()` as required by ECMA-262.
       let receiver = self.get_this_binding(scope)?;
-
       let home_object = self.home_object.ok_or(VmError::InvariantViolation(
         "super property access missing [[HomeObject]]",
       ))?;
 
-      // Root `this` + home object across property-key string allocation.
+      // Root receiver + home object across property-key string allocation and the `[[Get]]`.
       let mut key_scope = scope.reborrow();
       key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
       let key_s = key_scope.alloc_string(&expr.right)?;
@@ -10440,7 +10439,8 @@ impl<'a> Evaluator<'a> {
         "super property access missing [[HomeObject]]",
       ))?;
 
-      // Root `this` + home object across evaluation of the computed member key and `ToPropertyKey`.
+      // Root receiver + home object across evaluation of the computed key expression, `ToPropertyKey`,
+      // and the final `[[Get]]`.
       let mut key_scope = scope.reborrow();
       key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
@@ -10603,7 +10603,6 @@ impl<'a> Evaluator<'a> {
             ));
           }
           let receiver = self.get_this_binding(scope)?;
-
           let mut key_scope = scope.reborrow();
           key_scope.push_roots(&[self.this, receiver])?;
           let key_s = key_scope.alloc_string(&member.stx.right)?;
@@ -13252,7 +13251,6 @@ impl<'a> Evaluator<'a> {
         // when the `this` binding is represented via a shared `DerivedConstructorState` cell for
         // nested arrow functions / eval).
         let receiver = self.get_this_binding(scope)?;
-
         let home_object = self.home_object.ok_or(VmError::InvariantViolation(
           "super property access missing [[HomeObject]]",
         ))?;
@@ -13274,7 +13272,6 @@ impl<'a> Evaluator<'a> {
         }
         // `GetThisBinding` must be observed before evaluating the computed key expression.
         let receiver = self.get_this_binding(scope)?;
-
         let home_object = self.home_object.ok_or(VmError::InvariantViolation(
           "super property access missing [[HomeObject]]",
         ))?;
