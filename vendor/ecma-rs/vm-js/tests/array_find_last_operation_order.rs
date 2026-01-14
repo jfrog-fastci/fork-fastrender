@@ -38,6 +38,30 @@ fn find_last_index_length_abrupt_before_predicate_is_callable_check() -> Result<
 }
 
 #[test]
+fn find_last_length_valueof_abrupt_before_predicate_is_callable_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("[].findLast.call({ length: { valueOf() { throw 'boom' } } })")
+    .expect_err("expected abrupt completion from length valueOf");
+
+  let thrown = err.thrown_value().expect("expected a thrown value");
+  assert_eq!(value_to_utf8(&rt, thrown), "boom");
+  Ok(())
+}
+
+#[test]
+fn find_last_index_length_valueof_abrupt_before_predicate_is_callable_check() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("[].findLastIndex.call({ length: { valueOf() { throw 'boom' } } })")
+    .expect_err("expected abrupt completion from length valueOf");
+
+  let thrown = err.thrown_value().expect("expected a thrown value");
+  assert_eq!(value_to_utf8(&rt, thrown), "boom");
+  Ok(())
+}
+
+#[test]
 fn find_last_missing_predicate_throws_type_error_after_length() -> Result<(), VmError> {
   for src in [
     "[].findLast.call({ length: 0 })",
@@ -57,4 +81,3 @@ fn find_last_missing_predicate_throws_type_error_after_length() -> Result<(), Vm
 
   Ok(())
 }
-
