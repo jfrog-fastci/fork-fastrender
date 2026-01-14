@@ -50,7 +50,7 @@ A change counts if it lands at least one of:
 - **Focus management**: Tab order, focus ring, autofocus, focus trapping in dialogs
 - **Scrolling**: Mouse wheel, trackpad, keyboard (Page Up/Down, arrow keys, Home/End)
 - **Hit testing**: Clicks land on the correct element
-- **Hover states**: Cursor changes, tooltips, hover styling (requires `:hover` in CSS)
+- **Hover states**: Cursor changes (including `cursor: none` → `CursorKind::Hidden` to hide the OS cursor), tooltips, hover styling (requires `:hover` in CSS)
 - **Drag and drop**: Native drag/drop for files, text, links
 - **Context menus**: Right-click menus for links, images, selections
 - **Touch input**: (Future) Touch scrolling, tap, long-press
