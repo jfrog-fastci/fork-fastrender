@@ -22883,7 +22883,7 @@ impl App {
           return;
         }
 
-        if self.open_media_controls.is_some() {
+        if self.open_media_controls.is_some() && !self.pointer_captured {
           // If the media controls overlay is open, pointer interactions inside it are handled by
           // egui. Treat the overlay like other popups: do not forward either press or release
           // events to the page worker while the cursor is over the overlay.
