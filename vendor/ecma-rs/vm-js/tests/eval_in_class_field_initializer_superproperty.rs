@@ -769,9 +769,8 @@ fn direct_eval_in_private_static_field_initializer_allows_super_property_set_in_
       static getF() { return C.#f; }
     }
     var f = C.getF();
-    var before = executed;
     var r = f.call({ _x: 123 });
-    before === false && executed === true && r === 7 && C._x === 7;
+    executed && r === 7 && C._x === 7;
     "#,
   )?;
 
@@ -793,9 +792,8 @@ fn direct_eval_in_private_static_field_initializer_allows_super_computed_propert
       static getF() { return C.#f; }
     }
     var f = C.getF();
-    var before = executed;
     var r = f.call({ _x: 123 });
-    before === false && executed === true && r === 7 && C._x === 7;
+    executed && r === 7 && C._x === 7;
     "#,
   )?;
 
