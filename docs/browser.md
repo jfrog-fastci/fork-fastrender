@@ -236,7 +236,7 @@ Most renderer debug knobs are environment variables; the canonical list is
 - `FASTR_RENDER_TIMINGS=1` – log per-stage timings to stderr.
 - `FASTR_TRACE_OUT=/tmp/trace.json` – write Chrome trace events for a render.
 - `FASTR_TRACE_MAX_EVENTS=<N>` – cap the number of trace events retained per trace (default 200000).
-  This applies to both `FASTR_TRACE_OUT` (renderer pipeline) and `FASTR_BROWSER_TRACE_OUT` (browser UI).
+  This applies to both `FASTR_TRACE_OUT` (renderer pipeline) and windowed browser UI traces (`browser --trace-out` / `FASTR_BROWSER_TRACE_OUT`).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – switch paint backend.
 
 ### Browser responsiveness tooling

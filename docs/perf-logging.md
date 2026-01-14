@@ -12,7 +12,7 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
 - `FASTR_TRACE_OUT=/tmp/trace.json`
   - Writes a Chrome trace of the render pipeline (fetch/decode/parse/style/layout/paint). Open it in `chrome://tracing` or Perfetto to inspect spans.
   - `fetch_and_render` also supports `--trace-out trace.json`, and library consumers can set `RenderOptions::with_trace_output`.
-  - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per trace (default 200000). This applies to both `FASTR_TRACE_OUT` and `FASTR_BROWSER_TRACE_OUT`.
+  - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per trace (default 200000). This applies to both renderer pipeline traces (`FASTR_TRACE_OUT`) and browser UI traces (`browser --trace-out` / `FASTR_BROWSER_TRACE_OUT`).
 
 - `browser --trace-out /tmp/browser-trace.json` (preferred; env: `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json`, legacy alias: `FASTR_PERF_TRACE_OUT`)
   - Writes a Chrome trace of the windowed `browser` UI event loop (winit event handling, egui frame build, worker message drain, frame uploads, wgpu present). The trace is written when the browser process exits.
