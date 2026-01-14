@@ -39156,7 +39156,7 @@ fn gen_eval_assignment_apply_reference(
         GenEval::Suspend(mut suspend) => {
           let (base, key, receiver) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
