@@ -425,9 +425,15 @@ reason = "Range.detach is a legacy no-op but must exist and not throw."
 
 [[expectations]]
 id = "dom/ranges/Range-commonAncestorContainer.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs"
+status = "pass"
+reason = "Range.commonAncestorContainer implemented (dom/common.js setupRangeTests fixture now runs)."
+
+[[expectations]]
+id = "dom/ranges/Range-commonAncestorContainer.html"
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "Range WPT `dom/common.js` harness setup is not fully supported yet (testRanges/testRangesShort fixture initialization fails or times out)."
+reason = "Times out in vmjs-rendered (renderer-backed) backend."
 
 [[expectations]]
 id = "dom/ranges/Range-compareBoundaryPoints.html"
