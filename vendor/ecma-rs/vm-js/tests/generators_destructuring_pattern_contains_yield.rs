@@ -372,6 +372,82 @@ fn generator_yield_in_array_destructuring_default_suspends_before_next_element()
 }
 
 #[test]
+fn generator_throw_into_yield_in_object_destructuring_default_aborts_before_next_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rhs = new Proxy({b: 2}, {
+          get: function(t, k, r) {
+            steps.push("get:" + String(k));
+            return Reflect.get(t, k, r);
+          },
+        });
+
+        function* g() {
+          try {
+            ({a = (steps.push("default"), (yield 1)), b} = rhs);
+            return false;
+          } catch (e) {
+            return e === "boom" && steps.join("|") === "get:a|default";
+          }
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+
+        var r2 = it.throw("boom");
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_throw_into_yield_in_object_destructuring_computed_key_aborts_without_property_access() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rhs = new Proxy({x: 1, b: 2}, {
+          get: function(t, k, r) {
+            steps.push("get:" + String(k));
+            return Reflect.get(t, k, r);
+          },
+        });
+
+        function* g() {
+          let a = 0;
+          let b = 0;
+          try {
+            ({[(steps.push("key"), (yield 1))]: a, b} = rhs);
+            return false;
+          } catch (e) {
+            return e === "boom" && steps.join("|") === "key";
+          }
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+
+        var r2 = it.throw("boom");
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_then_default_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
