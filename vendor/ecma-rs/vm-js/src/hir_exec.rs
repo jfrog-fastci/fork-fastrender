@@ -2309,6 +2309,21 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
+    // Async functions execute via the compiled async executor by default. When a particular body
+    // uses an unsupported `await` form, we fall back on a per-function basis to the AST
+    // interpreter. Cache the parse metadata here so call-time fallback does not require parsing
+    // the surrounding script in full.
+    let ast_fallback = if async_needs_ast_fallback {
+      Some(self.vm.register_ecma_function(
+        self.env.source(),
+        def_span.start,
+        def_span.end,
+        kind,
+      )?)
+    } else {
+      None
+    };
+
     // The compiled (HIR) executor does not yet support generator / async-generator bodies
     // (`yield`, `yield*`). Allocate generator functions as interpreter-backed ECMAScript functions
     // so calling them can still execute via the AST interpreter.
@@ -2329,19 +2344,6 @@ impl<'vm> HirEvaluator<'vm> {
         closure_env,
       )?
     } else {
-      // Async function bodies still execute via the AST interpreter at call time. Cache the lazy
-      // parse metadata so `Vm::call_user_function` can delegate without requiring a full AST
-      // fallback for the entire surrounding script.
-      let ast_fallback = if is_async {
-        Some(self.vm.register_ecma_function(
-          self.env.source(),
-          def_span.start,
-          def_span.end,
-          kind,
-        )?)
-      } else {
-        None
-      };
       scope.alloc_user_function_with_env(
         CompiledFunctionRef {
           script,
@@ -2389,12 +2391,9 @@ impl<'vm> HirEvaluator<'vm> {
     // compiled path), but tag them so `Vm::call_user_function` delegates body execution to the AST
     // interpreter.
     if async_needs_ast_fallback {
-      let code_id = self.vm.register_ecma_function(
-        self.env.source(),
-        def_span.start,
-        def_span.end,
-        kind,
-      )?;
+      let code_id = ast_fallback.ok_or(VmError::InvariantViolation(
+        "async function marked as needing AST fallback but missing call handler fallback metadata",
+      ))?;
       scope
         .heap_mut()
         .set_function_data(func_obj, FunctionData::AsyncEcmaFallback { code_id })?;

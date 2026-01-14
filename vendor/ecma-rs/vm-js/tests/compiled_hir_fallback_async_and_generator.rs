@@ -74,6 +74,7 @@ fn compiled_user_function_call_falls_back_for_async_and_generator_bodies() -> Re
       CompiledFunctionRef {
         script: script.clone(),
         body: af_body,
+        ast_fallback: None,
       },
       af_name,
       0,
@@ -87,6 +88,7 @@ fn compiled_user_function_call_falls_back_for_async_and_generator_bodies() -> Re
       CompiledFunctionRef {
         script: script.clone(),
         body: g_body,
+        ast_fallback: None,
       },
       g_name,
       0,
@@ -147,4 +149,3 @@ fn compiled_user_function_call_falls_back_for_async_and_generator_bodies() -> Re
   assert_eq!(rt.exec_script("genResult")?, Value::Number(2.0));
   Ok(())
 }
-
