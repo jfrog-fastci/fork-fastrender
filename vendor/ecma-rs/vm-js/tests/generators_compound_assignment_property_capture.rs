@@ -36,6 +36,26 @@ fn generator_compound_assignment_property_captures_old_value_before_yield() {
 }
 
 #[test]
+fn generator_exponentiation_assignment_property_captures_old_value_before_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var o = { a: 2 };
+      function* g(){ return o.a **= (yield 0); }
+      var it = g();
+      it.next();
+      // Mutate the target after yielding; the assignment must still use the pre-yield old value.
+      o.a = 3;
+      var r = it.next(4);
+      r.done === true && r.value === 16 && o.a === 16
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_compound_assignment_property_captures_base_before_yield() {
   let mut rt = new_runtime();
   let value = rt
