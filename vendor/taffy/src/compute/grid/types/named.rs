@@ -5,6 +5,7 @@ use crate::{
   GridContainerStyle, GridPlacement, GridTemplateArea, Line, NonNamedGridPlacementWithNamedSpan,
   RepetitionCount,
 };
+use crate::util::check_layout_abort;
 use core::{
   borrow::Borrow,
   cmp::{max, min, Ordering},
@@ -136,6 +137,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       .enumerate()
       .take(MAX_EXPLICIT_LINE_INDEX as usize)
     {
+      check_layout_abort();
       let line_index = (idx as u16) + 1;
       for name in names {
         upsert_line_name_map(&mut row_lines, name.clone(), line_index);
@@ -148,6 +150,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       .enumerate()
       .take(MAX_EXPLICIT_LINE_INDEX as usize)
     {
+      check_layout_abort();
       let line_index = (idx as u16) + 1;
       for name in names {
         upsert_line_name_map(&mut column_lines, name.clone(), line_index);
@@ -188,6 +191,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     let mut area_row_count = 0;
     if let Some(area_iter) = style.grid_template_areas() {
       for area in area_iter.into_iter() {
+        check_layout_abort();
         // TODO: Investigate eliminating clones
         areas.insert(StrHasher(area.name.clone()), area.clone());
 
@@ -215,6 +219,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       if let Some(column_line_names_iter) = style.grid_template_column_names() {
         let mut hit_line_limit = false;
         for line_names in column_line_names_iter {
+          check_layout_abort();
           if current_line >= max_line_index {
             break;
           }
@@ -232,7 +237,9 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
             .min(MAX_EXPLICIT_TRACKS);
 
             for _ in 0..repeat_count {
+              check_layout_abort();
               for line_name_set in repeat.lines_names() {
+                check_layout_abort();
                 let current_line_u16 = current_line.min(max_line_index) as u16;
                 for line_name in line_name_set {
                   upsert_line_name_map(&mut column_lines, line_name.clone(), current_line_u16);
@@ -271,6 +278,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       if let Some(row_line_names_iter) = style.grid_template_row_names() {
         let mut hit_line_limit = false;
         for line_names in row_line_names_iter {
+          check_layout_abort();
           if current_line >= max_line_index {
             break;
           }
@@ -289,6 +297,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
 
             for _ in 0..repeat_count {
               for line_name_set in repeat.lines_names() {
+                check_layout_abort();
                 let current_line_u16 = current_line.min(max_line_index) as u16;
                 for line_name in line_name_set {
                   upsert_line_name_map(&mut row_lines, line_name.clone(), current_line_u16);

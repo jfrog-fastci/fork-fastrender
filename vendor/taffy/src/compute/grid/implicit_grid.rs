@@ -10,6 +10,7 @@ use core::cmp::{max, min};
 use super::types::TrackCounts;
 use super::limits::{clamp_grid_area_to_implicit_grid_limit, max_implicit_tracks_per_side};
 use super::OriginZeroLine;
+use crate::util::check_layout_abort;
 
 /// Estimate the number of rows and columns in the grid
 /// This is used as a performance optimisation to pre-size vectors and reduce allocations. It also forms a necessary step
@@ -108,6 +109,7 @@ fn get_known_child_positions<'a, S: GridItemStyle + 'a>(
   let (mut col_min, mut col_max, mut col_max_span) = (OriginZeroLine(0), OriginZeroLine(0), 0);
   let (mut row_min, mut row_max, mut row_max_span) = (OriginZeroLine(0), OriginZeroLine(0), 0);
   children_iter.for_each(|(node, child_style)| {
+    check_layout_abort();
     // Note: that the children reference the lines in between (and around) the tracks not tracks themselves,
     // and thus we must subtract 1 to get an accurate estimate of the number of tracks
     let subgrid_auto_span = get_child_subgrid_auto_span(node);
