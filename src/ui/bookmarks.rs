@@ -1893,7 +1893,9 @@ fn remove_first(items: &mut Vec<BookmarkId>, needle: BookmarkId) -> bool {
 mod bookmarks_bar_ui {
   use super::{BookmarkId, BookmarkNode, BookmarkStore};
   use egui::{Pos2, Rect, Stroke};
+  use rustc_hash::FxHashMap;
   use std::borrow::Cow;
+  use std::sync::Arc;
 
   #[derive(Debug, Default)]
   pub struct BookmarksBarOutput {
@@ -1908,6 +1910,36 @@ mod bookmarks_bar_ui {
   struct DragState {
     dragging: Option<BookmarkId>,
     drop_index: Option<usize>,
+  }
+
+  #[derive(Debug, Default)]
+  struct BookmarkBarA11yLabelCache {
+    revision: u64,
+    labels: FxHashMap<BookmarkId, Arc<str>>,
+  }
+
+  impl BookmarkBarA11yLabelCache {
+    fn label(
+      &mut self,
+      store: &BookmarkStore,
+      id: BookmarkId,
+      title: Option<&str>,
+      url: &str,
+    ) -> Arc<str> {
+      let revision = store.revision();
+      if self.revision != revision {
+        self.revision = revision;
+        self.labels.clear();
+      }
+
+      if let Some(label) = self.labels.get(&id) {
+        return Arc::clone(label);
+      }
+
+      let label: Arc<str> = Arc::from(super::format_bookmark_widget_info_label(title, url));
+      self.labels.insert(id, Arc::clone(&label));
+      label
+    }
   }
 
   pub(super) fn bookmarks_bar_item_widget_id(bookmark_id: BookmarkId) -> egui::Id {
@@ -1994,6 +2026,10 @@ mod bookmarks_bar_ui {
     let bar_id = ui.make_persistent_id("bookmarks_bar");
     let drag_id = bar_id.with("drag_state");
     let mut drag: DragState = ctx.data_mut(|d| d.get_persisted(drag_id).unwrap_or_default());
+    let a11y_cache_id = bar_id.with("a11y_label_cache");
+    let mut a11y_cache: BookmarkBarA11yLabelCache = ctx.data_mut(|d| {
+      std::mem::take(d.get_temp_mut_or_default::<BookmarkBarA11yLabelCache>(a11y_cache_id))
+    });
 
     let mut out = BookmarksBarOutput::default();
 
@@ -2045,7 +2081,7 @@ mod bookmarks_bar_ui {
               None => crate::ui::url_display::truncate_url_middle_cow(url, 36),
             };
 
-            let a11y_label = super::format_bookmark_widget_info_label(title, url);
+            let a11y_label = a11y_cache.label(bookmarks, id, title, url);
 
             let button = egui::Button::new(label.as_ref())
               .small()
@@ -2074,8 +2110,8 @@ mod bookmarks_bar_ui {
               });
             }
             response.widget_info({
-              let a11y_label = a11y_label.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+              let a11y_label = a11y_label;
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.as_ref())
             });
             item_rects.push((id, response.rect));
 
@@ -2347,6 +2383,7 @@ mod bookmarks_bar_ui {
 
     ctx.data_mut(|d| {
       d.insert_persisted(drag_id, drag);
+      d.insert_temp(a11y_cache_id, a11y_cache);
     });
 
     out
