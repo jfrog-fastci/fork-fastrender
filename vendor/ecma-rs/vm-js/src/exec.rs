@@ -17117,6 +17117,9 @@ pub(crate) enum GenFrame {
     members: *const Vec<Node<ClassMember>>,
     binding_name: Option<*const str>,
     func_name: *const str,
+    /// Optional inferred `name` for anonymous class expressions evaluated via `NamedEvaluation`
+    /// (e.g. `{ key: class {} }`).
+    inferred_name: Option<PropertyKey>,
     extends_null: bool,
   },
 
@@ -17675,6 +17678,11 @@ impl Trace for GenFrame {
         match key {
           PropertyKey::String(s) => tracer.trace_value(Value::String(*s)),
           PropertyKey::Symbol(s) => tracer.trace_value(Value::Symbol(*s)),
+        }
+      }
+      GenFrame::ClassAfterHeritage { inferred_name, .. } => {
+        if let Some(key) = inferred_name {
+          key.trace(tracer);
         }
       }
       GenFrame::ClassAfterComputedKey {
@@ -40665,6 +40673,7 @@ fn gen_eval_class_decl(
     scope,
     inner_binding,
     func_name,
+    None,
     &decl.stx.members,
     decl.stx.extends.as_ref(),
     extends_null,
@@ -40733,6 +40742,24 @@ fn gen_eval_class_expr(
   scope: &mut Scope<'_>,
   expr: &Node<ClassExpr>,
 ) -> Result<GenEval<Completion>, VmError> {
+  gen_eval_class_expr_inner(evaluator, scope, expr, None)
+}
+
+fn gen_eval_class_expr_named(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+  inferred_name: PropertyKey,
+) -> Result<GenEval<Completion>, VmError> {
+  gen_eval_class_expr_inner(evaluator, scope, expr, Some(inferred_name))
+}
+
+fn gen_eval_class_expr_inner(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+  inferred_name: Option<PropertyKey>,
+) -> Result<GenEval<Completion>, VmError> {
   let extends_null = match expr.stx.extends.as_ref() {
     None => false,
     Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
@@ -40754,6 +40781,7 @@ fn gen_eval_class_expr(
       scope,
       ClassBinding::None,
       "",
+      inferred_name,
       &expr.stx.members,
       expr.stx.extends.as_ref(),
       extends_null,
@@ -40769,6 +40797,7 @@ fn gen_eval_class_expr(
     scope,
     ClassBinding::Immutable(name.stx.name.as_str()),
     name.stx.name.as_str(),
+    None,
     &expr.stx.members,
     expr.stx.extends.as_ref(),
     extends_null,
@@ -40826,6 +40855,7 @@ fn gen_eval_class(
   scope: &mut Scope<'_>,
   binding: ClassBinding<'_>,
   func_name: &str,
+  inferred_name: Option<PropertyKey>,
   members: &Vec<Node<ClassMember>>,
   extends: Option<&Node<Expr>>,
   extends_null: bool,
@@ -40920,6 +40950,7 @@ fn gen_eval_class(
               members: members as *const Vec<Node<ClassMember>>,
               binding_name,
               func_name: func_name as *const str,
+              inferred_name,
               extends_null,
             },
           )?;
@@ -40933,6 +40964,7 @@ fn gen_eval_class(
       scope,
       binding,
       func_name,
+      inferred_name,
       members,
       super_value,
       extends_null,
@@ -40965,6 +40997,7 @@ fn gen_eval_class_after_super(
   scope: &mut Scope<'_>,
   binding: ClassBinding<'_>,
   func_name: &str,
+  inferred_name: Option<PropertyKey>,
   members: &Vec<Node<ClassMember>>,
   super_value: Value,
   extends_null: bool,
@@ -41135,6 +41168,28 @@ fn gen_eval_class_after_super(
     super_value,
     instance_slot_pair_count,
   )?;
+
+  // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
+  // syntactic positions (e.g. `{ key: class {} }`).
+  //
+  // This must happen *before* defining class elements: a class can define a `static name() {}`
+  // method which should override the constructor's initial `"name"` property. Setting the name
+  // after class evaluation would overwrite the method.
+  if func_name.is_empty() {
+    if let Some(name_key) = inferred_name {
+      let mut name_scope = class_scope.reborrow();
+      name_scope.push_root(Value::Object(func_obj))?;
+      match name_key {
+        PropertyKey::String(s) => {
+          name_scope.push_root(Value::String(s))?;
+        }
+        PropertyKey::Symbol(sym) => {
+          name_scope.push_root(Value::Symbol(sym))?;
+        }
+      }
+      crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+    }
+  }
 
   // Root the class constructor object for the remainder of class evaluation, so it remains alive
   // even for anonymous class expressions.
@@ -42912,7 +42967,24 @@ fn gen_eval_lit_obj_apply_valued_member(
         // trigger GC before reaching a yield boundary.
         value_scope.push_roots(&[Value::Object(obj), key_root])?;
 
-        match gen_eval_expr(evaluator, &mut value_scope, value_expr)? {
+        let eval = if is_proto_setter {
+          // `__proto__` setters do not define a property and do not participate in `SetFunctionName`
+          // inference.
+          gen_eval_expr(evaluator, &mut value_scope, value_expr)?
+        } else if let Expr::Class(class_expr) = value_expr.stx.as_ref() {
+          if class_expr.stx.name.is_none() {
+            // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
+            // behaviour when we bypass it for class `NamedEvaluation`.
+            evaluator.tick()?;
+            gen_eval_class_expr_named(evaluator, &mut value_scope, class_expr, key)?
+          } else {
+            gen_eval_expr(evaluator, &mut value_scope, value_expr)?
+          }
+        } else {
+          gen_eval_expr(evaluator, &mut value_scope, value_expr)?
+        };
+
+        match eval {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               let value = v.unwrap_or(Value::Undefined);
@@ -49158,6 +49230,7 @@ fn gen_resume_from_frames(
         members,
         binding_name,
         func_name,
+        inferred_name,
         extends_null,
       } => match state {
         Completion::Normal(v) => {
@@ -49175,17 +49248,18 @@ fn gen_resume_from_frames(
             None => ClassBinding::None,
             Some(ptr) => ClassBinding::Immutable(unsafe { &*ptr }),
           };
-          let func_name = unsafe { &*func_name };
-
-          match gen_eval_class_after_super(
-            evaluator,
-            scope,
-            binding,
-            func_name,
-            members,
-            super_value,
-            extends_null,
-          ) {
+           let func_name = unsafe { &*func_name };
+ 
+           match gen_eval_class_after_super(
+             evaluator,
+             scope,
+             binding,
+             func_name,
+             inferred_name,
+             members,
+             super_value,
+             extends_null,
+           ) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
@@ -51986,6 +52060,10 @@ fn gen_root_values_for_continuation(
       GenFrame::LitObjAfterPropValue { .. } => {
         needed = needed.saturating_add(2);
       }
+      GenFrame::ClassAfterHeritage { inferred_name, .. } => {
+        // Optional inferred `name` property key.
+        needed = needed.saturating_add(usize::from(inferred_name.is_some()));
+      }
       GenFrame::ClassAfterComputedKey { static_inits, .. } => {
         // `func_obj` + `prototype_obj` plus any values stored in the pending static initialization list.
         needed = needed.saturating_add(2);
@@ -52235,6 +52313,14 @@ fn gen_root_values_for_continuation(
           PropertyKey::String(s) => Value::String(*s),
           PropertyKey::Symbol(s) => Value::Symbol(*s),
         });
+      }
+      GenFrame::ClassAfterHeritage { inferred_name, .. } => {
+        if let Some(key) = inferred_name {
+          values.push(match key {
+            PropertyKey::String(s) => Value::String(*s),
+            PropertyKey::Symbol(sym) => Value::Symbol(*sym),
+          });
+        }
       }
       GenFrame::ClassAfterComputedKey {
         func_obj,
