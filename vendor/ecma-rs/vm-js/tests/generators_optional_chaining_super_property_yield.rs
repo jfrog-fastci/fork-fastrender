@@ -121,6 +121,58 @@ fn generator_optional_super_property_call_binds_this_across_yield_in_arg() {
 }
 
 #[test]
+fn generator_optional_super_property_computed_call_short_circuits_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base {}
+        class C extends Base {
+          *g() { return super[(yield "key")]?.(yield "should-not-yield-arg"); }
+        }
+
+        const it = (new C()).g();
+        const r1 = it.next();
+        const r2 = it.next("missing");
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === undefined && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_super_property_computed_call_binds_this_across_yield_in_key_and_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        let inst;
+        class Base {
+          m(x) { return this === inst && x === 1; }
+        }
+        class C extends Base {
+          *g() { return super[(yield "key")]?.(yield 0); }
+        }
+
+        inst = new C();
+        const it = inst.g();
+        const r1 = it.next();
+        const r2 = it.next("m");
+        const r3 = it.next(1);
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === 0 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_optional_super_property_yield_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(
@@ -169,6 +221,32 @@ fn generator_optional_super_property_yield_compiled() -> Result<(), VmError> {
       const r4_2 = it4.next(1);
       ok = ok && r4_1.value === 0 && r4_1.done === false &&
         r4_2.value === true && r4_2.done === true;
+
+      class Base5 {}
+      class C5 extends Base5 {
+        *g() { return super[(yield "key")]?.(yield "should-not-yield-arg"); }
+      }
+      const it5 = (new C5()).g();
+      const r5_1 = it5.next();
+      const r5_2 = it5.next("missing");
+      ok = ok && r5_1.value === "key" && r5_1.done === false &&
+        r5_2.value === undefined && r5_2.done === true;
+
+      let inst6;
+      class Base6 {
+        m(x) { return this === inst6 && x === 1; }
+      }
+      class C6 extends Base6 {
+        *g() { return super[(yield "key")]?.(yield 0); }
+      }
+      inst6 = new C6();
+      const it6 = inst6.g();
+      const r6_1 = it6.next();
+      const r6_2 = it6.next("m");
+      const r6_3 = it6.next(1);
+      ok = ok && r6_1.value === "key" && r6_1.done === false &&
+        r6_2.value === 0 && r6_2.done === false &&
+        r6_3.value === true && r6_3.done === true;
 
       ok
     "#,
