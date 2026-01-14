@@ -337,9 +337,14 @@ reason = "Times out in the offline runner (requires ShadowRoot + window load eve
 
 [[expectations]]
 id = "dom/ranges/Range-test-iframe.html"
+status = "skip"
+reason = "Helper file for the upstream Range suite (not a standalone testharness test); the offline runner expects a WPT report payload and should not execute this directly."
+
+[[expectations]]
+id = "dom/range_content_ops.window.js"
 backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-reason = "Helper file for the Range suite; should load cleanly (iframe support implemented)."
+status = "xfail"
+reason = "Range methods are still incomplete (deleteContents/cloneContents/insertNode); this focused test tracks remaining Range content mutation gaps."
 
 [[expectations]]
 id = "dom/ranges/Range-compareBoundaryPoints-crash.html"
@@ -599,6 +604,12 @@ id = "html_integration/script_src_empty_suppresses_inline_and_fires_error.html"
 backend = "vmjs-rendered"
 status = "xfail"
 reason = "vmjs-rendered executes HTML tests via the script runner; classic script error events for src='' are not fully integrated yet and the test times out."
+
+[[expectations]]
+id = "url/urlsearchparams-init-types.window.js"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "URLSearchParams constructor does not yet treat boxed String objects (`new String('a=1')`) as strings during union conversion (it incorrectly takes the iterable path)."
 
 [[expectations]]
 glob = "observers_layout/**"
