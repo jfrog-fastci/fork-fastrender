@@ -53501,10 +53501,10 @@ pub(crate) fn start_module_tla_evaluation(
         };
       };
 
-        let awaited_promise_res = {
-          let mut promise_scope = scope.reborrow();
-          promise_scope.push_root(await_value)?;
-          match kind {
+      let awaited_promise_res = {
+        let mut promise_scope = scope.reborrow();
+        promise_scope.push_root(await_value)?;
+        match kind {
           AsyncSuspendKind::Await => {
             let res = promise_resolve_for_await_with_host_and_hooks(
               evaluator.vm,
@@ -53513,8 +53513,9 @@ pub(crate) fn start_module_tla_evaluation(
               &mut *evaluator.hooks,
               await_value,
             );
-            res
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
+            res.map_err(|err| {
+              coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err)
+            })
           }
           AsyncSuspendKind::AwaitResolved => Ok(await_value),
           AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
