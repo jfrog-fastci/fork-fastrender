@@ -5512,7 +5512,8 @@ mod tests {
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
 
     let prepared = doc.prepared().expect("prepared");
-    let select = find_first_select_control(&prepared.box_tree().root).expect("select form control");
+    let select =
+      find_first_select_control(&prepared.box_tree().root).expect("select form control");
     let updated_label = select.items.iter().find_map(|item| match item {
       SelectItem::Option { node_id, label, .. } if *node_id == option_preorder => Some(label.as_str()),
       _ => None,

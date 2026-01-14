@@ -866,7 +866,7 @@ impl<Host: 'static> EventLoop<Host> {
       let reserved_source_idx = source.as_usize();
       self.task_queues[reserved_source_idx]
         .try_reserve(1)
-        .map_err(|_| Error::Other(String::new()))?;
+        .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
 
       let task = {
         let mut lock = self

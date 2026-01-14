@@ -134,7 +134,6 @@ fn has_nontrivial_interaction_state(state: &InteractionState) -> bool {
     || !state.hover_chain().is_empty()
     || !state.active_chain().is_empty()
     || !state.visited_links().is_empty()
-    || !state.visited_links().is_empty()
     || state.ime_preedit.is_some()
     || state.text_edit.is_some()
     || state.form_state().has_overrides()

@@ -163,7 +163,7 @@ mod tests {
     };
 
     let media_packet = MediaPacket {
-      track_id: u64::from(pkt.track_id()),
+      track_id: u64::from(track_id),
       dts_ns: pts_ns,
       pts_ns,
       duration_ns,
