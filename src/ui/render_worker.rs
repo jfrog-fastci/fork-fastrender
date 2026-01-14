@@ -6287,7 +6287,7 @@ impl BrowserRuntime {
     let generation_after_dispatch = js_tab.dom().mutation_generation();
     // Release the mutable borrow of `tab.js_tab` before querying tick scheduling state (which also
     // needs to borrow it mutably).
-    drop(js_tab);
+    let _ = js_tab;
     if generation_before_dispatch != prev_generation
       || generation_after_dispatch != generation_before_dispatch
     {
