@@ -3271,3 +3271,5 @@ mod template_inert_tests {
 
 #[cfg(test)]
 mod document_fragment_tests;
+#[cfg(test)]
+mod compare_document_position_tests;

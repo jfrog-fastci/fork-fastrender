@@ -83,3 +83,14 @@ test(() => {
   document.body.removeChild(host);
 }, "Node.compareDocumentPosition() treats shadow trees as separate trees");
 
+test(() => {
+  const otherDoc = document.implementation.createHTMLDocument("");
+  const a = document.createElement("div");
+  const b = otherDoc.createElement("div");
+
+  const pos = a.compareDocumentPosition(b);
+  const disconnected =
+    Node.DOCUMENT_POSITION_DISCONNECTED |
+    Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+  assert_equals(pos & disconnected, disconnected);
+}, "Node.compareDocumentPosition() treats nodes from different Documents as disconnected");
