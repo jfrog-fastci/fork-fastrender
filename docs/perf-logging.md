@@ -65,7 +65,8 @@ Enable it via either:
   - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` redirects output to a file instead of stdout.
 
 For interactive captures, prefer the convenience wrapper (runs under the repo guardrails, passes
-`browser --perf-log`, and tees the stdout JSONL stream to a file):
+`browser --perf-log`, and tees the stdout JSONL stream to a file). It also supports `--trace-out
+<path>` to capture a browser UI Perfetto/Chrome trace alongside the perf JSONL log:
 
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
