@@ -55784,6 +55784,87 @@ mod oom_arc_tests {
       .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
   }
+
+  #[test]
+  fn async_private_member_assignment_update_targets() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Promise/async evaluation allocates several intermediate objects (Promise capabilities,
+    // reaction jobs, etc). Allow some headroom to avoid spurious OOM failures.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    rt.exec_script(
+      r##"
+      var ok = false;
+
+      async function run() {
+        class C {
+          static #x = 0;
+          static getX() { return this.#x; }
+
+          static async testAssign() {
+            (await Promise.resolve(this)).#x = await Promise.resolve(2);
+          }
+
+          static async testAdd() {
+            (await Promise.resolve(this)).#x += await Promise.resolve(1);
+          }
+
+          static async testInc() {
+            return (await Promise.resolve(this)).#x++;
+          }
+
+          static async proxyAssignThrows() {
+            try {
+              (await Promise.resolve(new Proxy(this, {}))).#x = await Promise.resolve(1);
+              return false;
+            } catch (e) {
+              return e instanceof TypeError;
+            }
+          }
+
+          static #m() {}
+          static async addToPrivateMethodMessage() {
+            try {
+              (await Promise.resolve(this)).#m += await Promise.resolve(1);
+              return "no throw";
+            } catch (e) {
+              return e.message;
+            }
+          }
+        }
+
+        await C.testAssign();
+        if (C.getX() !== 2) return false;
+        // Ensure `#x` is treated as a private name, not the public string key "#x".
+        if (C["#x"] !== undefined) return false;
+
+        await C.testAdd();
+        if (C.getX() !== 3) return false;
+
+        const old = await C.testInc();
+        if (old !== 3) return false;
+        if (C.getX() !== 4) return false;
+
+        const proxyOk = await C.proxyAssignThrows();
+        if (proxyOk !== true) return false;
+
+        // Ensure `+=` resumes with a private reference (not a symbol-keyed property reference).
+        const msg = await C.addToPrivateMethodMessage();
+        if (msg !== "Cannot assign to read-only private member") return false;
+
+        return true;
+      }
+
+      run().then(v => { ok = v; });
+    "##,
+    )?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    let value = rt.exec_script("ok")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
