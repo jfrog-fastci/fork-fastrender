@@ -19515,6 +19515,24 @@ mod hir_async_await_control_flow_regression_tests {
   }
 
   #[test]
+  fn lexical_for_loop_closure_capture_across_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let fs = [];
+          for (let i=0;i<3;i++) {
+            await Promise.resolve(0);
+            fs.push(() => i);
+          }
+          return '' + fs[0]() + fs[1]() + fs[2]();
+        }
+        f;
+      "#,
+      ExpectedValue::String("012"),
+    )
+  }
+
+  #[test]
   fn optional_chaining_short_circuits_awaited_computed_key() -> Result<(), VmError> {
     run_compiled_async_fn_case(
       r#"
