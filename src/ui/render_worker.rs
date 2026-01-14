@@ -1357,7 +1357,7 @@ fn hit_test_fragment_tree_for_scroll_cached(
     }
   }
 
-  let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
+  let tree = Arc::new(prepared.fragment_tree_for_geometry_fast(scroll));
   *cache = Some(HitTestFragmentTreeCache {
     tree: Arc::clone(&tree),
     prepared_fragment_tree_ptr,
@@ -2891,7 +2891,7 @@ fn compute_page_accessibility_snapshot(
   }
 
   // Walk the paint-time geometry tree once and union fragment bounds for each DOM node.
-  let fragment_tree = prepared.fragment_tree_for_geometry(scroll_state);
+  let fragment_tree = prepared.fragment_tree_for_geometry_fast(scroll_state);
 
   let mut dom_bounds: Vec<Option<Rect>> = vec![None];
 
@@ -6598,7 +6598,7 @@ struct BrowserRuntime {
       return;
     };
 
-    let tree = prepared.fragment_tree_for_geometry(scroll);
+    let tree = prepared.fragment_tree_for_geometry_fast(scroll);
     let index = FindIndex::build(&tree);
     find.matches = index.find(
       &find.query,
@@ -8572,7 +8572,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&scroll_snapshot);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
@@ -8606,7 +8606,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&scroll_snapshot);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
@@ -8641,7 +8641,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&scroll_snapshot);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
@@ -8679,7 +8679,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&scroll_snapshot);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
@@ -8712,7 +8712,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&scroll_snapshot);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
@@ -9439,7 +9439,7 @@ struct BrowserRuntime {
       return;
     };
 
-    let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+    let geom_tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
     let Some(anchor_css) = styled_node_anchor_css(
       prepared.box_tree(),
       &geom_tree,
@@ -9688,7 +9688,7 @@ struct BrowserRuntime {
       let anchor_css = doc
         .prepared()
         .and_then(|prepared| {
-          let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+          let geom_tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
           styled_node_anchor_css(
             prepared.box_tree(),
             &geom_tree,
@@ -11209,7 +11209,7 @@ struct BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              let tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
               styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
@@ -11233,7 +11233,7 @@ struct BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              let tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
               styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
@@ -11284,7 +11284,7 @@ struct BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              let tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
               styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
@@ -11322,7 +11322,7 @@ struct BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              let tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
               styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
@@ -11359,7 +11359,7 @@ struct BrowserRuntime {
                   | crate::interaction::KeyAction::Enter
               ) {
                 let preferred_anchor_css = doc.prepared().and_then(|prepared| {
-                  let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+                  let tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
                   styled_node_anchor_css(
                     prepared.box_tree(),
                     &tree,
@@ -14271,7 +14271,7 @@ struct BrowserRuntime {
           .as_ref()
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
-            let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+            let geom_tree = prepared.fragment_tree_for_geometry_fast(&tab.scroll_state);
             styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,

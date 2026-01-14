@@ -579,7 +579,7 @@ impl BrowserTabController {
 
     // Mirror paint-time geometry (sticky + element scroll offsets + viewport-fixed scroll cancel)
     // so highlight rects stay aligned with what the user sees after scrolling.
-    let tree = prepared.fragment_tree_for_geometry(&self.scroll_state);
+    let tree = prepared.fragment_tree_for_geometry_fast(&self.scroll_state);
     let index = FindIndex::build(&tree);
     self.find_matches = index.find(
       &self.find_query,
@@ -726,7 +726,7 @@ impl BrowserTabController {
             self
               .document
               .prepared()
-              .map(|prepared| prepared.fragment_tree_for_geometry(&scroll_snapshot))
+              .map(|prepared| prepared.fragment_tree_for_geometry_fast(&scroll_snapshot))
           })
           .flatten();
           if let Ok(step_result) =
@@ -831,7 +831,7 @@ impl BrowserTabController {
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       let hit_tree = (self.scroll_state.viewport != Point::ZERO || !self.scroll_state.elements.is_empty())
-        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+        .then(|| prepared.fragment_tree_for_geometry_fast(&self.scroll_state));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
@@ -905,7 +905,7 @@ impl BrowserTabController {
         // selection focus advances in the same event.
         let hit_tree_after = self.document.prepared().and_then(|prepared| {
           (self.scroll_state.viewport != Point::ZERO || !self.scroll_state.elements.is_empty())
-            .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state))
+            .then(|| prepared.fragment_tree_for_geometry_fast(&self.scroll_state))
         });
         let fragment_tree_after = hit_tree_after.as_ref().unwrap_or(fragment_tree_unscrolled);
         changed |= self.document.mutate_dom(|dom| {
@@ -975,7 +975,7 @@ impl BrowserTabController {
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       let hit_tree = (self.scroll_state.viewport != Point::ZERO
         || !self.scroll_state.elements.is_empty())
-        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+        .then(|| prepared.fragment_tree_for_geometry_fast(&self.scroll_state));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
@@ -1022,7 +1022,7 @@ impl BrowserTabController {
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       let hit_tree = (self.scroll_state.viewport != Point::ZERO
         || !self.scroll_state.elements.is_empty())
-        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+        .then(|| prepared.fragment_tree_for_geometry_fast(&self.scroll_state));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
@@ -1071,7 +1071,7 @@ impl BrowserTabController {
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
       let hit_tree = (scroll_snapshot.viewport != Point::ZERO
         || !scroll_snapshot.elements.is_empty())
-        .then(|| prepared.fragment_tree_for_geometry(&scroll_snapshot));
+        .then(|| prepared.fragment_tree_for_geometry_fast(&scroll_snapshot));
       (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
@@ -1391,7 +1391,7 @@ impl BrowserTabController {
       found
     }?;
 
-    let geom_tree = prepared.fragment_tree_for_geometry(&self.scroll_state);
+    let geom_tree = prepared.fragment_tree_for_geometry_fast(&self.scroll_state);
     let page_rect = crate::interaction::absolute_bounds_for_box_id(&geom_tree, select_box_id)?;
 
     // Convert page-space bounds (includes scroll) to viewport-local coords for UI positioning.

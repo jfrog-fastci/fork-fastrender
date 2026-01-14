@@ -36,7 +36,7 @@ pub fn fragment_tree_with_scroll_and_sticky(
   prepared: &PreparedDocument,
   scroll: &ScrollState,
 ) -> FragmentTree {
-  prepared.fragment_tree_for_geometry(scroll)
+  prepared.fragment_tree_for_geometry_fast(scroll)
 }
 
 pub fn hit_test_with_scroll(

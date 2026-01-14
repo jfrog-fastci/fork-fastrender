@@ -350,7 +350,7 @@ pub fn apply_wheel_scroll_at_point_prepared(
 
   // Mirror the paint pipeline for hit testing: sticky offsets are applied relative to scroll state,
   // then scroll offsets translate scroll container contents.
-  let hit_test_tree = prepared.fragment_tree_for_geometry(&sanitized_scroll_state);
+  let hit_test_tree = prepared.fragment_tree_for_geometry_fast(&sanitized_scroll_state);
 
   apply_wheel_scroll_at_point_with_hit_test_tree(
     prepared.fragment_tree(),

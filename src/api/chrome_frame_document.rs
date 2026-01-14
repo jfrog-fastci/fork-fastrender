@@ -137,7 +137,7 @@ impl ChromeFrameDocument {
 
     let hit_tree =
       (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
-        .then(|| document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
+        .then(|| document.prepared().map(|prepared| prepared.fragment_tree_for_geometry_fast(&scroll)))
         .flatten();
     let (changed, hit) = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);

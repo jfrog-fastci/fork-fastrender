@@ -108,7 +108,7 @@ pub fn viewport_bounds_for_dom_node_ids(
 
   // 2) Clone and translate the fragment tree into paint-time geometry coordinates (element scroll +
   // sticky), then collect bounds for every referenced box id in a single fragment-tree traversal.
-  let fragment_tree = prepared.fragment_tree_for_geometry(scroll);
+  let fragment_tree = prepared.fragment_tree_for_geometry_fast(scroll);
 
   let mut needed_box_ids: FxHashSet<usize> = FxHashSet::default();
   for ids in box_ids_by_node.values() {

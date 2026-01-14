@@ -247,7 +247,7 @@ pub fn build_accesskit_tree_update_for_document(
   // offsets (and sticky positioning) so extracted bounds match what the user sees.
   //
   // Note: viewport scroll is not applied here; `AccessKitBoundsTransform` accounts for it.
-  let tree = prepared.fragment_tree_for_geometry(scroll_state);
+  let tree = prepared.fragment_tree_for_geometry_fast(scroll_state);
 
   // Bounds map keyed by `styled_node_id` (which matches `DomNode` preorder ids).
   //

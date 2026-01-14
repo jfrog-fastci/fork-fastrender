@@ -3336,6 +3336,32 @@ impl PreparedDocument {
     tree
   }
 
+  /// Like [`PreparedDocument::fragment_tree_for_geometry`], but optimized for high-frequency callers
+  /// (hit testing, scroll wheel routing, UI geometry queries).
+  ///
+  /// This avoids cloning expensive, non-geometry payloads (e.g. collected `@keyframes` rules and
+  /// scroll snap metadata) that are not required for hit testing or DOMRect-like calculations.
+  ///
+  /// Note: this is crate-private because it intentionally does **not** preserve all fragment-tree
+  /// auxiliary fields.
+  pub(crate) fn fragment_tree_for_geometry_fast(&self, scroll_state: &ScrollState) -> FragmentTree {
+    let mut tree = FragmentTree::new(self.fragment_tree.root.clone());
+    if self.fragment_tree.has_explicit_viewport() {
+      tree.set_viewport_size(self.fragment_tree.viewport_size());
+    }
+    tree.additional_fragments = self.fragment_tree.additional_fragments.clone();
+    tree.transition_state = self.fragment_tree.transition_state.clone();
+    tree.svg_filter_defs = self.fragment_tree.svg_filter_defs.clone();
+    tree.svg_id_defs = self.fragment_tree.svg_id_defs.clone();
+    tree.svg_id_defs_raw = self.fragment_tree.svg_id_defs_raw.clone();
+    tree.appearance_none_form_controls = self.fragment_tree.appearance_none_form_controls.clone();
+
+    self.apply_sticky_offsets_to_tree_with_scroll_state(&mut tree, scroll_state);
+    crate::scroll::apply_scroll_offsets(&mut tree, scroll_state);
+    crate::scroll::apply_viewport_scroll_cancel(&mut tree, scroll_state);
+    tree
+  }
+
   /// Returns the layout viewport size used during preparation.
   pub fn layout_viewport(&self) -> Size {
     self.layout_viewport

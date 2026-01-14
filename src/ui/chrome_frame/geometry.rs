@@ -48,7 +48,7 @@ pub fn element_border_rect_by_id_with_scroll_state(
   // Convert the fragment tree into paint-time geometry coordinates (element scroll offsets +
   // sticky adjustments). The returned tree is still in page coordinates; convert it to
   // viewport-local space at the end by subtracting the viewport scroll offset.
-  let geometry_tree = prepared.fragment_tree_for_geometry(scroll_state);
+  let geometry_tree = prepared.fragment_tree_for_geometry_fast(scroll_state);
 
   let mut out: Option<Rect> = None;
   // Match `BoxTree::assign_implicit_anchor_box_ids` traversal order.
