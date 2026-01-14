@@ -1742,8 +1742,9 @@ impl TextItem {
       }
     }
 
-    // `check_run` holds borrows into `runs`; drop it before we potentially mutate glyph advances.
-    drop(check_run);
+    // `check_run` holds borrows into `runs`; end its lifetime before we potentially mutate glyph
+    // advances.
+    let _ = check_run;
 
     if !needs_sort {
       #[cfg(test)]
