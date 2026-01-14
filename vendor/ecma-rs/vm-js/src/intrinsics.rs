@@ -9238,12 +9238,13 @@ mod json_stringify_number_object_tests {
   }
 
   #[test]
-  fn number_and_boolean_prototypes_do_not_define_symbol_to_primitive() -> Result<(), VmError> {
+  fn primitive_wrapper_prototypes_do_not_define_symbol_to_primitive() -> Result<(), VmError> {
     let mut rt = new_runtime();
     let v = rt.exec_script(
       r#"
         Number.prototype[Symbol.toPrimitive] === undefined &&
-        Boolean.prototype[Symbol.toPrimitive] === undefined
+        Boolean.prototype[Symbol.toPrimitive] === undefined &&
+        String.prototype[Symbol.toPrimitive] === undefined
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
