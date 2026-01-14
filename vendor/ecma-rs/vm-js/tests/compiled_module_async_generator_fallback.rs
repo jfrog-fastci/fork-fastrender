@@ -109,8 +109,10 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
   )?;
   let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  // Drop the AST to ensure the fallback path parses on demand from `record.source`.
+  // Drop the AST + source so the fallback path must parse on demand from the stored compiled
+  // `SourceText` (`record.compiled.source`).
   record_a.ast = None;
+  record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
 
   // Module `b` is compiled and imports `a.gen`, then calls `.next()` to produce a Promise.
@@ -126,6 +128,7 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
   record_b.compiled = Some(compiled_b);
   // Drop the AST to ensure module evaluation actually runs through the compiled-module path.
   record_b.ast = None;
+  record_b.source = None;
   let b = graph.add_module_with_specifier("b.js", record_b)?;
 
   graph.link_all_by_specifier();
