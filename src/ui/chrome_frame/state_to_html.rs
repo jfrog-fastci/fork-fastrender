@@ -56,7 +56,7 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
   let omnibox = &app.chrome.omnibox;
   let show = omnibox.open && !omnibox.suggestions.is_empty();
   if !show {
-    out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" hidden></div>\n");
+    out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\" hidden></div>\n");
     return;
   }
 
@@ -196,9 +196,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("</a>\n");
 
     // Close button.
-    out.push_str(
-      "      <a class=\"tab-close\" aria-label=\"Close tab\" href=\"chrome-action:close-tab?tab=",
-    );
+    out.push_str("      <a class=\"tab-close\" aria-label=\"Close tab: ");
+    out.push_str(&title);
+    out.push_str("\" href=\"chrome-action:close-tab?tab=");
     out.push_str(&tab_id);
     out.push_str("\">×</a>\n");
 
@@ -207,7 +207,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  </div>\n");
 
   // Toolbar.
-  out.push_str("  <div class=\"toolbar\" id=\"toolbar\">\n");
+  out.push_str(
+    "  <div class=\"toolbar\" id=\"toolbar\" role=\"toolbar\" aria-label=\"Browser controls\">\n",
+  );
 
   // Helper for toolbar button links.
   fn push_toolbar_button(
@@ -299,11 +301,10 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str(CHROME_ADDRESS_BAR_ID);
   out.push_str("\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
   out.push_str(&escape_html(&app.chrome.address_bar_text));
-  out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-expanded=\"");
+  out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-controls=\"omnibox-popup\" aria-expanded=\"");
   out.push_str(if omnibox_open { "true" } else { "false" });
   out.push('"');
   if omnibox_open {
-    out.push_str(" aria-controls=\"omnibox-popup\"");
     if let Some(selected_idx) = omnibox_selected_idx {
       let _ = write!(
         out,
@@ -401,8 +402,14 @@ mod tests {
     assert_eq!(html.matches("role=\"tab\"").count(), 3);
     assert_eq!(html.matches("role=\"tab\" aria-selected=\"true\"").count(), 1);
 
+    // Close buttons should include the tab title so the label is unique and meaningful.
+    assert!(html.contains("aria-label=\"Close tab: Rust &amp; &lt;Friends&gt;\""));
+
     // Toolbar buttons should have meaningful accessible labels; the visual glyphs are not good
     // spoken names ("←" etc).
+    assert!(html.contains("id=\"toolbar\""));
+    assert!(html.contains("role=\"toolbar\""));
+    assert!(html.contains("aria-label=\"Browser controls\""));
     assert!(html.contains("id=\"toolbar-back\""));
     assert!(html.contains("aria-label=\"Back\""));
     assert!(html.contains("id=\"toolbar-forward\""));
@@ -426,7 +433,8 @@ mod tests {
     assert!(html.contains("id=\"address-bar\""));
     assert!(html.contains("role=\"combobox\""));
     assert!(html.contains("aria-expanded=\"false\""));
-    assert!(!html.contains("aria-controls=\"omnibox-popup\""));
+    assert!(html.contains("aria-controls=\"omnibox-popup\""));
+    assert!(!html.contains("aria-activedescendant=\"omnibox-suggestion-"));
   }
 
   #[test]
