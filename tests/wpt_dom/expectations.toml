@@ -306,6 +306,12 @@ status = "pass"
 reason = "Range boundary-manipulation APIs (selectNode + live range updates in simple cases) implemented."
 
 [[expectations]]
+id = "dom/ranges/Range-attributes.html"
+backend = "vmjs"
+status = "pass"
+reason = "Range start/end container+offset accessors implemented (fixture setup for the Range suite succeeds)."
+
+[[expectations]]
 id = "dom/ranges/Range-cloneContents.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
@@ -342,6 +348,12 @@ status = "xfail"
 reason = "Times out in vmjs-rendered (renderer-backed) backend."
 
 [[expectations]]
+id = "dom/ranges/Range-commonAncestorContainer-2.html"
+backend = "vmjs"
+status = "pass"
+reason = "Range.commonAncestorContainer implemented for detached ranges + DocumentFragment endpoints."
+
+[[expectations]]
 id = "dom/ranges/Range-compareBoundaryPoints.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
@@ -358,6 +370,12 @@ id = "dom/ranges/Range-comparePoint.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
 reason = "Range.comparePoint is implemented, but this upstream WPT is too slow in the vm-js runner (deadline exceeded)."
+
+[[expectations]]
+id = "dom/ranges/Range-constructor.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+reason = "Range constructor implemented (default boundary points at document, offset 0)."
 
 [[expectations]]
 id = "dom/ranges/Range-deleteContents.html"
@@ -499,9 +517,15 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 
 [[expectations]]
 id = "dom/ranges/StaticRange-constructor.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs"
+status = "pass"
+reason = "StaticRange constructor + AbstractRange accessors implemented."
+
+[[expectations]]
+id = "dom/ranges/StaticRange-constructor.html"
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "StaticRange is not implemented yet."
+reason = "vmjs-rendered backend does not support StaticRange yet (renderer-backed document mode)."
 
 [[expectations]]
 id = "html_integration/module_script_importmap_before_domcontentloaded.html"
