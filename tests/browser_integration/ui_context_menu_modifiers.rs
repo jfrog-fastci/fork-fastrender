@@ -35,9 +35,16 @@ fn context_menu_request_propagates_modifier_keys_to_js_event() {
     <div id="target"></div>
     <script>
       document.addEventListener("contextmenu", function (ev) {
-        if (ev.shiftKey) {
-          ev.preventDefault();
-        }
+        var c = !!ev.ctrlKey;
+        var s = !!ev.shiftKey;
+        var a = !!ev.altKey;
+        var m = !!ev.metaKey;
+        // Ensure each modifier flag is forwarded independently (and does not spuriously enable any
+        // other modifier flag). We only call preventDefault() when exactly one modifier is set.
+        if (s && !c && !a && !m) ev.preventDefault();
+        if (c && !s && !a && !m) ev.preventDefault();
+        if (a && !c && !s && !m) ev.preventDefault();
+        if (m && !c && !s && !a) ev.preventDefault();
       });
     </script>
   </body>
@@ -68,65 +75,43 @@ fn context_menu_request_propagates_modifier_keys_to_js_event() {
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {index_url}"));
 
   let pos_css = (10.0, 10.0);
-  ui_tx
-    .send(UiToWorker::ContextMenuRequest {
-      tab_id,
-      pos_css,
-      modifiers: PointerModifiers::SHIFT,
+  let cases: &[(PointerModifiers, bool, &str)] = &[
+    (PointerModifiers::SHIFT, true, "shiftKey"),
+    (PointerModifiers::CTRL, true, "ctrlKey"),
+    (PointerModifiers::ALT, true, "altKey"),
+    (PointerModifiers::META, true, "metaKey"),
+    (PointerModifiers::NONE, false, "no modifiers"),
+  ];
+  for (modifiers, expect_prevented, label) in cases {
+    ui_tx
+      .send(UiToWorker::ContextMenuRequest {
+        tab_id,
+        pos_css,
+        modifiers: *modifiers,
+      })
+      .expect("send ContextMenuRequest");
+
+    let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+      matches!(msg, WorkerToUi::ContextMenu { .. })
     })
-    .expect("send ContextMenuRequest");
+    .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
 
-  let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ContextMenu { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
-
-  match msg {
-    WorkerToUi::ContextMenu {
-      tab_id: got_tab,
-      pos_css: got_pos,
-      default_prevented,
-      ..
-    } => {
-      assert_eq!(got_tab, tab_id);
-      assert_eq!(got_pos, pos_css);
-      assert!(
+    match msg {
+      WorkerToUi::ContextMenu {
+        tab_id: got_tab,
+        pos_css: got_pos,
         default_prevented,
-        "expected shiftKey=true to allow page listener to preventDefault()"
-      );
+        ..
+      } => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(got_pos, pos_css);
+        assert_eq!(
+          default_prevented, *expect_prevented,
+          "expected default_prevented={expect_prevented} for {label}"
+        );
+      }
+      other => panic!("unexpected WorkerToUi message: {other:?}"),
     }
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
-  }
-
-  // Without Shift held, the handler should not cancel the event.
-  ui_tx
-    .send(UiToWorker::ContextMenuRequest {
-      tab_id,
-      pos_css,
-      modifiers: PointerModifiers::NONE,
-    })
-    .expect("send ContextMenuRequest");
-
-  let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ContextMenu { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
-
-  match msg {
-    WorkerToUi::ContextMenu {
-      tab_id: got_tab,
-      pos_css: got_pos,
-      default_prevented,
-      ..
-    } => {
-      assert_eq!(got_tab, tab_id);
-      assert_eq!(got_pos, pos_css);
-      assert!(
-        !default_prevented,
-        "expected shiftKey=false to avoid preventDefault()"
-      );
-    }
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 
   drop(ui_tx);
