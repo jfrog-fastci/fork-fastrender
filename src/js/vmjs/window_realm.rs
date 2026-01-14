@@ -46802,7 +46802,11 @@ fn named_node_map_remove_named_item_native(
     }
   }
 
+<<<<<<< HEAD
   let Some(attr) = found else {
+=======
+  let Some((name, value)) = found else {
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   };
 

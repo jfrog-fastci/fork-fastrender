@@ -245,6 +245,7 @@ pub(crate) fn connect_websocket_with_cookies(
   ws_url: &str,
   protocols_header: Option<&str>,
 ) -> tungstenite::Result<(ClientSocket, ClientResponse)> {
+<<<<<<< HEAD
   // Treat renderer-supplied WebSocket URLs as untrusted: validate and canonicalize here even if the
   // renderer performed its own resolution/validation.
   let parsed = crate::ipc::websocket::validate_and_normalize_url(ws_url).map_err(
@@ -252,6 +253,11 @@ pub(crate) fn connect_websocket_with_cookies(
       tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))
     },
   )?;
+=======
+  let parsed = Url::parse(ws_url).map_err(|err| {
+    tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, err))
+  })?;
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
   let cookie_url = cookie_url_for_ws_url(&parsed);
 
   let mut request = parsed.clone().into_client_request()?;

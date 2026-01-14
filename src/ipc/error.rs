@@ -40,6 +40,19 @@ pub enum IpcError {
 
   #[error("IPC protocol error: frame length {len} exceeds maximum {max}")]
   FrameTooLarge { len: usize, max: usize },
+<<<<<<< HEAD
+=======
+
+  #[error("IPC codec error")]
+  Codec(#[source] Box<bincode::ErrorKind>),
+
+  #[error("failed to serialize IPC JSON message: {0}")]
+  Serialize(#[source] serde_json::Error),
+
+  #[error("failed to deserialize IPC JSON message: {0}")]
+  Deserialize(#[source] serde_json::Error),
+
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================

@@ -3695,8 +3695,12 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
+<<<<<<< HEAD
     let clock_dyn: Arc<dyn Clock> = clock.clone();
     let mut event_loop = EventLoop::<ClockHost>::with_clock(clock_dyn);
+=======
+    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock.clone());
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     let mut host = ClockHost::new(Arc::clone(&clock));
 
     {
@@ -3707,7 +3711,11 @@ mod tests {
       let global = realm.global_object();
       scope
         .push_root(Value::Object(global))
+<<<<<<< HEAD
         .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+=======
+        .expect("push global root");
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
 
       let advance_cb = make_callback(vm, &mut scope, global, "__advanceClock", advance_clock_native);
       set_prop(&mut scope, global, "__advanceClock", Value::Object(advance_cb));
@@ -6107,8 +6115,12 @@ mod tests {
   fn interval_continues_after_uncaught_exception() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
+<<<<<<< HEAD
     let clock_dyn: Arc<dyn Clock> = clock.clone();
     let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock_dyn);
+=======
+    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock.clone());
+>>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     let mut host =
       crate::js::WindowHost::new_with_fetcher_and_event_loop(
         dom,
