@@ -217,6 +217,26 @@ fn split_text_uses_utf16_code_unit_offsets() {
 }
 
 #[test]
+fn split_text_keeps_nodes_detached_when_original_has_no_parent() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let text = doc.create_text("hello");
+  assert_eq!(doc.parent(text).unwrap(), None);
+
+  let new_text = doc.split_text(text, 2).unwrap();
+  assert_eq!(doc.text_data(text).unwrap(), "he");
+  assert_eq!(doc.text_data(new_text).unwrap(), "llo");
+  assert_eq!(doc.parent(text).unwrap(), None);
+  assert_eq!(doc.parent(new_text).unwrap(), None);
+}
+
+#[test]
+fn split_text_errors_on_offset_past_end() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let text = doc.create_text("hello");
+  assert_eq!(doc.split_text(text, 6), Err(DomError::IndexSizeError));
+}
+
+#[test]
 fn mutation_log_append_child_records_inserted_node_id() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
