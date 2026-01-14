@@ -1541,6 +1541,19 @@ mod profile_autosave_toast_tests {
 type ToastText = String;
 
 #[cfg(any(test, feature = "browser_ui"))]
+fn max_toast_kind(
+  a: fastrender::ui::ToastKind,
+  b: fastrender::ui::ToastKind,
+) -> fastrender::ui::ToastKind {
+  use fastrender::ui::ToastKind;
+  match (a, b) {
+    (ToastKind::Error, _) | (_, ToastKind::Error) => ToastKind::Error,
+    (ToastKind::Warning, _) | (_, ToastKind::Warning) => ToastKind::Warning,
+    _ => ToastKind::Info,
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn truncate_utf8_str_tail_to_bytes(value: &str, max_bytes: usize) -> String {
   if max_bytes == 0 {
     return String::new();
@@ -6219,7 +6232,7 @@ fn determine_startup_session(
 ) -> (
   fastrender::ui::BrowserSession,
   StartupSessionSource,
-  Option<String>,
+  Option<(fastrender::ui::ToastKind, String)>,
 ) {
   let wants_restore = match restore {
     RestoreMode::Disable => false,
@@ -6227,7 +6240,7 @@ fn determine_startup_session(
     RestoreMode::Force => true,
   };
 
-  let mut session_load_toast: Option<String> = None;
+  let mut session_load_toast: Option<(fastrender::ui::ToastKind, String)> = None;
 
   let mut loaded_session_outcome = match fastrender::ui::session::load_session_outcome(session_path)
   {
@@ -6243,8 +6256,9 @@ fn determine_startup_session(
       let path = sanitize_path_for_toast(session_path, MAX_TOAST_PATH_BYTES);
       let err_short = sanitize_toast_detail_single_line(&err, MAX_TOAST_ERROR_BYTES)
         .unwrap_or_else(|| "unknown error".to_string());
-      session_load_toast = Some(format!(
-        "Failed to load session on startup.\nPath: {path}\nError: {err_short}"
+      session_load_toast = Some((
+        fastrender::ui::ToastKind::Error,
+        format!("Failed to load session on startup.\nPath: {path}\nError: {err_short}"),
       ));
 
       None
@@ -6257,8 +6271,9 @@ fn determine_startup_session(
         const MAX_TOAST_ERROR_BYTES: usize = 200;
         let err_short = sanitize_toast_detail_single_line(primary_err, MAX_TOAST_ERROR_BYTES)
           .unwrap_or_else(|| "unknown error".to_string());
-        session_load_toast = Some(format!(
-          "Session file was unreadable; restored from backup.\nError: {err_short}"
+        session_load_toast = Some((
+          fastrender::ui::ToastKind::Warning,
+          format!("Session file was unreadable; restored from backup.\nError: {err_short}"),
         ));
       }
     }
@@ -7068,8 +7083,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_none();
 
   let mut startup_profile_notifications: Vec<String> = Vec::new();
+  let mut startup_profile_toast_kind: Option<fastrender::ui::ToastKind> = None;
   if record_startup_profile_notifications {
-    if let Some(msg) = startup_session_toast {
+    if let Some((kind, msg)) = startup_session_toast {
+      startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+        Some(existing) => max_toast_kind(existing, kind),
+        None => kind,
+      });
       startup_profile_notifications.push(msg);
     }
   }
@@ -7088,6 +7108,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &err,
           )
         {
+          startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+            Some(existing) => max_toast_kind(existing, fastrender::ui::ToastKind::Warning),
+            None => fastrender::ui::ToastKind::Warning,
+          });
           startup_profile_notifications.push(msg);
         }
       }
@@ -7109,6 +7133,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &err,
           )
         {
+          startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+            Some(existing) => max_toast_kind(existing, fastrender::ui::ToastKind::Warning),
+            None => fastrender::ui::ToastKind::Warning,
+          });
           startup_profile_notifications.push(msg);
         }
       }
@@ -7693,9 +7721,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty());
+      let startup_profile_toast_kind = startup_profile_toast_kind.unwrap_or(fastrender::ui::ToastKind::Warning);
 
       if show_safe_mode_toast {
-        let kind = if profile_autosave_failure_toast
+        let mut kind = if profile_autosave_failure_toast
           .as_deref()
           .is_some_and(|text| !text.trim().is_empty())
         {
@@ -7703,6 +7732,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
           fastrender::ui::ToastKind::Warning
         };
+        if startup_profile_toast_text.is_some() {
+          kind = max_toast_kind(kind, startup_profile_toast_kind);
+        }
         let mut toast_text =
           "Safe mode: session restore skipped after repeated crashes.\nUse --restore to force restoring anyway."
             .to_string();
@@ -7737,7 +7769,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
       } else if let Some(toast_text) = startup_profile_toast_text {
         app.chrome_toast.show(
-          fastrender::ui::ToastKind::Warning,
+          startup_profile_toast_kind,
           toast_text.to_string(),
           now,
           std::time::Duration::from_secs(8),
