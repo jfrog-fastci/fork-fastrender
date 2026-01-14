@@ -35,6 +35,28 @@ test(() => {
 }, "Element.children and element-sibling traversal ignore non-element nodes");
 
 test(() => {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+  const a = document.createElement("span");
+  shadow.appendChild(a);
+
+  // Light DOM element traversal must ignore the internal ShadowRoot node stored under its host.
+  assert_equals(host.children.length, 0, "host.children should not expose ShadowRoot");
+  assert_equals(host.childElementCount, 0, "host.childElementCount should not count ShadowRoot");
+  assert_equals(host.firstElementChild, null, "host.firstElementChild should ignore ShadowRoot");
+  assert_equals(host.lastElementChild, null, "host.lastElementChild should ignore ShadowRoot");
+
+  // ShadowRoot implements ParentNode (via DocumentFragment); its element traversal APIs should
+  // operate over the shadow tree.
+  assert_equals(shadow.children.length, 1, "shadow.children.length");
+  assert_equals(shadow.childElementCount, 1, "shadow.childElementCount");
+  assert_equals(shadow.firstElementChild, a, "shadow.firstElementChild");
+  assert_equals(shadow.lastElementChild, a, "shadow.lastElementChild");
+  assert_equals(shadow.children.item(0), a, "shadow.children.item(0)");
+  assert_equals(shadow.children[0], a, "shadow.children[0]");
+}, "ShadowRoot supports ParentNode element traversal while host Element traversal ignores shadow root");
+
+test(() => {
   const parent = document.createElement("div");
   const children = parent.children;
 

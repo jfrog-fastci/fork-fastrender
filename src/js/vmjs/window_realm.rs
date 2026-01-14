@@ -34250,6 +34250,7 @@ fn parent_node_children_get_native(
   match &dom.node(handle.node_id).kind {
     NodeKind::Document { .. }
     | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. }
     | NodeKind::Element { .. }
     | NodeKind::Slot { .. } => {}
     _ => return Err(VmError::TypeError("Illegal invocation")),
@@ -34695,6 +34696,7 @@ fn parent_node_child_element_count_get_native(
   match &dom.node(node_id).kind {
     NodeKind::Document { .. }
     | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. }
     | NodeKind::Element { .. }
     | NodeKind::Slot { .. } => {}
     _ => return Err(VmError::TypeError("Illegal invocation")),
@@ -34724,6 +34726,7 @@ fn parent_node_first_element_child_get_native(
   match &dom.node(node_id).kind {
     NodeKind::Document { .. }
     | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. }
     | NodeKind::Element { .. }
     | NodeKind::Slot { .. } => {}
     _ => return Err(VmError::TypeError("Illegal invocation")),
@@ -34757,6 +34760,7 @@ fn parent_node_last_element_child_get_native(
   match &dom.node(node_id).kind {
     NodeKind::Document { .. }
     | NodeKind::DocumentFragment
+    | NodeKind::ShadowRoot { .. }
     | NodeKind::Element { .. }
     | NodeKind::Slot { .. } => {}
     _ => return Err(VmError::TypeError("Illegal invocation")),
