@@ -1632,13 +1632,35 @@ impl<'vm> HirEvaluator<'vm> {
             }
             hir_js::StmtKind::Var(var_decl) => {
               for declarator in &var_decl.declarators {
-                if self.hir_pat_contains_await_for_async_analysis(
+                let pat_contains_await = self.hir_pat_contains_await_for_async_analysis(
                   script,
                   body,
                   declarator.pat,
                   &mut steps,
-                )? {
-                  return Ok(false);
+                )?;
+                if pat_contains_await {
+                  // Support `var`/`let`/`const` object destructuring patterns where computed keys or
+                  // default values contain a *direct* `await <expr>` (`AsyncObjectPatternBindingState`).
+                  //
+                  // The initializer is still evaluated synchronously (or via the direct-`await`
+                  // declarator path below), and the object pattern itself must be await-free aside
+                  // from these narrow forms.
+                  if !matches!(
+                    var_decl.kind,
+                    hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+                  ) {
+                    return Ok(false);
+                  }
+                  if !object_pat_allows_direct_await_in_keys_and_defaults(
+                    self,
+                    script,
+                    body,
+                    declarator.pat,
+                    &mut steps,
+                    /* value_is_assignment_target */ false,
+                  )? {
+                    return Ok(false);
+                  }
                 }
                 let Some(init_id) = declarator.init else {
                   continue;
@@ -23111,6 +23133,70 @@ mod async_function_hir_exec_tests {
     assert!(
       matches!(func_data, FunctionData::None),
       "expected await destructuring assignment statement to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(3.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_var_decl_object_pat_with_await_in_key_and_default_executes_via_hir(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() {
+          const { [await Promise.resolve('k')]: v, y = await Promise.resolve(2) } = { k: 1 };
+          return v + y;
+        }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected await in var-decl object-pattern keys/defaults to execute via HIR (no per-function AST fallback), got {func_data:?}"
     );
 
     let promise = {
