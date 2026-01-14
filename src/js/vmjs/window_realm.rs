@@ -61599,9 +61599,9 @@ mod tests {
         const CONTAINED_BY = Node.DOCUMENT_POSITION_CONTAINED_BY;
 
         const r1 = a.compareDocumentPosition(b);
-        if (r1 !== (FOLLOWING | CONTAINS)) return 'a_vs_b:' + r1;
+        if (r1 !== (FOLLOWING | CONTAINED_BY)) return 'a_vs_b:' + r1;
         const r2 = b.compareDocumentPosition(a);
-        if (r2 !== (PRECEDING | CONTAINED_BY)) return 'b_vs_a:' + r2;
+        if (r2 !== (PRECEDING | CONTAINS)) return 'b_vs_a:' + r2;
         const r3 = b.compareDocumentPosition(c);
         if (r3 !== FOLLOWING) return 'b_vs_c:' + r3;
         const r4 = c.compareDocumentPosition(b);
@@ -61662,9 +61662,9 @@ mod tests {
         const CONTAINED_BY = Node.DOCUMENT_POSITION_CONTAINED_BY;
 
         const r1 = a.compareDocumentPosition(b);
-        if (r1 !== (FOLLOWING | CONTAINS)) return 'a_vs_b:' + r1;
+        if (r1 !== (FOLLOWING | CONTAINED_BY)) return 'a_vs_b:' + r1;
         const r2 = b.compareDocumentPosition(a);
-        if (r2 !== (PRECEDING | CONTAINED_BY)) return 'b_vs_a:' + r2;
+        if (r2 !== (PRECEDING | CONTAINS)) return 'b_vs_a:' + r2;
         const r3 = b.compareDocumentPosition(c);
         if (r3 !== FOLLOWING) return 'b_vs_c:' + r3;
         const r4 = c.compareDocumentPosition(b);
