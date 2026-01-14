@@ -908,7 +908,6 @@ impl Intrinsics {
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
     install_to_string_tag_writable(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
-    install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
     install_to_string_tag(
       scope,
       array_buffer_prototype,
