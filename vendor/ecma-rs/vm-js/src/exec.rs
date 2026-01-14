@@ -19086,6 +19086,39 @@ fn async_generator_handle_execution_result(
         return Ok(false);
       }
       AsyncBodyResult::Await {
+        kind: AsyncSuspendKind::AwaitResolved,
+        await_value: awaited_promise,
+        frames,
+      } => {
+        state.frames = frames;
+
+        // `AwaitResolved` means the internal `PromiseResolve` step has already been performed. Do not
+        // call `PromiseResolve` again or we'd observe `promise.constructor` twice.
+        debug_assert!(
+          matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj)),
+          "AwaitResolved suspension must carry a Promise object"
+        );
+
+        // Suspend: store frames in the VM and wire a Promise job to resume.
+        cont.env.teardown(scope.heap_mut());
+        scope
+          .heap_mut()
+          .async_generator_set_continuation(gen_obj, Some(cont))?;
+
+        async_generator_schedule_await(
+          vm,
+          scope,
+          host,
+          hooks,
+          gen_obj,
+          awaited_promise,
+          AsyncGeneratorResumeKind::Await,
+          state,
+        )?;
+        return Ok(false);
+      }
+
+      AsyncBodyResult::Await {
         kind: AsyncSuspendKind::Yield,
         await_value,
         frames,
@@ -53294,10 +53327,10 @@ pub(crate) fn start_module_tla_evaluation(
         };
       };
 
-      let awaited_promise_res = {
-        let mut promise_scope = scope.reborrow();
-        promise_scope.push_root(await_value)?;
-        match kind {
+        let awaited_promise_res = {
+          let mut promise_scope = scope.reborrow();
+          promise_scope.push_root(await_value)?;
+          match kind {
           AsyncSuspendKind::Await => {
             let res = promise_resolve_for_await_with_host_and_hooks(
               evaluator.vm,

@@ -30,8 +30,8 @@ We route page action requests using the **raw** `accesskit::ActionRequest` deliv
 `accesskit_winit` (the winit user event), before the request is forwarded into egui:
 
 1. Decode the target `NodeId` using `ui::decode_page_node_id`, which encodes:
-   `(tab_id, document_generation, dom_preorder_node_id)`.
-2. Reject stale requests by requiring the encoded `document_generation` to match the tab’s current
+   `(tab_id, tree_generation, dom_preorder_node_id)`.
+2. Reject stale requests by requiring the encoded `tree_generation` to match the tab’s current
    page accessibility generation.
 3. Translate the AccessKit action into a backend-agnostic UI↔worker message:
    `UiToWorker::{A11ySetFocus,A11yActivate,A11yScrollIntoView,A11yShowContextMenu}`.

@@ -137,7 +137,7 @@ impl ChromeDocumentContext<'_> {
 ///
 /// Decoding precedence:
 ///
-/// 1. **Canonical:** try the `(tab_id, document_generation, dom_node_id)` encoding produced by
+/// 1. **Canonical:** try the `(tab_id, tree_generation, dom_node_id)` encoding produced by
 ///    [`crate::ui::encode_page_node_id`]. This allows filtering stale action requests across
 ///    navigations (generation mismatch).
 /// 2. **Compatibility:** fall back to the tag-bit encoding in [`crate::ui::page_accesskit_ids`]
@@ -148,16 +148,16 @@ impl ChromeDocumentContext<'_> {
 pub fn fastrender_node_id_from_accesskit(
   node_id: accesskit::NodeId,
   current_tab_id: TabId,
-  current_document_generation: u32,
+  current_tree_generation: u32,
 ) -> Option<usize> {
   if let Some(dom_node_id) =
-    dom_node_id_for_current_page_action(node_id, current_tab_id, current_document_generation)
+    dom_node_id_for_current_page_action(node_id, current_tab_id, current_tree_generation)
   {
     return Some(dom_node_id);
   }
 
   // Back-compat for the tag-bit encoding in `ui::page_accesskit_ids`. This scheme does not carry
-  // a document generation, so callers cannot filter stale action requests across navigations when
+  // a tree generation, so callers cannot filter stale action requests across navigations when
   // using it. Prefer `encode_page_node_id` for real page subtree integration.
   let (tab_id, dom_node_id) = page_accesskit_ids::decode_page_node_id(node_id)?;
   if tab_id != current_tab_id {
@@ -190,11 +190,11 @@ fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
 pub fn handle_accesskit_action_request(
   ctx: &mut ChromeDocumentContext<'_>,
   current_tab_id: TabId,
-  current_document_generation: u32,
+  current_tree_generation: u32,
   request: accesskit::ActionRequest,
 ) -> bool {
   let Some(target_node_id) =
-    fastrender_node_id_from_accesskit(request.target, current_tab_id, current_document_generation)
+    fastrender_node_id_from_accesskit(request.target, current_tab_id, current_tree_generation)
   else {
     return false;
   };
@@ -1015,7 +1015,7 @@ mod tests {
     );
     assert!(
       !handled_stale,
-      "expected action requests for stale document generations to be ignored"
+      "expected action requests for stale tree generations to be ignored"
     );
     assert_eq!(
       engine.focused_node_id(),

@@ -45,7 +45,7 @@ const FASTR_ACCESSKIT_NAMESPACE_CHROME_DOM_PREORDER: u8 = 0x03;
 ///
 /// Payload layout (112 bits):
 /// - bits 111..64: tab id (48 bits, non-zero)
-/// - bits 63..32: document generation (32 bits)
+/// - bits 63..32: page accessibility-tree generation (32 bits)
 /// - bits 31..0: DOM pre-order node id (u32, non-zero; clamped from `usize`)
 const FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER: u8 = 0x04;
 
@@ -169,7 +169,7 @@ pub fn chrome_dom_preorder_from_accesskit(node: accesskit::NodeId) -> Option<usi
 /// Encode a 1-indexed DOM pre-order node id belonging to a rendered page/document.
 pub fn accesskit_id_for_page_dom_preorder(
   tab_id: u64,
-  document_generation: u32,
+  tree_generation: u32,
   dom_node_id: usize,
 ) -> accesskit::NodeId {
   // `tab_id=0` is reserved for invalid page node ids; returning a non-panicking ID that fails to
@@ -196,7 +196,7 @@ pub fn accesskit_id_for_page_dom_preorder(
   };
 
   let payload =
-    ((tab_id as u128) << 64) | ((document_generation as u128) << 32) | (dom_u32 as u128);
+    ((tab_id as u128) << 64) | ((tree_generation as u128) << 32) | (dom_u32 as u128);
   encode_namespaced_id(FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER, payload)
 }
 
@@ -209,12 +209,12 @@ pub fn page_dom_preorder_from_accesskit(node: accesskit::NodeId) -> Option<(u64,
   if tab_id == 0 {
     return None;
   }
-  let generation = ((payload >> 32) & 0xFFFF_FFFF) as u32;
+  let tree_generation = ((payload >> 32) & 0xFFFF_FFFF) as u32;
   let dom_node_id = (payload & 0xFFFF_FFFF) as u32;
   if dom_node_id == 0 {
     return None;
   }
-  Some((tab_id, generation, dom_node_id as usize))
+  Some((tab_id, tree_generation, dom_node_id as usize))
 }
 
 /// Encode a 1-indexed renderer preorder id in its own namespace.

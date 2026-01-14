@@ -26,19 +26,19 @@ fn accesskit_role_from_fastrender(role: &str) -> Role {
 
 fn build_accesskit_node_recursive(
   tab_id: crate::ui::messages::TabId,
-  document_generation: u32,
+  tree_generation: u32,
   node: &AccessibilityNode,
   interaction_state: Option<&InteractionState>,
   classes: &mut accesskit::NodeClassSet,
   out: &mut Vec<(NodeId, accesskit::Node)>,
 ) -> NodeId {
-  let id = encode_page_node_id(tab_id, document_generation, node.dom_node_id);
+  let id = encode_page_node_id(tab_id, tree_generation, node.dom_node_id);
 
   let mut child_ids = Vec::with_capacity(node.children.len());
   for child in &node.children {
     child_ids.push(build_accesskit_node_recursive(
       tab_id,
-      document_generation,
+      tree_generation,
       child,
       interaction_state,
       classes,
@@ -118,7 +118,7 @@ fn build_accesskit_node_recursive(
 /// suitable for windowed UI integration.
 pub fn build_accesskit_tree_update_for_dom(
   tab_id: crate::ui::messages::TabId,
-  document_generation: u32,
+  tree_generation: u32,
   renderer: &mut FastRender,
   dom: &DomNode,
   width: u32,
@@ -128,7 +128,7 @@ pub fn build_accesskit_tree_update_for_dom(
   let tree = renderer.accessibility_tree_with_interaction_state(dom, width, height, interaction_state)?;
   Ok(accesskit_tree_update_from_accessibility_tree(
     tab_id,
-    document_generation,
+    tree_generation,
     &tree,
     interaction_state,
   ))
@@ -137,7 +137,7 @@ pub fn build_accesskit_tree_update_for_dom(
 /// Convert a FastRender accessibility tree into an AccessKit tree update.
 pub fn accesskit_tree_update_from_accessibility_tree(
   tab_id: crate::ui::messages::TabId,
-  document_generation: u32,
+  tree_generation: u32,
   tree: &AccessibilityNode,
   interaction_state: Option<&InteractionState>,
 ) -> TreeUpdate {
@@ -145,7 +145,7 @@ pub fn accesskit_tree_update_from_accessibility_tree(
   let mut nodes = Vec::new();
   let root_id = build_accesskit_node_recursive(
     tab_id,
-    document_generation,
+    tree_generation,
     tree,
     interaction_state,
     &mut classes,
@@ -154,7 +154,7 @@ pub fn accesskit_tree_update_from_accessibility_tree(
 
   let focus = interaction_state
     .and_then(|state| state.focused)
-    .map(|id| encode_page_node_id(tab_id, document_generation, id));
+    .map(|id| encode_page_node_id(tab_id, tree_generation, id));
 
   TreeUpdate {
     nodes,

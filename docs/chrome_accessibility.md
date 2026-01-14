@@ -267,11 +267,11 @@ Layout (u128):
 - bits 127..120: marker `0x46`
 - bits 119..112: namespace `0x04`
 - bits 111..64: `TabId` (48 bits, non-zero)
-- bits 63..32: document generation (u32)
+- bits 63..32: tree generation (u32)
 - bits 31..0: DOM pre-order node id (u32; clamped)
 
-This gives each node a stable `(tab_id, generation, dom_node_id)` identity and ensures stale action
-requests from a previous navigation can be ignored (generation mismatch).
+This gives each node a stable `(tab_id, tree_generation, dom_node_id)` identity and ensures stale
+action requests from a previous navigation or tree rebuild can be ignored (generation mismatch).
 
 For compatibility, `fast_accesskit_actions` also accepts the tag-bit page ids produced by
 [`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs).
@@ -282,8 +282,8 @@ Encoding (u128):
 - Bits 64..=126 = `TabId` (63 bits; the high bit is masked off)
 - Bits 0..=63 = DOM pre-order node id (`usize` stored as `u64`)
 
-This encoding does not include a document generation so it cannot filter stale action requests
-across navigations.
+This encoding does not include a tree generation so it cannot filter stale action requests across
+navigations/tree rebuilds.
 
 #### Wrapper nodes (window/chrome/page roots)
 
@@ -418,9 +418,9 @@ need to become FastRender interaction operations.
 
 The current shared helper is [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
 
-- `handle_accesskit_action_request(ctx, current_tab_id, current_document_generation, request)` decodes
+- `handle_accesskit_action_request(ctx, current_tab_id, current_tree_generation, request)` decodes
   the target `NodeId` into a FastRender DOM node id (see NodeId scheme above).
-  - With the canonical `encode_page_node_id` encoding, requests for other tabs or stale document
+  - With the canonical `encode_page_node_id` encoding, requests for other tabs or stale tree
     generations are ignored.
   - With the tag-bit `page_accesskit_ids` encoding, only tab filtering is possible (no generation is
     encoded).

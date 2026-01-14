@@ -237,7 +237,7 @@ fn accessible_name_for_dom_node(node: &DomNode) -> Option<String> {
 /// split chrome/content layout). For a single full-window document, pass `Point::ZERO`.
 pub fn build_accesskit_tree_update_for_document(
   tab_id: TabId,
-  document_generation: u32,
+  tree_generation: u32,
   prepared: &PreparedDocument,
   scroll_state: &ScrollState,
   document_offset: Point,
@@ -271,7 +271,7 @@ pub fn build_accesskit_tree_update_for_document(
   let root_preorder_id = *node_ids
     .get(&(prepared.dom() as *const DomNode))
     .expect("root DOM node should have a preorder id");
-  let root_node_id = encode_page_node_id(tab_id, document_generation, root_preorder_id);
+  let root_node_id = encode_page_node_id(tab_id, tree_generation, root_preorder_id);
   stack.push(Frame {
     node: prepared.dom(),
     next_child: 0,
@@ -298,7 +298,7 @@ pub fn build_accesskit_tree_update_for_document(
       let preorder_id = *node_ids
         .get(&(child as *const DomNode))
         .expect("DOM traversal should have assigned a preorder id");
-      let child_node_id = encode_page_node_id(tab_id, document_generation, preorder_id);
+      let child_node_id = encode_page_node_id(tab_id, tree_generation, preorder_id);
 
       stack.push(Frame {
         node: child,
@@ -415,12 +415,12 @@ mod tests {
 
     let target_dom_id = node_id_for_dom_id(prepared.dom(), "target");
     let tab_id = crate::ui::messages::TabId(1);
-    let document_generation = 1;
-    let target_node_id = crate::ui::encode_page_node_id(tab_id, document_generation, target_dom_id);
+    let tree_generation = 1;
+    let target_node_id = crate::ui::encode_page_node_id(tab_id, tree_generation, target_dom_id);
 
     let update_unscrolled = build_accesskit_tree_update_for_document(
       tab_id,
-      document_generation,
+      tree_generation,
       &prepared,
       &ScrollState::with_viewport(Point::ZERO),
       Point::ZERO,
@@ -428,12 +428,12 @@ mod tests {
     );
     let y0_unscrolled = node_bounds_y0(&update_unscrolled, target_node_id);
 
-     // Keep the scroll offset well within the expected scroll range so future clamping behaviour
-     // does not make this test flaky.
+    // Keep the scroll offset well within the expected scroll range so future clamping behaviour
+    // does not make this test flaky.
     let scroll_y = 1000.0;
     let update_scrolled = build_accesskit_tree_update_for_document(
       tab_id,
-      document_generation,
+      tree_generation,
       &prepared,
       &ScrollState::with_viewport(Point::new(0.0, scroll_y)),
       Point::ZERO,

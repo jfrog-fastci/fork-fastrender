@@ -5,13 +5,13 @@
 //!
 //! Note: FastRender's current preferred encoding is the marker+namespace scheme in
 //! `crate::accessibility::accesskit_ids` (wrapped by `crate::ui::page_a11y`). This tag-bit variant
-//! is kept mainly for compatibility and does **not** include a document generation, so it cannot be
-//! used to filter stale action requests across navigations.
+//! is kept mainly for compatibility and does **not** include a tree generation, so it cannot be
+//! used to filter stale action requests across navigations or page accessibility-tree rebuilds.
 //!
-//! Note: the windowed browser UI's injected page subtree currently uses the `(tab_id, document
-//! generation, dom_node_id)` encoding in [`crate::ui::page_a11y`] (`encode_page_node_id`) so stale
-//! action requests from previous navigations can be rejected. This tag-bit variant is kept as a
-//! compact, reversible alternative encoding.
+//! Note: the windowed browser UI's injected page subtree currently uses the
+//! `(tab_id, tree_generation, dom_node_id)` encoding in [`crate::ui::page_a11y`]
+//! (`encode_page_node_id`) so stale action requests from previous navigations / tree generations can
+//! be rejected. This tag-bit variant is kept as a compact, reversible alternative encoding.
 
 #![cfg(feature = "browser_ui")]
 
@@ -163,4 +163,3 @@ mod tests {
     assert_eq!(decode_page_node_id(zero_dom), None);
   }
 }
-

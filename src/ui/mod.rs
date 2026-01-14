@@ -141,7 +141,7 @@ pub mod fastrender_accesskit;
 // Alternative tag-bit page `NodeId` encoding helpers.
 //
 // The windowed browser UI's injected page subtree currently uses `page_a11y::encode_page_node_id`
-// (tab id + document generation + dom node id). `page_accesskit_ids` is kept as a reversible
+// (tab id + tree generation + dom node id). `page_accesskit_ids` is kept as a reversible
 // tag-bit variant.
 #[cfg(feature = "browser_ui")]
 pub mod page_accesskit_ids;

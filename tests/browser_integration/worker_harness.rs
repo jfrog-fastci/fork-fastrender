@@ -331,7 +331,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     }
     WorkerToUi::PageAccessibility {
       tab_id,
-      document_generation: _,
+      tree_generation: _,
       tree,
       bounds_css: _,
     } => {

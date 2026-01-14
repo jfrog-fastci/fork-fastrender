@@ -27315,7 +27315,7 @@ impl App {
         .browser_state
         .tab(tab_id)
         .and_then(|tab| tab.page_accessibility.as_ref())
-        .map(|snap| snap.document_generation)
+        .map(|snap| snap.tree_generation)
     });
 
     if let Some(route) =
@@ -27662,20 +27662,21 @@ impl App {
           use fastrender::ui::UiToWorker;
 
           let active_tab_id = self.browser_state.active_tab_id();
-          let active_document_generation = active_tab_id.and_then(|tab_id| {
+          let active_tree_generation = active_tab_id.and_then(|tab_id| {
             self
               .browser_state
               .tab(tab_id)
               .and_then(|tab| tab.page_accessibility.as_ref())
-              .map(|snap| snap.document_generation)
+              .map(|snap| snap.tree_generation)
           });
           let mut msgs: Vec<UiToWorker> = Vec::new();
           let mut page_focus_requested = false;
 
           for req in page_accesskit_action_requests {
             // If the action request targets a canonical page node id (tab+generation+dom id),
-            // validate that it matches the currently active document generation. This prevents
-            // stale screen-reader requests from a previous navigation from affecting the new page.
+            // validate that it matches the currently active page accessibility tree generation.
+            // This prevents stale screen-reader requests from a previous mapping from affecting
+            // the new page.
             //
             // Note: The tag-bit page node ids (`ui::page_accesskit_ids`) do not encode a generation,
             // so they cannot be filtered here; they are kept only for compatibility.
@@ -27685,7 +27686,7 @@ impl App {
               else {
                 continue;
               };
-              if Some(tab_id) != active_tab_id || active_document_generation != Some(generation) {
+              if Some(tab_id) != active_tab_id || active_tree_generation != Some(generation) {
                 continue;
               }
             }
@@ -30116,7 +30117,7 @@ fn ensure_page_focus_cleared_for_chrome_click(
 #[derive(Debug)]
 enum PageAccesskitActionRoute {
   /// An AccessKit action request targeted at a page `NodeId`, but not for the currently active
-  /// `(tab_id, document_generation)` (or when no active document is available). This should be
+  /// `(tab_id, tree_generation)` (or when no active document is available). This should be
   /// ignored and **not** forwarded into egui.
   Ignored,
   /// A request targeting a node in the currently active page accessibility subtree.
@@ -30132,7 +30133,7 @@ enum PageAccesskitActionRoute {
 fn route_page_accesskit_action_request(
   request: &accesskit::ActionRequest,
   active_tab_id: Option<fastrender::ui::TabId>,
-  current_document_generation: Option<u32>,
+  current_tree_generation: Option<u32>,
 ) -> Option<PageAccesskitActionRoute> {
   // If this `NodeId` doesn't belong to the page namespace, let the chrome accessibility backend
   // handle it (egui widgets or the minimal compositor tree).
@@ -30148,7 +30149,7 @@ fn route_page_accesskit_action_request(
   if tab_id != active_tab_id {
     return Some(PageAccesskitActionRoute::Ignored);
   }
-  if current_document_generation != Some(generation) {
+  if current_tree_generation != Some(generation) {
     return Some(PageAccesskitActionRoute::Ignored);
   }
 

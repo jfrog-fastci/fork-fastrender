@@ -42,13 +42,13 @@ fn normalize_name(name: &str) -> Option<String> {
 
 fn build_subtree_nodes(
   tab_id: TabId,
-  document_generation: u32,
+  tree_generation: u32,
   node: &AccessibilityNode,
   classes: &mut accesskit::NodeClassSet,
   nodes_out: &mut Vec<(accesskit::NodeId, accesskit::Node)>,
   focus_out: &mut Option<accesskit::NodeId>,
 ) -> accesskit::NodeId {
-  let id = encode_page_node_id(tab_id, document_generation, node.dom_node_id);
+  let id = encode_page_node_id(tab_id, tree_generation, node.dom_node_id);
 
   if node.states.focused {
     *focus_out = Some(id);
@@ -58,7 +58,7 @@ fn build_subtree_nodes(
   for child in &node.children {
     let child_id = build_subtree_nodes(
       tab_id,
-      document_generation,
+      tree_generation,
       child,
       classes,
       nodes_out,
@@ -106,7 +106,7 @@ fn build_subtree_nodes(
 /// embedding into a windowed browser's overall accessibility tree.
 pub fn accesskit_subtree_for_page(
   tab_id: TabId,
-  document_generation: u32,
+  tree_generation: u32,
   root: &AccessibilityNode,
 ) -> PageAccessKitSubtree {
   let mut nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
@@ -115,7 +115,7 @@ pub fn accesskit_subtree_for_page(
 
   let root_id = build_subtree_nodes(
     tab_id,
-    document_generation,
+    tree_generation,
     root,
     &mut classes,
     &mut nodes,

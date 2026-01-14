@@ -290,11 +290,8 @@ pub struct LatestFrameMeta {
 
 #[derive(Debug)]
 pub struct PageAccessibilitySnapshot {
-  /// Monotonic per-tab generation incremented on each committed navigation (including error pages).
-  ///
-  /// UIs must treat this as part of the identity for all page nodes to avoid AccessKit `NodeId`
-  /// reuse across navigations.
-  pub document_generation: u32,
+  /// Monotonic per-tab generation for the page accessibility-tree node-id mapping.
+  pub tree_generation: u32,
   pub tree: crate::accessibility::AccessibilityNode,
   /// Map of DOM preorder node id → viewport-local CSS bounds.
   ///
@@ -3143,13 +3140,13 @@ impl BrowserAppState {
       }
       WorkerToUi::PageAccessibility {
         tab_id,
-        document_generation,
+        tree_generation,
         tree,
         bounds_css,
       } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.page_accessibility = Some(PageAccessibilitySnapshot {
-            document_generation,
+            tree_generation,
             tree,
             bounds_css,
           });

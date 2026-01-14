@@ -850,11 +850,12 @@ struct TabState {
   history: TabHistory,
   loading: bool,
   pending_history_entry: bool,
-  /// Monotonic per-tab generation, incremented each time a new document is committed.
+  /// Monotonic per-tab generation for the page accessibility-tree node-id mapping.
   ///
-  /// This is used to namespace AccessKit node ids so page nodes cannot be reused across
-  /// navigations (which would otherwise be likely because DOM preorder ids restart at 1).
-  document_generation: u32,
+  /// This is used to namespace AccessKit node ids so page nodes cannot be reused when the mapping
+  /// between renderer DOM preorder ids and semantic elements changes (at minimum on navigation
+  /// commits, and also on DOM structural changes within a navigation when detectable).
+  tree_generation: u32,
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
@@ -965,7 +966,7 @@ impl TabState {
       history: TabHistory::new(),
       loading: false,
       pending_history_entry: false,
-      document_generation: 0,
+      tree_generation: 0,
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
@@ -1237,6 +1238,19 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Worker
     }
     true
   });
+
+  // If the renderer preorder→dom2 mapping changes, existing `dom_node_id`-keyed AccessKit `NodeId`s
+  // can become ambiguous: the same `(tree_generation, dom_node_id)` could refer to a different
+  // element after the DOM resync. Bump the page accessibility tree generation so UIs can ignore any
+  // stale action requests that were queued against the previous mapping.
+  let preorder_mapping_changed = match tab.js_dom_mapping.as_ref() {
+    Some(prev) => prev.preorder_to_node_id() != mapping.preorder_to_node_id(),
+    None => true,
+  };
+  if preorder_mapping_changed {
+    tab.tree_generation = tab.tree_generation.wrapping_add(1);
+  }
+
   if let Some(committed_url) = tab.last_committed_url.as_deref() {
     // After syncing dom2 → dom1, recompute the effective base URL so relative URL resolution (links
     // and subresources) respects any JS-inserted/modified `<base href>`.
@@ -2315,7 +2329,7 @@ fn build_page_accesskit_subtree_for_tab(
 
   Some(page_accesskit_subtree::accesskit_subtree_for_page(
     tab_id,
-    tab.document_generation,
+    tab.tree_generation,
     &a11y_tree,
   ))
 }
@@ -12541,7 +12555,7 @@ impl BrowserRuntime {
           tab.last_base_url = base_url.clone();
           tab.site_key = Some(site_key_for_navigation(&committed_url, None));
           tab.site_mismatch_restarts = 0;
-          tab.document_generation = tab.document_generation.wrapping_add(1);
+          tab.tree_generation = tab.tree_generation.wrapping_add(1);
           if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
             tab.js_tab = None;
             tab.js_dom_mapping_generation = 0;
@@ -12784,7 +12798,7 @@ impl BrowserRuntime {
     tab.last_base_url = base_url.clone();
     tab.site_key = Some(site_key_for_navigation(&committed_url, None));
     tab.site_mismatch_restarts = 0;
-    tab.document_generation = tab.document_generation.wrapping_add(1);
+    tab.tree_generation = tab.tree_generation.wrapping_add(1);
     if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
       tab.js_tab = None;
       tab.js_dom_mapping_generation = 0;
@@ -12886,14 +12900,14 @@ impl BrowserRuntime {
             {
               let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
                 tab_id,
-                tab.document_generation,
+                tab.tree_generation,
                 &tree,
               );
               msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
             }
             msgs.push(WorkerToUi::PageAccessibility {
               tab_id,
-              document_generation: tab.document_generation,
+              tree_generation: tab.tree_generation,
               tree,
               bounds_css,
             });
@@ -13144,7 +13158,7 @@ impl BrowserRuntime {
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
     tab.site_key = Some(site_key_for_navigation(about_pages::ABOUT_ERROR, None));
     tab.site_mismatch_restarts = 0;
-    tab.document_generation = tab.document_generation.wrapping_add(1);
+    tab.tree_generation = tab.tree_generation.wrapping_add(1);
 
     tab.loading = false;
     tab.pending_history_entry = false;
@@ -13188,14 +13202,14 @@ impl BrowserRuntime {
       {
         let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
           tab_id,
-          tab.document_generation,
+          tab.tree_generation,
           &tree,
         );
         msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
       }
       msgs.push(WorkerToUi::PageAccessibility {
         tab_id,
-        document_generation: tab.document_generation,
+        tree_generation: tab.tree_generation,
         tree,
         bounds_css,
       });
@@ -13472,14 +13486,14 @@ impl BrowserRuntime {
           {
             let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
               tab_id,
-              tab.document_generation,
+              tab.tree_generation,
               &tree,
             );
             msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
           }
           msgs.push(WorkerToUi::PageAccessibility {
             tab_id,
-            document_generation: tab.document_generation,
+            tree_generation: tab.tree_generation,
             tree,
             bounds_css,
           });
