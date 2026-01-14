@@ -17740,8 +17740,17 @@ impl App {
       .overlay_scrollbar_visibility
       .register_interaction(std::time::Instant::now());
     if pointer_css.is_none() {
-      if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-        tab.apply_optimistic_viewport_scroll_delta(delta_css);
+      let changed = if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+        tab.apply_optimistic_viewport_scroll_delta(delta_css)
+      } else {
+        false
+      };
+      if changed {
+        // Ensure scroll-position autosave throttling sees viewport-only scroll gestures even when
+        // the worker acknowledgement matches our optimistic update exactly.
+        self
+          .scroll_autosave
+          .observe_scroll_change(std::time::Instant::now());
       }
     }
     self
@@ -24636,11 +24645,17 @@ impl App {
               fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
               fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
             };
-            if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-              tab.apply_optimistic_viewport_scroll_delta(delta_css);
+            let now = std::time::Instant::now();
+            let changed = if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+              tab.apply_optimistic_viewport_scroll_delta(delta_css)
+            } else {
+              false
+            };
+            if changed {
+              self.scroll_autosave.observe_scroll_change(now);
             }
             if let Some(hud) = self.hud.as_mut() {
-              hud.note_scroll_input(std::time::Instant::now());
+              hud.note_scroll_input(now);
             }
             PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
           }
