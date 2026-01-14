@@ -9943,6 +9943,768 @@ pub fn iterator_prototype_to_array(
   Ok(Value::Object(out))
 }
 
+fn close_iterator_on_throw_completion(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iterator: Value,
+) -> Result<(), VmError> {
+  // Close the iterator like `IfAbruptCloseIterator` would for a throw completion.
+  //
+  // This is used by iterator helpers when argument validation fails: the iterator must be closed
+  // even if we haven't yet fetched its `next` method.
+  let record = crate::iterator::IteratorRecord {
+    iterator,
+    next_method: Value::Undefined,
+    done: false,
+  };
+  crate::iterator::iterator_close(
+    vm,
+    host,
+    hooks,
+    scope,
+    &record,
+    crate::iterator::CloseCompletionKind::Throw,
+  )
+}
+
+fn parse_iterator_helper_limit_or_close_on_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iterator: Value,
+  limit: Value,
+) -> Result<f64, VmError> {
+  // Shared argument parsing for `Iterator.prototype.drop/take`.
+  //
+  // Spec shape:
+  // 1. Let numLimit be ? ToNumber(limit).
+  // 2. If numLimit is NaN, throw a RangeError exception.
+  // 3. Let integerLimit be ! ToIntegerOrInfinity(numLimit).
+  // 4. If integerLimit < 0, throw a RangeError exception.
+  let num_limit = match scope.to_number(vm, host, hooks, limit) {
+    Ok(n) => n,
+    Err(err) => {
+      if err.is_throw_completion() {
+        close_iterator_on_throw_completion(vm, scope, host, hooks, iterator)?;
+      }
+      return Err(err);
+    }
+  };
+
+  if num_limit.is_nan() {
+    let err = VmError::RangeError("Iterator helper limit is NaN");
+    close_iterator_on_throw_completion(vm, scope, host, hooks, iterator)?;
+    return Err(err);
+  }
+
+  // `ToIntegerOrInfinity` on a Number cannot throw.
+  let integer_limit = scope.to_integer_or_infinity(vm, host, hooks, Value::Number(num_limit))?;
+  if integer_limit < 0.0 {
+    let err = VmError::RangeError("Iterator helper limit is negative");
+    close_iterator_on_throw_completion(vm, scope, host, hooks, iterator)?;
+    return Err(err);
+  }
+  Ok(integer_limit)
+}
+
+fn get_iterator_direct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iterator: Value,
+  iterator_obj: GcObject,
+) -> Result<crate::iterator::IteratorRecord, VmError> {
+  // `GetIteratorDirect(obj)` (iterator helpers proposal).
+  //
+  // Note: per spec, this does **not** validate that `next` is callable; that check is deferred
+  // until the first time `next` is actually called.
+  let mut scope = scope.reborrow();
+  scope.push_root(iterator)?;
+
+  let next_key = string_key(&mut scope, "next")?;
+  let next_method = scope.get_with_host_and_hooks(vm, host, hooks, iterator_obj, next_key, iterator)?;
+  Ok(crate::iterator::IteratorRecord {
+    iterator,
+    next_method,
+    done: false,
+  })
+}
+
+fn iterator_helper_internal_keys(
+  scope: &mut Scope<'_>,
+) -> Result<(PropertyKey, PropertyKey, PropertyKey, PropertyKey, PropertyKey), VmError> {
+  let iterated = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_iterator_helper_iterated_symbol()?,
+  );
+  let next_method = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_iterator_helper_next_method_symbol()?,
+  );
+  let done = PropertyKey::from_symbol(scope.heap_mut().ensure_internal_iterator_helper_done_symbol()?);
+  let remaining = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_iterator_helper_remaining_symbol()?,
+  );
+  let running = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_iterator_helper_running_symbol()?,
+  );
+  Ok((iterated, next_method, done, remaining, running))
+}
+
+fn require_iterator_helper_slot(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: &PropertyKey,
+  message: &'static str,
+) -> Result<Value, VmError> {
+  match get_data_property_value(vm, scope, obj, key) {
+    Ok(Some(v)) => Ok(v),
+    Ok(None) => Err(VmError::TypeError(message)),
+    Err(VmError::PropertyNotData) => Err(VmError::TypeError(message)),
+    Err(err) => Err(err),
+  }
+}
+
+fn iterator_helper_get_done(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  done_key: &PropertyKey,
+) -> Result<bool, VmError> {
+  let done = get_data_property_value(vm, scope, obj, done_key)?;
+  match done {
+    Some(Value::Bool(b)) => Ok(b),
+    Some(v) => scope.heap().to_boolean(v),
+    None => Ok(false),
+  }
+}
+
+fn iterator_helper_set_done(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  done_key: PropertyKey,
+  done: bool,
+) -> Result<(), VmError> {
+  scope.define_property(obj, done_key, data_desc(Value::Bool(done), true, false, true))
+}
+
+fn iterator_helper_get_running(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  running_key: &PropertyKey,
+) -> Result<bool, VmError> {
+  let running = get_data_property_value(vm, scope, obj, running_key)?;
+  match running {
+    Some(Value::Bool(b)) => Ok(b),
+    Some(v) => scope.heap().to_boolean(v),
+    None => Ok(false),
+  }
+}
+
+fn iterator_helper_set_running(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  running_key: PropertyKey,
+  running: bool,
+) -> Result<(), VmError> {
+  scope.define_property(
+    obj,
+    running_key,
+    data_desc(Value::Bool(running), true, false, true),
+  )
+}
+
+/// `%IteratorPrototype%.drop` (iterator helpers proposal).
+pub fn iterator_prototype_drop(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator.prototype.drop called on non-object"));
+  };
+
+  let limit = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root `this` across ToNumber and potential iterator-closing operations.
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let integer_limit =
+    parse_iterator_helper_limit_or_close_on_error(vm, &mut scope, host, hooks, this, limit)?;
+
+  // GetIteratorDirect(this).
+  let record = get_iterator_direct(vm, &mut scope, host, hooks, this, this_obj)?;
+  let iterated = record.iterator;
+  let next_method = record.next_method;
+
+  // Create the helper iterator object.
+  scope.push_roots(&[iterated, next_method])?;
+  let helper = scope.alloc_object_with_prototype(Some(intr.iterator_prototype()))?;
+  scope.push_root(Value::Object(helper))?;
+
+  let (iterated_key, next_method_key, done_key, remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  scope.define_property(helper, iterated_key, data_desc(iterated, true, false, true))?;
+  scope.define_property(helper, next_method_key, data_desc(next_method, true, false, true))?;
+  scope.define_property(helper, done_key, data_desc(Value::Bool(false), true, false, true))?;
+  scope.define_property(
+    helper,
+    remaining_key,
+    data_desc(Value::Number(integer_limit), true, false, true),
+  )?;
+  scope.define_property(helper, running_key, data_desc(Value::Bool(false), true, false, true))?;
+
+  // Install `.next` / `.return` as own data properties.
+  let next_name = scope.alloc_string("next")?;
+  scope.push_root(Value::String(next_name))?;
+  let next_fn = scope.alloc_native_function(
+    intr.iterator_drop_helper_next_call(),
+    None,
+    next_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(next_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
+  scope.define_property(
+    helper,
+    PropertyKey::from_string(next_name),
+    data_desc(Value::Object(next_fn), true, false, true),
+  )?;
+
+  let return_name = scope.alloc_string("return")?;
+  scope.push_root(Value::String(return_name))?;
+  let return_fn = scope.alloc_native_function(
+    intr.iterator_drop_helper_return_call(),
+    None,
+    return_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(return_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(return_fn, Some(intr.function_prototype()))?;
+  scope.define_property(
+    helper,
+    PropertyKey::from_string(return_name),
+    data_desc(Value::Object(return_fn), true, false, true),
+  )?;
+
+  Ok(Value::Object(helper))
+}
+
+/// `%IteratorPrototype%.take` (iterator helpers proposal).
+pub fn iterator_prototype_take(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator.prototype.take called on non-object"));
+  };
+
+  let limit = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root `this` across ToNumber and potential iterator-closing operations.
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let integer_limit =
+    parse_iterator_helper_limit_or_close_on_error(vm, &mut scope, host, hooks, this, limit)?;
+
+  // GetIteratorDirect(this).
+  let record = get_iterator_direct(vm, &mut scope, host, hooks, this, this_obj)?;
+  let iterated = record.iterator;
+  let next_method = record.next_method;
+
+  // Create the helper iterator object.
+  scope.push_roots(&[iterated, next_method])?;
+  let helper = scope.alloc_object_with_prototype(Some(intr.iterator_prototype()))?;
+  scope.push_root(Value::Object(helper))?;
+
+  let (iterated_key, next_method_key, done_key, remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  scope.define_property(helper, iterated_key, data_desc(iterated, true, false, true))?;
+  scope.define_property(helper, next_method_key, data_desc(next_method, true, false, true))?;
+  scope.define_property(helper, done_key, data_desc(Value::Bool(false), true, false, true))?;
+  scope.define_property(
+    helper,
+    remaining_key,
+    data_desc(Value::Number(integer_limit), true, false, true),
+  )?;
+  scope.define_property(helper, running_key, data_desc(Value::Bool(false), true, false, true))?;
+
+  // Install `.next` / `.return` as own data properties.
+  let next_name = scope.alloc_string("next")?;
+  scope.push_root(Value::String(next_name))?;
+  let next_fn = scope.alloc_native_function(
+    intr.iterator_take_helper_next_call(),
+    None,
+    next_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(next_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
+  scope.define_property(
+    helper,
+    PropertyKey::from_string(next_name),
+    data_desc(Value::Object(next_fn), true, false, true),
+  )?;
+
+  let return_name = scope.alloc_string("return")?;
+  scope.push_root(Value::String(return_name))?;
+  let return_fn = scope.alloc_native_function(
+    intr.iterator_take_helper_return_call(),
+    None,
+    return_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(return_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(return_fn, Some(intr.function_prototype()))?;
+  scope.define_property(
+    helper,
+    PropertyKey::from_string(return_name),
+    data_desc(Value::Object(return_fn), true, false, true),
+  )?;
+
+  Ok(Value::Object(helper))
+}
+
+/// `Iterator.prototype.drop` helper iterator `.next`.
+pub fn iterator_drop_helper_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator drop helper next called on non-object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let (iterated_key, next_method_key, done_key, remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  // RequireInternalSlot on `[[Iterated]]` first to ensure Proxy objects and invalid receivers fail
+  // without observable side effects.
+  let iterated = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &iterated_key,
+    "Iterator helper missing [[Iterated]]",
+  )?;
+  let next_method = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &next_method_key,
+    "Iterator helper missing [[NextMethod]]",
+  )?;
+  let remaining_value = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &remaining_key,
+    "Iterator helper missing [[Remaining]]",
+  )?;
+  let remaining_num = match remaining_value {
+    Value::Number(n) => n,
+    _ => 0.0,
+  };
+
+  // Reentrancy check.
+  if iterator_helper_get_running(vm, &mut scope, this_obj, &running_key)? {
+    return Err(VmError::TypeError("Iterator helper is already running"));
+  }
+
+  if iterator_helper_get_done(vm, &mut scope, this_obj, &done_key)? {
+    let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+    return Ok(Value::Object(out));
+  }
+
+  // Mark running for the duration of this call.
+  iterator_helper_set_running(&mut scope, this_obj, running_key, true)?;
+  let result = (|| {
+    // Root the iterator + next method across iteration and potential allocations.
+    scope.push_roots(&[iterated, next_method])?;
+
+    let mut record = crate::iterator::IteratorRecord {
+      iterator: iterated,
+      next_method,
+      done: false,
+    };
+
+    // Drop phase.
+    let mut remaining = remaining_num;
+    if remaining.is_finite() {
+      while remaining > 0.0 {
+        let step = crate::iterator::iterator_step(vm, host, hooks, &mut scope, &mut record);
+        match step {
+          Ok(Some(_)) => {
+            remaining -= 1.0;
+          }
+          Ok(None) => {
+            // Underlying exhausted while dropping.
+            iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+            return create_iterator_result_object(vm, &mut scope, Value::Undefined, true);
+          }
+          Err(err) => {
+            iterator_helper_set_done(&mut scope, this_obj, done_key, record.done)?;
+            return Err(err);
+          }
+        }
+      }
+    } else {
+      // Infinity: drop until the underlying iterator is exhausted.
+      loop {
+        let step = crate::iterator::iterator_step(vm, host, hooks, &mut scope, &mut record);
+        match step {
+          Ok(Some(_)) => continue,
+          Ok(None) => {
+            iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+            return create_iterator_result_object(vm, &mut scope, Value::Undefined, true);
+          }
+          Err(err) => {
+            iterator_helper_set_done(&mut scope, this_obj, done_key, record.done)?;
+            return Err(err);
+          }
+        }
+      }
+    }
+
+    // Update remaining to 0 (or preserve Infinity).
+    if remaining_num.is_finite() && remaining_num != remaining {
+      scope.define_property(
+        this_obj,
+        remaining_key,
+        data_desc(Value::Number(remaining.max(0.0)), true, false, true),
+      )?;
+    }
+
+    // Yield phase.
+    match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut record) {
+      Ok(Some(v)) => create_iterator_result_object(vm, &mut scope, v, false),
+      Ok(None) => {
+        iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+        create_iterator_result_object(vm, &mut scope, Value::Undefined, true)
+      }
+      Err(err) => {
+        iterator_helper_set_done(&mut scope, this_obj, done_key, record.done)?;
+        Err(err)
+      }
+    }
+  })();
+
+  // Always clear running before returning.
+  iterator_helper_set_running(&mut scope, this_obj, running_key, false)?;
+  result
+}
+
+/// `Iterator.prototype.drop` helper iterator `.return`.
+pub fn iterator_drop_helper_return(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator drop helper return called on non-object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let (iterated_key, next_method_key, done_key, _remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  // RequireInternalSlot on `[[Iterated]]` first to ensure Proxy objects and invalid receivers fail
+  // without observable side effects.
+  let iterated = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &iterated_key,
+    "Iterator helper missing [[Iterated]]",
+  )?;
+  let next_method = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &next_method_key,
+    "Iterator helper missing [[NextMethod]]",
+  )?;
+
+  if iterator_helper_get_running(vm, &mut scope, this_obj, &running_key)? {
+    return Err(VmError::TypeError("Iterator helper is already running"));
+  }
+
+  if iterator_helper_get_done(vm, &mut scope, this_obj, &done_key)? {
+    return create_iterator_result_object(vm, &mut scope, Value::Undefined, true);
+  }
+
+  iterator_helper_set_running(&mut scope, this_obj, running_key, true)?;
+  let result = (|| {
+    // Mark the helper as done even if closing fails.
+    iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+
+    let record = crate::iterator::IteratorRecord {
+      iterator: iterated,
+      next_method,
+      done: false,
+    };
+    crate::iterator::iterator_close(
+      vm,
+      host,
+      hooks,
+      &mut scope,
+      &record,
+      crate::iterator::CloseCompletionKind::NonThrow,
+    )?;
+
+    create_iterator_result_object(vm, &mut scope, Value::Undefined, true)
+  })();
+
+  iterator_helper_set_running(&mut scope, this_obj, running_key, false)?;
+  result
+}
+
+/// `Iterator.prototype.take` helper iterator `.next`.
+pub fn iterator_take_helper_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator take helper next called on non-object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let (iterated_key, next_method_key, done_key, remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  // RequireInternalSlot on `[[Iterated]]` first to ensure Proxy objects and invalid receivers fail
+  // without observable side effects.
+  let iterated = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &iterated_key,
+    "Iterator helper missing [[Iterated]]",
+  )?;
+  let next_method = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &next_method_key,
+    "Iterator helper missing [[NextMethod]]",
+  )?;
+  let remaining_value = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &remaining_key,
+    "Iterator helper missing [[Remaining]]",
+  )?;
+  let remaining_num = match remaining_value {
+    Value::Number(n) => n,
+    _ => 0.0,
+  };
+
+  // Reentrancy check.
+  if iterator_helper_get_running(vm, &mut scope, this_obj, &running_key)? {
+    return Err(VmError::TypeError("Iterator helper is already running"));
+  }
+
+  if iterator_helper_get_done(vm, &mut scope, this_obj, &done_key)? {
+    let out =
+      iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+    return Ok(Value::Object(out));
+  }
+
+  // Mark running for the duration of this call.
+  iterator_helper_set_running(&mut scope, this_obj, running_key, true)?;
+  let result = (|| {
+    // Root the iterator + next method across iteration and potential allocations.
+    scope.push_roots(&[iterated, next_method])?;
+
+    // If remaining is 0, close and complete.
+    if remaining_num.is_finite() && remaining_num == 0.0 {
+      iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+      let record = crate::iterator::IteratorRecord {
+        iterator: iterated,
+        next_method,
+        done: false,
+      };
+      // IteratorClose on a normal completion: errors propagate.
+      let close_res = crate::iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        &mut scope,
+        &record,
+        crate::iterator::CloseCompletionKind::NonThrow,
+      );
+      match close_res {
+        Ok(()) => return create_iterator_result_object(vm, &mut scope, Value::Undefined, true),
+        Err(err) => {
+          // After a close failure, the helper iterator is considered done.
+          return Err(err);
+        }
+      }
+    }
+
+    let mut record = crate::iterator::IteratorRecord {
+      iterator: iterated,
+      next_method,
+      done: false,
+    };
+
+    match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut record) {
+      Ok(Some(v)) => {
+        // Decrement remaining if finite.
+        if remaining_num.is_finite() {
+          let new_remaining = (remaining_num - 1.0).max(0.0);
+          scope.define_property(
+            this_obj,
+            remaining_key,
+            data_desc(Value::Number(new_remaining), true, false, true),
+          )?;
+        }
+        create_iterator_result_object(vm, &mut scope, v, false)
+      }
+      Ok(None) => {
+        iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+        create_iterator_result_object(vm, &mut scope, Value::Undefined, true)
+      }
+      Err(err) => {
+        iterator_helper_set_done(&mut scope, this_obj, done_key, record.done)?;
+        Err(err)
+      }
+    }
+  })();
+
+  iterator_helper_set_running(&mut scope, this_obj, running_key, false)?;
+  result
+}
+
+/// `Iterator.prototype.take` helper iterator `.return`.
+pub fn iterator_take_helper_return(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Iterator take helper return called on non-object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let (iterated_key, next_method_key, done_key, _remaining_key, running_key) =
+    iterator_helper_internal_keys(&mut scope)?;
+
+  // RequireInternalSlot on `[[Iterated]]` first to ensure Proxy objects and invalid receivers fail
+  // without observable side effects.
+  let iterated = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &iterated_key,
+    "Iterator helper missing [[Iterated]]",
+  )?;
+  let next_method = require_iterator_helper_slot(
+    vm,
+    &mut scope,
+    this_obj,
+    &next_method_key,
+    "Iterator helper missing [[NextMethod]]",
+  )?;
+
+  if iterator_helper_get_running(vm, &mut scope, this_obj, &running_key)? {
+    return Err(VmError::TypeError("Iterator helper is already running"));
+  }
+
+  if iterator_helper_get_done(vm, &mut scope, this_obj, &done_key)? {
+    return create_iterator_result_object(vm, &mut scope, Value::Undefined, true);
+  }
+
+  iterator_helper_set_running(&mut scope, this_obj, running_key, true)?;
+  let result = (|| {
+    // Mark the helper as done even if closing fails.
+    iterator_helper_set_done(&mut scope, this_obj, done_key, true)?;
+
+    let record = crate::iterator::IteratorRecord {
+      iterator: iterated,
+      next_method,
+      done: false,
+    };
+    crate::iterator::iterator_close(
+      vm,
+      host,
+      hooks,
+      &mut scope,
+      &record,
+      crate::iterator::CloseCompletionKind::NonThrow,
+    )?;
+
+    create_iterator_result_object(vm, &mut scope, Value::Undefined, true)
+  })();
+
+  iterator_helper_set_running(&mut scope, this_obj, running_key, false)?;
+  result
+}
+
 fn setter_that_ignores_prototype_properties(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
