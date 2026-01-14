@@ -111,6 +111,19 @@ So the page-loop diffs for these fixtures are not exercising vertical writing / 
 * There is an existing DOM “compat” mutation for iframes that can lift a placeholder `src` from `data-src`/`data-live-path` (`src/dom.rs:4886-4945`). These fixtures already have non-placeholder `src`, so that compat block is not needed here (but may matter for other MDN captures).
 * To actually test vertical-writing behavior via these MDN pages, we likely need either a “scroll-to-sample” baseline mode or separate fixtures for the sample iframe HTML files.
 
+#### Dedicated fixtures for the iframe live-samples
+
+To make the vertical-writing demos show up in default page-loop screenshots/diffs, this repo includes small standalone fixtures (each `index.html` is a direct copy of the corresponding MDN `iframe.sample-code-frame` HTML under the full-page fixtures):
+
+* `mdn_writing_mode_multiple`
+  * from `developer.mozilla.org_en-US_docs_Web_CSS_writing-mode` (`assets/6cb36740d41f266bc9b10239b3566fce.html`)
+* `mdn_writing_mode_transforms`
+  * from `developer.mozilla.org_en-US_docs_Web_CSS_writing-mode` (`assets/25d003c583ed8f42996d3c0fd953a75a.html`)
+* `mdn_text_orientation_upright`
+  * from `developer.mozilla.org_en-US_docs_Web_CSS_text-orientation` (`assets/bbdc8f8a42d1b5971ca198c5d62428f0.html`)
+* `mdn_text_combine_upright`
+  * from `developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright` (`assets/489b0c9653c1ac283ee32072caaf5ec2.html`)
+
 ### 2) All three diffs look like “generic MDN layout” diffs, not vertical-writing feature diffs
 
 All three fixtures have very similar diff percentages (~4.4% pixel diff) and share the same first mismatch pixel `(x=911,y=107)` (within `dl.footer__links`).
@@ -289,50 +302,35 @@ Note: this iframe is also offscreen in the default page-loop viewport.
 ## Actionable follow-up checklist
 
 1. **Make the vertical-writing samples visible in the page-loop viewport.**
-   * Option A (simplest): add dedicated fixtures that render the iframe `assets/*.html` directly, e.g.:
-     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/6cb36740d41f266bc9b10239b3566fce.html` (writing-mode table)
-     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-orientation/assets/bbdc8f8a42d1b5971ca198c5d62428f0.html` (vertical-rl + text-orientation)
-     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html` (vertical-rl + text-combine-upright)
+   * Option A (simplest): use the dedicated fixtures that render the iframe `assets/*.html` directly:
+     * `mdn_writing_mode_multiple`
+     * `mdn_writing_mode_transforms`
+     * `mdn_text_orientation_upright`
+     * `mdn_text_combine_upright`
    * Option B: extend `xtask page-loop` + the Chrome baseline harness to scroll to a fragment anchor (e.g. `index.html#examples`) or to render a full-page screenshot (fit canvas to content).
 2. Once the sample content is in-view, re-run these fixtures and expect diffs to start exercising:
-     * vertical writing-mode layout axes (`src/layout/axis.rs`),
-     * vertical glyph orientation (`src/text/pipeline.rs`),
-     * text combine grouping (`src/layout/contexts/inline/mod.rs`).
+      * vertical writing-mode layout axes (`src/layout/axis.rs`),
+      * vertical glyph orientation (`src/text/pipeline.rs`),
+      * text combine grouping (`src/layout/contexts/inline/mod.rs`).
 
 ## Appendix: direct diffs of the *actual* MDN vertical-writing demos (iframe `assets/*.html`)
 
-Because the live-sample iframes are offscreen in the default `xtask page-loop` viewport, I rendered the iframe HTML assets directly as standalone “mini fixtures” (locally, not committed) and diffed them against a JS-off Chrome baseline.
+Because the live-sample iframes are offscreen in the default `xtask page-loop` viewport, the iframe HTML assets are also included as standalone “mini fixtures” and can be diffed directly against a JS-off Chrome baseline.
 
 These runs produce artifacts under:
 
 * `target/page_loop_mdn_vertical_samples/<stem>/...`
 
-Repro sketch (create local “fixture dirs” by copying the iframe HTML into `index.html`):
+Repro sketch (run `page-loop` directly on the standalone fixtures):
 
 ```bash
-tmp_fixtures=target/tmp_mdn_vertical_samples
-rm -rf "$tmp_fixtures" && mkdir -p "$tmp_fixtures"
-
-mkdir -p "$tmp_fixtures/mdn_writing_mode_multiple"
-cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/6cb36740d41f266bc9b10239b3566fce.html \
-  "$tmp_fixtures/mdn_writing_mode_multiple/index.html"
-
-mkdir -p "$tmp_fixtures/mdn_writing_mode_transforms"
-cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/25d003c583ed8f42996d3c0fd953a75a.html \
-  "$tmp_fixtures/mdn_writing_mode_transforms/index.html"
-
-mkdir -p "$tmp_fixtures/mdn_text_orientation_upright"
-cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-orientation/assets/bbdc8f8a42d1b5971ca198c5d62428f0.html \
-  "$tmp_fixtures/mdn_text_orientation_upright/index.html"
-
-mkdir -p "$tmp_fixtures/mdn_text_combine_upright"
-cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html \
-  "$tmp_fixtures/mdn_text_combine_upright/index.html"
-
-# Then run the same render_fixtures + chrome-baseline-fixtures + diff_renders pipeline
-# as in the main “Repro” section, but set:
-#   fixtures_dir="$tmp_fixtures"
-#   out="target/page_loop_mdn_vertical_samples/$stem"
+stem=mdn_writing_mode_multiple
+timeout -k 10 600 \
+  bash scripts/cargo_agent.sh xtask page-loop \
+  --fixture "$stem" \
+  --chrome \
+  --inspect-dump-json \
+  --write-snapshot
 ```
 
 ### Demo: writing-mode — “Using multiple writing modes”
