@@ -164,18 +164,6 @@ pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
     .unwrap_or(0)
 }
 
-/// Returns the legacy numeric `DOMException.code` for a given DOMException name.
-///
-/// WebIDL defines modern `DOMException.name` strings (e.g. `"InvalidStateError"`) but still
-/// specifies legacy numeric codes for backwards compatibility. Some shims/tests also use the legacy
-/// constant names (e.g. `"INVALID_STATE_ERR"`), so we accept both forms. Unknown names map to `0`.
-///
-/// Kept as a stable helper for legacy call sites that still construct plain `{ name, message }`
-/// objects instead of proper DOMException instances.
-pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
-  legacy_dom_exception_code_from_name(name)
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,

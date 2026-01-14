@@ -3559,9 +3559,7 @@ const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
 const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";
 const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
 const NODE_ITERATOR_FILTER_KEY: &str = "__fastrender_node_iterator_filter";
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_ITERATOR_ACTIVE_KEY: &str = "__fastrender_node_iterator_active";
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 
 const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
 const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
@@ -37717,13 +37715,15 @@ fn range_insert_node_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, "Illegal invocation")?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(node_obj) = node_value else {
     return Err(VmError::TypeError("Range.insertNode requires a node argument"));
   };
-  let node_handle = node_handle_from_wrapper_obj(vm, scope, node_obj, "Range.insertNode requires a node argument")?;
+  let node_handle =
+    node_handle_from_wrapper_obj(vm, &mut scope, node_obj, "Range.insertNode requires a node argument")?;
 
   // Cache insertion bookkeeping for the source node so we can keep wrapper-cached live collections
   // (`childNodes`, `children`, `<select>.options`) consistent when `insert_before` moves nodes.
@@ -37758,15 +37758,15 @@ fn range_insert_node_native(
   // Per DOM: throw HierarchyRequestError if the start node is a Comment/PI, a detached Text node,
   // or the node being inserted.
   if node_handle.document_id == handle.document_id && node_handle.node_id == start.node {
-    return Err(VmError::Throw(make_dom_exception(vm, scope, "HierarchyRequestError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
   }
   match &dom.node(start.node).kind {
     NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => {
-      return Err(VmError::Throw(make_dom_exception(vm, scope, "HierarchyRequestError", "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
     }
     NodeKind::Text { .. } => {
       if dom.parent(start.node).map_err(|_| VmError::TypeError("Illegal invocation"))?.is_none() {
-        return Err(VmError::Throw(make_dom_exception(vm, scope, "HierarchyRequestError", "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
       }
     }
     _ => {}
@@ -37782,7 +37782,7 @@ fn range_insert_node_native(
         .map_err(|_| VmError::TypeError("Illegal invocation"))?
       {
         Some(parent) => parent,
-        None => return Err(VmError::Throw(make_dom_exception(vm, scope, "HierarchyRequestError", "")?)),
+        None => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?)),
       };
       (parent, Some(start.node))
     }
@@ -37859,7 +37859,7 @@ fn range_insert_node_native(
   // Adopt the inserted node into the range's document if needed.
   let adopted = maybe_adopt_node_into_document(
     vm,
-    scope,
+    &mut scope,
     host,
     node_handle.document_obj,
     handle.document_obj,
@@ -37898,20 +37898,20 @@ fn range_insert_node_native(
   // Perform the insertion.
   let insert_result = unsafe { dom_ptr.as_mut() }.insert_before(parent, adopted.node_id, reference_node);
   if let Err(err) = insert_result {
-    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
   }
 
   // Update cached node lists for the parent (and potentially the moved node's previous parent).
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-  sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-  sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+  sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+  sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+  sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, parent)?;
   if node_is_fragment {
     // Inserting a DocumentFragment moves its children and empties the fragment; keep any cached
     // collections on the fragment wrapper in sync.
-    sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
-    sync_cached_children_for_wrapper(vm, scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
+    sync_cached_child_nodes_for_wrapper(vm, &mut scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
+    sync_cached_children_for_wrapper(vm, &mut scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
   } else if let Some(old_parent) = node_old_parent {
     // `insert_before` moves the node from its previous parent when connected. Keep any cached
     // collections on that parent in sync (which may live on a different `Document` wrapper).
@@ -37922,9 +37922,9 @@ fn range_insert_node_native(
         // SAFETY: `node_dom_ptr` is valid for the duration of this native call.
         unsafe { node_dom_ptr.as_ref() }
       };
-      sync_cached_child_nodes_for_node_id(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
-      sync_cached_children_for_node_id(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
-      sync_cached_select_options_for_select_ancestor(vm, scope, node_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_child_nodes_for_node_id(vm, &mut scope, node_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, &mut scope, node_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, &mut scope, node_document_obj, old_parent_dom, old_parent)?;
     }
   }
 
@@ -37936,21 +37936,21 @@ fn range_insert_node_native(
   if is_host_document_id(vm, handle.document_id) {
     run_dynamic_script_insertion_steps(
       vm,
-      scope,
+      &mut scope,
       host,
       hooks,
       handle.document_obj,
       dom_ptr,
       &inserted_roots,
     )?;
-    run_dynamic_script_children_changed_steps(vm, scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
+    run_dynamic_script_children_changed_steps(vm, &mut scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, handle.document_obj, needs_microtask)?;
   if node_dom_ptr != dom_ptr {
     let source_needs_microtask = unsafe { node_dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, node_document_obj, source_needs_microtask)?;
+    maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, node_document_obj, source_needs_microtask)?;
   }
 
   Ok(Value::Undefined)
@@ -37965,7 +37965,8 @@ fn range_surround_contents_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, "Illegal invocation")?;
 
   let new_parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(new_parent_obj) = new_parent_value else {
@@ -37975,7 +37976,7 @@ fn range_surround_contents_native(
   };
   let new_parent_handle = node_handle_from_wrapper_obj(
     vm,
-    scope,
+    &mut scope,
     new_parent_obj,
     "Range.surroundContents requires a node argument",
   )?;
@@ -37992,20 +37993,20 @@ fn range_surround_contents_native(
     let new_parent_dom = unsafe { new_parent_dom_ptr.as_ref() };
     match &new_parent_dom.node(new_parent_handle.node_id).kind {
       NodeKind::Document { .. } | NodeKind::Doctype { .. } | NodeKind::DocumentFragment => {
-        return Err(VmError::Throw(make_dom_exception(vm, scope, "InvalidNodeTypeError", "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidNodeTypeError", "")?));
       }
       _ => {}
     }
   }
 
   // 1. Extract the contents.
-  let fragment_value = range_extract_contents_native(vm, scope, host, hooks, _callee, this, &[])?;
+  let fragment_value = range_extract_contents_native(vm, &mut scope, host, hooks, _callee, this, &[])?;
   let fragment_value = scope.push_root(fragment_value)?;
 
   // 2. Adopt `newParent` into the range document before inserting.
   let adopted_parent = maybe_adopt_node_into_document(
     vm,
-    scope,
+    &mut scope,
     host,
     new_parent_handle.document_obj,
     handle.document_obj,
@@ -38036,15 +38037,15 @@ fn range_surround_contents_native(
     // Keep wrapper-cached collections on `newParent` in sync after clearing its children.
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_ref() };
-    sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
-    sync_cached_children_for_wrapper(vm, scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
-    sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, adopted_parent.node_id)?;
+    sync_cached_child_nodes_for_wrapper(vm, &mut scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
+    sync_cached_children_for_wrapper(vm, &mut scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
+    sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, adopted_parent.node_id)?;
   }
 
   // 4. Insert `newParent` into the range.
   range_insert_node_native(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     _callee,
@@ -38055,7 +38056,7 @@ fn range_surround_contents_native(
   // 5. Append extracted fragment to `newParent`.
   let _ = node_append_child_native(
     vm,
-    scope,
+    &mut scope,
     host,
     hooks,
     _callee,
@@ -38072,7 +38073,7 @@ fn range_surround_contents_native(
       .map_err(|_| VmError::TypeError("Illegal invocation"))?
     {
       Some(parent) => parent,
-      None => return Err(VmError::Throw(make_dom_exception(vm, scope, "InvalidNodeTypeError", "")?)),
+      None => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidNodeTypeError", "")?)),
     };
     let children = &dom.node(parent).children;
     let parent_is_element_like = matches!(&dom.node(parent).kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
@@ -38103,11 +38104,11 @@ fn range_surround_contents_native(
   // Sync cached lists for the affected parent.
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-  sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
+  sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+  sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, handle.document_obj, needs_microtask)?;
 
   Ok(Value::Undefined)
 }

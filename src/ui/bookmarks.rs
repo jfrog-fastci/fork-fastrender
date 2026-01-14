@@ -896,28 +896,18 @@ impl BookmarkStore {
     // Keep the URL index in sync with the new URL (including when multiple bookmarks share the
     // same URL).
     let node = self.nodes.get_mut(&id).ok_or(BookmarkError::NotFound(id))?;
-    let old_url = match node {
+    let (old_url, new_url_for_index) = match node {
       BookmarkNode::Bookmark(entry) => {
         let old_url = std::mem::replace(&mut entry.url, new_url);
         entry.title = new_title;
-        old_url
+        (old_url, entry.url.clone())
       }
       BookmarkNode::Folder(_) => unreachable!("validated above"),
     };
-    let new_url_for_index = self
-      .nodes
-      .get(&id)
-      .and_then(|node| match node {
-        BookmarkNode::Bookmark(entry) => Some(entry.url.as_str()),
-        BookmarkNode::Folder(_) => None,
-      })
-      .ok_or_else(|| {
-        BookmarkError::InvalidStore("update: bookmark disappeared after mutation".to_string())
-      })?;
 
     if old_url != new_url_for_index {
       self.url_index_dec(&old_url);
-      self.url_index_inc(new_url_for_index);
+      self.url_index_inc(&new_url_for_index);
     }
     self.touch();
     Ok(())
@@ -1408,14 +1398,11 @@ impl BookmarkStore {
     match self.attach_to_parent_list(id, parent) {
       Ok(()) => {
         if is_bookmark {
-          let BookmarkNode::Bookmark(entry) = self
-            .nodes
-            .get(&id)
-            .expect("node inserted above") // fastrender-allow-unwrap
-          else {
-            unreachable!("inserted bookmark node should remain a bookmark");
+          let url = match self.nodes.get(&id) {
+            Some(BookmarkNode::Bookmark(entry)) => entry.url.clone(),
+            _ => unreachable!("inserted bookmark node should remain a bookmark"),
           };
-          self.url_index_inc(entry.url.as_str());
+          self.url_index_inc(url.as_str());
         }
         if is_folder {
           self.touch_folders();

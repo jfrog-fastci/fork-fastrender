@@ -44,7 +44,7 @@ impl Default for MediaPlayerOptions {
       .max(1);
 
     Self {
-      av_sync: AvSyncConfig::from_env(),
+      av_sync: AvSyncConfig::default(),
       decode_threads,
     }
   }

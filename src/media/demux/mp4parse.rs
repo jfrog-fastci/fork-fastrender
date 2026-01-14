@@ -132,7 +132,9 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
     let mut tracks = Vec::new();
 
     for track in &ctx.tracks {
-      let id = track.track_id;
+      let Some(id) = track.track_id else {
+        continue;
+      };
       let kind = mp4_track_kind(&track.track_type);
 
       // Extract a conservative enabled flag. If mp4parse didn't parse tkhd, assume enabled.
@@ -216,7 +218,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
 
     let mut active_tracks = Vec::new();
     for id in active_track_ids {
-      let Some(track) = ctx.tracks.iter().find(|t| t.track_id == id) else {
+      let Some(track) = ctx.tracks.iter().find(|t| t.track_id == Some(id)) else {
         continue;
       };
       let samples = build_sample_list(track)?;
@@ -330,13 +332,26 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
     if let Some(entry) = stsd.descriptions.get(0) {
       match entry {
         mp4parse::SampleEntry::Audio(audio) => {
-          codec = match audio.codec_type.as_str() {
-            "mp4a" => MediaCodec::Aac,
-            other => MediaCodec::Unknown(other.to_string()),
+          let name = format!("{:?}", audio.codec_type);
+          let lower = name.to_ascii_lowercase();
+          codec = if lower.contains("mp4a") || lower.contains("aac") {
+            MediaCodec::Aac
+          } else if lower.contains("opus") {
+            MediaCodec::Opus
+          } else {
+            MediaCodec::Unknown(name)
           };
         }
         mp4parse::SampleEntry::Video(video) => {
-          codec = MediaCodec::Unknown(video.codec_type.clone());
+          let name = format!("{:?}", video.codec_type);
+          let lower = name.to_ascii_lowercase();
+          codec = if lower.contains("avc1") || lower.contains("avc3") || lower.contains("h264") {
+            MediaCodec::H264
+          } else if lower.contains("vp09") || lower.contains("vp9") {
+            MediaCodec::Vp9
+          } else {
+            MediaCodec::Unknown(name)
+          };
         }
         _ => {}
       }

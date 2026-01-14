@@ -153,7 +153,6 @@ impl SiteKey {
     site_key_for_navigation(url.as_str(), None, false)
   }
 }
-
 /// Canonical origin key for origin-partitioned state.
 ///
 /// This is intentionally distinct from [`SiteKey`]: `OriginKey` remains an origin-like key

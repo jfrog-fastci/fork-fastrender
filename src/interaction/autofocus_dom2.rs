@@ -37,15 +37,7 @@ fn node_has_attr(doc: &Document, node: &crate::dom2::Node, name: &str) -> bool {
     NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes.as_slice(),
     _ => return false,
   };
-  attrs
-    .iter()
-    .any(|attr| {
-      if is_html {
-        attr.local_name.eq_ignore_ascii_case(name)
-      } else {
-        attr.local_name == name
-      }
-    })
+  attrs.iter().any(|attr| attr.qualified_name_matches(name, is_html))
 }
 
 fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) -> Option<&'a str> {
@@ -59,13 +51,7 @@ fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) ->
   };
   attrs
     .iter()
-    .find(|attr| {
-      if is_html {
-        attr.local_name.eq_ignore_ascii_case(name)
-      } else {
-        attr.local_name == name
-      }
-    })
+    .find(|attr| attr.qualified_name_matches(name, is_html))
     .map(|attr| attr.value.as_str())
 }
 

@@ -285,7 +285,7 @@ impl Mp4Demuxer {
         dts_ns: sample.dts_ns,
         pts_ns,
         duration_ns: sample.duration_ns,
-        data: self.bytes[start..end].to_vec(),
+        data: self.bytes[start..end].to_vec().into(),
         is_keyframe: sample.is_sync,
       }));
     }

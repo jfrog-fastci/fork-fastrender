@@ -1383,7 +1383,7 @@ impl Painter {
         if !needs_intrinsic && !needs_ratio {
           return;
         }
-        if let Some(poster) = poster {
+          if let Some(poster) = poster {
           if let Ok(img) = self.image_cache.load_with_crossorigin_and_referrer_policy(
             &poster,
             crossorigin,

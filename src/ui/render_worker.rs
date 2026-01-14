@@ -984,6 +984,43 @@ impl TabState {
   }
 }
 
+fn hit_test_fragment_tree_for_scroll_cached(
+  cache: &mut Option<HitTestFragmentTreeCache>,
+  doc: &BrowserDocument,
+  scroll: &ScrollState,
+) -> Option<Arc<crate::FragmentTree>> {
+  // Fast path: when there is no viewport or element scroll, the prepared fragment tree can be used
+  // directly for hit testing without cloning.
+  if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
+    *cache = None;
+    return None;
+  }
+
+  let Some(prepared) = doc.prepared() else {
+    *cache = None;
+    return None;
+  };
+  let prepared_fragment_tree_ptr = prepared.fragment_tree() as *const crate::FragmentTree;
+
+  if let Some(existing) = cache.as_ref() {
+    if existing.prepared_fragment_tree_ptr == prepared_fragment_tree_ptr
+      && existing.scroll_viewport == scroll.viewport
+      && existing.scroll_elements == scroll.elements
+    {
+      return Some(Arc::clone(&existing.tree));
+    }
+  }
+
+  let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
+  *cache = Some(HitTestFragmentTreeCache {
+    tree: Arc::clone(&tree),
+    prepared_fragment_tree_ptr,
+    scroll_viewport: scroll.viewport,
+    scroll_elements: scroll.elements.clone(),
+  });
+  Some(tree)
+}
+
 fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUiMsg>) {
   let Some(doc) = tab.document.as_mut() else {
     return;
@@ -3844,10 +3881,12 @@ impl BrowserRuntime {
                   .history
                   .update_scroll_state(&tab.scroll_state);
               }
-              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-                tab_id,
-                scroll: tab.scroll_state.clone(),
-              });
+              let _ = self
+                .ui_tx
+                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+                  tab_id,
+                  scroll: tab.scroll_state.clone(),
+                }));
             }
             return;
           };
@@ -3859,15 +3898,19 @@ impl BrowserRuntime {
           let mut viewport_scrolled = false;
           let mut scroll_handled = false;
 
-          if let Some(pointer_css) = pointer_pos_css {
-            // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
-             // gesture for numeric stepping (instead of scrolling the page).
-              let scroll_snapshot = tab.scroll_state.clone();
-             let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
-             let engine = &mut tab.interaction;
-             if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-               let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
-               let step_result = engine.wheel_step_number_input(
+           if let Some(pointer_css) = pointer_pos_css {
+             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
+              // gesture for numeric stepping (instead of scrolling the page).
+             let scroll_snapshot = tab.scroll_state.clone();
+             let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+               &mut tab.hit_test_fragment_tree_cache,
+               doc,
+               &scroll_snapshot,
+             );
+              let engine = &mut tab.interaction;
+              if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+                let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
+                let step_result = engine.wheel_step_number_input(
                  dom,
                  box_tree,
                  fragment_tree,
@@ -3907,7 +3950,9 @@ impl BrowserRuntime {
                     next.update_deltas_from(&current_scroll);
                     doc.set_scroll_state(next.clone());
                     tab.scroll_state = next;
-                    tab.sync_js_scroll_state();
+                    if let Some(js_tab) = tab.js_tab.as_mut() {
+                      js_tab.set_scroll_state(tab.scroll_state.clone());
+                    }
                     scroll_changed = true;
                     emit_scroll_state_updated = doc.prepared().is_some();
                     changed = true;
@@ -3946,7 +3991,9 @@ impl BrowserRuntime {
                     next_scroll.update_deltas_from(&current_scroll);
                     doc.set_scroll_state(next_scroll.clone());
                     tab.scroll_state = next_scroll;
-                    tab.sync_js_scroll_state();
+                    if let Some(js_tab) = tab.js_tab.as_mut() {
+                      js_tab.set_scroll_state(tab.scroll_state.clone());
+                    }
                     scroll_changed = true;
                     emit_scroll_state_updated = true;
                     changed = true;
@@ -3997,7 +4044,9 @@ impl BrowserRuntime {
                   effective.update_deltas_from(&current_scroll);
                   doc.set_scroll_state(effective.clone());
                   tab.scroll_state = effective;
-                  tab.sync_js_scroll_state();
+                  if let Some(js_tab) = tab.js_tab.as_mut() {
+                    js_tab.set_scroll_state(tab.scroll_state.clone());
+                  }
                   scroll_changed = true;
                   emit_scroll_state_updated = true;
                   changed = true;
@@ -4015,7 +4064,9 @@ impl BrowserRuntime {
                 next.update_deltas_from(&current_scroll);
                 doc.set_scroll_state(next.clone());
                 tab.scroll_state = next;
-                tab.sync_js_scroll_state();
+                if let Some(js_tab) = tab.js_tab.as_mut() {
+                  js_tab.set_scroll_state(tab.scroll_state.clone());
+                }
                 scroll_changed = true;
                 changed = true;
                 viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
@@ -5463,18 +5514,13 @@ impl BrowserRuntime {
       // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
       // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
       if let Some(doc) = tab.document.as_mut() {
-        if document_wants_ticks(doc) && delta != Duration::ZERO {
+        if delta != Duration::ZERO && document_wants_ticks(doc, duration_to_ms_f32(tab.tick_time)) {
           tab.tick_time = tab.tick_time.checked_add(delta).unwrap_or(Duration::MAX);
 
           // `BrowserDocument` consumes time in milliseconds as `f32` today. Keep the UI worker's
           // timeline as a `Duration` to avoid cumulative float drift, then convert at the API
           // boundary.
-          let time_ms = tab.tick_time.as_secs_f64() * 1000.0;
-          let time_ms = if time_ms.is_finite() {
-            (time_ms.min(f32::MAX as f64)) as f32
-          } else {
-            f32::MAX
-          };
+          let time_ms = duration_to_ms_f32(tab.tick_time);
           doc.set_animation_time_ms(time_ms);
           tab.needs_repaint = true;
           tab.tick_coalesce = true;
@@ -6068,7 +6114,11 @@ impl BrowserRuntime {
       &scroll_snapshot,
       if pointer_in_page { pos_css } else { (-1.0, -1.0) },
     );
-    let base_url = base_url_for_links(tab);
+    let base_url = tab
+      .last_base_url
+      .as_deref()
+      .or(tab.last_committed_url.as_deref())
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
 
     // ---------------------------------------------------------------------------
     // Viewport autoscroll while extending a document selection.
@@ -6122,10 +6172,16 @@ impl BrowserRuntime {
         None
       };
 
-      let hit_tree_before = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
+      let hit_tree_before = hit_test_fragment_tree_for_scroll_cached(
+        &mut tab.hit_test_fragment_tree_cache,
+        doc,
+        &scroll_snapshot,
+      );
       let hit_tree_after = next_scroll
         .as_ref()
-        .and_then(|scroll| tab.hit_test_fragment_tree_for_scroll(doc, scroll));
+        .and_then(|scroll| {
+          hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll)
+        });
       let engine = &mut tab.interaction;
       let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) =
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -6677,7 +6733,11 @@ impl BrowserRuntime {
     };
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
+    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+      &mut tab.hit_test_fragment_tree_cache,
+      doc,
+      scroll,
+    );
     let engine = &mut tab.interaction;
 
     let (changed, target_id, target_element_id) =
@@ -6837,7 +6897,11 @@ impl BrowserRuntime {
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
-      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
+      let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+        &mut tab.hit_test_fragment_tree_cache,
+        doc,
+        scroll,
+      );
 
       let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
         (
@@ -6930,7 +6994,11 @@ impl BrowserRuntime {
 
     let pointer_buttons = tab.pointer_buttons;
 
-    let base_url = base_url_for_links(tab);
+    let base_url = tab
+      .last_base_url
+      .as_deref()
+      .or(tab.last_committed_url.as_deref())
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let document_url = tab
       .last_committed_url
       .as_deref()
@@ -6952,7 +7020,11 @@ impl BrowserRuntime {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
-      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
+      let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+        &mut tab.hit_test_fragment_tree_cache,
+        doc,
+        &scroll_snapshot,
+      );
       let engine = &mut tab.interaction;
       let (
         dom_changed,
@@ -7804,7 +7876,11 @@ impl BrowserRuntime {
 
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
+    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+      &mut tab.hit_test_fragment_tree_cache,
+      doc,
+      scroll,
+    );
 
     // ---------------------------------------------------------------------------
     // JS `drop` event dispatch
@@ -7945,7 +8021,11 @@ impl BrowserRuntime {
     let js_cancel_snapshot = tab.cancel.snapshot_paint();
     let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
-    let base_url = base_url_for_links(tab);
+    let base_url = tab
+      .last_base_url
+      .as_deref()
+      .or(tab.last_committed_url.as_deref())
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
@@ -7979,7 +8059,11 @@ impl BrowserRuntime {
       text_control_readonly: bool,
     }
 
-    let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
+    let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+      &mut tab.hit_test_fragment_tree_cache,
+      doc,
+      scroll,
+    );
     let engine = &mut tab.interaction;
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -9305,7 +9389,11 @@ impl BrowserRuntime {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
       };
-      let base_url = base_url_for_links(tab);
+      let base_url = tab
+        .last_base_url
+        .as_deref()
+        .or(tab.last_committed_url.as_deref())
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
       let document_url = tab
         .last_committed_url
         .as_deref()
@@ -9316,8 +9404,9 @@ impl BrowserRuntime {
       };
 
       let scroll_snapshot = tab.scroll_state.clone();
+      let engine = &mut tab.interaction;
       let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let (dom_changed, action) = tab.interaction.key_activate_with_layout_artifacts(
+        let (dom_changed, action) = engine.key_activate_with_layout_artifacts(
           dom,
           Some(box_tree),
           fragment_tree,
@@ -9326,8 +9415,8 @@ impl BrowserRuntime {
           base_url,
         );
         let (submitter, submitter_element_id) =
-          tab.interaction.take_last_form_submitter_with_element_id();
-        let focused = tab.interaction.focused_node_id();
+          engine.take_last_form_submitter_with_element_id();
+        let focused = engine.focused_node_id();
         let (
           focused_element_id,
           focused_is_text_input,
@@ -9368,7 +9457,7 @@ impl BrowserRuntime {
         let caret_scroll =
           crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
             dom,
-            tab.interaction.interaction_state(),
+            engine.interaction_state(),
             box_tree,
             fragment_tree,
             focus_scroll.as_ref().unwrap_or(&scroll_snapshot),
@@ -9425,15 +9514,14 @@ impl BrowserRuntime {
           let mut focused_is_button = false;
           let mut focused_is_video_controls = false;
           let mut focused_media_kind: Option<MediaElementKind> = None;
+          let engine = &mut tab.interaction;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
-              tab
-                .interaction
-                .key_activate(dom, key, document_url, base_url);
+              engine.key_activate(dom, key, document_url, base_url);
             action = next_action;
             (submitter, submitter_element_id) =
-              tab.interaction.take_last_form_submitter_with_element_id();
-            focused = tab.interaction.focused_node_id();
+              engine.take_last_form_submitter_with_element_id();
+            focused = engine.focused_node_id();
             let (
               id,
               is_text_input,
@@ -12194,8 +12282,8 @@ impl BrowserRuntime {
     // overlapping region and only repaint the newly exposed scroll stripes.
     let wants_ticks = tab
       .document
-      .as_ref()
-      .is_some_and(document_wants_ticks);
+      .as_mut()
+      .is_some_and(|doc| document_wants_ticks(doc, duration_to_ms_f32(tab.tick_time)));
     let should_disable_scroll_blit_for_animation_time =
       is_scroll && !force && wants_ticks && tab.tick_time != tab.last_painted_tick_time;
     if should_disable_scroll_blit_for_animation_time {

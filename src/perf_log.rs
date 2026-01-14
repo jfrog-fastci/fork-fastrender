@@ -335,7 +335,8 @@ impl PerfEvent<'_> {
 
 /// Write one JSONL record (newline terminated).
 pub fn write_jsonl<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
-  serde_json::to_writer(writer, value).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+  serde_json::to_writer(&mut *writer, value)
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
   writer.write_all(b"\n")?;
   Ok(())
 }
