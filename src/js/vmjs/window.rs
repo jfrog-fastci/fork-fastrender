@@ -7320,7 +7320,8 @@ mod tests {
     let mut host =
       make_host_with_options(dom, "https://example.invalid/", js_options)?;
 
-    let err = host
+    let window = host.host_mut().window_mut();
+    let err = window
       .exec_script("function f() { return f(); }\nf();")
       .expect_err("expected recursion to terminate");
     let VmError::ThrowWithStack { value, stack: _ } = err else {
@@ -7331,7 +7332,6 @@ mod tests {
     };
 
     // Verify the thrown value is a RangeError without invoking user code.
-    let window = host.host_mut().window_mut();
     let (_vm, _realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
     scope

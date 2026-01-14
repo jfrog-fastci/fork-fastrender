@@ -13713,7 +13713,6 @@ mod base_url_tests {
 mod media_wakeup_tests {
   use super::*;
   use std::time::{Duration, Instant};
-
   fn recv_media_wake(rx: &WorkerToUiInbox) -> (TabId, Duration, WakeReason) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -13721,9 +13720,8 @@ mod media_wakeup_tests {
       let msg = rx
         .recv_timeout(remaining)
         .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
-      match msg {
-        WorkerToUi::RequestWakeAfter { tab_id, after, reason } => return (tab_id, after, reason),
-        _ => continue,
+      if let WorkerToUi::RequestWakeAfter { tab_id, after, reason } = msg {
+        return (tab_id, after, reason);
       }
     }
   }
@@ -13835,7 +13833,8 @@ mod tick_hint_tests {
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+    let ui_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx, factory, downloads);
 
     let tab_id = TabId::new();
     runtime.handle_message(UiToWorker::CreateTab {

@@ -3659,7 +3659,6 @@ const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
 // `globalThis`, and is copied onto realm-owned documents so their iterators behave consistently.
 const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_ITERATOR_DOCUMENT_KEY: &str = "__fastrender_node_iterator_document";
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
 const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";
 const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
@@ -61091,10 +61090,11 @@ mod tests {
     };
 
     let dataset_ctx = realm.dataset_exotic_context();
+    let collections_ctx = realm.collections_exotic_context();
     let mut hooks = DomShimHostHooks::new(
       &mut host,
       dataset_ctx,
-      realm.collections_exotic_context(),
+      collections_ctx,
       realm.js_execution_options().webidl_limits,
     );
     realm.dispatch_media_event(
