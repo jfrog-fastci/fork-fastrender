@@ -849,8 +849,8 @@ fn generators_yield_in_object_literals() {
         const ok3 = c1.value === "spread" && c1.done === false && c2.value === true && c2.done === true;
 
         // { [(yield)]() { ... } }
-        // Note: `parse-js` currently rejects `yield <expr>` in computed method names; `yield`
-        // (no operand) is still a real `YieldExpression` and exercises generator continuation.
+        // Use `yield` with no operand to exercise `yield;` semantics inside computed member names:
+        // the yielded value is `undefined`, and the resumption value becomes the computed key.
         function* method_computed_key() {
           const o = { [(yield)]() { return 1; } };
           return typeof o.foo === "function" && o.foo() === 1;
@@ -991,6 +991,75 @@ fn generators_yield_in_object_literals_proto_setter() {
           b3.value === true && b3.done === true;
 
         ok1 && ok2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_yield_in_object_literals_proto_setter_non_object_and_null() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* proto_null() {
+          const o = { __proto__: (yield 1), x: 2 };
+          return Object.getPrototypeOf(o) === null &&
+            Object.getOwnPropertyDescriptor(o, "__proto__") === undefined &&
+            o.x === 2;
+        }
+        const it1 = proto_null();
+        const a1 = it1.next();
+        const a2 = it1.next(null);
+        const ok1 = a1.value === 1 && a1.done === false && a2.value === true && a2.done === true;
+
+        function* proto_ignored() {
+          const o = { __proto__: (yield 2), x: 3 };
+          return Object.getPrototypeOf(o) === Object.prototype &&
+            Object.getOwnPropertyDescriptor(o, "__proto__") === undefined &&
+            o.x === 3;
+        }
+        const it2 = proto_ignored();
+        const b1 = it2.next();
+        const b2 = it2.next(123);
+        const ok2 = b1.value === 2 && b1.done === false && b2.value === true && b2.done === true;
+
+        ok1 && ok2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_yield_in_object_literals_spread_does_not_trigger_proto_setter() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const proto = { marker: 1 };
+        const src = {};
+        Object.defineProperty(src, "__proto__", {
+          value: proto,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+
+        function* g() {
+          const o = { ...(yield 1), x: 2 };
+          const desc = Object.getOwnPropertyDescriptor(o, "__proto__");
+          return Object.getPrototypeOf(o) === Object.prototype &&
+            desc !== undefined &&
+            desc.value === proto &&
+            o.x === 2;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(src);
+        r1.value === 1 && r1.done === false &&
+          r2.value === true && r2.done === true
       "#,
     )
     .unwrap();
