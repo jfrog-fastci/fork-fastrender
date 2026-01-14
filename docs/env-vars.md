@@ -413,8 +413,8 @@ Not all builds implement all of these toggles yet; unsupported values are expect
     - Pages see `prefers-reduced-motion: reduce` by default unless explicitly overridden via
       `FASTR_PREFERS_REDUCED_MOTION=...`.
 - `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
-  - Includes FPS / frame-time samples, frame queue/backpressure stats, and (when enabled) UI latency
-    + CPU summary metrics.
+  - Includes FPS / frame-time samples, frame queue/backpressure stats, worker→UI message/wake rates
+    (useful for validating wake coalescing), and (when enabled) UI latency + CPU summary metrics.
   - Default: `0`.
   - CLI equivalents: `browser --hud` / `browser --no-hud` (CLI overrides env vars).
 - `FASTR_PERF_LOG=0|1` – emit a machine-readable performance log (JSONL) from the `browser` binary.

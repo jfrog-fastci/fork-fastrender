@@ -327,6 +327,8 @@ The browser chrome uses an accent color for links, focus rings, and selection.
   - `browser --hud` (or `FASTR_BROWSER_HUD=1`) shows an in-app HUD overlay with browser/debug metrics
     (FPS / frame time, frame queue/backpressure stats, and when enabled: input/resize latency + CPU
     usage summaries).
+    - The HUD also includes worker→UI wake/message counters (msg/s, wake/s, coalesced wake requests,
+      pending backlog estimate) to make wake-coalescing changes measurable.
   - `browser --no-hud` force-disables the HUD (overrides `FASTR_BROWSER_HUD`).
 - `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=1` logs `wgpu::Surface::configure` calls to stderr (useful
   when debugging interactive resize performance; swapchain reconfiguration should be coalesced).
