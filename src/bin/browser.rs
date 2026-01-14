@@ -1330,6 +1330,23 @@ fn format_new_window_error_detail(raw: &str) -> String {
   .unwrap_or_default()
 }
 
+/// Maps a new-window creation failure context into a user-facing toast.
+///
+/// `detail` should already be sanitized/truncated via [`format_new_window_error_detail`].
+#[cfg(any(test, feature = "browser_ui"))]
+fn new_window_failure_toast(
+  detail: Option<&str>,
+) -> (fastrender::ui::ToastKind, String) {
+  use fastrender::ui::ToastKind;
+
+  let mut text = "Failed to open a new window".to_string();
+  if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
+    text.push('\n');
+    text.push_str(detail);
+  }
+  (ToastKind::Error, text)
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 const BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES: usize = 160;
 
@@ -5225,6 +5242,23 @@ mod tests {
       detail.chars().all(|ch| ch == 'é' || ch == '…'),
       "expected only original characters plus ellipsis, got {detail:?}"
     );
+  }
+
+  #[test]
+  fn new_window_failure_toast_includes_detail_when_present() {
+    let (kind, text) = new_window_failure_toast(Some("create window: no display available"));
+    assert_eq!(kind, fastrender::ui::ToastKind::Error);
+    assert_eq!(
+      text,
+      "Failed to open a new window\ncreate window: no display available"
+    );
+  }
+
+  #[test]
+  fn new_window_failure_toast_is_single_line_when_detail_missing() {
+    let (kind, text) = new_window_failure_toast(None);
+    assert_eq!(kind, fastrender::ui::ToastKind::Error);
+    assert_eq!(text, "Failed to open a new window");
   }
 
   #[test]
@@ -18195,12 +18229,17 @@ impl App {
       window_state: None,
     };
 
-    let _ = self
+    // The winit event loop owns native window creation; request a new window via a user event.
+    if self
       .event_loop_proxy
       .send_event(UserEvent::RequestNewWindowWithSession {
         from_id: self.window.id(),
         window: session_window,
-      });
+      })
+      .is_err()
+    {
+      self.toast_new_window_error("event loop closed");
+    }
   }
 
   fn open_url_in_new_tab_with_reason(
@@ -19733,28 +19772,24 @@ impl App {
   }
 
   fn toast_new_window_error(&mut self, err: impl std::fmt::Display) {
-    use fastrender::ui::ToastKind;
     let detail = format_new_window_error_detail(&err.to_string());
-    let text = if detail.is_empty() {
-      "Failed to open new window".to_string()
-    } else {
-      format!("Failed to open new window\n{detail}")
-    };
-    self.show_chrome_toast_kind(ToastKind::Error, text);
+    let (kind, text) = new_window_failure_toast((!detail.is_empty()).then_some(detail.as_str()));
+    self.show_chrome_toast_kind(kind, text);
 
-    // Keep stderr logging opt-in (debug builds / explicit env) via the debug log overlay toggle so
-    // normal browsing sessions don't get noisy, while still preserving details for debugging.
+    let debug_line = if detail.is_empty() {
+      "[new-window] failed to open a new window".to_string()
+    } else {
+      format!("[new-window] failed to open a new window: {detail}")
+    };
+
+    // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
+    {
+      use std::io::Write;
+      let _ = writeln!(std::io::stderr(), "{debug_line}");
+    }
+
+    // Preserve diagnostics in the in-app debug log when enabled.
     if self.debug_log_ui_enabled {
-      let debug_line = if detail.is_empty() {
-        "[new-window] failed to open new window".to_string()
-      } else {
-        format!("[new-window] failed to open new window: {detail}")
-      };
-      // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
-      {
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "{debug_line}");
-      }
       if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
         self.debug_log.pop_front();
       }

@@ -963,7 +963,6 @@ mod tests {
   use super::*;
   use crate::ui::chrome_assets::ChromeAssetsFetcher;
   use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
-  use crate::ui::CursorKind;
   use crate::ui::BrowserTabState;
   use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
