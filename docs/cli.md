@@ -795,8 +795,8 @@ bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help`
 - Notes:
   - On Linux, building with `--features browser_ui` requires system GUI development headers (X11 / Wayland,
-    EGL/Vulkan, etc). Real-time audio output via `--features audio_cpal` additionally requires ALSA headers
-    (`libasound2-dev`). See [`docs/browser_ui.md#platform-prerequisites`](browser_ui.md#platform-prerequisites).
+    EGL/Vulkan, etc). Real-time audio output via `--features browser_ui_audio` (alias for `audio_cpal`) additionally
+    requires ALSA headers (`libasound2-dev`). See [`docs/browser_ui.md#platform-prerequisites`](browser_ui.md#platform-prerequisites).
   - See [`docs/chrome_accessibility.md`](chrome_accessibility.md) for recommended `dump_accesskit`
     invocations (`--named-only`, `--show-menu-bar`, `--focus-address-bar`) and how to interpret the
     output.

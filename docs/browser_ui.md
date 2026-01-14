@@ -86,7 +86,7 @@ If you run the `browser` binary without the feature, it will print a short messa
 Audio output backends are opt-in so CI/minimal hosts don't need system audio development packages.
 
 - Default: `NullAudioBackend` (silence), no system deps.
-- Real-time audio output: enable `audio_cpal` (may require ALSA dev packages on Linux).
+- Real-time audio output: enable `browser_ui_audio` (alias for `audio_cpal`; may require ALSA dev packages on Linux).
 
 On Ubuntu/Debian, you may need:
 
@@ -96,7 +96,7 @@ sudo apt-get install libasound2-dev
 
 ```bash
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser
+  bash scripts/cargo_agent.sh run --features browser_ui,browser_ui_audio --bin browser
 ```
 
 ### Native dialogs (file) (developer note)

@@ -93,6 +93,11 @@ browser_ui = [
   "dep:egui-winit",
   "dep:egui-wgpu",
 ]
+# Optional real-time audio output for the interactive `browser` UI.
+#
+# This is a thin alias for `audio_cpal` so developers can opt in locally without making
+# `--features browser_ui` pull in platform-specific system audio deps (ALSA/Pulse/etc on Linux).
+browser_ui_audio = ["audio_cpal"]
 browser_ui_wayland = [
   # Wayland backend support for the `browser` UI on Linux.
   #
@@ -128,7 +133,7 @@ codec_opus = ["dep:opus", "dep:audiopus_sys"]
 #
 # CI intentionally avoids enabling `audio_cpal` because it requires platform-specific system audio
 # development libraries on Linux (e.g. ALSA headers). Developers can opt in locally via
-# `--features audio_cpal`.
+# `--features audio_cpal` (or `--features browser_ui_audio`).
 ci = [
   "a11y_debug",
   "avif",
