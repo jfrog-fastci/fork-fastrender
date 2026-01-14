@@ -30,7 +30,7 @@ fn cap_trace_string(value: &str) -> String {
   value[..end].to_string()
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct TraceArgs {
   entries: Vec<TraceArg>,
 }
@@ -52,7 +52,21 @@ impl TraceArgs {
 
   #[inline]
   fn insert(&mut self, key: &'static str, value: JsonValue) {
+    // Preserve the previous `serde_json::Map` semantics: later inserts overwrite earlier values for
+    // the same key (and avoid emitting duplicate keys in the serialized JSON object).
+    for entry in &mut self.entries {
+      if entry.key == key {
+        entry.value = value;
+        return;
+      }
+    }
     self.entries.push(TraceArg { key, value });
+  }
+}
+
+impl Default for TraceArgs {
+  fn default() -> Self {
+    Self::new()
   }
 }
 
