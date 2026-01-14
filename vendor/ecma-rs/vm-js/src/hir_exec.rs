@@ -18185,6 +18185,14 @@ enum HirAsyncActive {
     stmt_index: usize,
     declarator_index: usize,
   },
+  /// Suspended while binding a `var`/`let`/`const` declarator object pattern that contains an
+  /// `await` expression in a computed key or default value.
+  AwaitVarDeclObjectPat {
+    stmt_index: usize,
+    declarator_index: usize,
+    binding_kind: PatBindingKind,
+    state: AsyncObjectPatternBindingState,
+  },
 }
 
 impl HirAsyncActive {
@@ -18198,6 +18206,7 @@ impl HirAsyncActive {
       HirAsyncActive::TryStmt(state) => state.teardown(heap),
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
       HirAsyncActive::ClassDecl(state) => state.teardown(heap),
+      HirAsyncActive::AwaitVarDeclObjectPat { state, .. } => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
       | HirAsyncActive::AwaitExportDefaultExpr { .. }
       | HirAsyncActive::AwaitAssignmentStmt { pending_assign: None, .. }
@@ -19621,6 +19630,109 @@ impl HirAsyncState {
                 None => Value::Undefined,
               };
 
+              // If the declarator pattern contains `await` in computed keys/defaults, evaluate its
+              // binding initialization via `AsyncObjectPatternBindingState`.
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+              ) {
+                let pat = evaluator.get_pat(body, declarator.pat)?;
+                if let hir_js::PatKind::Object(obj_pat) = &pat.kind {
+                  let mut has_await: bool = false;
+                  if obj_pat.rest.is_none() {
+                    for prop in &obj_pat.props {
+                      if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+                        let expr = evaluator.get_expr(body, *expr_id)?;
+                        if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                          has_await = true;
+                          break;
+                        }
+                      }
+                      if let Some(default_expr) = prop.default_value {
+                        let expr = evaluator.get_expr(body, default_expr)?;
+                        if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                          has_await = true;
+                          break;
+                        }
+                      }
+                    }
+                  }
+
+                  if has_await {
+                    let binding_kind = match var_decl.kind {
+                      hir_js::VarDeclKind::Var => PatBindingKind::Var,
+                      hir_js::VarDeclKind::Let => PatBindingKind::Let,
+                      hir_js::VarDeclKind::Const => PatBindingKind::Const,
+                      _ => unreachable!(),
+                    };
+
+                    let mut bind_state = match AsyncObjectPatternBindingState::new(
+                      evaluator,
+                      scope,
+                      declarator.pat,
+                      value,
+                    ) {
+                      Ok(s) => s,
+                      Err(err) => {
+                        let err = finalize_throw_with_stack_at_source_offset(
+                          &*evaluator.vm,
+                          scope,
+                          evaluator.script.source.as_ref(),
+                          stmt_offset,
+                          err,
+                        );
+                        match err {
+                          VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                            return Ok(HirAsyncResult::CompleteThrow(value))
+                          }
+                          other => return Err(other),
+                        }
+                      }
+                    };
+
+                    match bind_state.poll(evaluator, scope, body, None, binding_kind) {
+                      Ok(AsyncObjectPatternBindingPoll::Complete) => {
+                        // Done; continue to the next declarator.
+                        continue;
+                      }
+                      Ok(AsyncObjectPatternBindingPoll::Await {
+                        await_value,
+                        await_offset,
+                      }) => {
+                        self.active = Some(HirAsyncActive::AwaitVarDeclObjectPat {
+                          stmt_index,
+                          declarator_index: j,
+                          binding_kind,
+                          state: bind_state,
+                        });
+                        self.next_stmt_index = stmt_index;
+                        self.await_stmt_offset = await_offset;
+                        return Ok(HirAsyncResult::Await {
+                          kind: crate::exec::AsyncSuspendKind::Await,
+                          await_value,
+                        });
+                      }
+                      Err(err) => {
+                        bind_state.teardown(scope.heap_mut());
+                        let err = finalize_throw_with_stack_at_source_offset(
+                          &*evaluator.vm,
+                          scope,
+                          evaluator.script.source.as_ref(),
+                          stmt_offset,
+                          err,
+                        );
+                        match err {
+                          VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                            return Ok(HirAsyncResult::CompleteThrow(value))
+                          }
+                          other => return Err(other),
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
               if let Err(err) = evaluator.bind_var_decl_pat(
                 scope,
                 body,
@@ -19674,6 +19786,324 @@ impl HirAsyncState {
             self.next_stmt_index = stmt_index.saturating_add(1);
             continue;
           }
+
+        HirAsyncActive::AwaitVarDeclObjectPat {
+          stmt_index,
+          declarator_index,
+          binding_kind,
+          state,
+        } => {
+          let stmt_index = *stmt_index;
+          let declarator_index = *declarator_index;
+          let binding_kind = *binding_kind;
+          let await_offset = self.await_stmt_offset;
+          let Some(resume) = resume_value.take() else {
+            return Err(VmError::InvariantViolation(
+              "hir async await var decl object pattern missing resume value",
+            ));
+          };
+
+          // This resume point can only exist for block-bodied async functions/modules.
+          let HirAsyncBodyKind::Block { stmts } = &self.body_kind else {
+            return Err(VmError::InvariantViolation(
+              "hir async var decl object pattern resume used for non-block body",
+            ));
+          };
+          let stmt_id = *stmts.get(stmt_index).ok_or(VmError::InvariantViolation(
+            "hir async var decl object pattern resume stmt index out of bounds",
+          ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
+          let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
+            return Err(VmError::InvariantViolation(
+              "hir async var decl object pattern resume target is not a var declaration",
+            ));
+          };
+
+          // If the awaited promise rejected, treat as a throw at the await site.
+          let resume_value = match resume {
+            Ok(v) => Ok(v),
+            Err(err) => {
+              // Ensure persistent roots held by the pattern-binding state machine do not leak.
+              state.teardown(scope.heap_mut());
+              self.active = None;
+
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                await_offset,
+                err,
+              );
+              match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  return Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => return Err(other),
+              }
+            }
+          };
+
+          // Resume object pattern binding.
+          let poll = state.poll(evaluator, scope, body, Some(resume_value), binding_kind);
+          match poll {
+            Ok(AsyncObjectPatternBindingPoll::Await {
+              await_value,
+              await_offset,
+            }) => {
+              // Remain in this active state and suspend again.
+              self.await_stmt_offset = await_offset;
+              return Ok(HirAsyncResult::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+              });
+            }
+            Ok(AsyncObjectPatternBindingPoll::Complete) => {
+              // Pattern binding complete; continue evaluating subsequent declarators.
+              self.active = None;
+
+              for (j, declarator) in var_decl
+                .declarators
+                .iter()
+                .enumerate()
+                .skip(declarator_index.saturating_add(1))
+              {
+                evaluator.vm.tick()?;
+                let init_missing = declarator.init.is_none();
+
+                if let Some(init) = declarator.init {
+                  let init_expr = evaluator.get_expr(body, init)?;
+                  if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                    // Budget once for the await expression itself, matching synchronous evaluation.
+                    evaluator.vm.tick()?;
+                    let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        let err = finalize_throw_with_stack_at_source_offset(
+                          &*evaluator.vm,
+                          scope,
+                          evaluator.script.source.as_ref(),
+                          stmt_offset,
+                          err,
+                        );
+                        match err {
+                          VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                            return Ok(HirAsyncResult::CompleteThrow(value))
+                          }
+                          other => return Err(other),
+                        }
+                      }
+                    };
+                    self.active = Some(HirAsyncActive::AwaitVarDecl {
+                      stmt_index,
+                      declarator_index: j,
+                    });
+                    self.next_stmt_index = stmt_index;
+                    self.await_stmt_offset = init_expr.span.start;
+                    return Ok(HirAsyncResult::Await {
+                      kind: crate::exec::AsyncSuspendKind::Await,
+                      await_value,
+                    });
+                  }
+                }
+
+                let value = match declarator.init {
+                  Some(init) => match evaluator.eval_expr(scope, body, init) {
+                    Ok(v) => v,
+                    Err(err) => {
+                      let err = finalize_throw_with_stack_at_source_offset(
+                        &*evaluator.vm,
+                        scope,
+                        evaluator.script.source.as_ref(),
+                        stmt_offset,
+                        err,
+                      );
+                      match err {
+                        VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                          return Ok(HirAsyncResult::CompleteThrow(value))
+                        }
+                        other => return Err(other),
+                      }
+                    }
+                  },
+                  None => Value::Undefined,
+                };
+
+                // If the declarator pattern contains `await` in computed keys/defaults, evaluate its
+                // binding initialization via `AsyncObjectPatternBindingState`.
+                if matches!(
+                  var_decl.kind,
+                  hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+                ) {
+                  let pat = evaluator.get_pat(body, declarator.pat)?;
+                  if let hir_js::PatKind::Object(obj_pat) = &pat.kind {
+                    let mut has_await: bool = false;
+                    if obj_pat.rest.is_none() {
+                      for prop in &obj_pat.props {
+                        if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+                          let expr = evaluator.get_expr(body, *expr_id)?;
+                          if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                            has_await = true;
+                            break;
+                          }
+                        }
+                        if let Some(default_expr) = prop.default_value {
+                          let expr = evaluator.get_expr(body, default_expr)?;
+                          if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                            has_await = true;
+                            break;
+                          }
+                        }
+                      }
+                    }
+
+                    if has_await {
+                      let binding_kind = match var_decl.kind {
+                        hir_js::VarDeclKind::Var => PatBindingKind::Var,
+                        hir_js::VarDeclKind::Let => PatBindingKind::Let,
+                        hir_js::VarDeclKind::Const => PatBindingKind::Const,
+                        _ => unreachable!(),
+                      };
+
+                      let mut bind_state = match AsyncObjectPatternBindingState::new(
+                        evaluator,
+                        scope,
+                        declarator.pat,
+                        value,
+                      ) {
+                        Ok(s) => s,
+                        Err(err) => {
+                          let err = finalize_throw_with_stack_at_source_offset(
+                            &*evaluator.vm,
+                            scope,
+                            evaluator.script.source.as_ref(),
+                            stmt_offset,
+                            err,
+                          );
+                          match err {
+                            VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                              return Ok(HirAsyncResult::CompleteThrow(value))
+                            }
+                            other => return Err(other),
+                          }
+                        }
+                      };
+
+                      match bind_state.poll(evaluator, scope, body, None, binding_kind) {
+                        Ok(AsyncObjectPatternBindingPoll::Complete) => {
+                          // Done; continue to next declarator.
+                          continue;
+                        }
+                        Ok(AsyncObjectPatternBindingPoll::Await {
+                          await_value,
+                          await_offset,
+                        }) => {
+                          self.active = Some(HirAsyncActive::AwaitVarDeclObjectPat {
+                            stmt_index,
+                            declarator_index: j,
+                            binding_kind,
+                            state: bind_state,
+                          });
+                          self.next_stmt_index = stmt_index;
+                          self.await_stmt_offset = await_offset;
+                          return Ok(HirAsyncResult::Await {
+                            kind: crate::exec::AsyncSuspendKind::Await,
+                            await_value,
+                          });
+                        }
+                        Err(err) => {
+                          bind_state.teardown(scope.heap_mut());
+                          let err = finalize_throw_with_stack_at_source_offset(
+                            &*evaluator.vm,
+                            scope,
+                            evaluator.script.source.as_ref(),
+                            stmt_offset,
+                            err,
+                          );
+                          match err {
+                            VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                              return Ok(HirAsyncResult::CompleteThrow(value))
+                            }
+                            other => return Err(other),
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if let Err(err) = evaluator.bind_var_decl_pat(
+                  scope,
+                  body,
+                  declarator.pat,
+                  var_decl.kind,
+                  init_missing,
+                  value,
+                ) {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    err,
+                  );
+                  match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      return Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => return Err(other),
+                  }
+                }
+                // Explicit Resource Management: `using` and `await using` initializers must be objects,
+                // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+                if matches!(
+                  var_decl.kind,
+                  hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+                ) {
+                  match value {
+                    Value::Null | Value::Undefined | Value::Object(_) => {}
+                    _ => {
+                      let err = finalize_throw_with_stack_at_source_offset(
+                        &*evaluator.vm,
+                        scope,
+                        evaluator.script.source.as_ref(),
+                        stmt_offset,
+                        VmError::TypeError("Using declaration initializer must be an object"),
+                      );
+                      match err {
+                        VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                          return Ok(HirAsyncResult::CompleteThrow(value))
+                        }
+                        other => return Err(other),
+                      }
+                    }
+                  }
+                }
+              }
+
+              self.next_stmt_index = stmt_index.saturating_add(1);
+              continue;
+            }
+            Err(err) => {
+              // Ensure persistent roots held by the pattern-binding state machine do not leak.
+              state.teardown(scope.heap_mut());
+              self.active = None;
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
+              match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  return Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => return Err(other),
+              }
+            }
+          }
+        }
         }
       }
 
@@ -20754,6 +21184,109 @@ impl HirAsyncState {
             },
             None => Value::Undefined,
           };
+
+          // If the declarator pattern contains `await` in computed keys/defaults, evaluate its
+          // binding initialization via `AsyncObjectPatternBindingState`.
+          if matches!(
+            var_decl.kind,
+            hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+          ) {
+            let pat = evaluator.get_pat(body, declarator.pat)?;
+            if let hir_js::PatKind::Object(obj_pat) = &pat.kind {
+              let mut has_await: bool = false;
+              if obj_pat.rest.is_none() {
+                for prop in &obj_pat.props {
+                  if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+                    let expr = evaluator.get_expr(body, *expr_id)?;
+                    if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                      has_await = true;
+                      break;
+                    }
+                  }
+                  if let Some(default_expr) = prop.default_value {
+                    let expr = evaluator.get_expr(body, default_expr)?;
+                    if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+                      has_await = true;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              if has_await {
+                let binding_kind = match var_decl.kind {
+                  hir_js::VarDeclKind::Var => PatBindingKind::Var,
+                  hir_js::VarDeclKind::Let => PatBindingKind::Let,
+                  hir_js::VarDeclKind::Const => PatBindingKind::Const,
+                  _ => unreachable!(),
+                };
+
+                let mut bind_state = match AsyncObjectPatternBindingState::new(
+                  evaluator,
+                  scope,
+                  declarator.pat,
+                  value,
+                ) {
+                  Ok(s) => s,
+                  Err(err) => {
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
+                    return match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => Err(other),
+                    };
+                  }
+                };
+
+                match bind_state.poll(evaluator, scope, body, None, binding_kind) {
+                  Ok(AsyncObjectPatternBindingPoll::Complete) => {
+                    // Done; continue to the next declarator.
+                    continue;
+                  }
+                  Ok(AsyncObjectPatternBindingPoll::Await {
+                    await_value,
+                    await_offset,
+                  }) => {
+                    self.active = Some(HirAsyncActive::AwaitVarDeclObjectPat {
+                      stmt_index: self.next_stmt_index,
+                      declarator_index: j,
+                      binding_kind,
+                      state: bind_state,
+                    });
+                    self.await_stmt_offset = await_offset;
+                    return Ok(HirAsyncResult::Await {
+                      kind: crate::exec::AsyncSuspendKind::Await,
+                      await_value,
+                    });
+                  }
+                  Err(err) => {
+                    bind_state.teardown(scope.heap_mut());
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
+                    return match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => Err(other),
+                    };
+                  }
+                }
+              }
+            }
+          }
+
           if let Err(err) = evaluator.bind_var_decl_pat(
             scope,
             body,

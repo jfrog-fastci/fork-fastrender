@@ -1311,6 +1311,86 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
   }
 
+  fn var_decl_stmt_supported(decl: &Node<parse_js::ast::stmt::decl::VarDecl>) -> bool {
+    fn obj_pat_has_supported_await_in_keys_or_defaults(pat: &Pat) -> bool {
+      let Pat::Obj(obj_pat) = pat else {
+        return false;
+      };
+      if obj_pat.stx.rest.is_some() {
+        // `AsyncObjectPatternBindingState` does not support object rest patterns.
+        return false;
+      }
+      let mut has_await: bool = false;
+      for prop in obj_pat.stx.properties.iter() {
+        // Only allow `await` in computed keys and defaults, and only as a direct `await <expr>` with
+        // no nested `await` inside `<expr>`.
+        if let ClassOrObjKey::Computed(expr) = &prop.stx.key {
+          if expr_contains_await(expr) {
+            if !expr_is_direct_await_without_nested_await(expr) {
+              return false;
+            }
+            has_await = true;
+          }
+        }
+
+        // Property target patterns must not contain any `await` (including nested computed keys /
+        // defaults).
+        if pat_contains_await(&prop.stx.target.stx) {
+          return false;
+        }
+
+        if let Some(default) = prop.stx.default_value.as_ref() {
+          if expr_contains_await(default) {
+            if !expr_is_direct_await_without_nested_await(default) {
+              return false;
+            }
+            has_await = true;
+          }
+        }
+      }
+      has_await
+    }
+
+    decl.stx.declarators.iter().all(|d| {
+      let pat = &d.pattern.stx.pat.stx;
+
+      // Support async binding initialization for object patterns with `await` in computed keys or
+      // default values (see `AsyncObjectPatternBindingState`).
+      if pat_contains_await(pat) {
+        // Avoid mixing pattern-`await` support with Explicit Resource Management (using/await using)
+        // for now.
+        if !matches!(decl.stx.mode, VarDeclMode::Var | VarDeclMode::Let | VarDeclMode::Const) {
+          return false;
+        }
+
+        if !obj_pat_has_supported_await_in_keys_or_defaults(pat) {
+          return false;
+        }
+
+        // RHS is evaluated before destructuring and must be synchronous (no await).
+        let Some(init) = d.initializer.as_ref() else {
+          return false;
+        };
+        return !expr_contains_await(init);
+      }
+
+      let Some(init) = d.initializer.as_ref() else {
+        return true;
+      };
+
+      if !expr_contains_await(init) {
+        return true;
+      }
+
+      match &*init.stx {
+        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
+          !expr_contains_await(&unary.stx.argument)
+        }
+        _ => false,
+      }
+    })
+  }
+
   fn expr_is_object_destructuring_assignment_with_supported_await(expr: &Node<Expr>) -> bool {
     // Supported shape:
     //   `({ <object-pattern> } = <rhs>);`
@@ -1426,26 +1506,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
 
       // `var`/`let`/`const` declarations where any `await` in an initializer is a direct `await`
       // expression (`const x = await <expr>;`).
-      Stmt::VarDecl(decl) => decl.stx.declarators.iter().all(|d| {
-        if pat_contains_await(&d.pattern.stx.pat.stx) {
-          return false;
-        }
-
-        let Some(init) = d.initializer.as_ref() else {
-          return true;
-        };
-
-        if !expr_contains_await(init) {
-          return true;
-        }
-
-        match &*init.stx {
-          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
-            !expr_contains_await(&unary.stx.argument)
-          }
-          _ => false,
-        }
-      }),
+      Stmt::VarDecl(decl) => var_decl_stmt_supported(decl),
 
       // `for (init; test; update) { ... }` loops at top-level.
       //
@@ -1542,24 +1603,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
             Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => !expr_contains_await(&unary.stx.argument),
             _ => false,
           },
-          Stmt::VarDecl(decl) => decl.stx.declarators.iter().all(|d| {
-            if pat_contains_await(&d.pattern.stx.pat.stx) {
-              return false;
-            }
-
-            let Some(init) = d.initializer.as_ref() else {
-              return true;
-            };
-
-            if !expr_contains_await(init) {
-              return true;
-            }
-
-            match &*init.stx {
-              Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => !expr_contains_await(&unary.stx.argument),
-              _ => false,
-            }
-          }),
+          Stmt::VarDecl(decl) => var_decl_stmt_supported(decl),
           Stmt::ForTriple(for_stmt) => for_triple_stmt_supported(for_stmt),
           Stmt::ForOf(for_of) if !for_of.stx.await_ => for_of_stmt_supported_with_async_head(for_of),
           Stmt::ForOf(for_of) if for_of.stx.await_ => for_await_of_stmt_supported(for_of),
