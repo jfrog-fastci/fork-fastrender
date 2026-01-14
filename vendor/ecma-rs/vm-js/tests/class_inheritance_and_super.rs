@@ -280,10 +280,9 @@ fn derived_ctor_return_override_object_and_primitive() -> Result<(), VmError> {
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var primName = "";
-      try { new DPrim(); primName = "no"; } catch (e) { primName = e.name; }
+      var p = new DPrim();
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        primName === "TypeError"
+        p.b === 1 && (p instanceof DPrim) === true
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -304,10 +303,9 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var primName = "";
-      try { new DPrim(); primName = "no"; } catch (e) { primName = e.name; }
+      var p = new DPrim();
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        primName === "TypeError"
+        p.b === 1 && (p instanceof DPrim) === true
     "#,
   )?
   else {
@@ -365,7 +363,7 @@ fn derived_ctor_can_return_object_without_calling_super_compiled() -> Result<(),
 }
 
 #[test]
-fn derived_ctor_returning_primitive_without_super_throws_type_error() -> Result<(), VmError> {
+fn derived_ctor_returning_primitive_without_super_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -374,12 +372,12 @@ fn derived_ctor_returning_primitive_without_super_throws_type_error() -> Result<
       try { new D(); "no"; } catch (e) { e.name; }
     "#,
   )?;
-  assert_eq!(value_to_string(&rt, value), "TypeError");
+  assert_eq!(value_to_string(&rt, value), "ReferenceError");
   Ok(())
 }
 
 #[test]
-fn derived_ctor_returning_primitive_without_super_throws_type_error_compiled() -> Result<(), VmError> {
+fn derived_ctor_returning_primitive_without_super_throws_reference_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match exec_compiled(
     &mut rt,
@@ -393,7 +391,7 @@ fn derived_ctor_returning_primitive_without_super_throws_type_error_compiled() -
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
-  assert_eq!(value_to_string(&rt, value), "TypeError");
+  assert_eq!(value_to_string(&rt, value), "ReferenceError");
   Ok(())
 }
 
