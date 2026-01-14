@@ -2260,12 +2260,14 @@ impl Vm {
       EcmaFunctionKind::Decl => 0,
       EcmaFunctionKind::Expr => 1,
       EcmaFunctionKind::ObjectMember => 2,
-      // Parse class member snippets by wrapping them in a derived class expression:
-      // `(class extends null { <snippet> })`.
+      // Parse class member snippets by wrapping them in a generator function containing a
+      // derived class expression:
+      //
+      // `function*__vmjs(){(class extends null { <snippet> });}`
       //
       // Using `extends null` ensures `super()` is syntactically permitted in constructor bodies
       // (which would otherwise be rejected in a non-derived `class { ... }` wrapper).
-      EcmaFunctionKind::ClassMember => 21, // "(class extends null {".
+      EcmaFunctionKind::ClassMember => 39, // "function*__vmjs(){(class extends null {".
       // Parse field initializer expressions as the body of a synthetic class *method*:
       // `(class extends null {m(){return <snippet>;}})`.
       //
@@ -2398,13 +2400,13 @@ impl Vm {
       }
       EcmaFunctionKind::ClassMember => {
         let allow_top_level_yield = true;
-        let capacity = snippet.len().checked_add(23).ok_or(VmError::OutOfMemory)?;
+        let capacity = snippet.len().checked_add(43).ok_or(VmError::OutOfMemory)?;
         wrapped
           .try_reserve(capacity)
           .map_err(|_| VmError::OutOfMemory)?;
-        wrapped.push_str("(class extends null {");
+        wrapped.push_str("function*__vmjs(){(class extends null {");
         wrapped.push_str(snippet);
-        wrapped.push_str("})");
+        wrapped.push_str("});}");
         parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield)?
       }
       EcmaFunctionKind::ClassFieldInitializer => {
@@ -2583,43 +2585,59 @@ impl Vm {
         }
       },
       EcmaFunctionKind::ClassMember => match *stmt.stx {
-        Stmt::Expr(expr_stmt) => {
+        // We wrap class members in a generator function so computed keys can use `yield`.
+        Stmt::FunctionDecl(decl) => {
+          let Some(parse_js::ast::func::FuncBody::Block(mut body)) = decl.stx.function.stx.body
+          else {
+            return Err(VmError::Unimplemented(
+              "ECMAScript class member snippet wrapper did not parse as a block-bodied function declaration",
+            ));
+          };
+          if body.len() != 1 {
+            return Err(VmError::Unimplemented(
+              "ECMAScript class member snippet wrapper did not parse to a single statement",
+            ));
+          }
+          let stmt = body.pop().ok_or(VmError::Unimplemented(
+            "missing statement in parsed class member snippet wrapper",
+          ))?;
+          let Stmt::Expr(expr_stmt) = *stmt.stx else {
+            return Err(VmError::Unimplemented(
+              "ECMAScript class member snippet wrapper did not parse as an expression statement",
+            ));
+          };
           let expr = expr_stmt.stx.expr;
-          match *expr.stx {
-            AstExpr::Class(class_expr) => {
-              let member = class_expr.stx.members.into_iter().next().ok_or(VmError::Unimplemented(
-                "ECMAScript class member snippet did not contain any members",
-              ))?;
-              match member.stx.val {
-                ClassOrObjVal::Method(method) => {
-                  let ClassOrObjMethod { func } = *method.stx;
-                  func
-                }
-                ClassOrObjVal::Getter(getter) => {
-                  let ClassOrObjGetter { func } = *getter.stx;
-                  func
-                }
-                ClassOrObjVal::Setter(setter) => {
-                  let ClassOrObjSetter { func } = *setter.stx;
-                  func
-                }
-                _ => {
-                  return Err(VmError::Unimplemented(
-                    "ECMAScript class member snippet did not parse as a method/getter/setter",
-                  ));
-                }
-              }
+          let AstExpr::Class(class_expr) = *expr.stx else {
+            return Err(VmError::Unimplemented(
+              "ECMAScript class member snippet wrapper did not contain a class expression",
+            ));
+          };
+          let member = class_expr.stx.members.into_iter().next().ok_or(VmError::Unimplemented(
+            "ECMAScript class member snippet did not contain any members",
+          ))?;
+          match member.stx.val {
+            ClassOrObjVal::Method(method) => {
+              let ClassOrObjMethod { func } = *method.stx;
+              func
+            }
+            ClassOrObjVal::Getter(getter) => {
+              let ClassOrObjGetter { func } = *getter.stx;
+              func
+            }
+            ClassOrObjVal::Setter(setter) => {
+              let ClassOrObjSetter { func } = *setter.stx;
+              func
             }
             _ => {
               return Err(VmError::Unimplemented(
-                "ECMAScript class member snippet did not parse as a class expression",
+                "ECMAScript class member snippet did not parse as a method/getter/setter",
               ));
             }
           }
         }
         _ => {
           return Err(VmError::Unimplemented(
-            "ECMAScript class member snippet did not parse as an expression statement",
+            "ECMAScript class member snippet did not parse as a function declaration wrapper",
           ));
         }
       },

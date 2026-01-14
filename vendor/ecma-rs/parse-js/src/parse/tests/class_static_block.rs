@@ -133,7 +133,7 @@ fn return_in_static_block_is_syntax_error_even_inside_function() {
 }
 
 #[test]
-fn yield_in_static_block_is_syntax_error_even_inside_generator() {
+fn yield_in_static_block_is_allowed_inside_generator() {
   let src = r#"
      function *g() {
        class C {
@@ -149,7 +149,7 @@ fn yield_in_static_block_is_syntax_error_even_inside_generator() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+  assert!(res.is_ok(), "parse failed: {res:?}");
 }
 
 #[test]

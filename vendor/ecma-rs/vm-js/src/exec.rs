@@ -17180,14 +17180,14 @@ enum AsyncEval<T> {
 ///
 /// This is an explicit reification of the evaluator call stack needed to resume execution after a
 /// `yield` suspension point.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum GenClassStaticInit {
   Field { key: Value, initializer: Value },
   PrivateField {
     sym: GcSymbol,
     init: Option<*const Node<Expr>>,
   },
-  Block { stmts: *const [Node<Stmt>] },
+  Block { stmts: *const Vec<Node<Stmt>> },
 }
 
 #[derive(Debug)]
@@ -17510,6 +17510,23 @@ pub(crate) enum GenFrame {
     instance_private_method_idx: usize,
     instance_field_idx: usize,
     instance_field_slot_start: usize,
+  },
+
+  /// Continue class evaluation after a static initialization block completes.
+  ///
+  /// Static blocks execute after the element definition pass, and may contain `yield`, so they can
+  /// suspend and resume. This frame restores the outer class evaluation context and continues
+  /// executing any remaining static initialization elements.
+  ClassAfterStaticBlock {
+    func_obj: GcObject,
+    static_inits: Vec<GenClassStaticInit>,
+    next_init_index: usize,
+    saved_this: Value,
+    saved_new_target: Value,
+    saved_home_object_value: Value,
+    saved_lex: GcEnv,
+    saved_var_env: VarEnv,
+    saved_meta_property_context: MetaPropertyContext,
   },
 
   /// Continue a conditional expression after evaluating the test.
@@ -18268,6 +18285,37 @@ impl Trace for GenFrame {
             }
             GenClassStaticInit::Block { .. } => {}
           }
+        }
+      }
+      GenFrame::ClassAfterStaticBlock {
+        func_obj,
+        static_inits,
+        saved_this,
+        saved_new_target,
+        saved_home_object_value,
+        saved_lex,
+        saved_var_env,
+        ..
+      } => {
+        tracer.trace_value(Value::Object(*func_obj));
+        for init in static_inits {
+          match init {
+            GenClassStaticInit::Field { key, initializer } => {
+              tracer.trace_value(*key);
+              tracer.trace_value(*initializer);
+            }
+            GenClassStaticInit::PrivateField { sym, .. } => {
+              tracer.trace_value(Value::Symbol(*sym));
+            }
+            GenClassStaticInit::Block { .. } => {}
+          }
+        }
+        tracer.trace_value(*saved_this);
+        tracer.trace_value(*saved_new_target);
+        tracer.trace_value(*saved_home_object_value);
+        tracer.trace_env(*saved_lex);
+        if let VarEnv::Env(env) = saved_var_env {
+          tracer.trace_env(*env);
         }
       }
       GenFrame::ImportAfterOptions { specifier, .. } => tracer.trace_value(*specifier),
@@ -42746,7 +42794,7 @@ fn gen_eval_class_members_from(
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
       static_inits.push(GenClassStaticInit::Block {
-        stmts: block.stx.body.as_slice() as *const [Node<Stmt>],
+        stmts: &block.stx.body as *const Vec<Node<Stmt>>,
       });
       continue;
     }
@@ -43511,13 +43559,132 @@ fn gen_eval_class_members_from(
     }
   }
 
+  gen_eval_class_static_inits_from(evaluator, scope, func_obj, static_inits, 0)
+}
+
+fn gen_eval_class_static_inits_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  func_obj: GcObject,
+  static_inits: Vec<GenClassStaticInit>,
+  start_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
   // Evaluate class static initialization elements (public static fields, private static fields, and
   // static blocks) in source order.
-  for init in static_inits {
-    match init {
+  for idx in start_index..static_inits.len() {
+    match static_inits[idx] {
       GenClassStaticInit::Block { stmts } => {
         let stmts = unsafe { &*stmts };
-        evaluator.eval_class_static_block(scope, func_obj, stmts)?;
+
+        // Mirror `Evaluator::eval_class_static_block` but yield-aware.
+        let mut block_scope = scope.reborrow();
+        block_scope.push_root(Value::Object(func_obj))?;
+
+        let saved_this = evaluator.this;
+        let saved_new_target = evaluator.new_target;
+        let saved_home_object_value = evaluator
+          .home_object
+          .map(Value::Object)
+          .unwrap_or(Value::Undefined);
+        let saved_lex = evaluator.env.lexical_env;
+        let saved_var_env = evaluator.env.var_env();
+        let saved_meta_property_context = evaluator.env.meta_property_context();
+
+        evaluator.this = Value::Object(func_obj);
+        evaluator.this_initialized = true;
+        evaluator.new_target = Value::Undefined;
+        evaluator.home_object = Some(func_obj);
+        evaluator
+          .env
+          .set_meta_property_context(MetaPropertyContext::METHOD);
+
+        let var_env = block_scope.env_create(Some(saved_lex))?;
+        let body_lex = block_scope.env_create(Some(var_env))?;
+        evaluator.env.set_var_env(VarEnv::Env(var_env));
+        evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+
+        let eval_res: Result<GenEval<Completion>, VmError> = (|| {
+          evaluator.instantiate_stmt_list(&mut block_scope, stmts)?;
+          gen_eval_stmt_list(evaluator, &mut block_scope, stmts)
+        })();
+
+        match eval_res {
+          Ok(GenEval::Suspend(mut suspend)) => {
+            // Preserve the static-block execution context across suspension, and resume class static
+            // initialization after the block completes.
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::ClassAfterStaticBlock {
+                func_obj,
+                static_inits,
+                next_init_index: idx.saturating_add(1),
+                saved_this,
+                saved_new_target,
+                saved_home_object_value,
+                saved_lex,
+                saved_var_env,
+                saved_meta_property_context,
+              },
+            )?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+          Ok(GenEval::Complete(completion)) => {
+            // Restore the surrounding class evaluation context regardless of how the block completes.
+            evaluator.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+            evaluator.env.set_var_env(saved_var_env);
+            evaluator
+              .env
+              .set_meta_property_context(saved_meta_property_context);
+            evaluator.this = saved_this;
+            evaluator.new_target = saved_new_target;
+            evaluator.home_object = match saved_home_object_value {
+              Value::Object(o) => Some(o),
+              Value::Undefined => None,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "class static block saved home object is not an object or undefined",
+                ))
+              }
+            };
+
+            match completion {
+              Completion::Normal(_) => {}
+              Completion::Throw(_) => return Ok(GenEval::Complete(completion)),
+              Completion::Return(_) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Return completion (early errors should prevent this)",
+                ))
+              }
+              Completion::Break(..) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Break completion (early errors should prevent this)",
+                ))
+              }
+              Completion::Continue(..) => {
+                return Err(VmError::InvariantViolation(
+                  "class static block produced Continue completion (early errors should prevent this)",
+                ))
+              }
+            }
+          }
+          Err(err) => {
+            // Restore the surrounding class evaluation context regardless of errors during
+            // instantiation/evaluation.
+            evaluator.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+            evaluator.env.set_var_env(saved_var_env);
+            evaluator
+              .env
+              .set_meta_property_context(saved_meta_property_context);
+            evaluator.this = saved_this;
+            evaluator.new_target = saved_new_target;
+            evaluator.home_object = match saved_home_object_value {
+              Value::Object(o) => Some(o),
+              Value::Undefined => None,
+              _ => None,
+            };
+            return Err(err);
+          }
+        }
       }
       GenClassStaticInit::PrivateField { sym, init } => {
         let init = unsafe { init.map(|ptr| &*ptr) };
@@ -43527,9 +43694,7 @@ fn gen_eval_class_members_from(
         let key = match key {
           Value::String(s) => PropertyKey::from_string(s),
           Value::Symbol(s) => PropertyKey::from_symbol(s),
-          Value::Undefined => {
-            return Err(VmError::InvariantViolation("static field key is undefined"))
-          }
+          Value::Undefined => return Err(VmError::InvariantViolation("static field key is undefined")),
           _ => {
             return Err(VmError::InvariantViolation(
               "static field key is not a string or symbol",
@@ -52104,6 +52269,80 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::ClassAfterStaticBlock {
+        func_obj,
+        static_inits,
+        next_init_index,
+        saved_this,
+        saved_new_target,
+        saved_home_object_value,
+        saved_lex,
+        saved_var_env,
+        saved_meta_property_context,
+      } => {
+        // Keep class-evaluation roots local to this continuation step so they do not leak into the
+        // surrounding generator resume call.
+        let mut class_scope = scope.reborrow();
+
+        // Restore the surrounding class evaluation context regardless of how the block completed.
+        evaluator
+          .env
+          .set_lexical_env(class_scope.heap_mut(), saved_lex);
+        evaluator.env.set_var_env(saved_var_env);
+        evaluator
+          .env
+          .set_meta_property_context(saved_meta_property_context);
+        evaluator.this = saved_this;
+        evaluator.new_target = saved_new_target;
+        evaluator.home_object = match saved_home_object_value {
+          Value::Object(o) => Some(o),
+          Value::Undefined => None,
+          _ => {
+            state = gen_error_to_completion(
+              evaluator,
+              &mut class_scope,
+              VmError::InvariantViolation(
+                "class static block saved home object is not an object or undefined",
+              ),
+            )?;
+            continue;
+          }
+        };
+
+        match state {
+          Completion::Normal(_) => match gen_eval_class_static_inits_from(
+            evaluator,
+            &mut class_scope,
+            func_obj,
+            static_inits,
+            next_init_index,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, &mut class_scope, err)?,
+          },
+          Completion::Throw(thrown) => state = Completion::Throw(thrown),
+          Completion::Return(_) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Return completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Break completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Continue completion (early errors should prevent this)",
+            ))
+          }
+        }
+      }
+
       GenFrame::CondAfterTest { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -55700,6 +55939,18 @@ fn gen_root_values_for_continuation(
           }
         }
       }
+      GenFrame::ClassAfterStaticBlock { static_inits, .. } => {
+        // `func_obj` + `saved_this` + `saved_new_target` + `saved_home_object_value` plus any values
+        // stored in the pending static initialization list.
+        needed = needed.saturating_add(4);
+        for init in static_inits.iter() {
+          match init {
+            GenClassStaticInit::Field { .. } => needed = needed.saturating_add(2),
+            GenClassStaticInit::PrivateField { .. } => needed = needed.saturating_add(1),
+            GenClassStaticInit::Block { .. } => {}
+          }
+        }
+      }
       GenFrame::ImportAfterOptions { .. } => {
         needed = needed.saturating_add(1);
       }
@@ -56089,6 +56340,29 @@ fn gen_root_values_for_continuation(
           }
         }
       }
+      GenFrame::ClassAfterStaticBlock {
+        func_obj,
+        static_inits,
+        saved_this,
+        saved_new_target,
+        saved_home_object_value,
+        ..
+      } => {
+        values.push(Value::Object(*func_obj));
+        for init in static_inits.iter() {
+          match init {
+            GenClassStaticInit::Field { key, initializer } => {
+              values.push(*key);
+              values.push(*initializer);
+            }
+            GenClassStaticInit::PrivateField { sym, .. } => values.push(Value::Symbol(*sym)),
+            GenClassStaticInit::Block { .. } => {}
+          }
+        }
+        values.push(*saved_this);
+        values.push(*saved_new_target);
+        values.push(*saved_home_object_value);
+      }
       GenFrame::ImportAfterOptions { specifier, .. } => values.push(*specifier),
       GenFrame::TaggedTemplateComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::TaggedTemplateAfterSubstitution {
@@ -56166,19 +56440,17 @@ pub(crate) fn generator_resume(
         gen_root_values_for_continuation(&mut scope, &cont)?;
         cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
 
-        let this = cont.this;
-        let new_target = cont.new_target;
         let func = cont.func.clone();
 
-        let (result, strict_after) = {
+        let (result, strict_after, this_after, new_target_after, home_object_after) = {
           let mut evaluator = Evaluator {
             vm,
             host,
             hooks,
             env: &mut cont.env,
             strict: cont.strict,
-            this,
-            new_target,
+            this: cont.this,
+            new_target: cont.new_target,
             home_object: cont.home_object,
             class_constructor: None,
             derived_constructor: false,
@@ -56187,12 +56459,22 @@ pub(crate) fn generator_resume(
             is_async_generator: false,
           };
           let result = gen_start_body(&mut evaluator, &mut scope, &func);
-          (result, evaluator.strict)
+          (
+            result,
+            evaluator.strict,
+            evaluator.this,
+            evaluator.new_target,
+            evaluator.home_object,
+          )
         };
-        // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
-        // evaluation forces strict mode). Persist the current strictness into the continuation so it
-        // is restored correctly across subsequent `yield` suspensions.
+
+        // Persist temporary strictness/`this`/`new.target`/`[[HomeObject]]` changes across yield
+        // suspensions: nested constructs (notably class static blocks) can override these values
+        // and then suspend.
         cont.strict = strict_after;
+        cont.this = this_after;
+        cont.new_target = new_target_after;
+        cont.home_object = home_object_after;
 
         match result {
           Ok(GenEval::Suspend(suspend)) => {
@@ -56261,8 +56543,6 @@ pub(crate) fn generator_resume(
       gen_root_values_for_continuation(&mut scope, &cont)?;
       cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
 
-      let this = cont.this;
-      let new_target = cont.new_target;
       let frames = mem::take(&mut cont.frames);
 
       let resume_completion = match input {
@@ -56274,15 +56554,15 @@ pub(crate) fn generator_resume(
         GeneratorResumeInput::Return(v) => Completion::Return(v),
       };
 
-      let (result, strict_after) = {
+      let (result, strict_after, this_after, new_target_after, home_object_after) = {
         let mut evaluator = Evaluator {
           vm,
           host,
           hooks,
           env: &mut cont.env,
           strict: cont.strict,
-          this,
-          new_target,
+          this: cont.this,
+          new_target: cont.new_target,
           home_object: cont.home_object,
           class_constructor: None,
           derived_constructor: false,
@@ -56291,11 +56571,21 @@ pub(crate) fn generator_resume(
           is_async_generator: false,
         };
         let result = gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion);
-        (result, evaluator.strict)
+        (
+          result,
+          evaluator.strict,
+          evaluator.this,
+          evaluator.new_target,
+          evaluator.home_object,
+        )
       };
-      // Persist temporary strictness changes across yield suspensions (see comment in the
-      // `SuspendedStart` branch above).
+
+      // Persist temporary strictness/`this`/`new.target`/`[[HomeObject]]` changes across yield
+      // suspensions (see comment in the `SuspendedStart` branch above).
       cont.strict = strict_after;
+      cont.this = this_after;
+      cont.new_target = new_target_after;
+      cont.home_object = home_object_after;
 
       match result {
         Ok(GenEval::Suspend(suspend)) => {

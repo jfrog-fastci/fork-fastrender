@@ -269,22 +269,22 @@ impl<'a> Parser<'a> {
               // `return` is always a syntax error within the block.
               p.in_function = 0;
               p.new_target_allowed += 1;
-               p.super_prop_allowed += 1;
-               p.super_call_allowed = 0;
-               // Static blocks have their own `Await` / `Yield` context:
-               // - `await` is reserved as an identifier (even in scripts),
-               // - `await`/`for await` are only permitted when nested within an *async function*
-               //   (i.e. do not inherit top-level await from modules or async classic scripts), and
-               // - `yield` is not treated as a keyword from an enclosing generator, but yield
-               //   expressions are never permitted, and
-               // - `return` statements are never permitted (handled above via `in_function = 0`).
-               let is_module = p.is_module();
-               let await_expr_allowed = ctx.rules.await_expr_allowed && prev_in_function > 0;
-               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
-                 await_allowed: false,
-                 yield_allowed: !is_module,
-                 await_expr_allowed,
-                yield_expr_allowed: false,
+              p.super_prop_allowed += 1;
+              p.super_call_allowed = 0;
+              // Static blocks have their own `Await` / `Yield` context:
+              // - `await` is reserved as an identifier (even in scripts),
+              // - `await`/`for await` are permitted in the same contexts as the surrounding code
+              //   (async functions and modules with top-level await enabled), and
+              // - `yield` follows the enclosing grammar context (it can begin a YieldExpression when
+              //   parsing within a generator), and
+              // - `return` statements are never permitted (handled above via `in_function = 0`).
+              let is_module = p.is_module();
+              let await_expr_allowed = ctx.rules.await_expr_allowed;
+              let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+                await_allowed: false,
+                yield_allowed: if is_module { false } else { ctx.rules.yield_allowed },
+                await_expr_allowed,
+                yield_expr_allowed: ctx.rules.yield_expr_allowed,
               });
               let prev_in_class_static_block = p.in_class_static_block;
               p.in_class_static_block = prev_in_class_static_block.saturating_add(1);

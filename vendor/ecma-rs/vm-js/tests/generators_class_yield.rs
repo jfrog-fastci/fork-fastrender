@@ -242,20 +242,28 @@ fn generator_property_assignment_anonymous_class_inferred_name_across_yield_in_e
 }
 
 #[test]
-fn yield_in_class_static_block_is_syntax_error() {
+fn generator_class_yield_in_static_block() {
   let mut rt = new_runtime();
-  let err = rt
+  let value = rt
     .exec_script(
       r#"
-      function* g() {
-        class C {
-          static { yield 0; }
+        function* g() {
+          class C {
+            static {
+              this.x = yield 1;
+            }
+          }
+          return C.x;
         }
-      }
-    "#,
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(7);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 7 && r2.done === true
+      "#,
     )
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
 }
 
 #[test]
