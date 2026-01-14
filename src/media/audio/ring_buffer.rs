@@ -298,10 +298,31 @@ impl AudioRingBuffer {
       return false;
     }
 
-    let available = self.buffered_samples();
+    let read = self.read.load(Ordering::Relaxed);
+    let write = self.write.load(Ordering::Acquire);
+    let available = write.wrapping_sub(read);
+
+    if available == 0 {
+      return true;
+    }
+
+    // If indices have wrapped in a way that breaks invariants, drop buffered audio.
+    if available > self.capacity {
+      self.read.store(write, Ordering::Release);
+      return true;
+    }
+
+    // Keep frame alignment: if producers ever push a non-multiple of `channels` (shouldn't happen),
+    // drop the corrupted buffer so we don't get stuck with a permanent partial frame.
+    if available % channels != 0 {
+      self.read.store(write, Ordering::Release);
+      return true;
+    }
+
     let mut to_read = requested.min(available);
     to_read -= to_read % channels;
     if to_read == 0 {
+      self.read.store(write, Ordering::Release);
       return true;
     }
 
