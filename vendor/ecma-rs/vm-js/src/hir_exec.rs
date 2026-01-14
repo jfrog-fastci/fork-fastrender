@@ -17243,6 +17243,13 @@ impl HirAsyncClassDeclState {
           let mut root_scope = member_scope.reborrow();
           root_scope.push_roots(&[key_value, init_value])?;
 
+          // Reserve storage in `static_inits` before allocating persistent roots so we don't leak
+          // roots if `Vec::try_reserve` fails under OOM.
+          self
+            .static_inits
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+
           let key_root = root_scope.heap_mut().add_root(key_value)?;
           let init_root_res = root_scope.heap_mut().add_root(init_value);
           let init_root = match init_root_res {
@@ -17253,7 +17260,6 @@ impl HirAsyncClassDeclState {
             }
           };
 
-          self.static_inits.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           self.static_inits.push(HirAsyncClassStaticInitElement::Field {
             key_root,
             initializer_root: init_root,
