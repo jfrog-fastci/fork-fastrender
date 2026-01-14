@@ -203,6 +203,8 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - Affects:
     - **Save Page** / **Print**: native save dialog falls back to the in-app save popup.
     - `<input type=file>`: native file picker dialog is skipped and the in-app file picker popup is used instead.
+    - **Downloads** → **Change download folder…**: skips the native folder picker and opens an in-app “Change download folder” dialog.
+    - **Bookmarks** → **Import/Export**: skips the native file dialog and expects you to type the import/export path manually.
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).

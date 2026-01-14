@@ -11260,6 +11260,19 @@ struct OpenPageExport {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenDownloadDirPicker {
+  /// egui widget id that held focus before the dialog was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
+  /// Draft directory path input shown in the popup.
+  draft: String,
+  error: Option<String>,
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug)]
 struct PendingPageExport {
   tab_id: fastrender::ui::TabId,
@@ -13635,6 +13648,8 @@ struct App {
   open_color_picker_rect: Option<egui::Rect>,
   open_file_picker: Option<OpenFilePicker>,
   open_file_picker_rect: Option<egui::Rect>,
+  open_download_dir_picker: Option<OpenDownloadDirPicker>,
+  open_download_dir_picker_rect: Option<egui::Rect>,
   open_page_export: Option<OpenPageExport>,
   open_page_export_rect: Option<egui::Rect>,
   open_media_controls: Option<OpenMediaControls>,
@@ -14089,6 +14104,9 @@ impl App {
         .open_file_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
+        .open_download_dir_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
         .open_page_export_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
@@ -14145,6 +14163,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_file_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_download_dir_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_page_export_rect
@@ -14629,6 +14650,8 @@ impl App {
       open_color_picker_rect: None,
       open_file_picker: None,
       open_file_picker_rect: None,
+      open_download_dir_picker: None,
+      open_download_dir_picker_rect: None,
       open_page_export: None,
       open_page_export_rect: None,
       open_media_controls: None,
@@ -16610,6 +16633,29 @@ impl App {
     self.open_file_picker_rect = None;
   }
 
+  fn close_download_dir_picker(&mut self) {
+    self.open_download_dir_picker_rect = None;
+    let Some(dialog) = self.open_download_dir_picker.take() else {
+      return;
+    };
+    restore_or_clear_egui_focus(&self.egui_ctx, dialog.focus_before_open);
+  }
+
+  fn open_download_dir_picker_in_app(&mut self) {
+    // Treat as chrome UI: while the dialog is open, don't forward keyboard input to the page.
+    self.clear_page_focus();
+    self.close_download_dir_picker();
+
+    let focus_before_open = egui_focused_widget_id(&self.egui_ctx);
+    let draft = self.download_dir.display().to_string();
+    self.open_download_dir_picker = Some(OpenDownloadDirPicker {
+      focus_before_open,
+      draft,
+      error: None,
+    });
+    self.open_download_dir_picker_rect = None;
+  }
+
   fn close_page_export(&mut self) {
     self.open_page_export_rect = None;
     let Some(dialog) = self.open_page_export.take() else {
@@ -18084,6 +18130,7 @@ impl App {
         || self.open_date_time_picker.is_some()
         || self.open_color_picker.is_some()
         || self.open_file_picker.is_some()
+        || self.open_download_dir_picker.is_some()
         || self.open_media_controls.is_some()
         || self.open_context_menu.is_some()
         || self.pending_context_menu_request.is_some()
@@ -21293,6 +21340,12 @@ impl App {
     self.browser_state.chrome.downloads_panel_open = false;
     self.downloads_panel_request_focus = false;
     self.downloads_panel_search_query.clear();
+    if self.open_download_dir_picker.is_some() {
+      // Avoid leaving egui focused on a widget that will disappear when the panel closes.
+      self.open_download_dir_picker = None;
+      self.open_download_dir_picker_rect = None;
+      restore_or_clear_egui_focus(&self.egui_ctx, None);
+    }
   }
 
   fn render_downloads_panel(&mut self, ctx: &egui::Context) {
@@ -21427,43 +21480,56 @@ impl App {
       // Note: download-directory changes apply only to this window/worker. Newly created windows
       // inherit the download directory of the window that spawned them (see `RequestNewWindow`
       // handlers in the winit event loop).
-      let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rfd::FileDialog::new()
-          .set_directory(&self.download_dir)
-          .pick_folder()
-      }));
-      match selection {
-        Ok(Some(path)) => {
-          if apply_download_dir_change_state(
-            &mut self.download_dir,
-            &mut self.download_dir_allowlist,
-            path,
-          ) {
-            fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-              self.download_dir.display().to_string(),
-            ));
-            let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
-              path: self.download_dir.clone(),
-            });
+      let force_in_app = fastrender::ui::native_dialogs::force_in_app_dialogs_from_env(
+        std::env::var(fastrender::ui::native_dialogs::ENV_BROWSER_FORCE_IN_APP_DIALOGS)
+          .ok()
+          .as_deref(),
+      );
+      if force_in_app {
+        self.open_download_dir_picker_in_app();
+        self.window.request_redraw();
+      } else {
+        let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+          rfd::FileDialog::new()
+            .set_directory(&self.download_dir)
+            .pick_folder()
+        }));
+        match selection {
+          Ok(Some(path)) => {
+            if apply_download_dir_change_state(
+              &mut self.download_dir,
+              &mut self.download_dir_allowlist,
+              path,
+            ) {
+              fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+                self.download_dir.display().to_string(),
+              ));
+              let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
+                path: self.download_dir.clone(),
+              });
+              self.window.request_redraw();
+            }
+          }
+          Ok(None) => {}
+          Err(panic_payload) => {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+              (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+              s.clone()
+            } else {
+              "unknown panic".to_string()
+            };
+            eprintln!("rfd download folder picker panicked: {msg}");
+            self.show_chrome_toast_kind(
+              fastrender::ui::ToastKind::Error,
+              "Failed to open native file dialog",
+            );
+            // Best-effort fallback: allow the user to type a path.
+            self.open_download_dir_picker_in_app();
             self.window.request_redraw();
           }
-        }
-        Ok(None) => {}
-        Err(panic_payload) => {
-          let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-            (*s).to_string()
-          } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-            s.clone()
-          } else {
-            "unknown panic".to_string()
-          };
-          eprintln!("rfd download folder picker panicked: {msg}");
-          self.show_chrome_toast_kind(
-            fastrender::ui::ToastKind::Error,
-            "Failed to open native file dialog",
-          );
-        }
-      };
+        };
+      }
     }
   }
 
@@ -22430,6 +22496,114 @@ impl App {
       }
       Some(Action::Cancel) => {
         self.cancel_file_picker();
+        self.window.request_redraw();
+      }
+      None => {}
+    }
+  }
+
+  fn render_download_dir_picker(&mut self, ctx: &egui::Context) {
+    if self.open_download_dir_picker.is_none() {
+      self.open_download_dir_picker_rect = None;
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.close_download_dir_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    enum Action {
+      Choose(String),
+      Cancel,
+    }
+
+    // When the dialog first opens, force keyboard focus into it so keyboard-only workflows work
+    // without requiring an extra click.
+    let request_initial_focus = self.open_download_dir_picker_rect.is_none();
+
+    let mut open = true;
+    let popup = egui::Window::new("Change download folder")
+      .collapsible(false)
+      .resizable(false)
+      .open(&mut open)
+      .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+      .show(ctx, |ui| {
+        let Some(dialog) = self.open_download_dir_picker.as_mut() else {
+          return None;
+        };
+
+        if let Some(err) = dialog.error.as_deref().filter(|s| !s.trim().is_empty()) {
+          ui.colored_label(egui::Color32::from_rgb(220, 50, 47), err);
+          ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+        }
+
+        ui.label("Enter the directory where downloads should be saved:");
+        let resp = ui.add(
+          egui::TextEdit::singleline(&mut dialog.draft)
+            .desired_width(420.0)
+            .hint_text("Folder path"),
+        );
+        if request_initial_focus {
+          resp.request_focus();
+        }
+
+        let mut action: Option<Action> = None;
+        ui.horizontal(|ui| {
+          if ui.button("OK").clicked() {
+            action = Some(Action::Choose(dialog.draft.clone()));
+          }
+          if ui.button("Cancel").clicked() {
+            action = Some(Action::Cancel);
+          }
+        });
+
+        action
+      });
+
+    if !open {
+      self.close_download_dir_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    let Some(popup) = popup else {
+      self.open_download_dir_picker_rect = None;
+      return;
+    };
+    self.open_download_dir_picker_rect = Some(popup.response.rect);
+
+    match popup.inner {
+      Some(Action::Choose(raw)) => {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+          if let Some(dialog) = self.open_download_dir_picker.as_mut() {
+            dialog.error = Some("Download folder path cannot be empty.".to_string());
+          }
+          self.window.request_redraw();
+          return;
+        }
+
+        let new_dir = std::path::PathBuf::from(trimmed);
+        let changed = apply_download_dir_change_state(
+          &mut self.download_dir,
+          &mut self.download_dir_allowlist,
+          new_dir,
+        );
+        if changed {
+          fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+            self.download_dir.display().to_string(),
+          ));
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::SetDownloadDirectory {
+            path: self.download_dir.clone(),
+          });
+        }
+        self.close_download_dir_picker();
+        self.window.request_redraw();
+      }
+      Some(Action::Cancel) => {
+        self.close_download_dir_picker();
         self.window.request_redraw();
       }
       None => {}
@@ -23490,6 +23664,10 @@ impl App {
           self.cancel_file_picker();
           self.window.request_redraw();
         }
+        if self.open_download_dir_picker.is_some() {
+          self.close_download_dir_picker();
+          self.window.request_redraw();
+        }
         if self.open_page_export.is_some() {
           self.cancel_page_export();
           self.window.request_redraw();
@@ -23986,6 +24164,18 @@ impl App {
               if clicked_input_control {
                 return;
               }
+            }
+
+            if self.open_download_dir_picker.is_some() {
+              if self
+                .open_download_dir_picker_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              self.close_download_dir_picker();
+              self.window.request_redraw();
+              return;
             }
 
             let mut swallow_tap_for_media_toggle = false;
@@ -24505,6 +24695,18 @@ impl App {
           if clicked_input_control {
             return;
           }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_download_dir_picker.is_some() {
+          if self
+            .open_download_dir_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          self.close_download_dir_picker();
+          self.window.request_redraw();
+          return;
         }
 
         if matches!(state, ElementState::Pressed) && self.open_page_export.is_some() {
@@ -27666,59 +27868,83 @@ impl App {
       }
 
       if output.request_pick_import_file {
-        let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-          rfd::FileDialog::new()
-            .add_filter("Bookmarks JSON", &["json"])
-            .pick_file()
-        }));
-        match selection {
-          Ok(path) => {
-            if self.bookmarks_manager.apply_import_dialog_selection(path) {
-              ctx.request_repaint();
+        let force_in_app = fastrender::ui::native_dialogs::force_in_app_dialogs_from_env(
+          std::env::var(fastrender::ui::native_dialogs::ENV_BROWSER_FORCE_IN_APP_DIALOGS)
+            .ok()
+            .as_deref(),
+        );
+        if force_in_app {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Native file dialogs are disabled; enter the import path manually",
+          );
+        } else {
+          let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rfd::FileDialog::new()
+              .add_filter("Bookmarks JSON", &["json"])
+              .pick_file()
+          }));
+          match selection {
+            Ok(path) => {
+              if self.bookmarks_manager.apply_import_dialog_selection(path) {
+                ctx.request_repaint();
+              }
             }
-          }
-          Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-              (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-              s.clone()
-            } else {
-              "unknown panic".to_string()
-            };
-            eprintln!("rfd import file dialog panicked: {msg}");
-            self.show_chrome_toast_kind(
-              fastrender::ui::ToastKind::Error,
-              "Failed to open native file dialog",
-            );
+            Err(panic_payload) => {
+              let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+              } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+              } else {
+                "unknown panic".to_string()
+              };
+              eprintln!("rfd import file dialog panicked: {msg}");
+              self.show_chrome_toast_kind(
+                fastrender::ui::ToastKind::Error,
+                "Failed to open native file dialog",
+              );
+            }
           }
         }
       }
 
       if output.request_pick_export_file {
-        let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-          rfd::FileDialog::new()
-            .add_filter("Bookmarks JSON", &["json"])
-            .save_file()
-        }));
-        match selection {
-          Ok(path) => {
-            if self.bookmarks_manager.apply_export_dialog_selection(path) {
-              ctx.request_repaint();
+        let force_in_app = fastrender::ui::native_dialogs::force_in_app_dialogs_from_env(
+          std::env::var(fastrender::ui::native_dialogs::ENV_BROWSER_FORCE_IN_APP_DIALOGS)
+            .ok()
+            .as_deref(),
+        );
+        if force_in_app {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Native file dialogs are disabled; enter the export path manually",
+          );
+        } else {
+          let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rfd::FileDialog::new()
+              .add_filter("Bookmarks JSON", &["json"])
+              .save_file()
+          }));
+          match selection {
+            Ok(path) => {
+              if self.bookmarks_manager.apply_export_dialog_selection(path) {
+                ctx.request_repaint();
+              }
             }
-          }
-          Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-              (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-              s.clone()
-            } else {
-              "unknown panic".to_string()
-            };
-            eprintln!("rfd export file dialog panicked: {msg}");
-            self.show_chrome_toast_kind(
-              fastrender::ui::ToastKind::Error,
-              "Failed to open native file dialog",
-            );
+            Err(panic_payload) => {
+              let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+              } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+              } else {
+                "unknown panic".to_string()
+              };
+              eprintln!("rfd export file dialog panicked: {msg}");
+              self.show_chrome_toast_kind(
+                fastrender::ui::ToastKind::Error,
+                "Failed to open native file dialog",
+              );
+            }
           }
         }
       }
@@ -28068,6 +28294,16 @@ impl App {
               wheel_blocked_by_popup = true;
             } else {
               self.cancel_file_picker();
+            }
+          }
+          if self.open_download_dir_picker.is_some() {
+            if self
+              .open_download_dir_picker_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.close_download_dir_picker();
             }
           }
           if self.open_page_export.is_some() {
@@ -28821,6 +29057,7 @@ impl App {
     self.render_date_time_picker(&ctx);
     self.render_color_picker(&ctx);
     self.render_file_picker(&ctx);
+    self.render_download_dir_picker(&ctx);
     self.render_page_export_dialog(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
