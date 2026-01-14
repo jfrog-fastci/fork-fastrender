@@ -1014,9 +1014,13 @@ fn find_fragment_with_box_id_and_origin<'a>(
   box_id: usize,
 ) -> Option<(&'a FragmentNode, Point)> {
   let mut stack: Vec<(&'a FragmentNode, Point)> = Vec::new();
-  stack.push((&tree.root, tree.root.bounds.origin));
+  if point_is_finite(tree.root.bounds.origin) {
+    stack.push((&tree.root, tree.root.bounds.origin));
+  }
   for root in &tree.additional_fragments {
-    stack.push((root, root.bounds.origin));
+    if point_is_finite(root.bounds.origin) {
+      stack.push((root, root.bounds.origin));
+    }
   }
 
   while let Some((node, origin)) = stack.pop() {
@@ -1024,7 +1028,11 @@ fn find_fragment_with_box_id_and_origin<'a>(
       return Some((node, origin));
     }
     for child in node.children.iter().rev() {
-      let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      let Some(child_origin) =
+        checked_translate(origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
       stack.push((child, child_origin));
     }
   }
@@ -1039,21 +1047,30 @@ fn scrollport_rect_in_page(
   container: ScrollAnchorContainer,
 ) -> Option<Rect> {
   match container {
-    ScrollAnchorContainer::Viewport => Some(Rect::from_xywh(
-      scroll.viewport.x,
-      scroll.viewport.y,
-      viewport.width,
-      viewport.height,
-    )),
+    ScrollAnchorContainer::Viewport => {
+      if !viewport.width.is_finite() || !viewport.height.is_finite() {
+        return None;
+      }
+      let scroll = sanitize_point(scroll.viewport);
+      Some(Rect::from_xywh(scroll.x, scroll.y, viewport.width, viewport.height))
+    }
     ScrollAnchorContainer::Element(box_id) => {
       let (node, origin) = find_fragment_with_box_id_and_origin(tree, box_id)?;
       let style = node.style.as_deref()?;
-      Some(super::scrollport_rect_for_fragment(node, style).translate(origin))
+      let rect = super::scrollport_rect_for_fragment(node, style);
+      if !rect_is_finite(rect) || !point_is_finite(origin) {
+        return None;
+      }
+      let translated_origin = checked_translate(rect.origin, origin)?;
+      Some(Rect::new(translated_origin, rect.size))
     }
   }
 }
 
 fn anchor_selection_point(scrollport: Rect) -> Option<Point> {
+  if !rect_is_finite(scrollport) {
+    return None;
+  }
   let w = scrollport.width().max(0.0);
   let h = scrollport.height().max(0.0);
   if w <= 0.0 || h <= 0.0 {
@@ -1131,35 +1148,42 @@ fn find_fragment_rect_for_box_id_in_scrollport(
   box_id: usize,
   scrollport: Rect,
 ) -> Option<Rect> {
+  if !rect_is_finite(scrollport) {
+    return None;
+  }
   let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
-  stack.push((&tree.root, tree.root.bounds.origin));
+  if point_is_finite(tree.root.bounds.origin) {
+    stack.push((&tree.root, tree.root.bounds.origin));
+  }
   for root in &tree.additional_fragments {
-    stack.push((root, root.bounds.origin));
+    if point_is_finite(root.bounds.origin) {
+      stack.push((root, root.bounds.origin));
+    }
   }
 
   let mut best: Option<(Rect, (f32, f32))> = None;
 
   while let Some((node, origin)) = stack.pop() {
     if node.box_id() == Some(box_id) && !fragment_excludes_scroll_anchoring(node) {
-      let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
-      if rect.intersects(scrollport)
-        && rect.min_x().is_finite()
-        && rect.min_y().is_finite()
-        && rect.width().is_finite()
-        && rect.height().is_finite()
-      {
-        let key_y = rect.min_y().max(scrollport.min_y());
-        let key_x = rect.min_x().max(scrollport.min_x());
-        let key = (key_y, key_x);
-        let replace = best.map(|(_, best_key)| key < best_key).unwrap_or(true);
-        if replace {
-          best = Some((rect, key));
+      if let Some(rect) = checked_rect_for_node(origin, node) {
+        if rect.intersects(scrollport) {
+          let key_y = rect.min_y().max(scrollport.min_y());
+          let key_x = rect.min_x().max(scrollport.min_x());
+          let key = (key_y, key_x);
+          let replace = best.map(|(_, best_key)| key < best_key).unwrap_or(true);
+          if replace {
+            best = Some((rect, key));
+          }
         }
       }
     }
 
     for child in node.children.iter().rev() {
-      let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
+      let Some(child_origin) =
+        checked_translate(origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
       stack.push((child, child_origin));
     }
   }
