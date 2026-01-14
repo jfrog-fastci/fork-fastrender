@@ -44154,9 +44154,16 @@ mod tests {
       .unwrap_err();
     match err {
       VmError::Syntax(diags) => {
+        let has_engine_early_error = diags.iter().any(|d| d.code.as_str() == "VMJS0004");
+        let has_parser_error = diags.iter().any(|d| {
+          d.code.as_str() == "PS0002"
+            && d.message.contains(
+              "'arguments' is not allowed in class field initializer or static initialization block",
+            )
+        });
         assert!(
-          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-          "expected early error VMJS0004, got {diags:?}"
+          has_engine_early_error || has_parser_error,
+          "expected early error VMJS0004 or parser error PS0002 about disallowed 'arguments', got {diags:?}"
         );
         Ok(())
       }
