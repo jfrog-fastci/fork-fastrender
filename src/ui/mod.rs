@@ -361,7 +361,7 @@ pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand
 #[cfg(feature = "browser_ui")]
 pub use session::{
   BrowserSession, BrowserSessionClosedTab, BrowserSessionTab, BrowserSessionTabGroup,
-  BrowserSessionWindow, BrowserWindowState,
+  BrowserSessionWindow, BrowserWindowState, SessionLoadOutcome, SessionLoadSource,
 };
 #[cfg(feature = "browser_ui")]
 pub use session_autosave::SessionAutosave;
