@@ -105,6 +105,12 @@ pub mod multiprocess;
 pub mod shutdown_join_tracker;
 pub mod startup_notifications;
 
+// Touch gesture recogniser (tap/scroll/long-press) used by the windowed browser UI.
+//
+// Kept lightweight (no winit/egui types) so it can be unit tested without enabling the heavyweight
+// `browser_ui` feature.
+pub mod touch_gesture;
+
 // Scroll-position autosave throttling is used only by the windowed browser UI, but keep it
 // available under `cfg(test)` so the helper can be unit-tested without enabling `browser_ui`.
 #[cfg(any(test, feature = "browser_ui"))]

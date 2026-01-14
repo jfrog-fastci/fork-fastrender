@@ -11188,11 +11188,11 @@ impl InteractionEngine {
         return changed;
       }
 
-      // `<select>` typeahead: when a dropdown select is focused, typing should jump to the next
-      // matching *visible* option.
+      // `<select>` typeahead: when a (single-select) `<select>` is focused, typing should jump to
+      // the next matching *visible* option (browser-like).
       //
-      // Keep this conservative: only apply to dropdown selects (non-multiple, size=1) to avoid
-      // changing behaviour for listbox/multiple selects.
+      // Keep this conservative: only apply to single-select controls (`multiple=false`). Multi-select
+      // listboxes have more nuanced "active option" semantics; we leave them as a no-op for now.
       let query = trim_ascii_whitespace(text);
       if query.is_empty() {
         return changed;
@@ -11215,7 +11215,7 @@ impl InteractionEngine {
       if computed_disabled {
         return changed;
       }
-      if control.multiple || control.size != 1 {
+      if control.multiple {
         return changed;
       }
 
@@ -11266,6 +11266,9 @@ impl InteractionEngine {
         let pos = (start + offset) % options.len();
         let (option_node_id, _, label) = &options[pos];
         if starts_with_ignore_ascii_case(label, query) {
+          // Keep the Shift range-selection anchor consistent with other selection-affecting
+          // interactions (clicks, arrow-key navigation).
+          self.select_listbox_anchor.insert(focused, *option_node_id);
           changed |= self.activate_select_option(dom, focused, *option_node_id, false);
           break;
         }

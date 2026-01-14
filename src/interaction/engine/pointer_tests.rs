@@ -5234,6 +5234,44 @@ fn listbox_select_click_in_blank_area_is_noop() {
 }
 
 #[test]
+fn listbox_select_typeahead_selects_next_matching_option() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "s"), ("size", "2")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![text("Apple")]),
+          el("option", vec![("id", "o2")], vec![text("Banana")]),
+          el("option", vec![("id", "o3")], vec![text("Blueberry")]),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "s");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(select_dom_id), true);
+
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+
+  assert!(
+    engine.text_input(&mut dom, "b"),
+    "expected listbox <select> typeahead to change selection"
+  );
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+}
+
+#[test]
 fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others() {
   let mut dom = doc(vec![el(
     "html",

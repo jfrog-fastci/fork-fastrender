@@ -9548,7 +9548,6 @@ mod tests {
   use super::*;
 
   use crate::api::FastRender;
-  use crate::api::VmJsBrowserTabExecutor;
   use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
   use crate::js::{Clock, VirtualClock, WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
