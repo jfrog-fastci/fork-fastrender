@@ -15737,20 +15737,38 @@ impl DisplayListBuilder {
     };
 
     let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let shaped = self.shaper.shape(text, style, &self.font_ctx);
-    if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
-      breakdown.record_text_shape(start.elapsed());
-    }
-    let mut runs = match shaped {
-      Ok(r) => r,
-      Err(_) => return self.emit_naive_text(text, rect, Some(style)),
+    let mut runs_storage: Option<Vec<ShapedRun>> = None;
+    let mut runs_storage_arc: Option<Arc<Vec<ShapedRun>>> = None;
+    let runs: &[ShapedRun] = if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      let shaped = self.shaper.shape_arc(text, style, &self.font_ctx);
+      if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
+        breakdown.record_text_shape(start.elapsed());
+      }
+      match shaped {
+        Ok(runs) => {
+          runs_storage_arc = Some(runs);
+          runs_storage_arc.as_deref().unwrap()
+        }
+        Err(_) => return self.emit_naive_text(text, rect, Some(style)),
+      }
+    } else {
+      let shaped = self.shaper.shape(text, style, &self.font_ctx);
+      if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
+        breakdown.record_text_shape(start.elapsed());
+      }
+      let mut runs = match shaped {
+        Ok(r) => r,
+        Err(_) => return self.emit_naive_text(text, rect, Some(style)),
+      };
+      InlineTextItem::apply_spacing_to_runs(
+        &mut runs,
+        text,
+        style.letter_spacing,
+        style.word_spacing,
+      );
+      runs_storage = Some(runs);
+      runs_storage.as_deref().unwrap()
     };
-    InlineTextItem::apply_spacing_to_runs(
-      &mut runs,
-      text,
-      style.letter_spacing,
-      style.word_spacing,
-    );
 
     let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
     let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
@@ -15766,7 +15784,7 @@ impl DisplayListBuilder {
 
     let metrics = match &style.line_height {
       crate::style::types::LineHeight::Normal => {
-        InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size)
+        InlineTextItem::metrics_from_runs(&self.font_ctx, runs, line_height, style.font_size)
       }
       _ => InlineTextItem::metrics_from_first_available_font(
         metrics_scaled.as_ref(),
@@ -15824,7 +15842,7 @@ impl DisplayListBuilder {
       // per-run cluster offsets into offsets relative to the full string.
       let mut glyphs: Vec<crate::text::pipeline::GlyphPosition> = Vec::new();
       let mut run_glyph_starts: Vec<usize> = Vec::with_capacity(runs.len());
-      for run in &runs {
+      for run in runs {
         run_glyph_starts.push(glyphs.len());
         let run_start = run.start;
         for glyph in &run.glyphs {
@@ -15967,7 +15985,7 @@ impl DisplayListBuilder {
     }
 
     self.emit_shaped_runs(
-      &runs,
+      runs,
       style.color,
       baseline,
       start_x,
