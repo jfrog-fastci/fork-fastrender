@@ -2014,6 +2014,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
     );
     let using_mode = matches!(decl.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing);
+    if decl.mode == VarDeclMode::AwaitUsing && !ctx.await_allowed {
+      // Explicit Resource Management early error:
+      // `await using` declarations are only valid in contexts where `await` expressions are allowed
+      // (modules and async functions).
+      if let Some(first) = decl.declarators.first() {
+        self.push_error(
+          first.pattern.loc,
+          "await using declarations are only valid in async functions and modules",
+        )?;
+      }
+    }
     if using_mode && !ctx.using_allowed {
       // Explicit Resource Management early error (tc39/proposal-explicit-resource-management):
       // - In Script goal, `using` declarations are only permitted within specific syntactic containers.
