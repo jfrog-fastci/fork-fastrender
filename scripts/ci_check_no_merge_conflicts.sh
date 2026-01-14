@@ -268,3 +268,49 @@ if [[ "${scan_root}" == "." && -e vendor/ecma-rs/.git ]]; then
     exit "${ecma_rs_status}"
   fi
 fi
+
+# Guardrail: never allow duplicate `mod` declarations in `src/lib.rs`.
+#
+# This can happen during large merges (e.g. duplicated `pub mod media;`) even when no textual
+# conflict markers remain, and it breaks compilation with an opaque "module defined multiple times"
+# error.
+#
+# Only run this check when scanning the full repository (default); `--path` mode is intended for
+# arbitrary directory scans and may not include `src/lib.rs`.
+if [[ "${scan_root}" == "." && -f src/lib.rs ]]; then
+  lib_mod_dups="$(
+    awk '
+      {
+        line = $0
+        sub(/^[ \t]+/, "", line)
+        if (line ~ /^(pub(\([^)]*\))?[ \t]+)?mod[ \t]+[A-Za-z0-9_#]+[ \t]*;/) {
+          name = line
+          sub(/^(pub(\([^)]*\))?[ \t]+)?mod[ \t]+/, "", name)
+          sub(/[ \t]*;.*/, "", name)
+          sub(/^r#/, "", name)
+          counts[name]++
+          if (locs[name] == "") {
+            locs[name] = NR
+          } else {
+            locs[name] = locs[name] "," NR
+          }
+        }
+      }
+      END {
+        for (name in counts) {
+          if (counts[name] > 1) {
+            print name ":" locs[name]
+          }
+        }
+      }
+    ' src/lib.rs | sort
+  )"
+
+  if [[ -n "${lib_mod_dups}" ]]; then
+    echo "error: found duplicate module declarations in src/lib.rs:" >&2
+    echo "${lib_mod_dups}" | sed 's/^/  - /' >&2
+    echo >&2
+    echo "hint: declare each module only once in src/lib.rs (merge conflicts can accidentally duplicate `pub mod ...;`)." >&2
+    exit 1
+  fi
+fi
