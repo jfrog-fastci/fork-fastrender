@@ -4601,11 +4601,10 @@ impl Vm {
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
  
-    // The compiled (HIR) executor does not yet support generator / async-generator bodies
-    // (`yield`, `yield*`). Generator functions are normally allocated as interpreter-backed
-    // ECMAScript functions, but low-level embeddings/tests can allocate them as compiled user
-    // functions (`CallHandler::User`). Detect this case and defer body execution to the AST
-    // evaluator at call-time.
+    // The compiled (HIR) executor does not yet support **sync** generator bodies (`yield`, `yield*`).
+    // Generator functions are normally allocated as interpreter-backed ECMAScript functions, but
+    // low-level embeddings/tests can allocate them as compiled user functions (`CallHandler::User`).
+    // Detect this case and defer body execution to the AST evaluator at call-time.
     let ast_fallback_span_kind = (|| -> Result<Option<(u32, u32, EcmaFunctionKind)>, VmError> {
       let func_body = func
         .script
@@ -4620,9 +4619,8 @@ impl Vm {
         ));
       };
 
-      // Only fall back for generator (including async generator) functions. Ordinary synchronous
-      // and async (non-generator) functions remain on the compiled executor path.
-      if !func_meta.generator {
+      // Only fall back for *sync* generator functions. Async generators can execute via HIR.
+      if !func_meta.generator || func_meta.async_ {
         return Ok(None);
       }
 
@@ -4728,6 +4726,7 @@ impl Vm {
       scope,
       host,
       hooks,
+      callee,
       &mut env,
       func,
       is_strict,
@@ -4875,6 +4874,7 @@ impl Vm {
       &mut this_scope,
       host,
       hooks,
+      callee,
       &mut env,
       func,
       is_strict,

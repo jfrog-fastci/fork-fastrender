@@ -5,7 +5,7 @@ use crate::error_object::new_error;
 use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::for_in::ForInEnumerator;
 use crate::heap::{
-  AsyncGeneratorContinuation, AsyncGeneratorState, ExternalMemoryToken,
+  AsyncGeneratorContinuation, AsyncGeneratorFunc, AsyncGeneratorState, ExternalMemoryToken,
   GeneratorContinuation, GeneratorState, Trace, Tracer,
 };
 use crate::iterator;
@@ -1826,6 +1826,17 @@ impl RuntimeEnv {
     if let Some(root) = self.disposable_root.take() {
       heap.remove_root(root);
     }
+  }
+
+  /// Detaches this `RuntimeEnv`'s persistent roots without mutating the heap root set.
+  ///
+  /// This is used when an environment is copied into a **GC-owned** continuation (generator/async
+  /// generator objects). In that case, the environment record and disposable-scope stack will be
+  /// traced via the GC heap, so persistent roots would be redundant and could keep state alive
+  /// after the generator is collected.
+  pub(crate) fn detach_lexical_root(&mut self) {
+    self.lexical_root = None;
+    self.disposable_root = None;
   }
 
   pub(crate) fn set_lexical_env(&mut self, heap: &mut Heap, env: GcEnv) {
@@ -17483,6 +17494,10 @@ pub(crate) enum AsyncFrame {
   HirAsync {
     state: crate::hir_exec::HirAsyncState,
   },
+  /// Root frame for compiled (HIR) async generator execution.
+  HirAsyncGenerator {
+    state: crate::hir_exec::HirAsyncGeneratorState,
+  },
   /// Converts the internal optional-chaining sentinel value to `undefined`.
   ///
   /// This frame is injected by `async_eval_expr` so the async evaluator can propagate optional-chain
@@ -19405,6 +19420,7 @@ impl RootedCompletion {
 fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
   match frame {
     AsyncFrame::HirAsync { state } => state.teardown(heap),
+    AsyncFrame::HirAsyncGenerator { state } => state.teardown(heap),
     AsyncFrame::DisposeScopeContinue {
       scope_root, pending, ..
     } => {
@@ -20633,46 +20649,85 @@ fn async_generator_start(
   let this = cont.this;
   let new_target = cont.new_target;
   let home_object = cont.home_object;
-  let func = cont.func.clone();
-  let args: &[Value] = &cont.args;
 
-  let mut evaluator = Evaluator {
-    vm,
-    host,
-    hooks,
-    env: &mut cont.env,
-    // Async generator request/queue processing expects iterator-close errors to override incoming
-    // throw completions, so do not apply `AsyncIteratorClose` suppression rules.
-    suppress_async_iterator_close_errors_on_throw: false,
-    strict: cont.strict,
-    is_async_generator: true,
-    this,
-    new_target,
-    home_object,
-    class_constructor: None,
-    derived_constructor: false,
-    this_initialized: true,
-    this_root_idx: None,
-  };
+  match &cont.func {
+    AsyncGeneratorFunc::Ast(func) => {
+      let mut evaluator = Evaluator {
+        vm,
+        host,
+        hooks,
+        env: &mut cont.env,
+        // Async generator request/queue processing expects iterator-close errors to override incoming
+        // throw completions, so do not apply `AsyncIteratorClose` suppression rules.
+        suppress_async_iterator_close_errors_on_throw: false,
+        strict: cont.strict,
+        is_async_generator: true,
+        this,
+        new_target,
+        home_object,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
 
-  if let Err(err) = evaluator.instantiate_function(scope, func.as_ref(), args) {
-    let err = coerce_error_to_throw_for_async(vm, scope, err);
-    match err {
-      VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
-        return Ok((AsyncBodyResult::CompleteThrow(reason), cont))
-      }
-      other => return Err(other),
+      // Note: parameter instantiation has already happened at call-time (per `run_ecma_function`),
+      // so we can execute the body immediately.
+      let result = async_start_body(&mut evaluator, scope, func)?;
+      // Persist strictness and `this`/`new.target`/`home_object` overrides across suspensions.
+      cont.strict = evaluator.strict;
+      cont.this = evaluator.this;
+      cont.new_target = evaluator.new_target;
+      cont.home_object = evaluator.home_object;
+
+      Ok((result, cont))
+    }
+
+    AsyncGeneratorFunc::Hir(func_ref) => {
+      // Note: parameter instantiation has already happened at call-time (per `run_compiled_function`),
+      // so this start executes the body immediately.
+      let mut state =
+        crate::hir_exec::HirAsyncGeneratorState::new(func_ref.script.clone(), func_ref.body)?;
+      let result = state.start(
+        vm,
+        scope,
+        host,
+        hooks,
+        &mut cont.env,
+        cont.strict,
+        cont.this,
+        cont.new_target,
+        cont.home_object,
+      );
+      let result: Result<AsyncBodyResult, VmError> = match result {
+        Ok(crate::hir_exec::HirAsyncResult::Await { kind, await_value }) => {
+          let mut frames: VecDeque<AsyncFrame> = VecDeque::new();
+          frames
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          frames.push_back(AsyncFrame::HirAsyncGenerator { state });
+          Ok(AsyncBodyResult::Await {
+            kind,
+            await_value,
+            frames,
+          })
+        }
+        Ok(crate::hir_exec::HirAsyncResult::CompleteOk(v)) => {
+          state.teardown(scope.heap_mut());
+          Ok(AsyncBodyResult::CompleteOk(v))
+        }
+        Ok(crate::hir_exec::HirAsyncResult::CompleteThrow(reason)) => {
+          state.teardown(scope.heap_mut());
+          Ok(AsyncBodyResult::CompleteThrow(reason))
+        }
+        Err(err) => {
+          state.teardown(scope.heap_mut());
+          Err(err)
+        }
+      };
+      Ok((result?, cont))
     }
   }
-
-  let result = async_start_body(&mut evaluator, scope, &func)?;
-  // Persist strictness and `this`/`new.target`/`home_object` overrides across suspensions.
-  cont.strict = evaluator.strict;
-  cont.this = evaluator.this;
-  cont.new_target = evaluator.new_target;
-  cont.home_object = evaluator.home_object;
-
-  Ok((result, cont))
 }
 
 fn async_generator_handle_execution_result(
@@ -22012,8 +22067,14 @@ fn source_offset_for_async_frames_best_effort(
   // HIR async execution can suspend without AST node pointers in its frame stack. In that case, use
   // the compiled source and the statement offset tracked by the HIR async state machine.
   for frame in frames {
-    if let AsyncFrame::HirAsync { state } = frame {
-      return (state.script_source(), state.await_stmt_offset());
+    match frame {
+      AsyncFrame::HirAsync { state } => {
+        return (state.script_source(), state.await_stmt_offset());
+      }
+      AsyncFrame::HirAsyncGenerator { state } => {
+        return (state.script_source(), state.suspend_stmt_offset());
+      }
+      _ => {}
     }
   }
 
@@ -34828,6 +34889,79 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "hir async frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::HirAsyncGenerator {
+        state: mut hir_state,
+      } => match state {
+        AsyncState::Expr(resume_res) => {
+          let res = hir_state.resume(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            evaluator.env,
+            evaluator.strict,
+            evaluator.this,
+            evaluator.new_target,
+            evaluator.home_object,
+            resume_res,
+          );
+          match res {
+            Ok(crate::hir_exec::HirAsyncResult::Await { kind, await_value }) => {
+              if frames.try_reserve(1).is_err() {
+                hir_state.teardown(scope.heap_mut());
+                return Err(VmError::OutOfMemory);
+              }
+              frames.push_front(AsyncFrame::HirAsyncGenerator { state: hir_state });
+              let frames_out = mem::take(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                kind,
+                await_value,
+                frames: frames_out,
+              });
+            }
+            Ok(crate::hir_exec::HirAsyncResult::CompleteOk(v)) => {
+              hir_state.teardown(scope.heap_mut());
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteOk(v));
+              }
+              state = AsyncState::Completion(Completion::Normal(Some(v)));
+            }
+            Ok(crate::hir_exec::HirAsyncResult::CompleteThrow(reason)) => {
+              hir_state.teardown(scope.heap_mut());
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(reason));
+              }
+              let stack = evaluator.vm.capture_stack();
+              state = AsyncState::Completion(Completion::Throw(Thrown { value: reason, stack }));
+            }
+            Err(VmError::Throw(value)) => {
+              hir_state.teardown(scope.heap_mut());
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(value));
+              }
+              let stack = evaluator.vm.capture_stack();
+              state = AsyncState::Completion(Completion::Throw(Thrown { value, stack }));
+            }
+            Err(VmError::ThrowWithStack { value, stack }) => {
+              hir_state.teardown(scope.heap_mut());
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(value));
+              }
+              state = AsyncState::Completion(Completion::Throw(Thrown { value, stack }));
+            }
+            Err(err) => {
+              hir_state.teardown(scope.heap_mut());
+              return Err(err);
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "hir async generator frame received completion state",
           ))
         }
       },
@@ -58199,8 +58333,7 @@ pub(crate) fn run_ecma_function(
     // The generator continuation is GC-owned by the generator object, so it must not keep
     // persistent env roots alive across yields.
     let mut gen_env = env.clone();
-    gen_env.lexical_root = None;
-    gen_env.disposable_root = None;
+    gen_env.detach_lexical_root();
 
     if func.stx.async_ {
       let cont = AsyncGeneratorContinuation {
@@ -58209,7 +58342,7 @@ pub(crate) fn run_ecma_function(
         this,
         new_target,
         home_object,
-        func: func.clone(),
+        func: AsyncGeneratorFunc::Ast(func.clone()),
         args: boxed_args.into_boxed_slice(),
       };
 

@@ -1,4 +1,7 @@
-use crate::heap::{AsyncGeneratorRequest, AsyncGeneratorRequestKind, AsyncGeneratorState, Trace, Tracer};
+use crate::heap::{
+  AsyncGeneratorFunc, AsyncGeneratorRequest, AsyncGeneratorRequestKind, AsyncGeneratorState, Trace,
+  Tracer,
+};
 use crate::iterator;
 use crate::property::PropertyKey;
 use crate::{GcObject, Job, JobKind, PromiseCapability, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
@@ -439,6 +442,45 @@ fn pat_has_default_value(pat: &parse_js::ast::expr::pat::Pat) -> bool {
   }
 }
 
+fn hir_pat_has_default_value(body: &hir_js::Body, pat_id: hir_js::PatId) -> Result<bool, VmError> {
+  let idx = usize::try_from(pat_id.0).map_err(|_| VmError::OutOfMemory)?;
+  let pat = body.pats.get(idx).ok_or(VmError::InvariantViolation(
+    "hir pattern id missing from body",
+  ))?;
+  match &pat.kind {
+    hir_js::PatKind::Ident(_) => Ok(false),
+    hir_js::PatKind::Assign { .. } => Ok(true),
+    hir_js::PatKind::AssignTarget(_) => Ok(false),
+    hir_js::PatKind::Rest(inner) => hir_pat_has_default_value(body, **inner),
+    hir_js::PatKind::Array(arr) => {
+      for elem in arr.elements.iter().flatten() {
+        if elem.default_value.is_some() || hir_pat_has_default_value(body, elem.pat)? {
+          return Ok(true);
+        }
+      }
+      if let Some(rest) = arr.rest {
+        if hir_pat_has_default_value(body, rest)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+    hir_js::PatKind::Object(obj) => {
+      for prop in &obj.props {
+        if prop.default_value.is_some() || hir_pat_has_default_value(body, prop.value)? {
+          return Ok(true);
+        }
+      }
+      if let Some(rest) = obj.rest {
+        if hir_pat_has_default_value(body, rest)? {
+          return Ok(true);
+        }
+      }
+      Ok(false)
+    }
+  }
+}
+
 fn async_generator_needs_deferred_start(
   scope: &Scope<'_>,
   generator: GcObject,
@@ -450,9 +492,28 @@ fn async_generator_needs_deferred_start(
   // Defer start when parameter binding would evaluate default initializers. This matches the
   // observable test expectation that default parameter expressions are evaluated only once a
   // microtask checkpoint runs.
-  for param in &cont.func.stx.parameters {
-    if param.stx.default_value.is_some() || pat_has_default_value(&param.stx.pattern.stx.pat.stx) {
-      return Ok(Some(cont.env.global_object()));
+  match &cont.func {
+    AsyncGeneratorFunc::Ast(func) => {
+      for param in &func.stx.parameters {
+        if param.stx.default_value.is_some() || pat_has_default_value(&param.stx.pattern.stx.pat.stx) {
+          return Ok(Some(cont.env.global_object()));
+        }
+      }
+    }
+    AsyncGeneratorFunc::Hir(func_ref) => {
+      let body = func_ref
+        .script
+        .hir
+        .body(func_ref.body)
+        .ok_or(VmError::InvariantViolation("compiled function body not found"))?;
+      let Some(func_meta) = body.function.as_ref() else {
+        return Err(VmError::InvariantViolation("function body missing metadata"));
+      };
+      for param in &func_meta.params {
+        if param.default.is_some() || hir_pat_has_default_value(body, param.pat)? {
+          return Ok(Some(cont.env.global_object()));
+        }
+      }
     }
   }
 

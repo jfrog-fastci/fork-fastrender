@@ -13330,8 +13330,14 @@ pub(crate) struct AsyncGeneratorContinuation {
   pub(crate) this: Value,
   pub(crate) new_target: Value,
   pub(crate) home_object: Option<GcObject>,
-  pub(crate) func: Arc<Node<Func>>,
+  pub(crate) func: AsyncGeneratorFunc,
   pub(crate) args: Box<[Value]>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AsyncGeneratorFunc {
+  Ast(Arc<Node<Func>>),
+  Hir(CompiledFunctionRef),
 }
 
 impl AsyncGeneratorContinuation {

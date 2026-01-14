@@ -60,9 +60,11 @@ pub struct CompiledScript {
   /// program.
   ///
   /// Notes:
-  /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor, but
-  ///   generator functions are allocated as interpreter-backed ECMAScript functions so their bodies
-  ///   execute via the AST evaluator at call-time.
+  /// - **Sync** generator bodies (`yield` / `yield*`) are not supported in the compiled executor;
+  ///   sync generator functions are allocated as interpreter-backed ECMAScript functions so their
+  ///   bodies execute via the AST evaluator at call-time.
+  /// - Async generator bodies are supported by a conservative compiled executor for a limited
+  ///   subset of `yield` patterns; unsupported async generators fall back at allocation time.
   /// - Private-name syntax (`#x`, `#m`, ...) is not supported in the compiled executor.
   /// - Async (non-generator) function bodies execute via the compiled async executor when
   ///   supported, falling back to the AST interpreter at call-time for unsupported `await`

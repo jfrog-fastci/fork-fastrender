@@ -4,6 +4,7 @@ use crate::exec::{
   perform_direct_eval_with_host_and_hooks, AsyncContinuation, ModuleTlaStepResult, ResolvedBinding,
   RuntimeEnv, VarEnv,
 };
+use crate::fallible_alloc::box_try_new_vm;
 use crate::fallible_format;
 use crate::function::FunctionData;
 use crate::function::ThisMode;
@@ -135,6 +136,7 @@ fn compiled_constructor_body_construct(
       &mut scope,
       host,
       hooks,
+      body_func,
       &mut env,
       func_ref,
       is_strict,
@@ -183,6 +185,7 @@ fn compiled_constructor_body_construct(
       &mut scope,
       host,
       hooks,
+      body_func,
       &mut env,
       func_ref,
       is_strict,
@@ -2558,6 +2561,106 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(true)
   }
 
+  /// Returns `true` if this async generator body can execute via the compiled async-generator
+  /// executor without falling back to the AST interpreter.
+  ///
+  /// Currently supported subset:
+  /// - no `await` expressions and no `for await..of`
+  /// - no `yield*`
+  /// - `yield` may only appear as a top-level expression statement (`yield <expr>;`)
+  fn async_generator_body_is_hir_supported(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body_id: hir_js::BodyId,
+  ) -> Result<bool, VmError> {
+    let body = script
+      .hir
+      .body(body_id)
+      .ok_or(VmError::InvariantViolation(
+        "hir body id missing from compiled script",
+      ))?;
+    let Some(func_meta) = body.function.as_ref() else {
+      return Err(VmError::InvariantViolation("function body missing function metadata"));
+    };
+
+    debug_assert!(func_meta.async_);
+    debug_assert!(func_meta.generator);
+
+    let hir_js::FunctionBody::Block(stmts) = &func_meta.body else {
+      return Ok(false);
+    };
+
+    // Collect yield expressions that are allowed (direct expression statements at the top level).
+    let mut allowed_yields: HashSet<hir_js::ExprId> = HashSet::new();
+    const STMT_TICK_EVERY: usize = 32;
+    for (i, stmt_id) in stmts.iter().enumerate() {
+      if i % STMT_TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Expr(expr_id) = stmt.kind else {
+        continue;
+      };
+      let expr = self.get_expr(body, expr_id)?;
+      if matches!(
+        expr.kind,
+        hir_js::ExprKind::Yield {
+          delegate: false, ..
+        }
+      ) {
+        allowed_yields.insert(expr_id);
+      }
+    }
+
+    // Reject any `for await..of` loops (including nested ones).
+    const LOOP_TICK_EVERY: usize = 64;
+    for (i, stmt) in body.stmts.iter().enumerate() {
+      if i % LOOP_TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      if let hir_js::StmtKind::ForIn {
+        is_for_of: true,
+        await_: true,
+        ..
+      } = &stmt.kind
+      {
+        return Ok(false);
+      }
+      if let hir_js::StmtKind::Var(var_decl) = &stmt.kind {
+        if matches!(
+          var_decl.kind,
+          hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+        ) {
+          return Ok(false);
+        }
+      }
+    }
+
+    // Reject any `await` expressions or unsupported `yield` forms (nested yield, yield*).
+    const EXPR_TICK_EVERY: usize = 128;
+    for (i, expr) in body.exprs.iter().enumerate() {
+      if i % EXPR_TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+      match &expr.kind {
+        hir_js::ExprKind::Await { .. } => return Ok(false),
+        hir_js::ExprKind::Yield { delegate, .. } => {
+          if *delegate {
+            return Ok(false);
+          }
+          let id_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+          let expr_id = hir_js::ExprId(id_u32);
+          if !allowed_yields.contains(&expr_id) {
+            return Ok(false);
+          }
+        }
+        _ => {}
+      }
+    }
+
+    Ok(true)
+  }
+
   fn super_base_value(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
     let Some(home_object) = self.home_object else {
       return Err(VmError::InvariantViolation(
@@ -3462,6 +3565,16 @@ impl<'vm> HirEvaluator<'vm> {
       None
     };
 
+    // Decide whether this async generator body is supported by the compiled executor.
+    //
+    // Async generators that are not yet supported are allocated as interpreter-backed functions so
+    // we never partially execute HIR before discovering an unsupported `yield`/`await` form.
+    let async_generator_is_hir_supported = if is_async_generator {
+      self.async_generator_body_is_hir_supported(&script, body_id)?
+    } else {
+      false
+    };
+
     // Root inputs across string allocation + function allocation in case either triggers GC.
     let mut scope = scope.reborrow();
     let outer_env = self.env.lexical_env();
@@ -3498,10 +3611,11 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    // The compiled (HIR) executor does not yet support generator / async-generator bodies
-    // (`yield`, `yield*`). Allocate generator functions as interpreter-backed ECMAScript functions
-    // so calling them can still execute via the AST interpreter.
-    let (func_obj, async_ast_fallback) = if is_generator {
+    // The compiled (HIR) executor does not yet support **sync** generator bodies (`yield`, `yield*`).
+    //
+    // Async generators execute via a conservative compiled executor when supported; unsupported
+    // bodies fall back to the AST interpreter at allocation time.
+    let (func_obj, async_ast_fallback) = if is_generator && !async_generator_is_hir_supported {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
         def_span.start,
@@ -24460,6 +24574,248 @@ impl HirAsyncState {
   }
 }
 
+/// Continuation state for compiled (HIR) async generator bodies.
+///
+/// This is intentionally conservative: it currently supports only top-level `yield <expr>;`
+/// expression statements (no `yield*`, no nested `yield`, and no `await`).
+///
+/// Unsupported async generator bodies should be allocated as interpreter-backed functions (see
+/// `HirEvaluator::async_generator_body_is_hir_supported`) to avoid partial execution before falling
+/// back.
+#[derive(Debug)]
+pub(crate) struct HirAsyncGeneratorState {
+  script: Arc<CompiledScript>,
+  body_id: hir_js::BodyId,
+  /// Best-effort source offset for the most recent suspension/statement.
+  suspend_stmt_offset: u32,
+  stmts: Box<[hir_js::StmtId]>,
+  next_stmt_index: usize,
+}
+
+impl HirAsyncGeneratorState {
+  pub(crate) fn script_source(&self) -> Arc<crate::SourceText> {
+    self.script.source.clone()
+  }
+
+  pub(crate) fn suspend_stmt_offset(&self) -> u32 {
+    self.suspend_stmt_offset
+  }
+
+  pub(crate) fn new(script: Arc<CompiledScript>, body_id: hir_js::BodyId) -> Result<Self, VmError> {
+    let body = script
+      .hir
+      .body(body_id)
+      .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+    if body.kind != hir_js::BodyKind::Function {
+      return Err(VmError::InvariantViolation(
+        "compiled async generator body is not a function body",
+      ));
+    }
+    let Some(func_meta) = body.function.as_ref() else {
+      return Err(VmError::InvariantViolation("function body missing metadata"));
+    };
+    if !func_meta.async_ || !func_meta.generator {
+      return Err(VmError::InvariantViolation(
+        "compiled async generator state constructed for non-async-generator body",
+      ));
+    }
+
+    let hir_js::FunctionBody::Block(stmts) = &func_meta.body else {
+      return Err(VmError::InvariantViolation(
+        "async generator body is not a block body",
+      ));
+    };
+    let mut cloned: Vec<hir_js::StmtId> = Vec::new();
+    cloned
+      .try_reserve_exact(stmts.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    cloned.extend_from_slice(stmts);
+
+    Ok(Self {
+      script,
+      body_id,
+      suspend_stmt_offset: 0,
+      stmts: cloned.into_boxed_slice(),
+      next_stmt_index: 0,
+    })
+  }
+
+  pub(crate) fn teardown(&mut self, _heap: &mut crate::Heap) {
+    // Currently no persistent roots.
+  }
+
+  pub(crate) fn start(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    env: &mut RuntimeEnv,
+    strict: bool,
+    this: Value,
+    new_target: Value,
+    home_object: Option<GcObject>,
+  ) -> Result<HirAsyncResult, VmError> {
+    let mut evaluator = HirEvaluator {
+      vm,
+      host,
+      hooks,
+      env,
+      strict,
+      this,
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target,
+      home_object,
+      script: self.script.clone(),
+    };
+    self.drive(&mut evaluator, scope, None)
+  }
+
+  pub(crate) fn resume(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    env: &mut RuntimeEnv,
+    strict: bool,
+    this: Value,
+    new_target: Value,
+    home_object: Option<GcObject>,
+    resume_value: Result<Value, VmError>,
+  ) -> Result<HirAsyncResult, VmError> {
+    let mut evaluator = HirEvaluator {
+      vm,
+      host,
+      hooks,
+      env,
+      strict,
+      this,
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target,
+      home_object,
+      script: self.script.clone(),
+    };
+    self.drive(&mut evaluator, scope, Some(resume_value))
+  }
+
+  fn drive(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    mut resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<HirAsyncResult, VmError> {
+    // Handle resume input from:
+    // - consumer `.next(x)` (Ok(x)),
+    // - consumer `.throw(reason)` (Throw),
+    // - consumer `.return(v)` (Return), or
+    // - yield-operand rejection (Throw).
+    if let Some(resume) = resume_value.take() {
+      match resume {
+        Ok(_) => {}
+        Err(VmError::Return(v)) => return Ok(HirAsyncResult::CompleteOk(v)),
+        Err(VmError::Throw(reason)) | Err(VmError::ThrowWithStack { value: reason, .. }) => {
+          return Ok(HirAsyncResult::CompleteThrow(reason))
+        }
+        Err(err) => return Err(err),
+      }
+    }
+
+    let body = self
+      .script
+      .hir
+      .body(self.body_id)
+      .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+
+    loop {
+      if self.next_stmt_index >= self.stmts.len() {
+        return Ok(HirAsyncResult::CompleteOk(Value::Undefined));
+      }
+
+      evaluator.vm.tick()?;
+      let stmt_id = self.stmts[self.next_stmt_index];
+      let stmt = evaluator.get_stmt(body, stmt_id)?;
+      let stmt_offset = stmt.span.start;
+      self.suspend_stmt_offset = stmt_offset;
+
+      // Intercept top-level `yield` expression statements.
+      if let hir_js::StmtKind::Expr(expr_id) = stmt.kind {
+        let expr = evaluator.get_expr(body, expr_id)?;
+        if let hir_js::ExprKind::Yield {
+          expr: yield_operand,
+          delegate: false,
+        } = expr.kind
+        {
+          let await_value = match yield_operand {
+            Some(operand_id) => match evaluator.eval_expr(scope, body, operand_id) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                return match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => Err(other),
+                };
+              }
+            },
+            None => Value::Undefined,
+          };
+
+          self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Yield,
+            await_value,
+          });
+        }
+      }
+
+      // Evaluate other statements synchronously.
+      let stmt_result = evaluator.eval_stmt(scope, body, stmt_id);
+      match stmt_result {
+        Ok(flow) => match flow {
+          Flow::Normal(_) => {
+            self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+          }
+          Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+          Flow::Break(..) | Flow::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "async generator body produced break/continue completion",
+            ))
+          }
+        },
+        Err(err) => {
+          let err = finalize_throw_with_stack_at_source_offset(
+            &*evaluator.vm,
+            scope,
+            evaluator.script.source.as_ref(),
+            stmt_offset,
+            err,
+          );
+          return match err {
+            VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+              Ok(HirAsyncResult::CompleteThrow(value))
+            }
+            other => Err(other),
+          };
+        }
+      }
+    }
+  }
+}
+
 fn run_compiled_async_function(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -24740,6 +25096,7 @@ pub(crate) fn run_compiled_function(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   env: &mut RuntimeEnv,
   func: CompiledFunctionRef,
   strict: bool,
@@ -24766,11 +25123,91 @@ pub(crate) fn run_compiled_function(
     return Err(VmError::InvariantViolation("function body missing metadata"));
   };
   if func_meta.generator {
-    return Err(VmError::Unimplemented(if func_meta.async_ {
-      "async generator functions"
-    } else {
-      "generator functions"
-    }));
+    if !func_meta.async_ {
+      return Err(VmError::Unimplemented("generator functions"));
+    }
+
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // Root `callee`, `this`, `new_target`, and arguments while we allocate the generator
+    // object/continuation in case allocation triggers a GC.
+    let mut init_scope = scope.reborrow();
+    init_scope.push_root(Value::Object(callee))?;
+    init_scope.push_root(this)?;
+    init_scope.push_root(new_target)?;
+    init_scope.push_roots(args)?;
+
+    // `OrdinaryCreateFromConstructor(F, "%AsyncGeneratorPrototype%")` (ECMA-262): async generator
+    // instances use `F.prototype` when it is an object, otherwise fall back to
+    // `%AsyncGeneratorPrototype%`.
+    let proto_key_s = init_scope.alloc_string("prototype")?;
+    init_scope.push_root(Value::String(proto_key_s))?;
+    let proto_key = PropertyKey::from_string(proto_key_s);
+    let proto_value = init_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      callee,
+      proto_key,
+      Value::Object(callee),
+    )?;
+    init_scope.push_root(proto_value)?;
+    let proto_obj = match proto_value {
+      Value::Object(o) => o,
+      _ => intr.async_generator_prototype(),
+    };
+
+    // Per ECMA-262, async generator calls must perform parameter instantiation eagerly.
+    {
+      let mut evaluator = HirEvaluator {
+        vm,
+        host,
+        hooks,
+        env,
+        strict,
+        this,
+        this_initialized,
+        class_constructor,
+        derived_constructor,
+        this_root_idx,
+        new_target,
+        home_object,
+        script: func.script.clone(),
+      };
+      evaluator.instantiate_function_body(&mut init_scope, body, args)?;
+    }
+
+    let mut boxed_args: Vec<Value> = Vec::new();
+    boxed_args
+      .try_reserve_exact(args.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    boxed_args.extend_from_slice(args);
+
+    // The generator continuation is GC-owned by the generator object, so it must not keep
+    // persistent env roots alive across yields.
+    let mut gen_env = env.clone();
+    gen_env.detach_lexical_root();
+
+    let cont = crate::heap::AsyncGeneratorContinuation {
+      env: gen_env,
+      strict,
+      this,
+      new_target,
+      home_object,
+      func: crate::heap::AsyncGeneratorFunc::Hir(func.clone()),
+      args: boxed_args.into_boxed_slice(),
+    };
+
+    let gen_obj = init_scope.alloc_async_generator_with_prototype(
+      Some(proto_obj),
+      crate::heap::AsyncGeneratorState::SuspendedStart,
+      Some(box_try_new_vm(cont)?),
+      VecDeque::new(),
+    )?;
+
+    return Ok(Value::Object(gen_obj));
   }
 
   // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
@@ -32930,6 +33367,7 @@ mod hir_async_await_stack_tests {
 
   fn run_hir_async_function_direct(
     rt: &mut JsRuntime,
+    callee: crate::GcObject,
     func_ref: crate::CompiledFunctionRef,
     is_strict: bool,
     outer: Option<crate::GcEnv>,
@@ -32957,6 +33395,7 @@ mod hir_async_await_stack_tests {
         &mut scope,
         &mut host,
         &mut hooks,
+        callee,
         &mut env,
         func_ref,
         is_strict,
@@ -33000,7 +33439,7 @@ mod hir_async_await_stack_tests {
       (func_ref, f.is_strict, f.closure_env)
     };
 
-    let promise = run_hir_async_function_direct(&mut rt, func_ref, is_strict, outer)?;
+    let promise = run_hir_async_function_direct(&mut rt, func_obj, func_ref, is_strict, outer)?;
     let promise_root = rt.heap.add_root(promise)?;
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
@@ -33082,7 +33521,7 @@ mod hir_async_await_stack_tests {
       (func_ref, f.is_strict, f.closure_env)
     };
 
-    let promise = run_hir_async_function_direct(&mut rt, func_ref, is_strict, outer)?;
+    let promise = run_hir_async_function_direct(&mut rt, func_obj, func_ref, is_strict, outer)?;
     let promise_root = rt.heap.add_root(promise)?;
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
