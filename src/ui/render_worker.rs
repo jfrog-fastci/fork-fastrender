@@ -884,6 +884,12 @@ struct TabState {
   /// This is used to optionally apply a small paint-time deadline for scroll-triggered repaints so
   /// the worker can bail out quickly under heavy pages.
   next_paint_is_scroll: bool,
+  /// Consecutive cancelled/timed-out scroll-triggered paint attempts.
+  ///
+  /// When scroll paint deadlines are enabled, this is used to apply a small repaint backoff after
+  /// repeated cancellations so the worker does not busy-loop under extremely slow paints while
+  /// scroll input continues to arrive.
+  scroll_paint_cancel_streak: u32,
   /// True when the next paint was triggered by a tick message and we should coalesce any
   /// immediately-following tick events before rendering.
   tick_coalesce: bool,
@@ -968,6 +974,7 @@ impl TabState {
       last_painted_scroll_state: None,
       scroll_coalesce: false,
       next_paint_is_scroll: false,
+      scroll_paint_cancel_streak: 0,
       tick_coalesce: false,
       hit_test_fragment_tree_cache: None,
       document: None,
@@ -2820,8 +2827,9 @@ fn env_u64_ms(var: &str) -> Option<u64> {
 }
 
 fn scroll_paint_deadline_from_env() -> Option<Duration> {
-  // Prefer the new name, but keep the legacy var as an alias.
-  env_u64_ms("FASTR_SCROLL_PAINT_DEADLINE_MS")
+  // Prefer the worker-specific name, but keep older names as aliases.
+  env_u64_ms("FASTR_WORKER_SCROLL_PAINT_DEADLINE_MS")
+    .or_else(|| env_u64_ms("FASTR_SCROLL_PAINT_DEADLINE_MS"))
     .or_else(|| env_u64_ms("FASTR_SCROLL_PAINT_BUDGET_MS"))
     .map(Duration::from_millis)
 }
@@ -2834,6 +2842,17 @@ fn scroll_paint_backoff_from_env(deadline: Option<Duration>) -> Duration {
   } else {
     Duration::ZERO
   }
+}
+
+fn scroll_paint_cancel_backoff_duration(deadline: Duration, cancel_streak: u32) -> Duration {
+  // Keep this bounded and small: the worker should remain responsive to other input even when this
+  // optional scroll deadline safeguard is enabled.
+  let max = deadline.min(Duration::from_millis(16));
+
+  // Exponential backoff: 1ms, 2ms, 4ms, 8ms, 16ms (capped).
+  let shift = cancel_streak.saturating_sub(1).min(4) as u32;
+  let ms = 1u64 << shift;
+  Duration::from_millis(ms).min(max)
 }
 
 struct ActiveDownload {
@@ -12918,6 +12937,9 @@ impl BrowserRuntime {
       return None;
     }
     let prev_viewport_scroll = tab.scroll_state.viewport;
+    if !is_scroll {
+      tab.scroll_paint_cancel_streak = 0;
+    }
 
     // Scroll blit fallback diagnostics.
     //
@@ -13059,18 +13081,37 @@ impl BrowserRuntime {
       if is_scroll {
         tab.next_paint_is_scroll = true;
       }
-      if scroll_deadline_timed_out {
-        tab.repaint_after = Some(Instant::now() + self.scroll_paint_backoff);
-        if tab.scroll_state != tab.last_reported_scroll_state {
-          msgs.push(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          });
+
+      if scroll_deadline.is_some() {
+        tab.scroll_paint_cancel_streak = tab.scroll_paint_cancel_streak.saturating_add(1);
+        let streak = tab.scroll_paint_cancel_streak;
+
+        let now = Instant::now();
+        if scroll_deadline_timed_out {
+          tab.repaint_after = Some(now + self.scroll_paint_backoff);
+          if tab.scroll_state != tab.last_reported_scroll_state {
+            msgs.push(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            });
+          }
+        } else if streak >= 2 {
+          // Avoid spinning in a tight loop when scroll paints are repeatedly cancelled (typically
+          // due to rapidly arriving scroll input) while a scroll deadline is enabled.
+          if let Some(deadline) = self.scroll_paint_deadline {
+            let backoff = scroll_paint_cancel_backoff_duration(deadline, streak);
+            if !backoff.is_zero() {
+              tab.repaint_after = Some(now + backoff);
+            }
+          }
         }
       }
     }
 
     let did_paint = painted.is_some();
+    if did_paint || !should_retry {
+      tab.scroll_paint_cancel_streak = 0;
+    }
     let mut viewport_scrolled = false;
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
