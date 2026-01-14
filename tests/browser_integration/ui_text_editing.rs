@@ -1815,7 +1815,7 @@ fn textarea_shift_arrow_up_down_extends_selection_and_typing_replaces_it() -> Re
   };
 
   assert!(
-    chars_per_visual_line.saturating_mul(2) <= initial_len,
+    chars_per_visual_line.saturating_mul(2) < initial_len,
     "expected initial textarea value to span at least 3 visual lines; got chars_per_visual_line={chars_per_visual_line}, initial_len={initial_len}",
   );
 
