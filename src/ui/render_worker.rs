@@ -11993,6 +11993,15 @@ struct BrowserRuntime {
           );
         }
       }
+
+      if tab.scroll_state != tab.last_reported_scroll_state {
+        Self::emit_scroll_state_updated(
+          &self.ui_tx,
+          tab_id,
+          &tab.scroll_state,
+          &mut tab.last_reported_scroll_state,
+        );
+      }
     }
 
     if let Some((href, file_name)) = download_to_start {

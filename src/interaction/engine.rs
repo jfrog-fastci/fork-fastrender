@@ -2321,6 +2321,25 @@ mod tests {
   }
 
   #[test]
+  fn word_backspace_at_word_start_deletes_previous_word_and_whitespace() {
+    let value = "hello world";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place caret at the start of "world" (after the separating space).
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 6);
+    assert!(engine.key_action(&mut dom, KeyAction::WordBackspace));
+    assert_eq!(input_value(&mut dom, input_id), "world");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
   fn word_left_skips_combining_mark_sequence() {
     let value = "a\u{0301}b";
     let mut dom = crate::dom::parse_html(&format!(
@@ -4617,12 +4636,27 @@ fn word_right_char_idx(word_chars: &[bool], caret: usize) -> usize {
 }
 
 fn word_backspace_range(word_chars: &[bool], caret: usize) -> Option<(usize, usize)> {
-  let caret = caret.min(word_chars.len());
+  let len = word_chars.len();
+  let caret = caret.min(len);
   if caret == 0 {
     return None;
   }
+
+  // Match typical browser Ctrl+Backspace behavior:
+  // - When the caret is at the start of a word (i.e. previous char is not a word char, but the
+  //   caret is followed by a word char), delete back to the start of the previous word (skipping
+  //   the non-word run in between).
+  // - Otherwise, delete the contiguous run of the same word/non-word class immediately before the
+  //   caret.
+  //
+  // This ensures `hello| world` deletes `hello ` instead of just the single space.
+  let caret_at_word_start =
+    caret < len && word_chars.get(caret).copied().unwrap_or(false) && !word_chars[caret - 1];
+
   let mut start = caret;
-  if word_chars[start - 1] {
+  if caret_at_word_start {
+    start = word_left_char_idx(word_chars, caret);
+  } else if word_chars[caret - 1] {
     while start > 0 && word_chars[start - 1] {
       start -= 1;
     }
@@ -4631,6 +4665,7 @@ fn word_backspace_range(word_chars: &[bool], caret: usize) -> Option<(usize, usi
       start -= 1;
     }
   }
+
   (start != caret).then_some((start, caret))
 }
 

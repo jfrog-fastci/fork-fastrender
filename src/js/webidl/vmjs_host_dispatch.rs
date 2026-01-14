@@ -9331,6 +9331,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               (old_parents, fragments, adopt_roots)
             }))
         })?;
+        })?;
 
         // Snapshot subtree mappings for adoption. Apply wrapper remaps only after the DOM mutation
         // succeeds so failed `replaceWith` calls don't corrupt wrapper identity / `ownerDocument`.
@@ -14443,13 +14444,14 @@ mod element_dispatch_tests {
     let document_url = "https://example.invalid/".to_string();
     let module_loader: ModuleLoaderHandle =
       std::rc::Rc::new(std::cell::RefCell::new(ModuleLoader::new(Some(document_url.clone()))));
+    let clock: Arc<dyn crate::clock::Clock> = Arc::new(crate::clock::VirtualClock::new());
     vm.set_user_data(WindowRealmUserData::new(
       document_url,
       std::rc::Rc::clone(&module_loader),
       Some(1),
       None,
       5 * 1024 * 1024,
-      Arc::new(VirtualClock::new()),
+      clock,
     ));
 
     let mut scope = heap.scope();

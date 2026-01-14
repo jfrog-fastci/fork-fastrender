@@ -65,6 +65,14 @@ impl ClockMediaClock {
   }
 }
 
+impl std::fmt::Debug for ClockMediaClock {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ClockMediaClock")
+      .field("clock", &"<dyn Clock>")
+      .finish()
+  }
+}
+
 impl MediaClock for ClockMediaClock {
   fn now(&self) -> Duration {
     self.clock.now()

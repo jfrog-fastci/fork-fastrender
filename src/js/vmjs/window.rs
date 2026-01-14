@@ -7358,7 +7358,7 @@ mod tests {
     let msg = err.to_string();
     assert!(
       msg.contains("RangeError"),
-      "expected stack overflow RangeError, got {msg}"
+      "expected stack overflow RangeError, got: {msg}"
     );
     Ok(())
   }
