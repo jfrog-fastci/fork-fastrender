@@ -50,19 +50,21 @@ pub struct CompiledScript {
   ///
   /// Notes:
   /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
-  /// - Private names (`#x`) are not supported in the compiled executor.
-  /// - Some top-level `await` patterns (classic scripts) and all module top-level await currently
-  ///   require falling back to the AST interpreter (see
-  ///   [`CompiledScript::top_level_await_requires_ast_fallback`]).
+  /// - Private-name syntax (`#x`, `#m`, ...) is not supported in the compiled executor.
+  /// - Async function bodies execute via the AST interpreter at call-time (see
+  ///   [`crate::Vm::call_user_function`]).
+  ///
+  /// Top-level await (classic scripts and modules) is handled by the compiled async executor for a
+  /// limited subset of patterns; unsupported forms are tracked separately in
+  /// [`CompiledScript::top_level_await_requires_ast_fallback`].
   pub requires_ast_fallback: bool,
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
   /// async evaluation.
   pub contains_top_level_await: bool,
-  /// True if this classic script's top-level await usage is not currently supported by the HIR
-  /// async classic-script executor and requires a full fallback to the AST interpreter.
+  /// True if top-level await evaluation must fall back to the AST evaluator.
   ///
-  /// The compiled async classic-script executor currently supports only a small subset of top-level
-  /// await patterns:
+  /// The compiled async executors are intentionally conservative. For classic scripts, the compiled
+  /// executor supports only a small subset of top-level await patterns:
   /// - expression statements of the form `await <expr>;`
   /// - expression statements of the form `x = await <expr>;` (for supported assignment targets)
   /// - `var`/`let`/`const` declarator initializers of the form `= await <expr>`
@@ -71,8 +73,12 @@ pub struct CompiledScript {
   ///
   /// Any other top-level await usage (e.g. `await` inside nested blocks like `class static {}`, or
   /// nested `await` inside the awaited subexpression, or additional `await` inside a `for
-  /// await..of` loop body) must be executed via the AST interpreter to avoid partially executing
+  /// await..of` loop body) must be executed via the AST evaluator to avoid partially executing
   /// compiled HIR before discovering an unsupported construct.
+  ///
+  /// This flag allows callers (notably [`crate::JsRuntime::exec_compiled_script`] for classic
+  /// scripts and [`crate::ModuleGraph`] for modules) to choose the AST async evaluator *before
+  /// executing any HIR*, avoiding partially-executed side effects.
   pub top_level_await_requires_ast_fallback: bool,
   #[allow(dead_code)]
   source_type: SourceType,
@@ -212,9 +218,9 @@ impl CompiledScript {
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
-    // The compiled module executor does not currently support top-level await, so any module with
-    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
-    let top_level_await_requires_ast_fallback = contains_top_level_await;
+    let top_level_await_requires_ast_fallback =
+      contains_top_level_await && top_level_await_requires_ast_fallback(&parsed.stx.body);
+
     {
       let mut tick = || Ok(());
       crate::early_errors::validate_top_level(
@@ -231,7 +237,8 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
+    let requires_ast_fallback =
+      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -363,9 +370,8 @@ impl CompiledScript {
 
     let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
-    // The compiled module executor does not currently support top-level await, so any module with
-    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
-    let top_level_await_requires_ast_fallback = contains_top_level_await;
+    let top_level_await_requires_ast_fallback =
+      contains_top_level_await && top_level_await_requires_ast_fallback(&parsed.stx.body);
     {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
@@ -381,7 +387,8 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
+    let requires_ast_fallback =
+      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -418,10 +425,10 @@ impl CompiledScript {
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
-    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
-    // The compiled module executor does not currently support top-level await, so any module with
-    // `[[HasTLA]] = true` must fall back to the AST async evaluator.
-    let top_level_await_requires_ast_fallback = contains_top_level_await;
+    let top_level_await_requires_ast_fallback =
+      contains_top_level_await && top_level_await_requires_ast_fallback(&parsed.stx.body);
+    let requires_ast_fallback =
+      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))
@@ -914,6 +921,78 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     // existing synchronous evaluator behaviour for them.
     _ => false,
   }
+}
+
+/// Returns true if the compiled/HIR async evaluator must fall back to the AST evaluator for this
+/// top-level statement list.
+///
+/// The compiled async evaluator is intentionally conservative: it only supports suspension at
+/// specific, well-scoped boundaries that can be resumed without retaining `parse-js` AST pointers.
+/// Any top-level await outside of these supported shapes requires an AST fallback to ensure
+/// correctness (before executing any HIR).
+fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
+  for stmt in stmts {
+    if !stmt_contains_await(stmt) {
+      continue;
+    }
+
+    let supported = match &*stmt.stx {
+      // `await <expr>;` as a standalone statement item.
+      Stmt::Expr(expr_stmt) => match &*expr_stmt.stx.expr.stx {
+        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
+          // The compiled evaluator does not yet support nested `await` inside the awaited operand.
+          !expr_contains_await(&unary.stx.argument)
+        }
+        _ => false,
+      },
+
+      // `var`/`let`/`const` declarations where any `await` in an initializer is a direct `await`
+      // expression (`const x = await <expr>;`).
+      Stmt::VarDecl(decl) => decl.stx.declarators.iter().all(|d| {
+        if pat_contains_await(&d.pattern.stx.pat.stx) {
+          return false;
+        }
+
+        let Some(init) = d.initializer.as_ref() else {
+          return true;
+        };
+
+        if !expr_contains_await(init) {
+          return true;
+        }
+
+        match &*init.stx {
+          Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
+            !expr_contains_await(&unary.stx.argument)
+          }
+          _ => false,
+        }
+      }),
+
+      // `for await (<lhs> of <rhs>) { ... }` at top-level.
+      //
+      // The compiled evaluator can suspend/resume the implicit `await` boundaries in `for await..of`
+      // itself, but does not yet support additional nested `await` within the head or body.
+      Stmt::ForOf(for_of) if for_of.stx.await_ => {
+        if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+          false
+        } else if expr_contains_await(&for_of.stx.rhs) {
+          false
+        } else {
+          !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+        }
+      }
+
+      // Everything else is unsupported for the compiled async evaluator for now.
+      _ => false,
+    };
+
+    if !supported {
+      return true;
+    }
+  }
+
+  false
 }
 
 fn stmt_is_module_only(stmt: &Node<Stmt>) -> bool {

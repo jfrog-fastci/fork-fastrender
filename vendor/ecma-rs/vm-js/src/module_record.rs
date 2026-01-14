@@ -260,8 +260,9 @@ pub struct SourceTextModuleRecord {
   /// When present, module bodies may be executed via the compiled (HIR) executor instead of the
   /// AST interpreter.
   ///
-  /// Note: the compiled executor does **not** currently support top-level await, so async module
-  /// evaluation may fall back to parsing the AST on demand.
+  /// Note: async module evaluation (top-level await) is supported by the compiled executor only
+  /// for a conservative subset of `await` shapes. When unsupported patterns are present,
+  /// [`crate::ModuleGraph`] falls back to the async AST evaluator.
   ///
   /// When executing via the HIR path, `source`/`ast` may be `None` as the compiled script already
   /// owns its own [`SourceText`] reference.

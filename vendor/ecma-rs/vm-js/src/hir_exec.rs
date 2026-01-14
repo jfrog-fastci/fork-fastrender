@@ -1,7 +1,8 @@
 use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::{
-  perform_direct_eval_with_host_and_hooks, AsyncContinuation, ResolvedBinding, RuntimeEnv, VarEnv,
+  perform_direct_eval_with_host_and_hooks, AsyncContinuation, ModuleTlaStepResult, ResolvedBinding,
+  RuntimeEnv, VarEnv,
 };
 use crate::fallible_format;
 use crate::function::FunctionData;
@@ -11290,6 +11291,7 @@ pub(crate) struct HirAsyncState {
   body_id: hir_js::BodyId,
   allow_new_target_in_eval: bool,
   body_kind: HirAsyncBodyKind,
+  in_root_stmt_list: bool,
   next_stmt_index: usize,
   active: Option<HirAsyncActive>,
 }
@@ -11300,28 +11302,58 @@ impl HirAsyncState {
       .hir
       .body(body_id)
       .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
-    let Some(func_meta) = body.function.as_ref() else {
-      return Err(VmError::InvariantViolation("function body missing metadata"));
-    };
-    let allow_new_target_in_eval = !func_meta.is_arrow;
-    let body_kind = match &func_meta.body {
-      hir_js::FunctionBody::Block(stmts) => {
+    let (allow_new_target_in_eval, body_kind, in_root_stmt_list) = match body.kind {
+      // Root script/module body.
+      hir_js::BodyKind::TopLevel => {
         let mut cloned: Vec<hir_js::StmtId> = Vec::new();
         cloned
-          .try_reserve_exact(stmts.len())
+          .try_reserve_exact(body.root_stmts.len())
           .map_err(|_| VmError::OutOfMemory)?;
-        cloned.extend_from_slice(stmts);
-        HirAsyncBodyKind::Block {
-          stmts: cloned.into_boxed_slice(),
-        }
+        cloned.extend_from_slice(body.root_stmts.as_slice());
+        (
+          /* allow_new_target_in_eval */ false,
+          HirAsyncBodyKind::Block {
+            stmts: cloned.into_boxed_slice(),
+          },
+          /* in_root_stmt_list */ true,
+        )
       }
-      hir_js::FunctionBody::Expr(expr) => HirAsyncBodyKind::Expr { expr: *expr },
+      // Async function body (block or expression-bodied arrow).
+      hir_js::BodyKind::Function => {
+        let Some(func_meta) = body.function.as_ref() else {
+          return Err(VmError::InvariantViolation("function body missing metadata"));
+        };
+        let allow_new_target_in_eval = !func_meta.is_arrow;
+        let body_kind = match &func_meta.body {
+          hir_js::FunctionBody::Block(stmts) => {
+            let mut cloned: Vec<hir_js::StmtId> = Vec::new();
+            cloned
+              .try_reserve_exact(stmts.len())
+              .map_err(|_| VmError::OutOfMemory)?;
+            cloned.extend_from_slice(stmts);
+            HirAsyncBodyKind::Block {
+              stmts: cloned.into_boxed_slice(),
+            }
+          }
+          hir_js::FunctionBody::Expr(expr) => HirAsyncBodyKind::Expr { expr: *expr },
+        };
+        (allow_new_target_in_eval, body_kind, /* in_root_stmt_list */ false)
+      }
+      other => {
+        return Err(VmError::InvariantViolation(match other {
+          hir_js::BodyKind::Class => "compiled async body is a class body",
+          hir_js::BodyKind::Initializer => "compiled async body is an initializer body",
+          hir_js::BodyKind::Unknown => "compiled async body is an unknown body kind",
+          hir_js::BodyKind::TopLevel | hir_js::BodyKind::Function => unreachable!(),
+        }))
+      }
     };
     Ok(Self {
       script,
       body_id,
       allow_new_target_in_eval,
       body_kind,
+      in_root_stmt_list,
       next_stmt_index: 0,
       active: None,
     })
@@ -11449,16 +11481,15 @@ impl HirAsyncState {
                   stmt_offset,
                   err,
                 );
-                match err {
-                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                    return Ok(HirAsyncResult::CompleteThrow(value))
-                  }
+              match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  return Ok(HirAsyncResult::CompleteThrow(value))
+                }
                   other => return Err(other),
                 }
               }
             }
           }
-
           HirAsyncActive::AwaitExprStmt { next_stmt_index } => {
             let next_stmt_index = *next_stmt_index;
             let Some(resume) = resume_value.take() else {
@@ -11498,7 +11529,6 @@ impl HirAsyncState {
               }
             }
           }
-
           HirAsyncActive::AwaitReturn => {
             let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
@@ -11585,7 +11615,6 @@ impl HirAsyncState {
               }
             }
           }
-
           HirAsyncActive::AwaitVarDecl {
             stmt_index,
             declarator_index,
@@ -11627,7 +11656,6 @@ impl HirAsyncState {
                 }
               }
             };
-
             // This resume point can only exist for block-bodied async functions.
             let HirAsyncBodyKind::Block { stmts } = &self.body_kind else {
               return Err(VmError::InvariantViolation(
@@ -11842,6 +11870,8 @@ impl HirAsyncState {
         await_: true,
       } = &stmt.kind
       {
+        // Budget once for the statement entry (matching `eval_stmt_labelled`).
+        evaluator.vm.tick()?;
         self.active = Some(HirAsyncActive::ForAwaitOf(ForAwaitOfState::new(
           left.clone(),
           *right,
@@ -12056,7 +12086,12 @@ impl HirAsyncState {
       }
 
       // Evaluate non-awaiting statements synchronously.
-      match evaluator.eval_root_stmt(scope, body, stmt_id) {
+      let stmt_result = if self.in_root_stmt_list {
+        evaluator.eval_root_stmt(scope, body, stmt_id)
+      } else {
+        evaluator.eval_stmt(scope, body, stmt_id)
+      };
+      match stmt_result {
         Ok(flow) => match flow {
           Flow::Normal(_) => {
             self.next_stmt_index = self.next_stmt_index.saturating_add(1);
@@ -12645,8 +12680,8 @@ pub(crate) fn run_compiled_script(
 /// `ScriptOrModule::Module` execution context so `import.meta` and dynamic `import()` can resolve
 /// module-scoped state.
 ///
-/// Note: the compiled executor does **not** currently support top-level await; callers must fall
-/// back to the AST async evaluator for modules with `[[HasTLA]] = true`.
+/// For modules with `[[HasTLA]] = true`, use [`start_compiled_module_tla_evaluation`] instead so
+/// execution can suspend/resume without falling back to the async AST evaluator.
 pub(crate) fn run_compiled_module(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12744,6 +12779,240 @@ pub(crate) fn run_compiled_module(
   debug_assert_eq!(popped, Some(exec_ctx));
   debug_assert!(popped.is_some(), "module execution popped no execution context");
   result
+}
+
+/// Starts async evaluation of a compiled module body (HIR) until completion or the first supported
+/// top-level `await` boundary.
+///
+/// This mirrors [`crate::exec::start_module_tla_evaluation`], but uses the compiled/HIR executor and
+/// suspends/resumes using HIR ids (no raw `parse-js` AST pointers in continuation frames).
+///
+/// Callers must conservatively ensure the module's top-level await shapes are supported by the HIR
+/// async evaluator (see [`CompiledScript::top_level_await_requires_ast_fallback`]) before invoking
+/// this function.
+pub(crate) fn start_compiled_module_tla_evaluation(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  script: Arc<CompiledScript>,
+) -> Result<ModuleTlaStepResult, VmError> {
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
+
+  let result = (|| -> Result<ModuleTlaStepResult, VmError> {
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(script.source.clone(), 0, 0);
+
+    let source = script.source.clone();
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    let mut state = HirAsyncState::new(script.clone(), script.hir.root_body())?;
+    let mut next = state.start(
+      &mut *vm_frame,
+      scope,
+      host,
+      hooks,
+      &mut env,
+      /* strict */ true,
+      /* this */ Value::Undefined,
+      /* new_target */ Value::Undefined,
+      /* home_object */ None,
+    );
+
+    // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
+    // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
+    loop {
+      let next_res = match next {
+        Ok(r) => r,
+        Err(err) => {
+          state.teardown(scope.heap_mut());
+          env.teardown(scope.heap_mut());
+          return Err(err);
+        }
+      };
+
+      match next_res {
+        HirAsyncResult::CompleteOk(_) => {
+          state.teardown(scope.heap_mut());
+          env.teardown(scope.heap_mut());
+          return Ok(ModuleTlaStepResult::Completed);
+        }
+        HirAsyncResult::CompleteThrow(reason) => {
+          state.teardown(scope.heap_mut());
+          env.teardown(scope.heap_mut());
+          return Err(VmError::ThrowWithStack {
+            value: reason,
+            stack: vm_frame.capture_stack(),
+          });
+        }
+        HirAsyncResult::Await { kind, await_value } => {
+          // Resolve the awaited value to an awaited promise using the same Promise resolution
+          // semantics as `Await`.
+          let awaited_promise_res = {
+            let mut promise_scope = scope.reborrow();
+            promise_scope.push_root(await_value)?;
+            match kind {
+              crate::exec::AsyncSuspendKind::Await => {
+                let res = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut promise_scope,
+                  host,
+                  hooks,
+                  await_value,
+                );
+                res.map_err(|err| {
+                  crate::exec::coerce_error_to_throw_for_async(&*vm_frame, &mut promise_scope, err)
+                })
+              }
+              crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+              crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+                "unexpected async generator yield suspension in compiled module TLA",
+              )),
+            }
+          };
+
+          let awaited_promise = match awaited_promise_res {
+            Ok(p) => p,
+            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+              // Resume immediately with a throw completion.
+              next = state.resume(
+                &mut *vm_frame,
+                scope,
+                host,
+                hooks,
+                &mut env,
+                /* strict */ true,
+                /* this */ Value::Undefined,
+                /* new_target */ Value::Undefined,
+                /* home_object */ None,
+                Err(VmError::Throw(reason)),
+              );
+              continue;
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              env.teardown(scope.heap_mut());
+              return Err(err);
+            }
+          };
+
+          // Root all GC-managed values while we create persistent roots and register the continuation.
+          //
+          // Module top-level `this` and `new.target` are always `undefined`, and there is no
+          // `[[HomeObject]]` by default. We still store dummy roots to satisfy `AsyncContinuation`'s
+          // fields and to match `start_module_tla_evaluation`'s layout.
+          let mut root_scope = scope.reborrow();
+          let values = [
+            Value::Undefined, // this
+            Value::Undefined, // new.target
+            Value::Undefined, // home_object
+            Value::Undefined, // promise (unused)
+            Value::Undefined, // resolve (unused)
+            Value::Undefined, // reject (unused)
+            awaited_promise,
+          ];
+          root_scope.push_roots(&values)?;
+
+          let mut roots: Vec<RootId> = Vec::new();
+          roots
+            .try_reserve_exact(values.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          for &value in &values {
+            match root_scope.heap_mut().add_root(value) {
+              Ok(id) => roots.push(id),
+              Err(e) => {
+                for id in roots.drain(..) {
+                  root_scope.heap_mut().remove_root(id);
+                }
+                state.teardown(root_scope.heap_mut());
+                env.teardown(root_scope.heap_mut());
+                return Err(e);
+              }
+            }
+          }
+
+          // Ensure async continuation insertion cannot fail after consuming the state/env, so we
+          // don't leak persistent roots if the continuation storage allocation fails.
+          if let Err(err) = vm_frame.reserve_async_continuations(1) {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            state.teardown(root_scope.heap_mut());
+            env.teardown(root_scope.heap_mut());
+            return Err(err);
+          }
+
+          let mut frames: VecDeque<crate::exec::AsyncFrame> = VecDeque::new();
+          if frames.try_reserve(1).is_err() {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            state.teardown(root_scope.heap_mut());
+            env.teardown(root_scope.heap_mut());
+            return Err(VmError::OutOfMemory);
+          }
+          frames.push_back(crate::exec::AsyncFrame::HirAsync { state });
+
+          let cont = AsyncContinuation {
+            env: env.clone(),
+            strict: true,
+            allow_new_target_in_eval: false,
+            exec_ctx: Some(exec_ctx),
+            script_ast: None,
+            script_ast_memory: None,
+            this_root: roots[0],
+            new_target_root: roots[1],
+            home_object_root: roots[2],
+            promise_root: roots[3],
+            resolve_root: roots[4],
+            reject_root: roots[5],
+            awaited_promise_root: Some(roots[6]),
+            frames,
+          };
+
+          let continuation_id =
+            vm_frame.insert_async_continuation_reserved(VmAsyncContinuation::Ast(cont));
+
+          // Do not tear down `env`: its env root is now owned by the continuation.
+          return Ok(ModuleTlaStepResult::Await {
+            promise: awaited_promise,
+            continuation_id,
+          });
+        }
+      }
+    }
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(
+    popped.is_some(),
+    "module execution popped no execution context"
+  );
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
+  }
 }
 
 pub(crate) fn instantiate_compiled_module_decls(

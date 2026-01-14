@@ -1994,19 +1994,15 @@ impl ModuleGraph {
           &ast.stx.body,
         )?;
       } else {
-        let has_tla = self.modules[idx].has_tla;
         let compiled = self.modules[idx].compiled.clone();
         match compiled {
-          Some(script)
-            if !script.requires_ast_fallback && !script.contains_async_generators && !has_tla =>
-          {
+          Some(script) if !script.requires_ast_fallback && !script.contains_async_generators => {
             instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
           }
           _ => {
             // Either:
             // - no compiled module payload exists, or
-            // - this module must run through the AST evaluator (top-level await, async/generator
-            //   fallback, ...).
+            // - this module must run through the AST evaluator (unsupported constructs, ...)
             //
             // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
             // interpreter instantiation path can run.
@@ -2768,36 +2764,56 @@ impl ModuleGraph {
         let mut tla_fallback_ast: Option<Arc<Node<TopLevel>>> = None;
         let mut tla_fallback_ast_memory: Option<ExternalMemoryToken> = None;
 
-        // Top-level await is not supported by the compiled executor. Even if the module has a
-        // pre-compiled HIR body, fall back to the async AST evaluator.
+        // Prefer the compiled/HIR async evaluator for modules that have precompiled code and that
+        // do not require an AST fallback for top-level await.
         //
-        // If the module record does not retain an AST (e.g. compiled modules that discard parse
-        // trees after linking), parse it on demand and retain it across async suspension. The async
-        // evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`), so the
-        // backing `Arc<Node<TopLevel>>` must remain alive until the continuation completes or is
-        // aborted.
-        let ast = match ast {
-          Some(ast) => ast,
-          None => {
-            let (ast, token) = parse_module_ast_for_tla_fallback(vm, scope.heap_mut(), &source)?;
-            tla_fallback_ast = Some(ast.clone());
-            tla_fallback_ast_memory = Some(token);
-            ast
-          }
+        // The fallback path uses the async AST evaluator, which supports arbitrary `await` shapes
+        // but stores raw pointers into the `parse-js` AST in its continuation frames.
+        let step = if let Some(compiled) = compiled.filter(|c| !c.top_level_await_requires_ast_fallback) {
+          crate::hir_exec::start_compiled_module_tla_evaluation(
+            vm,
+            scope,
+            host,
+            hooks,
+            state.global_object,
+            state.realm_id,
+            module,
+            module_env,
+            compiled,
+          )
+        } else {
+          // AST fallback: ensure a parsed module AST exists and is kept alive across suspension.
+          //
+          // If the module record does not retain an AST (e.g. compiled modules that discard parse
+          // trees after linking), parse it on demand and retain it across async suspension. The async
+          // evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`), so the
+          // backing `Arc<Node<TopLevel>>` must remain alive until the continuation completes or is
+          // aborted.
+          let ast = match ast {
+            Some(ast) => ast,
+            None => {
+              let (ast, token) = parse_module_ast_for_tla_fallback(vm, scope.heap_mut(), &source)?;
+              tla_fallback_ast = Some(ast.clone());
+              tla_fallback_ast_memory = Some(token);
+              ast
+            }
+          };
+
+          start_module_tla_evaluation(
+            vm,
+            scope,
+            host,
+            hooks,
+            state.global_object,
+            state.realm_id,
+            module,
+            module_env,
+            source,
+            &ast.stx.body,
+          )
         };
 
-        match start_module_tla_evaluation(
-          vm,
-          scope,
-          host,
-          hooks,
-          state.global_object,
-          state.realm_id,
-          module,
-          module_env,
-          source,
-          &ast.stx.body,
-        ) {
+        match step {
           Ok(ModuleTlaStepResult::Completed) => {
             state.next_member_index = state.next_member_index.saturating_add(1);
             continue;
