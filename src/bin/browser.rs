@@ -14034,6 +14034,12 @@ struct App {
   pending_context_menu_request: Option<PendingContextMenuRequest>,
   open_context_menu: Option<OpenContextMenu>,
   open_context_menu_rect: Option<egui::Rect>,
+  /// Bounding rect of the omnibox dropdown (if visible) in egui points.
+  ///
+  /// This is populated from egui temp data written by `ui::chrome_ui_with_bookmarks` so the winit
+  /// input routing layer can treat the dropdown as a true overlay (preventing clicks/wheel events
+  /// from reaching the rendered page).
+  omnibox_dropdown_rect: Option<egui::Rect>,
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
@@ -14516,6 +14522,9 @@ impl App {
         .open_context_menu_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
+        .omnibox_dropdown_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
         .debug_log_overlay_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
@@ -14575,6 +14584,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_context_menu_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .omnibox_dropdown_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .debug_log_overlay_rect
@@ -15052,6 +15064,7 @@ impl App {
       pending_context_menu_request: None,
       open_context_menu: None,
       open_context_menu_rect: None,
+      omnibox_dropdown_rect: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       open_datalist: None,
@@ -24922,6 +24935,15 @@ impl App {
         // Keep `last_cursor_pos_points` updated so helper logic (e.g. file drops, keyboard context
         // menu anchoring) can reuse the most recent touch position.
         self.last_cursor_pos_points = Some(pos_points);
+
+        // The omnibox dropdown is rendered as an egui overlay that can overlap the page viewport.
+        // Treat touches inside it as UI-only so we don't forward taps/scrolls to the page worker.
+        if self
+          .omnibox_dropdown_rect
+          .is_some_and(|rect| rect.contains(pos_points))
+        {
+          return;
+        }
         let now = std::time::Instant::now();
 
         match touch.phase {
@@ -25679,6 +25701,17 @@ impl App {
               self.window.request_redraw();
             }
           }
+          return;
+        }
+
+        if !self.pointer_captured
+          && self
+            .omnibox_dropdown_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+        {
+          // The omnibox dropdown is rendered as an egui `Area` overlay (it can overlap the page
+          // viewport). Treat it as a true overlay: pointer interactions inside should be handled by
+          // egui only and must not be forwarded to the page worker.
           return;
         }
 
@@ -28680,6 +28713,19 @@ impl App {
         },
       )
     };
+
+    // Fetch the current omnibox dropdown overlay bounds (if any) from egui temp data populated by
+    // `chrome_ui_with_bookmarks`. We use this in the winit input path to treat the dropdown as a
+    // true overlay: without this, the dropdown can overlap the page viewport and clicks/wheel
+    // scrolls may be forwarded to the page worker instead of being handled by egui.
+    if self.renderer_chrome_enabled {
+      self.omnibox_dropdown_rect = None;
+    } else {
+      let omnibox_rect_id = egui::Id::new("omnibox_dropdown").with("rect");
+      self.omnibox_dropdown_rect =
+        ctx.data(|d| d.get_temp::<Option<egui::Rect>>(omnibox_rect_id)).flatten();
+    }
+
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
     let appearance_after = self.browser_state.appearance.clone();
 

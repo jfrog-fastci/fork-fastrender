@@ -3602,6 +3602,13 @@ pub fn chrome_ui_with_bookmarks(
   // Omnibox dropdown overlay
   // -----------------------------------------------------------------------------
   let omnibox_dropdown_id = egui::Id::new("omnibox_dropdown");
+  // Cache the omnibox dropdown bounds into egui temp data so the windowed (winit) input routing
+  // layer can treat it as an overlay and avoid forwarding clicks/wheel events to the rendered page.
+  //
+  // This mirrors how the windowed UI tracks other popups (select dropdown, context menu, etc.),
+  // but without introducing an egui dependency into `BrowserAppState`.
+  let omnibox_dropdown_rect_id = omnibox_dropdown_id.with("rect");
+  ctx.data_mut(|d| d.insert_temp(omnibox_dropdown_rect_id, Option::<egui::Rect>::None));
   let omnibox_open_t = motion.animate_bool(
     ctx,
     omnibox_dropdown_id.with("popup_open"),
@@ -3819,6 +3826,8 @@ pub fn chrome_ui_with_bookmarks(
           });
         });
       });
+
+      ctx.data_mut(|d| d.insert_temp(omnibox_dropdown_rect_id, Some(inner.response.rect)));
 
       if app.chrome.omnibox.open {
         if let Some(idx) = clicked_suggestion {
@@ -7021,6 +7030,46 @@ frame={idx} repaint_after={:?}\n",
         .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
       "expected ChromeAction::FocusAddressBar, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn omnibox_dropdown_rect_is_cached_in_ctx_temp_data() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+    app.chrome.address_bar_text = "example".to_string();
+    app.chrome.omnibox.open = true;
+    app.chrome.omnibox.suggestions = vec![OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: None,
+      url: Some("https://example.com/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    }];
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+
+    let rect_id = egui::Id::new("omnibox_dropdown").with("rect");
+    let rect = ctx
+      .data(|d| d.get_temp::<Option<egui::Rect>>(rect_id))
+      .flatten()
+      .expect("expected omnibox dropdown rect to be cached");
+    assert!(
+      rect.width().is_finite() && rect.width() > 0.0 && rect.height().is_finite() && rect.height() > 0.0,
+      "unexpected rect: {rect:?}"
+    );
+
+    // If the omnibox is cleared on the following frame, the cached rect should be cleared too (so
+    // input routing doesn't keep treating the old bounds as a live overlay).
+    app.chrome.omnibox.reset();
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = ctx.end_frame();
+
+    let rect = ctx.data(|d| d.get_temp::<Option<egui::Rect>>(rect_id)).flatten();
+    assert!(rect.is_none(), "expected cached rect to clear, got {rect:?}");
   }
 
   #[test]

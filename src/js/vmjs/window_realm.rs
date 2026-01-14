@@ -37469,6 +37469,7 @@ fn range_collapsed_get_native(
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::Bool(collapsed))
 }
+
 fn range_set_start_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
