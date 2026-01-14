@@ -124,13 +124,18 @@ impl ChromeDocumentContext<'_> {
   }
 }
 
-/// Decode an AccessKit [`accesskit::NodeId`] into a FastRender DOM pre-order node id, but only when
-/// the request targets the currently active page (tab + document generation).
+/// Decode an AccessKit [`accesskit::NodeId`] into a FastRender DOM pre-order node id.
 ///
-/// This uses the namespaced encoding produced by [`crate::ui::encode_page_node_id`] and rejects:
-/// - egui/chrome `NodeId`s (which do not decode as page ids),
-/// - ids for other tabs,
-/// - stale ids targeting a previous document generation.
+/// Decoding precedence:
+///
+/// 1. **Canonical:** try the `(tab_id, document_generation, dom_node_id)` encoding produced by
+///    [`crate::ui::encode_page_node_id`]. This allows filtering stale action requests across
+///    navigations (generation mismatch).
+/// 2. **Compatibility:** fall back to the tag-bit encoding in [`crate::ui::page_accesskit_ids`]
+///    (`(tab_id, dom_node_id)`), which can still filter by tab but cannot filter stale navigations
+///    (no generation is encoded).
+///
+/// In both cases, egui/chrome `NodeId`s are rejected and requests targeting other tabs are ignored.
 pub fn fastrender_node_id_from_accesskit(
   node_id: accesskit::NodeId,
   current_tab_id: TabId,
