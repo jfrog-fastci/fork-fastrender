@@ -596,12 +596,115 @@ fn super_property_uninitialized_this_throws_reference_error_before_key_eval() ->
   Ok(())
 }
 
+const THIS_UNINITIALIZED_PUTVALUE_CONTEXTS: &str = r#"
+  function errName(e) { return typeof e === "string" ? e : e.name; }
+
+  function dotAssign() {
+    var after = "no";
+    class C extends Object {
+      constructor() {
+        super.x = 0;
+        after = "yes";
+      }
+    }
+    var err = "no";
+    try { new C(); } catch (e) { err = errName(e); }
+    return err + "," + after + ",0";
+  }
+
+  function exprAssign() {
+    var baseCalls = 0;
+    class Base {
+      constructor() {
+        baseCalls++;
+        throw "base";
+      }
+    }
+    var after = "no";
+    class Derived extends Base {
+      constructor() {
+        super[super()] = 0;
+        after = "yes";
+      }
+    }
+    var err = "no";
+    try { new Derived(); } catch (e) { err = errName(e); }
+    return err + "," + after + "," + baseCalls;
+  }
+
+  function exprCompoundAssign() {
+    var baseCalls = 0;
+    class Base {
+      constructor() {
+        baseCalls++;
+        throw "base";
+      }
+    }
+    var after = "no";
+    class Derived extends Base {
+      constructor() {
+        super[super()] += 0;
+        after = "yes";
+      }
+    }
+    var err = "no";
+    try { new Derived(); } catch (e) { err = errName(e); }
+    return err + "," + after + "," + baseCalls;
+  }
+
+  function exprIncrement() {
+    var baseCalls = 0;
+    class Base {
+      constructor() {
+        baseCalls++;
+        throw "base";
+      }
+    }
+    var after = "no";
+    class Derived extends Base {
+      constructor() {
+        super[super()]++;
+        after = "yes";
+      }
+    }
+    var err = "no";
+    try { new Derived(); } catch (e) { err = errName(e); }
+    return err + "," + after + "," + baseCalls;
+  }
+
+  dotAssign() + ";" + exprAssign() + ";" + exprCompoundAssign() + ";" + exprIncrement()
+"#;
+
 #[test]
 fn super_property_uninitialized_this_throws_reference_error_before_key_eval_compiled(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(&mut rt, THIS_UNINITIALIZED)?;
   assert_value_is_utf8(&rt, value, "ReferenceError;ReferenceError:0");
+  Ok(())
+}
+
+#[test]
+fn super_property_uninitialized_this_putvalue_does_not_evaluate_expr() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(THIS_UNINITIALIZED_PUTVALUE_CONTEXTS)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "ReferenceError,no,0;ReferenceError,no,0;ReferenceError,no,0;ReferenceError,no,0",
+  );
+  Ok(())
+}
+
+#[test]
+fn super_property_uninitialized_this_putvalue_does_not_evaluate_expr_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, THIS_UNINITIALIZED_PUTVALUE_CONTEXTS)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "ReferenceError,no,0;ReferenceError,no,0;ReferenceError,no,0;ReferenceError,no,0",
+  );
   Ok(())
 }
 
