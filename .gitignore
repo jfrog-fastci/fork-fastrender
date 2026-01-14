@@ -14,6 +14,11 @@ target_pages/
 __pycache__/
 *.py[cod]
 
+# Local build/page-loop logs.
+build_renderers.log
+build_xtask.log
+shopify_page_loop.log
+
 # `specs/tc39-ecma262/` is intentionally vendored as a minimal set of HTML tables used by the JS
 # parser/runtime. Ignore any full upstream spec repo checkout in this directory.
 /specs/tc39-ecma262/*
