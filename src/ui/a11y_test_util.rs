@@ -1090,6 +1090,28 @@ pub fn accesskit_focus_name(update: &accesskit::TreeUpdate) -> Option<String> {
   (!name.is_empty()).then_some(name.to_string())
 }
 
+pub fn expect_accesskit_focus_name(update: &accesskit::TreeUpdate) -> String {
+  accesskit_focus_name(update).unwrap_or_else(|| {
+    let focus_id = update.focus.map(|id| id.0.get().to_string());
+    let mut seen: Vec<String> = update
+      .nodes
+      .iter()
+      .filter_map(|(id, node)| {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          return None;
+        }
+        Some(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name))
+      })
+      .collect();
+    seen.sort();
+    panic!(
+      "expected AccessKit focus to resolve to a non-empty name (focus_id={focus_id:?}), \
+      got named nodes={seen:#?}"
+    );
+  })
+}
+
 pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) -> Option<String> {
   let update = accesskit_update_from_platform_output(output);
   accesskit_focus_name(update)
@@ -1097,6 +1119,15 @@ pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) 
 
 pub fn accesskit_focus_name_from_full_output(output: &egui::FullOutput) -> Option<String> {
   accesskit_focus_name_from_platform_output(&output.platform_output)
+}
+
+pub fn expect_accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) -> String {
+  let update = accesskit_update_from_platform_output(output);
+  expect_accesskit_focus_name(update)
+}
+
+pub fn expect_accesskit_focus_name_from_full_output(output: &egui::FullOutput) -> String {
+  expect_accesskit_focus_name_from_platform_output(&output.platform_output)
 }
 
 /// Common state helpers for AccessKit nodes.
@@ -1434,6 +1465,7 @@ mod tests {
       "expect_* helper should return the same node"
     );
     assert_eq!(accesskit_focus_name(&update), Some("Focus target".to_string()));
+    assert_eq!(expect_accesskit_focus_name(&update), "Focus target".to_string());
     assert_eq!(
       accesskit_node_by_role_and_name(&update, Role::Button, "Focus target").map(|(id, _node)| id),
       Some(id(2))
@@ -1462,6 +1494,10 @@ mod tests {
     assert_eq!(
       accesskit_focus_name_from_platform_output(&platform_output),
       Some("Focus target".to_string())
+    );
+    assert_eq!(
+      expect_accesskit_focus_name_from_platform_output(&platform_output),
+      "Focus target".to_string()
     );
     assert!(accesskit_node_by_name_from_platform_output(&platform_output, "Missing").is_none());
     assert_eq!(
