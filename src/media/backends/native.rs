@@ -1,4 +1,5 @@
 use crate::media::demux::webm::WebmDemuxer;
+#[cfg(feature = "media_mp4")]
 use crate::media::demuxer::Mp4PacketDemuxer;
 use crate::media::{MediaBackend, MediaDecodePipeline, MediaError, MediaResult, MediaSession};
 use std::io::Cursor;
