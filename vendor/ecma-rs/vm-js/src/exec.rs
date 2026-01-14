@@ -25186,44 +25186,68 @@ fn async_eval_class_static_init_from(
         block_scope.push_root(saved_this)?;
         block_scope.push_root(saved_new_target)?;
         block_scope.push_root(saved_home_object_value)?;
-        let saved_this_root = block_scope.heap_mut().add_root(saved_this)?;
-        let saved_new_target_root = block_scope.heap_mut().add_root(saved_new_target)?;
-        let saved_home_object_root = block_scope.heap_mut().add_root(saved_home_object_value)?;
+        let (saved_this_root, saved_new_target_root, saved_home_object_root) = {
+          let heap = block_scope.heap_mut();
+          let saved_this_root = heap.add_root(saved_this)?;
+          let saved_new_target_root = match heap.add_root(saved_new_target) {
+            Ok(id) => id,
+            Err(err) => {
+              heap.remove_root(saved_this_root);
+              return Err(err);
+            }
+          };
+          let saved_home_object_root = match heap.add_root(saved_home_object_value) {
+            Ok(id) => id,
+            Err(err) => {
+              heap.remove_root(saved_new_target_root);
+              heap.remove_root(saved_this_root);
+              return Err(err);
+            }
+          };
+          (saved_this_root, saved_new_target_root, saved_home_object_root)
+        };
 
-        evaluator.this = Value::Object(func_obj);
-        evaluator.new_target = Value::Undefined;
-        evaluator.home_object = Some(func_obj);
-        evaluator
-          .env
-          .set_meta_property_context(MetaPropertyContext::METHOD);
+        // From this point onward, we must restore the outer evaluator context and clean up the
+        // saved-value roots on *any* error (including OOM), because we have mutated evaluator state
+        // and allocated persistent roots.
+        let eval_res: Result<AsyncEval<Completion>, VmError> = (|| {
+          evaluator.this = Value::Object(func_obj);
+          evaluator.new_target = Value::Undefined;
+          evaluator.home_object = Some(func_obj);
+          evaluator
+            .env
+            .set_meta_property_context(MetaPropertyContext::METHOD);
 
-        let var_env = block_scope.env_create(Some(saved_lex))?;
-        // Mark the static-block var environment as a "this environment" so arrow functions created
-        // in the block resolve their lexical `this`/`new.target` to the class constructor.
-        block_scope
-          .heap_mut()
-          .env_set_this_value(var_env, Some(Value::Object(func_obj)))?;
-        block_scope
-          .heap_mut()
-          .env_set_new_target(var_env, Some(Value::Undefined))?;
-        let body_lex = block_scope.env_create(Some(var_env))?;
-        // Mark the static block lexical environment as a "this environment" so arrow functions
-        // created within the block resolve lexical `this` / `new.target` to the class constructor.
-        block_scope
-          .heap_mut()
-          .env_set_this_value(body_lex, Some(Value::Object(func_obj)))?;
-        block_scope
-          .heap_mut()
-          .env_set_new_target(body_lex, Some(Value::Undefined))?;
-        evaluator.env.set_var_env(VarEnv::Env(var_env));
-        evaluator
-          .env
-          .set_lexical_env(block_scope.heap_mut(), body_lex);
+          let var_env = block_scope.env_create(Some(saved_lex))?;
+          // Mark the static-block var environment as a "this environment" so arrow functions created
+          // in the block resolve their lexical `this`/`new.target` to the class constructor.
+          block_scope
+            .heap_mut()
+            .env_set_this_value(var_env, Some(Value::Object(func_obj)))?;
+          block_scope
+            .heap_mut()
+            .env_set_new_target(var_env, Some(Value::Undefined))?;
+          let body_lex = block_scope.env_create(Some(var_env))?;
+          // Mark the static block lexical environment as a "this environment" so arrow functions
+          // created within the block resolve lexical `this` / `new.target` to the class constructor.
+          block_scope
+            .heap_mut()
+            .env_set_this_value(body_lex, Some(Value::Object(func_obj)))?;
+          block_scope
+            .heap_mut()
+            .env_set_new_target(body_lex, Some(Value::Undefined))?;
+          evaluator.env.set_var_env(VarEnv::Env(var_env));
+          evaluator
+            .env
+            .set_lexical_env(block_scope.heap_mut(), body_lex);
 
-        // Hoist var/lexical/function declarations within the block before evaluating it.
-        evaluator.instantiate_stmt_list(&mut block_scope, &block.stx.body)?;
+          // Hoist var/lexical/function declarations within the block before evaluating it.
+          evaluator.instantiate_stmt_list(&mut block_scope, &block.stx.body)?;
 
-        match async_eval_stmt_list(evaluator, &mut block_scope, &block.stx.body) {
+          async_eval_stmt_list(evaluator, &mut block_scope, &block.stx.body)
+        })();
+
+        match eval_res {
           Ok(AsyncEval::Complete(completion)) => {
             // Restore outer context before continuing (static block execution is synchronous at the
             // statement-list boundary regardless of completion type).
@@ -27485,8 +27509,15 @@ fn async_for_await_of_after_rhs(
   let (iterator_root, next_method_root) = match (|| -> Result<(RootId, RootId), VmError> {
     let mut root_scope = iter_scope.reborrow();
     root_scope.push_roots(&[iterator_value, next_method_value])?;
-    let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
-    let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
+    let heap = root_scope.heap_mut();
+    let iterator_root = heap.add_root(iterator_value)?;
+    let next_method_root = match heap.add_root(next_method_value) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(iterator_root);
+        return Err(err);
+      }
+    };
     Ok((iterator_root, next_method_root))
   })() {
     Ok(v) => v,
@@ -28887,8 +28918,15 @@ fn async_yield_star_begin(
   let (iterator_root, next_method_root) = {
     let mut root_scope = scope.reborrow();
     root_scope.push_roots(&[yield_star.iterator(), yield_star.next_method()])?;
-    let iterator_root = root_scope.heap_mut().add_root(yield_star.iterator())?;
-    let next_method_root = root_scope.heap_mut().add_root(yield_star.next_method())?;
+    let heap = root_scope.heap_mut();
+    let iterator_root = heap.add_root(yield_star.iterator())?;
+    let next_method_root = match heap.add_root(yield_star.next_method()) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(iterator_root);
+        return Err(err);
+      }
+    };
     (iterator_root, next_method_root)
   };
 
@@ -32190,19 +32228,73 @@ fn async_eval_tagged_template_with_callee(
       }
       AsyncEval::Suspend(mut suspend) => {
         let mut root_scope = call_scope.reborrow();
-        root_scope.push_roots(&[callee_value, this_value])?;
-        let callee_root = root_scope.heap_mut().add_root(callee_value)?;
-        let this_root = root_scope.heap_mut().add_root(this_value)?;
+        if let Err(err) = root_scope.push_roots(&[callee_value, this_value]) {
+          for mut frame in suspend.frames {
+            async_teardown_frame(root_scope.heap_mut(), &mut frame);
+          }
+          return Err(err);
+        }
+        let (callee_root, this_root) = {
+          let heap = root_scope.heap_mut();
+          let callee_root = match heap.add_root(callee_value) {
+            Ok(id) => id,
+            Err(err) => {
+              for mut frame in suspend.frames {
+                async_teardown_frame(heap, &mut frame);
+              }
+              return Err(err);
+            }
+          };
+          let this_root = match heap.add_root(this_value) {
+            Ok(id) => id,
+            Err(err) => {
+              heap.remove_root(callee_root);
+              // We are about to return an error while abandoning the suspended frames produced by
+              // the substitution expression; tear them down to avoid leaking their roots.
+              for mut frame in suspend.frames {
+                async_teardown_frame(heap, &mut frame);
+              }
+              return Err(err);
+            }
+          };
+          (callee_root, this_root)
+        };
 
         let mut arg_roots: Vec<RootId> = Vec::new();
-        arg_roots
-          .try_reserve_exact(args.len())
-          .map_err(|_| VmError::OutOfMemory)?;
+        if arg_roots.try_reserve_exact(args.len()).is_err() {
+          async_tagged_template_cleanup(&mut root_scope, callee_root, this_root, &mut arg_roots);
+          for mut frame in suspend.frames {
+            async_teardown_frame(root_scope.heap_mut(), &mut frame);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         for v in args {
-          root_scope.push_root(v)?;
-          arg_roots.push(root_scope.heap_mut().add_root(v)?);
+          if let Err(err) = root_scope.push_root(v) {
+            async_tagged_template_cleanup(&mut root_scope, callee_root, this_root, &mut arg_roots);
+            for mut frame in suspend.frames {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
+            return Err(err);
+          }
+          match root_scope.heap_mut().add_root(v) {
+            Ok(id) => arg_roots.push(id),
+            Err(err) => {
+              async_tagged_template_cleanup(&mut root_scope, callee_root, this_root, &mut arg_roots);
+              for mut frame in suspend.frames {
+                async_teardown_frame(root_scope.heap_mut(), &mut frame);
+              }
+              return Err(err);
+            }
+          }
         }
 
+        if suspend.frames.try_reserve(1).is_err() {
+          async_tagged_template_cleanup(&mut root_scope, callee_root, this_root, &mut arg_roots);
+          for mut frame in suspend.frames {
+            async_teardown_frame(root_scope.heap_mut(), &mut frame);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::TaggedTemplateAfterSubstitution {
@@ -32212,7 +32304,8 @@ fn async_eval_tagged_template_with_callee(
             arg_roots,
             next_part_index: part_index.saturating_add(1),
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         return Ok(AsyncEval::Suspend(suspend));
       }
     }
@@ -33827,8 +33920,15 @@ fn async_call_begin(
   let (callee_root, this_root) = {
     let mut root_scope = scope.reborrow();
     root_scope.push_roots(&[callee_value, this_value])?;
-    let callee_root = root_scope.heap_mut().add_root(callee_value)?;
-    let this_root = root_scope.heap_mut().add_root(this_value)?;
+    let heap = root_scope.heap_mut();
+    let callee_root = heap.add_root(callee_value)?;
+    let this_root = match heap.add_root(this_value) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(callee_root);
+        return Err(err);
+      }
+    };
     (callee_root, this_root)
   };
 
@@ -34171,9 +34271,23 @@ fn async_super_call_begin(
     let class_value = Value::Object(class_ctor);
     let mut root_scope = scope.reborrow();
     root_scope.push_roots(&[super_value, state_value, class_value])?;
-    let super_ctor_root = root_scope.heap_mut().add_root(super_value)?;
-    let state_root = root_scope.heap_mut().add_root(state_value)?;
-    let class_ctor_root = root_scope.heap_mut().add_root(class_value)?;
+    let heap = root_scope.heap_mut();
+    let super_ctor_root = heap.add_root(super_value)?;
+    let state_root = match heap.add_root(state_value) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(super_ctor_root);
+        return Err(err);
+      }
+    };
+    let class_ctor_root = match heap.add_root(class_value) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(state_root);
+        heap.remove_root(super_ctor_root);
+        return Err(err);
+      }
+    };
     (super_ctor_root, state_root, class_ctor_root)
   };
 
