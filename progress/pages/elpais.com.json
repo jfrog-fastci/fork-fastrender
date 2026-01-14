@@ -17,12 +17,13 @@
   "notes": "Fixed border fast path for single-edge bottom borders: avoid shifting pixel-aligned 1px dividers down by 1px due to opaque fill snapping. Remaining pixel diffs are mostly text rasterization (hinting/subpixel AA) differences vs Chrome.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 44046,
-    "diff_percent": 4.5881,
-    "perceptual": 0.4474,
+    "diff_pixels": 31190,
+    "diff_percent": 3.249,
+    "perceptual": 0.0275,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 304,
-      "y": 279,
+      "x": 293,
+      "y": 278,
       "baseline_rgba": [
         255,
         255,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "d23a6edde65ed0bca7c81ed95118085f96ac4649"
   },
   "hotspot": "layout",
   "failure_stage": null,
