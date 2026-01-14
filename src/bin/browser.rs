@@ -26603,10 +26603,9 @@ impl App {
               && response.hovered()
               && !self.clear_browsing_data_dialog_open
             {
-              let cursor_over_overlay = self.debug_log_overlay_pointer_capture
-                || response
-                  .hover_pos()
-                  .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
+              let cursor_over_overlay = response
+                .hover_pos()
+                .is_some_and(|pos| self.cursor_over_egui_overlay_blocks_page_wheel(pos));
               if !cursor_over_overlay {
                 let mut delta_css = (0.0, 0.0);
                 for (unit, delta, modifiers) in &self.wheel_events_buf {
