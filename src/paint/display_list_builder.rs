@@ -12809,17 +12809,40 @@ impl DisplayListBuilder {
     if matches!(replaced_type, ReplacedType::Canvas) {
       return;
     }
-    // `<video>` without a poster often sits above a thumbnail image that should remain visible
-    // until the video loads/paints. Keep that pattern working when controls are not shown.
-    if matches!(
-      replaced_type,
-      ReplacedType::Video {
-        poster: None,
-        controls: false,
-        ..
+    // `<video>` without a poster is commonly used in two real-world patterns:
+    // 1) A real media element with a source URL but no poster (e.g. autoplay previews). Chromium
+    //    paints a dark media surface and a minimal scrubber UI even before any frames can be drawn
+    //    (and in error cases where no frames ever load).
+    // 2) A JS-driven overlay where the `<video>` element is present but no source has been set yet;
+    //    sites often keep an `<img>` thumbnail behind the video until it begins playing. In this
+    //    case Chromium keeps the `<video>` element visually transparent.
+    //
+    // We approximate this by only suppressing placeholder painting when there is no usable media
+    // source. When a source URL exists, emit a stable UA-like placeholder surface (even if
+    // `controls` is not explicitly present in markup), matching Chrome's behaviour on common news
+    // pages (e.g. cnn.com fixtures).
+    if let ReplacedType::Video {
+      src,
+      poster: None,
+      controls: false,
+      ..
+    } = replaced_type
+    {
+      let src = trim_ascii_whitespace(src);
+      if src.is_empty() || src.starts_with('#') {
+        return;
       }
-    ) {
-      return;
+      const ABOUT_BLANK: &str = "about:blank";
+      if src
+        .get(..ABOUT_BLANK.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(ABOUT_BLANK))
+        && matches!(
+          src.as_bytes().get(ABOUT_BLANK.len()),
+          None | Some(b'#') | Some(b'?')
+        )
+      {
+        return;
+      }
     }
     // When `<img>` has an `alt` attribute, browsers render a combined broken-image icon + alt text
     // fallback. `emit_alt_text` handles that rendering so the icon can be positioned relative to
@@ -12836,15 +12859,10 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PushClip(clip.clone()));
     }
 
-    // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
-    // chrome for the native controls. Emit a stable approximation rather than leaving the element
+    // For `<video>` without a poster/frame, browsers still paint a dark video surface and chrome
+    // for native controls/affordances. Emit a stable approximation rather than leaving the element
     // transparent.
-    if matches!(
-      replaced_type,
-      ReplacedType::Video {
-        controls: true, ..
-      }
-    ) {
+    if matches!(replaced_type, ReplacedType::Video { .. }) {
       self.list.push(DisplayItem::FillRect(FillRectItem {
         rect: content_rect,
         color: Rgba::rgb(51, 51, 51),
@@ -22505,7 +22523,7 @@ mod tests {
   }
 
   #[test]
-  fn video_without_poster_emits_no_placeholder() {
+  fn video_without_poster_and_without_src_emits_no_placeholder() {
     let fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
       ReplacedType::Video {
@@ -22521,7 +22539,38 @@ mod tests {
 
     assert!(
       list.is_empty(),
-      "video without a poster should paint nothing rather than a placeholder"
+      "video without a poster and without a usable src should paint nothing"
+    );
+  }
+
+  #[test]
+  fn video_without_controls_without_poster_with_src_emits_placeholder() {
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 120.0, 100.0),
+      ReplacedType::Video {
+        src: "video.mp4".to_string(),
+        poster: None,
+        controls: false,
+      },
+    );
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    assert!(
+      list.items().iter().any(|item| {
+        matches!(
+          item,
+          DisplayItem::FillRect(fill) if fill.color == Rgba::rgb(51, 51, 51)
+        )
+      }),
+      "expected video surface fill even when controls are absent"
+    );
+    assert!(
+      list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRoundedRect(_))),
+      "expected scrubber track placeholder UI"
     );
   }
 

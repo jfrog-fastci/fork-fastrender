@@ -4840,6 +4840,42 @@ impl<'a> LineBuilder<'a> {
           match next {
             InlineItem::Text(text_item) => {
               let remaining_width = (available_children_width - used_width).max(0.0);
+              // Collapsible whitespace that overflows the remaining line width should not be wrapped
+              // into its own continuation fragment.
+              //
+              // When an inline box ends (or has a break opportunity) at a whitespace-only text run,
+              // Unicode line breaking reports the only allowed break at the end of the run
+              // (`byte_offset == text.len()`). `TextItem::split_at` intentionally refuses to split at
+              // `text.len()` because it would produce an empty trailing item. Without special
+              // handling, we would therefore "break before" the entire whitespace run and carry it
+              // into the remainder fragment. That remainder fragment then starts a new line with a
+              // single collapsible space, inflating line box height (observed on cnn.com lead-package
+              // titles).
+              //
+              // CSS whitespace collapsing trims such whitespace at the wrap boundary, so drop it
+              // eagerly:
+              // - If this inline box already contributed in-flow content to the current line (or the
+              //   box itself starts mid-line), treat the whitespace as the wrap boundary and keep the
+              //   subsequent children for the remainder.
+              // - If we are at the start of the line, simply skip the whitespace and continue trying
+              //   to place following children on this line.
+              let whitespace_only = matches!(
+                text_item.style.white_space,
+                WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+              ) && !text_item.text.is_empty()
+                && text_item.text.chars().all(|ch| ch == ' ')
+                && !text_item.is_marker;
+              if whitespace_only {
+                let line_has_in_flow_prefix =
+                  fragment_has_in_flow_children || box_start_x > LINE_PIXEL_FIT_EPSILON;
+                if line_has_in_flow_prefix {
+                  // Break the inline box before the next non-space child. `text_item` itself is
+                  // discarded because it would be trimmed at the line break.
+                  break;
+                }
+                // Line-start: discard the leading collapsed whitespace and keep filling this line.
+                continue;
+              }
               let mut break_opportunity = text_item.find_break_point(remaining_width);
               if !fragment_has_in_flow_children && !allow_emergency_breaks {
                 // When the inline box starts mid-line, we should not apply emergency breaks to the
@@ -7866,6 +7902,37 @@ mod tests {
       .collect();
     assert_eq!(line0_text, "when");
     assert_eq!(line1_text, "writing");
+  }
+
+  #[test]
+  fn collapsible_spaces_inside_inline_boxes_do_not_create_wrapped_whitespace_lines() {
+    // Regression (cnn.com): when an inline box fragments across lines and its continuation fragment
+    // begins with a whitespace-only text run, the whitespace is collapsed away at the line start.
+    // We must not emit an extra line box for that whitespace-only continuation fragment.
+    let mut builder = make_builder(20.0);
+
+    let mut inline_box = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inline_box.add_child(InlineItem::Text(make_text_item("when", 20.0)));
+    inline_box.add_child(InlineItem::Text(make_text_item(" ", 4.0)));
+    builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1, "unexpected extra line: {lines:#?}");
+    let line_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert_eq!(line_text, "when");
   }
 
   #[test]

@@ -16,12 +16,13 @@
     "layout": 328.1982700126984,
     "paint": 217.1311725388889
   },
-  "notes": "",
+  "notes": "Fixes: (1) avoid emitting wrapped whitespace-only line fragments inside inline boxes (cnn lead headline no longer shifts down a line). (2) paint UA-like <video> placeholder when a video has a usable src but no poster/controls (cnn uses many zero-byte mp4s). Remaining diffs mostly minor text/image rasterization differences vs Chrome.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 304204,
-    "diff_percent": 31.6879,
-    "perceptual": 0.2352,
+    "diff_pixels": 214654,
+    "diff_percent": 22.3598,
+    "perceptual": 0.0541,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 35,
       "y": 285,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
