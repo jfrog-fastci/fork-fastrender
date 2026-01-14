@@ -27,16 +27,6 @@ pub enum BookmarksManagerAction {
   OpenInNewTab(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BookmarksManagerRequest {
-  /// Request that the windowed browser open a native file picker dialog and, on success, populate
-  /// [`BookmarksManagerState::import_path`].
-  RequestOpenImportDialog,
-  /// Request that the windowed browser open a native save-file dialog and, on success, populate
-  /// [`BookmarksManagerState::export_path`].
-  RequestOpenExportDialog,
-}
-
 #[derive(Debug, Default)]
 pub struct BookmarksManagerState {
   pub search: String,
@@ -272,11 +262,20 @@ struct EditBookmarkState {
 #[derive(Debug, Default)]
 pub struct BookmarksManagerOutput {
   pub actions: Vec<BookmarksManagerAction>,
-  pub requests: Vec<BookmarksManagerRequest>,
   pub changed: bool,
   pub bookmark_deltas: Vec<BookmarkDelta>,
   /// Whether this change is destructive enough to justify a best-effort immediate flush.
   pub request_flush: bool,
+  /// Request that the windowed browser open a native "pick file" dialog for the import path.
+  ///
+  /// This module stays "pure UI" (no OS dialog invocation) by emitting a flag that the `browser`
+  /// binary can handle via `rfd`.
+  pub request_pick_import_file: bool,
+  /// Request that the windowed browser open a native "save file" dialog for the export path.
+  ///
+  /// This module stays "pure UI" (no OS dialog invocation) by emitting a flag that the `browser`
+  /// binary can handle via `rfd`.
+  pub request_pick_export_file: bool,
   pub close_requested: bool,
   /// Whether the panel contained a focused text input, and thus the page should not request egui
   /// focus this frame.
@@ -433,9 +432,7 @@ pub fn bookmarks_manager_side_panel(
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose export file")
             });
             if choose_resp.clicked() {
-              out
-                .requests
-                .push(BookmarksManagerRequest::RequestOpenExportDialog);
+              out.request_pick_export_file = true;
             }
 
             ui.add_space(6.0);
@@ -525,9 +522,7 @@ pub fn bookmarks_manager_side_panel(
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose import file")
             });
             if choose_resp.clicked() {
-              out
-                .requests
-                .push(BookmarksManagerRequest::RequestOpenImportDialog);
+              out.request_pick_import_file = true;
             }
 
             ui.add_space(6.0);
@@ -596,9 +591,7 @@ pub fn bookmarks_manager_side_panel(
             if import_btn.clicked() {
               if state.import_json.trim().is_empty() {
                 state.error = Some("Import JSON is empty.".to_string());
-              } else if let Err(err) =
-                state.io_job.start_import_json(state.import_json.clone())
-              {
+              } else if let Err(err) = state.io_job.start_import_json(state.import_json.clone()) {
                 state.error = Some(err);
               }
             }
@@ -1545,12 +1538,17 @@ fn folder_combo_box(
         .auto_shrink([false, false])
         .max_height(row_height * 12.0)
         .id_source((combo_id, "popup"))
-        .show_rows(ui, row_height, folder_cache.folder_options.len(), |ui, row_range| {
-          for idx in row_range {
-            let (id, label) = &folder_cache.folder_options[idx];
-            ui.selectable_value(value, *id, label);
-          }
-        });
+        .show_rows(
+          ui,
+          row_height,
+          folder_cache.folder_options.len(),
+          |ui, row_range| {
+            for idx in row_range {
+              let (id, label) = &folder_cache.folder_options[idx];
+              ui.selectable_value(value, *id, label);
+            }
+          },
+        );
     })
     .response;
   response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
@@ -1688,11 +1686,11 @@ fn list_row(
 #[cfg(test)]
 mod tests {
   use super::{
-    bookmarks_manager_side_panel, BookmarksManagerOutput, BookmarksManagerRequest,
-    BookmarksManagerState, CreateFolderState, EditBookmarkState,
+    bookmarks_manager_side_panel, BookmarksManagerOutput, BookmarksManagerState, CreateFolderState,
+    EditBookmarkState,
   };
-  use crate::ui::{a11y_test_util, BookmarkDelta, BookmarkId, BookmarkStore};
   use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
+  use crate::ui::{a11y_test_util, BookmarkDelta, BookmarkId, BookmarkStore};
   use std::sync::mpsc;
   use std::time::{Duration, Instant};
 
@@ -1973,14 +1971,8 @@ mod tests {
       .expect("failed to find Choose file… button for import");
 
     let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
-    assert!(
-      out
-        .requests
-        .iter()
-        .any(|r| *r == BookmarksManagerRequest::RequestOpenImportDialog),
-      "expected clicking Choose file… to emit RequestOpenImportDialog, got {:?}",
-      out.requests
-    );
+    assert!(out.request_pick_import_file);
+    assert!(!out.request_pick_export_file);
   }
 
   #[test]
@@ -1998,14 +1990,8 @@ mod tests {
       .expect("failed to find Choose file… button for export");
 
     let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
-    assert!(
-      out
-        .requests
-        .iter()
-        .any(|r| *r == BookmarksManagerRequest::RequestOpenExportDialog),
-      "expected clicking Choose file… to emit RequestOpenExportDialog, got {:?}",
-      out.requests
-    );
+    assert!(out.request_pick_export_file);
+    assert!(!out.request_pick_import_file);
   }
 
   #[test]
@@ -2014,15 +2000,13 @@ mod tests {
     state.import_path = "old_import.json".to_string();
     state.export_path = "old_export.json".to_string();
 
-    let import_changed = state.apply_import_dialog_selection(Some(std::path::PathBuf::from(
-      "/tmp/import.json",
-    )));
+    let import_changed =
+      state.apply_import_dialog_selection(Some(std::path::PathBuf::from("/tmp/import.json")));
     assert!(import_changed);
     assert_eq!(state.import_path, "/tmp/import.json");
 
-    let export_changed = state.apply_export_dialog_selection(Some(std::path::PathBuf::from(
-      "/tmp/export.json",
-    )));
+    let export_changed =
+      state.apply_export_dialog_selection(Some(std::path::PathBuf::from("/tmp/export.json")));
     assert!(export_changed);
     assert_eq!(state.export_path, "/tmp/export.json");
 
@@ -2049,7 +2033,10 @@ mod tests {
     state.io_job = BookmarksIoJob::ExportingJson { rx };
 
     let output = poll_io_job_and_end_frame(&ctx, &mut state, &mut store, &mut out);
-    assert!(state.error.as_ref().is_some_and(|s| s.contains("disconnected")));
+    assert!(state
+      .error
+      .as_ref()
+      .is_some_and(|s| s.contains("disconnected")));
     assert_eq!(state.export_json.as_deref(), Some("{\"old\":true}"));
     assert_eq!(output.platform_output.copied_text, "");
   }
@@ -2075,11 +2062,13 @@ mod tests {
       &ctx,
       &mut state,
       &mut store,
-      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
-        action: accesskit::Action::Expand,
-        target: node_id,
-        data: None,
-      })],
+      vec![egui::Event::AccessKitActionRequest(
+        accesskit::ActionRequest {
+          action: accesskit::Action::Expand,
+          target: node_id,
+          data: None,
+        },
+      )],
     );
     let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
     assert_eq!(node.is_expanded(), Some(true));
@@ -2106,11 +2095,13 @@ mod tests {
       &ctx,
       &mut state,
       &mut store,
-      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
-        action: accesskit::Action::Expand,
-        target: node_id,
-        data: None,
-      })],
+      vec![egui::Event::AccessKitActionRequest(
+        accesskit::ActionRequest {
+          action: accesskit::Action::Expand,
+          target: node_id,
+          data: None,
+        },
+      )],
     );
     let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
     assert_eq!(node.is_expanded(), Some(true));
@@ -2129,11 +2120,13 @@ mod tests {
       &ctx,
       &mut state,
       &mut store,
-      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
-        action: accesskit::Action::Collapse,
-        target: node_id,
-        data: None,
-      })],
+      vec![egui::Event::AccessKitActionRequest(
+        accesskit::ActionRequest {
+          action: accesskit::Action::Collapse,
+          target: node_id,
+          data: None,
+        },
+      )],
     );
     let (_node_id, node) = accesskit_node_by_name(&output, "Folder: Work");
     assert_eq!(node.is_expanded(), Some(false));
@@ -2240,7 +2233,10 @@ mod tests {
       |state, _store, _out| state.export_json.is_some() || state.error.is_some(),
     );
 
-    let json = state.export_json.clone().expect("export_json should be set");
+    let json = state
+      .export_json
+      .clone()
+      .expect("export_json should be set");
 
     assert_eq!(output.platform_output.copied_text, json);
     assert_eq!(
@@ -2338,7 +2334,11 @@ mod tests {
     assert!(!out.changed);
     assert!(!out.request_flush);
     assert!(out.bookmark_deltas.is_empty());
-    assert!(state.error.as_ref().unwrap().contains("Failed to import bookmarks"));
+    assert!(state
+      .error
+      .as_ref()
+      .unwrap()
+      .contains("Failed to import bookmarks"));
     assert_eq!(state.import_json, "not valid json");
   }
 }
