@@ -185,9 +185,20 @@ fn recursion_triggers_stack_overflow_range_error() {
     .exec_script("function recurse(){ return recurse(); } recurse();")
     .unwrap_err();
 
-  let VmError::ThrowWithStack { value: _, stack } = err else {
+  let VmError::ThrowWithStack { value, stack } = err else {
     panic!("expected thrown RangeError, got {err:?}");
   };
+
+  let Value::Object(thrown_obj) = value else {
+    panic!("expected thrown value to be object, got {value:?}");
+  };
+  let range_error_proto = rt.realm().intrinsics().range_error_prototype();
+  let mut scope = rt.heap.scope();
+  scope.push_root(value).unwrap();
+  assert_eq!(
+    scope.heap().object_prototype(thrown_obj).unwrap(),
+    Some(range_error_proto)
+  );
   assert_eq!(stack.len(), 8);
   assert!(
     stack

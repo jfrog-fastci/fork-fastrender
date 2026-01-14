@@ -62,7 +62,6 @@ fn vm_stack_overflow_on_deep_manual_frames() -> Result<(), VmError> {
   // Create a runtime so VM intrinsics are initialized; stack overflow should surface as a thrown
   // RangeError object rather than an internal helper error.
   let mut rt = JsRuntime::new(vm, heap)?;
-
   let mut scope = rt.heap.scope();
   let call_id = rt.vm.register_native_call(recursive)?;
   let name = scope.alloc_string("recurse")?;
