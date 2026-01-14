@@ -213,7 +213,9 @@ impl TabGroupState {
     } else {
       "Collapse tab group"
     };
-    self.tab_group_chip_a11y_label_cache.get_or_update(prefix, title)
+    self
+      .tab_group_chip_a11y_label_cache
+      .get_or_update(prefix, title)
   }
 }
 
@@ -2328,6 +2330,20 @@ impl BrowserAppState {
   pub fn clear_history(&mut self) {
     self.history.clear();
     self.visited.clear();
+  }
+
+  /// Remove completed downloads from the downloads history.
+  ///
+  /// Returns the number of removed entries.
+  ///
+  /// When any downloads are removed, this bumps `session_revision` so windowed UI front-ends can
+  /// persist the updated session snapshot.
+  pub fn clear_completed_downloads(&mut self) -> usize {
+    let removed = self.downloads.clear_completed();
+    if removed > 0 {
+      self.bump_session_revision();
+    }
+    removed
   }
 
   /// Populate [`BrowserAppState::visited`] from the persisted [`BrowserAppState::history`].
@@ -5645,7 +5661,10 @@ mod tab_group_tests {
       total_bytes: Some(10),
     });
     let rev1 = app.session_revision();
-    assert!(rev1 > rev0, "expected DownloadStarted to bump session revision");
+    assert!(
+      rev1 > rev0,
+      "expected DownloadStarted to bump session revision"
+    );
 
     app.apply_worker_msg(WorkerToUi::DownloadFinished {
       tab_id,
@@ -5653,7 +5672,95 @@ mod tab_group_tests {
       outcome: DownloadOutcome::Completed,
     });
     let rev2 = app.session_revision();
-    assert!(rev2 > rev1, "expected DownloadFinished to bump session revision");
+    assert!(
+      rev2 > rev1,
+      "expected DownloadFinished to bump session revision"
+    );
+  }
+
+  #[test]
+  fn session_revision_bumps_for_clear_completed_downloads() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let completed = DownloadId(1);
+    let cancelled = DownloadId(2);
+
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: completed,
+      url: "https://example.com/completed.txt".to_string(),
+      file_name: "completed.txt".to_string(),
+      path: std::path::PathBuf::from("completed.txt"),
+      total_bytes: None,
+    });
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id: completed,
+      outcome: DownloadOutcome::Completed,
+    });
+
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: cancelled,
+      url: "https://example.com/cancelled.txt".to_string(),
+      file_name: "cancelled.txt".to_string(),
+      path: std::path::PathBuf::from("cancelled.txt"),
+      total_bytes: None,
+    });
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id: cancelled,
+      outcome: DownloadOutcome::Cancelled,
+    });
+
+    let rev0 = app.session_revision();
+    let removed = app.clear_completed_downloads();
+    let rev1 = app.session_revision();
+    assert_eq!(removed, 1);
+    assert!(
+      rev1 > rev0,
+      "expected clear_completed_downloads to bump session revision"
+    );
+    assert_eq!(
+      app
+        .downloads
+        .downloads
+        .iter()
+        .map(|d| d.download_id)
+        .collect::<Vec<_>>(),
+      vec![cancelled]
+    );
+  }
+
+  #[test]
+  fn clear_completed_downloads_noop_does_not_bump_session_revision() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let cancelled = DownloadId(1);
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: cancelled,
+      url: "https://example.com/cancelled.txt".to_string(),
+      file_name: "cancelled.txt".to_string(),
+      path: std::path::PathBuf::from("cancelled.txt"),
+      total_bytes: None,
+    });
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id: cancelled,
+      outcome: DownloadOutcome::Cancelled,
+    });
+
+    let rev0 = app.session_revision();
+    let removed = app.clear_completed_downloads();
+    let rev1 = app.session_revision();
+    assert_eq!(removed, 0);
+    assert_eq!(
+      rev1, rev0,
+      "expected no-op clear_completed_downloads not to bump session revision"
+    );
   }
 
   #[test]
