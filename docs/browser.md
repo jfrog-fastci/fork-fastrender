@@ -194,13 +194,13 @@ binary)”). Notably:
   `wgpu` to use a fallback (software) adapter when selecting a GPU for the windowed UI.
 - `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backends ...` (alias: `--wgpu-backend`) – restrict
   the `wgpu` backend set (for example `gl`) when the default backend selection fails.
-- `FASTR_PERF_LOG=1` / `browser --perf-log` – enable JSONL responsiveness logging for the windowed UI
+- `browser --perf-log` (preferred; env: `FASTR_PERF_LOG=1`) – enable JSONL responsiveness logging for the windowed UI
   (frame times, input latency, TTFP, CPU usage). See
   [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
-- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` / `browser --perf-log-out <path>` – write the responsiveness
+- `browser --perf-log-out <path>` (preferred; env: `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` + `FASTR_PERF_LOG=1`) – write the responsiveness
   JSONL log to a file (instead of stdout).
-- `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` / `browser --trace-out <path>` – write a Perfetto/Chrome
-  trace of the windowed browser UI event loop (written when the browser process exits).
+- `browser --trace-out <path>` (preferred; env: `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json`, legacy alias: `FASTR_PERF_TRACE_OUT`) – write a Perfetto/Chrome
+  trace of the windowed browser UI event loop (written when the browser process exits; cap retention with `FASTR_TRACE_MAX_EVENTS=<N>`).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
