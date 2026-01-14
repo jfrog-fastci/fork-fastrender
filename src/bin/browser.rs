@@ -17196,6 +17196,11 @@ impl App {
       );
     }
 
+    // Drop any coalesced `FrameReady` pixmaps eagerly. The worker→UI bridge thread holds a clone of
+    // `frame_ready_bridge_coalescer`; if the worker is stuck and stops sending, the bridge may never
+    // wake up to drop the coalescer, so clear it proactively during shutdown to reclaim memory.
+    drop(self.frame_ready_bridge_coalescer.drain());
+
     self.destroy_all_textures();
   }
 
