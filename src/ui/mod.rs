@@ -13,10 +13,6 @@ pub mod browser_app;
 pub mod browser_limits;
 pub mod renderer_ipc;
 pub mod protocol_limits;
-// Worker-side per-tab controller used only by the windowed browser UI + integration tests.
-//
-// Keep it behind `browser_ui` so renderer-only builds don't even parse UI-only code.
-#[cfg(feature = "browser_ui")]
 pub mod browser_tab_controller;
 pub mod chrome_action;
 pub mod chrome_action_url;
@@ -285,7 +281,6 @@ pub mod fast_accesskit_actions;
 #[cfg(feature = "browser_ui")]
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 
-#[cfg(feature = "browser_ui")]
 pub use browser_tab_controller::BrowserTabController;
 #[cfg(any(test, feature = "browser_ui"))]
 pub use render_worker::spawn_browser_worker_for_test;
