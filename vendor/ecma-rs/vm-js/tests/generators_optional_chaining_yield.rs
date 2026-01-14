@@ -29,6 +29,27 @@ fn generator_optional_chain_computed_member_propagates_short_circuit_and_skips_k
 }
 
 #[test]
+fn generator_optional_chain_computed_member_propagates_and_skips_yield_in_key_after_base_short_circuit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = (yield 0)?.x[(yield "should-not-yield")];
+        return r === undefined;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === 0 && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_optional_chain_call_computed_member_propagates_short_circuit_and_skips_key_and_args() {
   let mut rt = new_runtime();
   let value = rt
@@ -41,6 +62,27 @@ fn generator_optional_chain_call_computed_member_propagates_short_circuit_and_sk
 
         var r = (yield 0)?.x[(side++, "toString")](arg());
         return r === undefined && side === 0 && arg_side === 0;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === 0 && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_call_computed_member_propagates_and_skips_yield_in_key_and_args_after_base_short_circuit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = (yield 0)?.x[(yield "should-not-yield-key")](yield "should-not-yield-arg");
+        return r === undefined;
       }
       var it = g();
       var r1 = it.next();
@@ -74,4 +116,3 @@ fn generator_optional_chain_computed_member_does_not_evaluate_key_when_base_is_n
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-
