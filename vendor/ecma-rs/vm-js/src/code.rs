@@ -51,7 +51,9 @@ pub struct CompiledScript {
   /// program.
   ///
   /// Notes:
-  /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
+  /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor, but
+  ///   generator functions are allocated as interpreter-backed ECMAScript functions so their bodies
+  ///   execute via the AST evaluator at call-time.
   /// - Private-name syntax (`#x`, `#m`, ...) is not supported in the compiled executor.
   /// - Async (non-generator) function bodies can execute via the compiled async executor, and can
   ///   fall back on a per-function basis when they use unsupported `await` forms (see
@@ -172,16 +174,16 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    // The compiled (HIR) executor does not yet support generator bodies, and it only supports a
-    // subset of async classic scripts (top-level await as a direct statement/initializer/assignment,
-    // plus top-level `for await..of` loops without nested await, with an optional direct `await` in
-    // the RHS).
+    // The compiled (HIR) executor does not yet support private names or all top-level await forms.
+    //
+    // Generator function bodies execute via the AST evaluator at call-time, so classic scripts that
+    // merely define/call generators can still run via the compiled executor.
     //
     // Fall back to the AST interpreter when the script uses unsupported top-level await forms (for
     // example `await` nested inside class static blocks, or `for await..of` bodies that themselves
     // contain `await`).
     let requires_ast_fallback =
-      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
+      contains_private_names || top_level_await_requires_ast_fallback;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -246,8 +248,9 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    let requires_ast_fallback =
-      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
+    // See `compile_script`: generator function bodies execute via per-function AST evaluation, so
+    // generator modules can still instantiate/execute through the compiled executor.
+    let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -338,8 +341,9 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    let requires_ast_fallback =
-      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
+    // See `compile_script`: generator function bodies execute via per-function AST evaluation, so
+    // classic scripts that contain generators do not require full-script AST fallback.
+    let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -391,8 +395,9 @@ impl CompiledScript {
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
-    let requires_ast_fallback =
-      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
+    // See `compile_module`: generator function bodies execute via per-function AST evaluation, so
+    // modules that contain generators do not require full-module AST fallback.
+    let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -431,8 +436,7 @@ impl CompiledScript {
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     let top_level_await_requires_ast_fallback =
       contains_top_level_await && top_level_await_requires_ast_fallback(&parsed.stx.body);
-    let requires_ast_fallback =
-      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
+    let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))

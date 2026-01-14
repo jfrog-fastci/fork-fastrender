@@ -3085,8 +3085,8 @@ fn compiled_module_default_export_generator_function_uses_ecma_call_handler() ->
       "#,
     )?;
     assert!(
-      script_a.requires_ast_fallback,
-      "generator syntax should require module-level AST fallback"
+      !script_a.requires_ast_fallback,
+      "modules that define generator functions should still be able to instantiate/execute via the compiled executor (generator bodies execute via call-time AST evaluation)"
     );
     let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
@@ -3112,8 +3112,8 @@ fn compiled_module_default_export_generator_function_uses_ecma_call_handler() ->
       Err(e) => return Err(e),
     };
     assert!(
-      graph.module(a).ast.is_some(),
-      "linking should materialize an AST when CompiledScript.requires_ast_fallback is true"
+      graph.module(a).ast.is_none(),
+      "linking should not need to materialize an AST for generator-only modules"
     );
 
     let promise = match graph.evaluate(

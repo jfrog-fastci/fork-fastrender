@@ -18903,7 +18903,7 @@ mod async_function_ast_fallback_tests {
     assert!(!script.contains_async_generators);
     assert!(
       !script.requires_ast_fallback,
-      "compiled scripts should only require full AST fallback for generators or top-level await"
+      "compiled scripts should only require full AST fallback for private names or unsupported top-level await patterns"
     );
     let result = rt.exec_compiled_script(script)?;
     let Value::Object(func_obj) = result else {
@@ -18967,7 +18967,7 @@ mod async_function_ast_fallback_tests {
     assert!(!script.contains_async_generators);
     assert!(
       !script.requires_ast_fallback,
-      "compiled scripts should only require full AST fallback for generators or top-level await"
+      "compiled scripts should only require full AST fallback for private names or unsupported top-level await patterns"
     );
     let result = rt.exec_compiled_script(script)?;
     let Value::Object(func_obj) = result else {

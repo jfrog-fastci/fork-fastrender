@@ -2222,8 +2222,8 @@ impl JsRuntime {
     {
       // Some script bodies are not yet supported by the compiled (HIR) executor.
       //
-      // Async function bodies execute via the AST interpreter at call-time (see
-      // `Vm::call_user_function`).
+      // Async and generator function bodies execute via the AST interpreter at call-time (see
+      // `Vm::call_user_function` and `hir_exec::alloc_user_function_object`).
       //
       // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
       // can still execute correctly without partially executing any HIR code (which could introduce
@@ -2438,11 +2438,10 @@ impl JsRuntime {
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback {
       // See `exec_compiled_script_with_host`: some script bodies are not yet supported by the
-      // compiled (HIR) executor (e.g. generator bodies, private names, unsupported top-level await
-      // patterns).
+      // compiled (HIR) executor (e.g. private names, unsupported top-level await patterns).
       //
-      // Note: scripts that merely *define* async functions can still execute via HIR; async function
-      // bodies fall back to the AST interpreter at call-time (see `Vm::call_user_function`).
+      // Note: scripts that merely *define* async/generator functions can still execute via HIR;
+      // async/generator bodies fall back to the AST interpreter at call-time.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
     }

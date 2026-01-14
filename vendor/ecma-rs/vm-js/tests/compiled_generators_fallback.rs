@@ -53,8 +53,8 @@ fn compiled_script_with_host_and_hooks_falls_back_for_generators() -> Result<(),
   )?;
 
   assert!(
-    script.requires_ast_fallback,
-    "generator scripts should require AST fallback until the HIR executor supports generator bodies"
+    !script.requires_ast_fallback,
+    "scripts that define/call generator functions should be able to execute via HIR (generator bodies execute via call-time AST evaluation)"
   );
 
   let mut host = ();
