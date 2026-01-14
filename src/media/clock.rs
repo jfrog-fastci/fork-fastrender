@@ -299,7 +299,7 @@ impl MediaClock for AudioStreamClock {
   }
 }
 
-/// Minimal playback state for [`PlaybackClock`].
+/// Whether a [`PlaybackClock`] is currently advancing (`Playing`) or frozen (`Paused`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
   Playing,
