@@ -102,6 +102,244 @@ fn derived_constructor_body_destructuring_default_this_throws_reference_error_co
 }
 
 #[test]
+fn derived_constructor_param_array_destructuring_default_this_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor([a = this] = []) { super(); }
+        }
+        try { new B([]); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_param_array_destructuring_default_this_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor([a = this] = []) { super(); }
+      }
+      try { new B([]); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_body_array_destructuring_default_this_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor() {
+            let a;
+            ([a = this] = []);
+            super();
+          }
+        }
+        try { new B(); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_body_array_destructuring_default_this_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor() {
+          let a;
+          ([a = this] = []);
+          super();
+        }
+      }
+      try { new B(); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_param_object_pattern_computed_key_this_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor({ [this]: a } = {}) { super(); }
+        }
+        try { new B({}); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_param_object_pattern_computed_key_this_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor({ [this]: a } = {}) { super(); }
+      }
+      try { new B({}); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_body_object_pattern_computed_key_this_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor() {
+            let a;
+            ({ [this]: a } = {});
+            super();
+          }
+        }
+        try { new B(); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_body_object_pattern_computed_key_this_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor() {
+          let a;
+          ({ [this]: a } = {});
+          super();
+        }
+      }
+      try { new B(); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_param_object_pattern_computed_key_super_computed_does_not_run() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        class A {}
+        class B extends A {
+          constructor({ [super[(side = 1, "m")]]: a } = {}) { super(); }
+        }
+        try { new B({}); "no"; } catch (e) { e.name + ":" + side }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError:0");
+}
+
+#[test]
+fn derived_constructor_param_object_pattern_computed_key_super_computed_does_not_run_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      class A {}
+      class B extends A {
+        constructor({ [super[(side = 1, "m")]]: a } = {}) { super(); }
+      }
+      try { new B({}); "no"; } catch (e) { e.name + ":" + side }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError:0");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_body_object_pattern_computed_key_super_computed_does_not_run() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        class A {}
+        class B extends A {
+          constructor() {
+            let a;
+            ({ [super[(side = 1, "m")]]: a } = {});
+            super();
+          }
+        }
+        try { new B(); "no"; } catch (e) { e.name + ":" + side }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError:0");
+}
+
+#[test]
+fn derived_constructor_body_object_pattern_computed_key_super_computed_does_not_run_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          let a;
+          ({ [super[(side = 1, "m")]]: a } = {});
+          super();
+        }
+      }
+      try { new B(); "no"; } catch (e) { e.name + ":" + side }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError:0");
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_param_destructuring_default_super_property_throws_reference_error() {
   let mut rt = new_runtime();
   let value = rt
