@@ -1836,7 +1836,13 @@ impl BrowserTabController {
         }
 
         let focused = self.interaction.focused_node_id();
-        let (focused_is_input, focused_is_textarea, focused_is_select, focused_is_button) = focused
+        let (
+          focused_is_input,
+          focused_is_textarea,
+          focused_is_select,
+          focused_is_button,
+          focused_is_video_controls,
+        ) = focused
           .and_then(|focused_id| {
             crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
               (
@@ -1844,10 +1850,11 @@ impl BrowserTabController {
                 dom_is_textarea(node),
                 dom_is_select(node),
                 dom_is_button(node),
+                dom_is_video_controls(node),
               )
             })
           })
-          .unwrap_or((false, false, false, false));
+          .unwrap_or((false, false, false, false, false));
 
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
@@ -1876,6 +1883,7 @@ impl BrowserTabController {
             focused_is_textarea,
             focused_is_select,
             focused_is_button,
+            focused_is_video_controls,
           ),
         )
       });
@@ -1889,6 +1897,7 @@ impl BrowserTabController {
       focused_is_textarea,
       focused_is_select,
       focused_is_button,
+      focused_is_video_controls,
     ) = match result {
       Ok(result) => result,
       Err(_) => {
@@ -1897,6 +1906,7 @@ impl BrowserTabController {
         let mut focused_is_textarea = false;
         let mut focused_is_select = false;
         let mut focused_is_button = false;
+        let mut focused_is_video_controls = false;
         let mut fallback_picker_value: Option<String> = None;
         let changed = self.document.mutate_dom(|dom| {
           let (dom_changed, next_action) =
@@ -1915,6 +1925,7 @@ impl BrowserTabController {
               focused_is_textarea = dom_is_textarea(node);
               focused_is_select = dom_is_select(node);
               focused_is_button = dom_is_button(node);
+              focused_is_video_controls = dom_is_video_controls(node);
             }
           }
 
@@ -1932,6 +1943,7 @@ impl BrowserTabController {
           focused_is_textarea,
           focused_is_select,
           focused_is_button,
+          focused_is_video_controls,
         )
       }
     };
@@ -1965,8 +1977,13 @@ impl BrowserTabController {
     // control that would normally consume them, treat the key as a viewport scrolling shortcut.
     if action_is_none {
       let focus_consumes_space =
-        focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
-      let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
+        focused_is_input
+          || focused_is_textarea
+          || focused_is_select
+          || focused_is_button
+          || focused_is_video_controls;
+      let focus_consumes_arrows =
+        focused_is_input || focused_is_textarea || focused_is_select || focused_is_video_controls;
       let focus_consumes_home_end = focus_consumes_arrows;
 
       let allow_scroll = match key {
@@ -3068,6 +3085,16 @@ fn dom_is_button(node: &crate::dom::DomNode) -> bool {
   node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+}
+
+fn dom_is_video_controls(node: &crate::dom::DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+  if tag.eq_ignore_ascii_case("video") || tag.eq_ignore_ascii_case("audio") {
+    return node.get_attribute_ref("controls").is_some();
+  }
+  false
 }
 
 #[cfg(test)]
