@@ -1897,6 +1897,38 @@ mod tests {
     min_x.zip(max_x)
   }
 
+  fn extract_first_form_control_from_fragment_tree(
+    fragment_tree: &crate::tree::fragment_tree::FragmentTree,
+  ) -> Option<crate::tree::box_tree::FormControl> {
+    use crate::tree::box_tree::ReplacedType;
+    use crate::tree::fragment_tree::FragmentContent;
+
+    let mut stack: Vec<&crate::tree::fragment_tree::FragmentNode> = Vec::new();
+    stack.push(&fragment_tree.root);
+    for root in fragment_tree.additional_fragments.iter() {
+      stack.push(root);
+    }
+    while let Some(node) = stack.pop() {
+      if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+        if let ReplacedType::FormControl(control) = replaced_type {
+          return Some(control.clone());
+        }
+      }
+
+      if matches!(
+        node.content,
+        FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+      ) {
+        continue;
+      }
+
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
   #[test]
   fn document_selection_repaints_from_cache_without_layout() -> Result<()> {
     let renderer = renderer_for_tests();
@@ -2018,6 +2050,66 @@ mod tests {
     assert!(
       caret_start.0 + 5 < caret_end.0,
       "expected caret x to move left; start={caret_start:?}, end={caret_end:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn form_control_ime_preedit_propagates_into_paint_state() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        input {
+          font: 24px monospace;
+          border: 0;
+          padding: 0;
+          margin: 0;
+          background: white;
+          color: black;
+        }
+      </style>
+      <input value="hello">
+    "#;
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(320, 40))?;
+    let input_id = find_first_element_preorder_id(document.dom(), "input")
+      .expect("expected to find <input> preorder id");
+
+    // Simulate the typical cached paint flow:
+    // - Layout was already performed with focus state (CSS-affecting).
+    // - Then IME preedit begins (paint-only).
+    let mut focused_state = InteractionState::default();
+    focused_state.set_focused(Some(input_id));
+    focused_state.set_focus_chain(vec![input_id]);
+    let prepared = document.prepare_dom_with_options_and_interaction_state(Some(&focused_state))?;
+
+    let mut preedit_state = focused_state.clone();
+    preedit_state.set_ime_preedit(Some(crate::interaction::ImePreeditState {
+      node_id: input_id,
+      text: "abc".to_string(),
+      cursor: Some((1, 2)),
+    }));
+
+    let mut fragment_tree = prepared.fragment_tree().clone();
+    crate::interaction::paint_overlays::apply_form_control_paint_overlays_to_fragment_tree(
+      prepared.box_tree(),
+      &mut fragment_tree,
+      Some(&preedit_state),
+    );
+
+    let control = extract_first_form_control_from_fragment_tree(&fragment_tree)
+      .expect("expected to find a form control in fragment tree");
+    assert!(
+      control.focused,
+      "expected form control to remain focused after overlay patching"
+    );
+    assert_eq!(
+      control.ime_preedit,
+      Some(crate::tree::box_tree::ImePreeditPaintState {
+        text: "abc".to_string(),
+        cursor: Some((1, 2)),
+      })
     );
     Ok(())
   }
