@@ -77,3 +77,27 @@ fn generator_yield_in_class_computed_method_name() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_class_eval_is_strict_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        return class extends (yield 1) { [(x = 1, "m")]() { return 2; } };
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var ok = false;
+      try {
+        it.next(Base);
+      } catch (e) {
+        ok = e && e.name === "ReferenceError" && typeof x === "undefined";
+      }
+      r1.value === 1 && r1.done === false && ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

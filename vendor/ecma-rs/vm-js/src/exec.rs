@@ -52182,7 +52182,7 @@ pub(crate) fn generator_resume(
         let new_target = cont.new_target;
         let func = cont.func.clone();
 
-        let result = {
+        let (result, strict_after) = {
           let mut evaluator = Evaluator {
             vm,
             host,
@@ -52197,8 +52197,13 @@ pub(crate) fn generator_resume(
             this_initialized: true,
             this_root_idx: None,
           };
-          gen_start_body(&mut evaluator, &mut scope, &func)
+          let result = gen_start_body(&mut evaluator, &mut scope, &func);
+          (result, evaluator.strict)
         };
+        // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
+        // evaluation forces strict mode). Persist the current strictness into the continuation so it
+        // is restored correctly across subsequent `yield` suspensions.
+        cont.strict = strict_after;
 
         match result {
           Ok(GenEval::Suspend(suspend)) => {
@@ -52280,7 +52285,7 @@ pub(crate) fn generator_resume(
         GeneratorResumeInput::Return(v) => Completion::Return(v),
       };
 
-      let result = {
+      let (result, strict_after) = {
         let mut evaluator = Evaluator {
           vm,
           host,
@@ -52295,8 +52300,12 @@ pub(crate) fn generator_resume(
           this_initialized: true,
           this_root_idx: None,
         };
-        gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion)
+        let result = gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion);
+        (result, evaluator.strict)
       };
+      // Persist temporary strictness changes across yield suspensions (see comment in the
+      // `SuspendedStart` branch above).
+      cont.strict = strict_after;
 
       match result {
         Ok(GenEval::Suspend(suspend)) => {
