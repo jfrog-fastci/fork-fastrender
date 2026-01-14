@@ -10495,7 +10495,7 @@ impl<'a> Evaluator<'a> {
       self.tick()?;
 
       let mut iter_env: Option<GcEnv> = None;
-      if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
         if matches!(
           *mode,
           VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -10503,6 +10503,20 @@ impl<'a> Evaluator<'a> {
           let env = iter_scope.env_create(Some(outer_lex))?;
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
+ 
+          // Each iteration of a lexical `for-in` loop must start with uninitialized bindings for
+          // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+          let mutable = *mode == VarDeclMode::Let;
+          if let Err(err) = self.instantiate_lexical_names_from_pat(
+            &mut iter_scope,
+            env,
+            &pat_decl.stx.pat.stx,
+            pat_decl.loc,
+            mutable,
+          ) {
+            self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+            return Err(err);
+          }
         }
       }
 
@@ -10651,7 +10665,7 @@ impl<'a> Evaluator<'a> {
       };
 
       let mut iter_env: Option<GcEnv> = None;
-      if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+      if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
         if matches!(
           *mode,
           VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -10659,6 +10673,20 @@ impl<'a> Evaluator<'a> {
           let env = iter_scope.env_create(Some(outer_lex))?;
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
+ 
+          // Each iteration of a lexical `for-of` loop must start with uninitialized bindings for
+          // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+          let mutable = *mode == VarDeclMode::Let;
+          if let Err(err) = self.instantiate_lexical_names_from_pat(
+            &mut iter_scope,
+            env,
+            &pat_decl.stx.pat.stx,
+            pat_decl.loc,
+            mutable,
+          ) {
+            self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+            return Err(self.iterator_close_on_error(&mut iter_scope, &iterator_record, err));
+          }
         }
       }
 
@@ -39678,7 +39706,7 @@ fn gen_for_in_loop(
     evaluator.tick()?;
 
     let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+    if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
       if matches!(
         *mode,
         VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -39686,6 +39714,22 @@ fn gen_for_in_loop(
         let env = scope.env_create(Some(outer_lex))?;
         evaluator.env.set_lexical_env(scope.heap_mut(), env);
         iter_env_created = true;
+ 
+        // Each iteration of a lexical `for-in` loop must start with uninitialized bindings for
+        // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+        let mutable = *mode == VarDeclMode::Let;
+        if let Err(err) = evaluator.instantiate_lexical_names_from_pat(
+          scope,
+          env,
+          &pat_decl.stx.pat.stx,
+          pat_decl.loc,
+          mutable,
+        ) {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          return Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator, scope, err,
+          )?));
+        }
       }
     }
 
@@ -40057,7 +40101,7 @@ fn gen_for_of_loop(
     };
 
     let mut iter_env_created = false;
-    if let ForInOfLhs::Decl((mode, _)) = &stmt.lhs {
+    if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
       if matches!(
         *mode,
         VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
@@ -40065,6 +40109,20 @@ fn gen_for_of_loop(
         let env = scope.env_create(Some(outer_lex))?;
         evaluator.env.set_lexical_env(scope.heap_mut(), env);
         iter_env_created = true;
+ 
+        // Each iteration of a lexical `for-of` loop must start with uninitialized bindings for
+        // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+        let mutable = *mode == VarDeclMode::Let;
+        if let Err(err) = evaluator.instantiate_lexical_names_from_pat(
+          scope,
+          env,
+          &pat_decl.stx.pat.stx,
+          pat_decl.loc,
+          mutable,
+        ) {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          return Err(evaluator.iterator_close_on_error(scope, iterator_record, err));
+        }
       }
     }
 
