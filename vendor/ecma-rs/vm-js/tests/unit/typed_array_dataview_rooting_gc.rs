@@ -217,6 +217,110 @@ fn array_buffer_slice_roots_this_and_end_across_gc_in_tonumber() -> Result<(), V
 }
 
 #[test]
+fn array_buffer_transfer_to_immutable_roots_this_across_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(8);
+      return [buf, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [buf_val, _, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_buffer();
+
+  let mut scope = heap.scope();
+  let out = builtins::array_buffer_prototype_transfer_to_immutable(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    buf_val,
+    &[],
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected transferToImmutable() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(dst_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "ArrayBuffer.prototype.transferToImmutable returned non-object",
+    ));
+  };
+
+  let dst_len = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(dst_obj),
+    &[],
+  )?;
+  assert_eq!(dst_len, Value::Number(8.0));
+
+  // Source buffer must be detached.
+  let src_len = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    buf_val,
+    &[],
+  )?;
+  assert_eq!(src_len, Value::Number(0.0));
+
+  let detached = builtins::array_buffer_prototype_detached_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    buf_val,
+    &[],
+  )?;
+  assert_eq!(detached, Value::Bool(true));
+
+  // Immutable buffers are not resizable and have maxByteLength == byteLength.
+  let resizable = builtins::array_buffer_prototype_resizable_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(dst_obj),
+    &[],
+  )?;
+  assert_eq!(resizable, Value::Bool(false));
+
+  let max_len = builtins::array_buffer_prototype_max_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(dst_obj),
+    &[],
+  )?;
+  assert_eq!(max_len, Value::Number(8.0));
+
+  Ok(())
+}
+
+#[test]
 fn typed_array_set_roots_inputs_across_gc_in_offset_coercion() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 
