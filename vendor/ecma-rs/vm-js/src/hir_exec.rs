@@ -6787,17 +6787,25 @@ impl<'vm> HirEvaluator<'vm> {
   
           scope.push_roots(&[receiver, Value::Object(home_object)])?;
 
-          // Spec: for `super[expr]`, `ToPropertyKey` is observed before `GetSuperBase`.
+          // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
+          // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
+          // coercion does not affect the resolved super base.
           let (key, super_base_obj) = match &member.property {
             hir_js::ObjectKey::Computed(expr_id) => {
               let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
               scope.push_root(key_value)?;
 
+              let super_base = scope.object_get_prototype(home_object)?;
+              if let Some(super_base_obj) = super_base {
+                scope.push_root(Value::Object(super_base_obj))?;
+              }
+
               let key =
                 scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
               root_property_key(&mut scope, key)?;
 
-              let super_base = scope.object_get_prototype(home_object)?;
+              // Dereferencing a super property on a null super base throws a TypeError, but
+              // `ToPropertyKey` must still be observed first (per spec ordering above).
               let Some(super_base_obj) = super_base else {
                 return Err(throw_type_error(
                   self.vm,
@@ -6805,7 +6813,7 @@ impl<'vm> HirEvaluator<'vm> {
                   "Cannot read a super property from a null prototype",
                 )?);
               };
-              scope.push_root(Value::Object(super_base_obj))?;
+
               (key, super_base_obj)
             }
             other => {
@@ -7366,18 +7374,20 @@ impl<'vm> HirEvaluator<'vm> {
           let this_value = self.resolve_this_binding(&mut update_scope)?;
           update_scope.push_root(this_value)?;
 
-          // Spec: for `super[expr]++`, `ToPropertyKey` must be observed before `GetSuperBase`.
+          // Spec: for `super[expr]++`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
+          // `prop-expr-getsuperbase-before-topropertykey-putvalue-increment.js`), so prototype
+          // mutation during key coercion does not affect the resolved super base.
           let (key, obj) = match &member.property {
             hir_js::ObjectKey::Computed(expr_id) => {
               let key_value = self.eval_expr(&mut update_scope, body, *expr_id)?;
               update_scope.push_root(key_value)?;
 
+              let base = self.super_base_value(&mut update_scope)?;
+              update_scope.push_root(base)?;
+
               let key =
                 update_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
               root_property_key(&mut update_scope, key)?;
-
-              let base = self.super_base_value(&mut update_scope)?;
-              update_scope.push_root(base)?;
               let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
               update_scope.push_root(Value::Object(obj))?;
               (key, obj)
@@ -8508,19 +8518,22 @@ impl<'vm> HirEvaluator<'vm> {
         .home_object
         .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-      // Spec: for `super[expr]`, `ToPropertyKey` is observed before `GetSuperBase`.
+      // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
+      // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
+      // coercion does not affect the resolved super base.
       let (key, super_base) = match &member.property {
         hir_js::ObjectKey::Computed(expr_id) => {
           let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
           scope.push_root(key_value)?;
 
-          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut scope, key)?;
           // `GetSuperBase` (ECMA-262) returns the prototype of `home_object`, which may be `null`.
           let super_base = scope.object_get_prototype(home_object)?;
           if let Some(super_base_obj) = super_base {
             scope.push_root(Value::Object(super_base_obj))?;
           }
+
+          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+          root_property_key(&mut scope, key)?;
           (key, super_base)
         }
         other => {
@@ -8894,17 +8907,25 @@ impl<'vm> HirEvaluator<'vm> {
                 .home_object
                 .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-              // Spec: for `super[expr]`, `ToPropertyKey` is observed before `GetSuperBase`.
+              // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
+              // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
+              // coercion does not affect the resolved super base.
               let (key, super_base_obj) = match &member.property {
                 hir_js::ObjectKey::Computed(expr_id) => {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
                   scope.push_root(key_value)?;
 
+                  let super_base = scope.object_get_prototype(home_object)?;
+                  if let Some(super_base_obj) = super_base {
+                    scope.push_root(Value::Object(super_base_obj))?;
+                  }
+
                   let key =
                     scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
                   root_property_key(&mut scope, key)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  // Dereferencing a super property on a null super base throws a TypeError, but
+                  // `ToPropertyKey` must still be observed first (per spec ordering above).
                   let Some(super_base_obj) = super_base else {
                     return Err(throw_type_error(
                       self.vm,
@@ -8912,7 +8933,7 @@ impl<'vm> HirEvaluator<'vm> {
                       "Cannot read a super property from a null prototype",
                     )?);
                   };
-                  scope.push_root(Value::Object(super_base_obj))?;
+
                   (key, super_base_obj)
                 }
                 other => {
@@ -9143,17 +9164,25 @@ impl<'vm> HirEvaluator<'vm> {
                 .home_object
                 .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-              // Spec: for `super[expr]`, `ToPropertyKey` is observed before `GetSuperBase`.
+              // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
+              // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
+              // coercion does not affect the resolved super base.
               let (key, super_base_obj) = match &member.property {
                 hir_js::ObjectKey::Computed(expr_id) => {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
                   scope.push_root(key_value)?;
 
+                  let super_base = scope.object_get_prototype(home_object)?;
+                  if let Some(super_base_obj) = super_base {
+                    scope.push_root(Value::Object(super_base_obj))?;
+                  }
+
                   let key =
                     scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
                   root_property_key(&mut scope, key)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  // Dereferencing a super property on a null super base throws a TypeError, but
+                  // `ToPropertyKey` must still be observed first (per spec ordering above).
                   let Some(super_base_obj) = super_base else {
                     return Err(throw_type_error(
                       self.vm,
@@ -9161,7 +9190,7 @@ impl<'vm> HirEvaluator<'vm> {
                       "Cannot read a super property from a null prototype",
                     )?);
                   };
-                  scope.push_root(Value::Object(super_base_obj))?;
+
                   (key, super_base_obj)
                 }
                 other => {
@@ -10804,24 +10833,25 @@ impl<'vm> HirEvaluator<'vm> {
       let receiver = self.resolve_this_binding(&mut get_scope)?;
       get_scope.push_root(receiver)?;
 
-      // `super[expr]` evaluation order:
+      // `super[expr]` evaluation order (ECMA-262):
       // - evaluate the key expression to a value,
-      // - perform `ToPropertyKey`,
-      // - and then capture the super base (`GetSuperBase`).
+      // - capture the super base (`GetSuperBase`),
+      // - then perform `ToPropertyKey` (test262:
+      //   `prop-expr-getsuperbase-before-topropertykey-*`).
       //
-      // This allows key conversion side effects (e.g. prototype mutation) to affect the base object
-      // used for the super property lookup.
+      // This ensures key-coercion side effects (e.g. prototype mutation in `toString`) do not affect
+      // which super base is used for the property lookup.
       let (key, obj) = match &member.property {
         hir_js::ObjectKey::Computed(expr_id) => {
           let key_value = self.eval_expr(&mut get_scope, body, *expr_id)?;
           get_scope.push_root(key_value)?;
 
+          let base = self.super_base_value(&mut get_scope)?;
+          get_scope.push_root(base)?;
+
           let key =
             get_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
           root_property_key(&mut get_scope, key)?;
-
-          let base = self.super_base_value(&mut get_scope)?;
-          get_scope.push_root(base)?;
           let obj = match get_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
             Ok(obj) => obj,
             Err(VmError::TypeError(msg)) => {
@@ -10936,20 +10966,21 @@ impl<'vm> HirEvaluator<'vm> {
       let receiver = self.resolve_this_binding(&mut scope)?;
       scope.push_root(receiver)?;
 
-      // `super[expr]` evaluation order:
+      // `super[expr]` evaluation order (ECMA-262):
       // - evaluate the key expression to a value,
-      // - perform `ToPropertyKey`,
-      // - and then capture the super base (`GetSuperBase`).
+      // - capture the super base (`GetSuperBase`),
+      // - then perform `ToPropertyKey` (test262:
+      //   `prop-expr-getsuperbase-before-topropertykey-*`).
       let (key, obj) = match &member.property {
         hir_js::ObjectKey::Computed(expr_id) => {
           let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
           scope.push_root(key_value)?;
 
-          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut scope, key)?;
-
           let base = self.super_base_value(&mut scope)?;
           scope.push_root(base)?;
+
+          let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+          root_property_key(&mut scope, key)?;
           let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
             Ok(obj) => obj,
             Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
@@ -11695,22 +11726,23 @@ impl<'vm> HirEvaluator<'vm> {
           let receiver = self.resolve_this_binding(&mut scope)?;
           scope.push_root(receiver)?;
 
-          // `super[expr](...args)` evaluation order:
+          // `super[expr](...args)` evaluation order (ECMA-262):
           // - evaluate the key expression to a value,
-          // - perform `ToPropertyKey`,
           // - capture the super base (`GetSuperBase`),
+          // - then perform `ToPropertyKey` (test262:
+          //   `prop-expr-getsuperbase-before-topropertykey-*`),
           // - and finally `[[Get]]` the callee from the captured base with `receiver = this`.
           let (key, obj) = match &member.property {
             hir_js::ObjectKey::Computed(expr_id) => {
               let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
               scope.push_root(key_value)?;
 
+              let base = self.super_base_value(&mut scope)?;
+              scope.push_root(base)?;
+
               let key =
                 scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
               root_property_key(&mut scope, key)?;
-
-              let base = self.super_base_value(&mut scope)?;
-              scope.push_root(base)?;
               let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
                 Ok(obj) => obj,
                 Err(VmError::TypeError(msg)) => {
