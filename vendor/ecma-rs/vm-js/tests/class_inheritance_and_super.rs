@@ -278,7 +278,8 @@ fn derived_ctor_return_override_object_and_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
-      class B { constructor() { this.b = 1; } }
+      var side = 0;
+      class B { constructor() { side++; this.b = 1; } }
       class DObj extends B {
         constructor() { super(); return { ok: true }; }
       }
@@ -286,10 +287,10 @@ fn derived_ctor_return_override_object_and_primitive() -> Result<(), VmError> {
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var primName = "";
-      try { new DPrim(); primName = "no"; } catch (e) { primName = e.name; }
+      var out = "";
+      try { new DPrim(); out = "no"; } catch (e) { out = e.name; }
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        primName === "TypeError"
+        out === "TypeError" && side === 2
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -302,7 +303,8 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
   let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
-      class B { constructor() { this.b = 1; } }
+      var side = 0;
+      class B { constructor() { side++; this.b = 1; } }
       class DObj extends B {
         constructor() { super(); return { ok: true }; }
       }
@@ -310,10 +312,10 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var primName = "";
-      try { new DPrim(); primName = "no"; } catch (e) { primName = e.name; }
+      var out = "";
+      try { new DPrim(); out = "no"; } catch (e) { out = e.name; }
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        primName === "TypeError"
+        out === "TypeError" && side === 2
     "#,
   )?
   else {

@@ -93,6 +93,7 @@ fn await_in_async_class_static_block_is_allowed() -> Result<(), VmError> {
     "#,
   )?;
 
+  // Static block evaluation has started, but the `await` has not yet resumed.
   let out = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, out), "a");
 

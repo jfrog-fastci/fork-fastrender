@@ -58972,10 +58972,12 @@ mod tests {
     match err {
       VmError::Syntax(diags) => {
         assert!(
+          // Depending on parser/early-error split, this can surface either as a parser diagnostic
+          // (PS*) or an engine early error (VMJS0004).
           diags
             .iter()
             .any(|d| matches!(d.code.as_str(), "VMJS0004" | "PS0002")),
-          "expected early error VMJS0004 (vm-js) or PS0002 (parse-js), got {diags:?}"
+          "expected PS0002 or VMJS0004, got {diags:?}"
         );
         Ok(())
       }

@@ -39,6 +39,7 @@ fn compiled_script_await_using_in_nested_block_falls_back() -> Result<(), VmErro
     script.top_level_await_requires_ast_fallback,
     "await using is not yet supported by the HIR async classic-script executor"
   );
+  assert!(script.requires_ast_fallback);
 
   let completion = rt.exec_compiled_script(script)?;
   let completion_root = rt.heap_mut().add_root(completion)?;

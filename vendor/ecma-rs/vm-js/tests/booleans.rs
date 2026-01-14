@@ -97,6 +97,5 @@ fn boolean_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primi
     )?,
     Value::Bool(true)
   );
-
   Ok(())
 }

@@ -1042,8 +1042,7 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
             return true;
           }
           match &member.stx.val {
-            // Class static blocks execute during class evaluation, so any `await` they contain
-            // contributes to async classic-script/module evaluation.
+            // Static blocks execute during class evaluation, and can suspend with `await`.
             ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
             _ => false,
           }

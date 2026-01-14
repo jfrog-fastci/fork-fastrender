@@ -34288,11 +34288,11 @@ mod object_builtins_regression_tests {
           Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
           const okRegExpOverride = toString.call(r) === "[object test262]";
 
-           // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
-           const af = async function () {};
-           const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
+          // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
+          const af = async function () {};
+          const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
           const okAsyncProxy = toString.call(new Proxy(af, {})) === "[object AsyncFunction]";
-
+ 
           if (!okArrIterDefault) failures.push("okArrIterDefault");
           if (!okArrIterNull) failures.push("okArrIterNull");
           if (!okArrIterFallback) failures.push("okArrIterFallback");
