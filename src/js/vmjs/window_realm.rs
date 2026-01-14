@@ -54022,7 +54022,12 @@ fn init_window_globals(
     let media_reflected_bool_set_call_id =
       vm.register_native_call(html_media_element_reflected_bool_set_native)?;
 
-    for (prop, attr) in [("autoplay", "autoplay"), ("controls", "controls"), ("loop", "loop")] {
+    for (prop, attr) in [
+      ("autoplay", "autoplay"),
+      ("controls", "controls"),
+      ("loop", "loop"),
+      ("defaultMuted", "muted"),
+    ] {
       let attr_s = scope.alloc_string(attr)?;
       scope.push_root(Value::String(attr_s))?;
 
@@ -59674,7 +59679,12 @@ fn init_window_globals(
   if let Some(html_media_element_proto) = html_media_element_proto {
     let reflected_bool_get_call_id = vm.register_native_call(html_media_element_reflected_bool_get_native)?;
     let reflected_bool_set_call_id = vm.register_native_call(html_media_element_reflected_bool_set_native)?;
-    for (prop, attr) in [("controls", "controls"), ("loop", "loop"), ("autoplay", "autoplay")] {
+    for (prop, attr) in [
+      ("controls", "controls"),
+      ("loop", "loop"),
+      ("autoplay", "autoplay"),
+      ("defaultMuted", "muted"),
+    ] {
       let attr_s = scope.alloc_string(attr)?;
       scope.push_root(Value::String(attr_s))?;
 
@@ -62733,6 +62743,7 @@ mod tests {
         const seeking = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'seeking');
         const paused = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused');
         const muted = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+        const defaultMuted = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'defaultMuted');
         const volume = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
         const playbackRate = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
         if (!networkState || typeof networkState.get !== 'function' || networkState.set !== undefined) return false;
@@ -62740,6 +62751,7 @@ mod tests {
         if (!seeking || typeof seeking.get !== 'function' || seeking.set !== undefined) return false;
         if (!paused || typeof paused.get !== 'function' || paused.set !== undefined) return false;
         if (!muted || typeof muted.get !== 'function' || typeof muted.set !== 'function') return false;
+        if (!defaultMuted || typeof defaultMuted.get !== 'function' || typeof defaultMuted.set !== 'function') return false;
         if (!volume || typeof volume.get !== 'function' || typeof volume.set !== 'function') return false;
         if (!playbackRate || typeof playbackRate.get !== 'function' || typeof playbackRate.set !== 'function') return false;
  
@@ -62760,6 +62772,10 @@ mod tests {
         try { muted.get.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { muted.set.call(bogus, true); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { defaultMuted.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { defaultMuted.set.call(bogus, true); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { volume.get.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
@@ -62810,6 +62826,45 @@ mod tests {
         } catch (e) {
           return false;
         }
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_default_muted_reflects_attribute_and_syncs_muted() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.defaultMuted !== false) throw new Error(`expected defaultMuted false, got ${video.defaultMuted}`);
+        if (video.muted !== false) throw new Error(`expected muted false, got ${video.muted}`);
+
+        video.defaultMuted = true;
+        if (video.defaultMuted !== true) throw new Error('expected defaultMuted true after setting');
+        if (!video.hasAttribute('muted')) throw new Error('expected muted attribute to be present');
+        // While `muted` is still in its default state, it should track `defaultMuted`.
+        if (video.muted !== true) throw new Error('expected muted true after defaultMuted=true');
+
+        video.defaultMuted = false;
+        if (video.defaultMuted !== false) throw new Error('expected defaultMuted false after clearing');
+        if (video.hasAttribute('muted')) throw new Error('expected muted attribute to be removed');
+        if (video.muted !== false) throw new Error('expected muted false after defaultMuted=false');
+
+        // Once `.muted` is set explicitly, future `defaultMuted` changes should not override it.
+        video.muted = true;
+        if (video.muted !== true) throw new Error('expected muted true after explicit set');
+        video.defaultMuted = true;
+        video.defaultMuted = false;
+        if (video.defaultMuted !== false) throw new Error('expected defaultMuted false after toggle off');
+        if (video.muted !== true) throw new Error('expected muted to remain true after defaultMuted toggles');
+
         return true;
       })()"#,
     )?;
