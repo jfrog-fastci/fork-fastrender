@@ -360,6 +360,42 @@ fn arguments_is_allowed_as_object_property_name_in_static_block() {
 }
 
 #[test]
+fn escaped_arguments_identifier_reference_is_syntax_error_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        argu\u006dents;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn escaped_arguments_identifier_reference_is_syntax_error_in_object_shorthand_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        ({ argu\u006dents });
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
 fn for_await_of_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
