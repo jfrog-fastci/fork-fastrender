@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
     }
     Err(loc.error(
       SyntaxErrorType::ExpectedSyntax(
-        "`arguments` is not allowed in class field initializers or static blocks",
+        "`arguments` is not allowed in class field initializers or static initialization blocks",
       ),
       None,
     ))
