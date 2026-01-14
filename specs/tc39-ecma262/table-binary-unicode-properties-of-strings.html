@@ -2,11 +2,14 @@
 <!--
   Minimal vendored snapshot of the ECMA-262 “Binary Unicode properties of strings” table.
 
-  parse-js extracts the backticked identifiers to validate /v-mode RegExp Unicode property
-  escapes. These are the Emoji-related properties of strings; they must not be accepted in u
-  mode.
+  parse-js extracts the backticked identifiers from this file at compile time to validate RegExp
+  Unicode property escapes in Unicode Sets (/v) mode. These are the Emoji-related properties of
+  strings; they must not be accepted in Unicode (/u) mode.
 
   The parser only cares about the set of names, not the HTML structure.
+
+  Note: keep backticks only around actual property names; avoid using them for prose in this
+  comment (parse-js extracts all backticked identifiers).
 -->
 <meta charset="utf-8">
 <title>Binary Unicode properties of strings</title>
