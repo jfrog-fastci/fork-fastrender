@@ -23512,6 +23512,7 @@ fn async_define_class_member(
     ClassOrObjVal::Method(method) => {
       let func_node = &method.stx.func;
       let length = evaluator.function_length(&func_node.stx)?;
+      let is_async_generator = func_node.stx.generator && func_node.stx.async_;
 
       let span_start = evaluator.class_member_span_start(
         member_loc_start,
@@ -23566,7 +23567,20 @@ fn async_define_class_member(
         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
       member_scope
         .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        .object_set_prototype(
+          func_obj,
+          Some(if func_node.stx.generator {
+            if is_async_generator {
+              intr.async_generator_function_prototype()
+            } else {
+              intr.generator_function_prototype()
+            }
+          } else if func_node.stx.async_ {
+            intr.async_function_prototype()
+          } else {
+            intr.function_prototype()
+          }),
+        )?;
       member_scope
         .heap_mut()
         .set_function_realm(func_obj, evaluator.env.global_object())?;
@@ -23584,6 +23598,23 @@ fn async_define_class_member(
       member_scope
         .heap_mut()
         .set_function_home_object(func_obj, Some(target_obj))?;
+      if func_node.stx.generator {
+        if is_async_generator {
+          crate::function_properties::make_async_generator_function_instance_prototype(
+            &mut member_scope,
+            func_obj,
+            intr.async_generator_prototype(),
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+        } else {
+          crate::function_properties::make_generator_function_instance_prototype(
+            &mut member_scope,
+            func_obj,
+            intr.generator_prototype(),
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+        }
+      }
       member_scope.push_root(Value::Object(func_obj))?;
 
       // Methods use the property key as the function `name` if possible.
