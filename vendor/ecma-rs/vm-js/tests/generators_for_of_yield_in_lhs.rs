@@ -602,6 +602,98 @@ fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_memb
 }
 
 #[test]
+fn generator_for_of_yield_in_array_pattern_elem_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ([super[yield "k"]] of [[3]]) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ([...super[yield "k"]] of [[1, 2, 3]]) { return this._k[1]; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_prop_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ({a: super[yield "k"]} of [{a: 3}]) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ({...super[yield "k"]} of [{a: 1, b: 2}]) { return this._k.b; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member_multiple_iterations() {
   let mut rt = new_runtime();
   let value = rt
