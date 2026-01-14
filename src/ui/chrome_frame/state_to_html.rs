@@ -324,9 +324,13 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  </div>\n");
 
   // Content frame placeholder.
+  //
+  // Mark this as the main landmark so assistive tech can jump directly to the page region (the
+  // actual page content is composited by the host, but this establishes the chrome/content split in
+  // the renderer's accessibility tree).
   out.push_str("  <div id=\"");
   out.push_str(CHROME_CONTENT_FRAME_ID);
-  out.push_str("\" class=\"content-frame\"></div>\n");
+  out.push_str("\" class=\"content-frame\" role=\"main\" aria-label=\"Page\"></div>\n");
 
   out.push_str("</body>\n");
   out.push_str("</html>\n");
@@ -427,6 +431,10 @@ mod tests {
       html.matches(r#"id="content-frame""#).count(),
       1,
       "expected exactly one #content-frame placeholder"
+    );
+    assert!(
+      html.contains(r#"id="content-frame" class="content-frame" role="main""#),
+      "expected #content-frame to be marked as the main landmark"
     );
 
     // Address bar uses combobox semantics (collapsed when no omnibox popup is open).
