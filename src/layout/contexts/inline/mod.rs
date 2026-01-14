@@ -7699,8 +7699,10 @@ impl InlineFormattingContext {
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> Vec<FragmentNode> {
     let mut fragments = Vec::new();
+    let mut prev_ended_with_hard_break = false;
 
     for (idx, line) in lines.into_iter().enumerate() {
+      let starts_after_forced_break = prev_ended_with_hard_break;
       let line_block_offset = start_y + line.y_offset;
       let line_direction = line.resolved_direction;
       let (is_last_line, _is_single_line) = paragraph_info[idx];
@@ -7759,10 +7761,12 @@ impl InlineFormattingContext {
         strut_metrics,
         relative_cb,
         is_first_formatted_line,
+        starts_after_forced_break,
         anchor_positions.as_deref_mut(),
         positioned_containing_blocks.as_deref_mut(),
       );
       fragments.push(line_fragment);
+      prev_ended_with_hard_break = line.ends_with_hard_break;
     }
 
     fragments
@@ -7783,6 +7787,7 @@ impl InlineFormattingContext {
     _strut_metrics: &BaselineMetrics,
     relative_cb: &ContainingBlock,
     is_first_formatted_line: bool,
+    starts_after_forced_break: bool,
     mut anchor_positions: Option<&mut HashMap<usize, StaticPositionAnchorPoint>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> FragmentNode {
@@ -7818,17 +7823,24 @@ impl InlineFormattingContext {
       items = markers;
     }
 
+    let usable_width = if available_width.is_finite() {
+      available_width.max(0.0)
+    } else {
+      line.width
+    };
+
     // CSS Text 4 `text-spacing-trim` hanging punctuation (minimal implementation).
     //
-    // For `trim-start`, a leading fullwidth opening punctuation character is treated as half-width
-    // for alignment/justification measurement and the other half hangs into the line's start edge.
-    // For `trim-both`, the same is done for trailing fullwidth closing punctuation.
+    // For values that trim at line edges, treat a fullwidth punctuation character as half-width for
+    // alignment/justification measurement and let the other half hang outside the line box.
     //
     // This implementation is intentionally conservative:
     // - At most one punctuation glyph is trimmed per edge.
     // - Only a small subset of the spec's character classes is recognized.
-    // - Only `trim-start` and `trim-both` (and `trim-all` as an alias for `trim-both`) affect
-    //   layout; other values are parsed/stored but currently behave like `normal`.
+    // - `space-first` trims line-start punctuation except on the first line and after forced breaks.
+    // - `normal`/`trim-start`/`space-first` trim line-end punctuation only if it would otherwise
+    //   overflow prior to justification.
+    // - `trim-all` is treated like `trim-both` (only affects line edges).
     fn is_fullwidth_opening_punctuation(ch: char) -> bool {
       matches!(
         ch,
@@ -7890,21 +7902,47 @@ impl InlineFormattingContext {
 
     let mut inline_shifts: Vec<f32> = vec![0.0; items.len()];
     if !items.is_empty() {
-      fn wants_trim_start(trim: TextSpacingTrim) -> bool {
-        matches!(
-          trim,
-          TextSpacingTrim::TrimStart | TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll
-        )
+      const FIT_EPSILON: f32 = 0.01;
+
+      fn wants_trim_start(
+        trim: TextSpacingTrim,
+        is_first_formatted_line: bool,
+        starts_after_forced_break: bool,
+      ) -> bool {
+        match trim {
+          // `auto` is UA-defined in the spec; approximate it with high-quality trimming.
+          TextSpacingTrim::Auto => true,
+          TextSpacingTrim::TrimStart | TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll => true,
+          TextSpacingTrim::SpaceFirst => !is_first_formatted_line && !starts_after_forced_break,
+          _ => false,
+        }
       }
 
-      fn wants_trim_end(trim: TextSpacingTrim) -> bool {
-        matches!(trim, TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll)
+      fn wants_trim_end(trim: TextSpacingTrim, end_overflow: bool) -> bool {
+        match trim {
+          TextSpacingTrim::Auto => true,
+          TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll => true,
+          TextSpacingTrim::Normal | TextSpacingTrim::TrimStart | TextSpacingTrim::SpaceFirst => {
+            end_overflow
+          }
+          _ => false,
+        }
       }
 
-      fn start_hang_in_item(item: &InlineItem) -> Option<f32> {
+      fn start_hang_in_item(
+        item: &InlineItem,
+        is_first_formatted_line: bool,
+        starts_after_forced_break: bool,
+      ) -> Option<f32> {
         match item {
           InlineItem::Text(t) => {
-            if t.is_marker || !wants_trim_start(t.style.text_spacing_trim) {
+            if t.is_marker
+              || !wants_trim_start(
+                t.style.text_spacing_trim,
+                is_first_formatted_line,
+                starts_after_forced_break,
+              )
+            {
               return None;
             }
             let ch = t.text.chars().next()?;
@@ -7922,7 +7960,9 @@ impl InlineFormattingContext {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return start_hang_in_item(other),
+                other => {
+                  return start_hang_in_item(other, is_first_formatted_line, starts_after_forced_break);
+                }
               }
             }
             None
@@ -7937,10 +7977,88 @@ impl InlineFormattingContext {
         }
       }
 
-      fn end_hang_in_item(item: &InlineItem) -> Option<f32> {
+      fn apply_start_hang(
+        item: &mut InlineItem,
+        hang: f32,
+        is_first_formatted_line: bool,
+        starts_after_forced_break: bool,
+      ) -> bool {
         match item {
           InlineItem::Text(t) => {
-            if t.is_marker || !wants_trim_end(t.style.text_spacing_trim) {
+            if t.is_marker
+              || !wants_trim_start(
+                t.style.text_spacing_trim,
+                is_first_formatted_line,
+                starts_after_forced_break,
+              )
+              || !t
+                .text
+                .chars()
+                .next()
+                .is_some_and(is_fullwidth_opening_punctuation)
+            {
+              return false;
+            }
+            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            true
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &mut b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => {
+                  return apply_start_hang(other, hang, is_first_formatted_line, starts_after_forced_break);
+                }
+              }
+            }
+            false
+          }
+          InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      // Apply line-start trimming first so the end-of-line overflow check accounts for it.
+      let start_info: Option<(usize, f32)> = items
+        .iter()
+        .enumerate()
+        .find_map(|(idx, positioned)| match &positioned.item {
+          InlineItem::StaticPositionAnchor(_) => None,
+          _ => start_hang_in_item(
+            &positioned.item,
+            is_first_formatted_line,
+            starts_after_forced_break,
+          )
+          .map(|hang| (idx, hang)),
+        });
+
+      if let Some((idx, hang)) = start_info {
+        if let Some(positioned) = items.get_mut(idx) {
+          apply_start_hang(
+            &mut positioned.item,
+            hang,
+            is_first_formatted_line,
+            starts_after_forced_break,
+          );
+        }
+        // When the inline-start edge is the physical left edge (`direction:ltr`), shift the glyph
+        // left so the hanging half does not overlap the following content.
+        if !rtl {
+          if let Some(shift) = inline_shifts.get_mut(idx) {
+            *shift -= hang;
+          }
+        }
+      }
+
+      // Determine whether the line would overflow before applying line-end trimming.
+      let width_before_end_trim: f32 = items.iter().map(|p| p.item.width()).sum();
+      let end_overflow = width_before_end_trim > usable_width + FIT_EPSILON;
+
+      fn end_hang_in_item(item: &InlineItem, end_overflow: bool) -> Option<f32> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker || !wants_trim_end(t.style.text_spacing_trim, end_overflow) {
               return None;
             }
             let ch = t.text.chars().next_back()?;
@@ -7958,7 +8076,7 @@ impl InlineFormattingContext {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return end_hang_in_item(other),
+                other => return end_hang_in_item(other, end_overflow),
               }
             }
             None
@@ -7971,38 +8089,11 @@ impl InlineFormattingContext {
         }
       }
 
-      fn apply_start_hang(item: &mut InlineItem, hang: f32) -> bool {
+      fn apply_end_hang(item: &mut InlineItem, hang: f32, end_overflow: bool) -> bool {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker
-              || !wants_trim_start(t.style.text_spacing_trim)
-              || !t.text.chars().next().is_some_and(is_fullwidth_opening_punctuation)
-            {
-              return false;
-            }
-            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
-            true
-          }
-          InlineItem::InlineBox(b) => {
-            for child in &mut b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return apply_start_hang(other, hang),
-              }
-            }
-            false
-          }
-          InlineItem::Ruby(_) => false,
-          _ => false,
-        }
-      }
-
-      fn apply_end_hang(item: &mut InlineItem, hang: f32) -> bool {
-        match item {
-          InlineItem::Text(t) => {
-            if t.is_marker
-              || !wants_trim_end(t.style.text_spacing_trim)
+              || !wants_trim_end(t.style.text_spacing_trim, end_overflow)
               || !t.text.chars().next_back().is_some_and(is_fullwidth_closing_punctuation)
             {
               return false;
@@ -8015,7 +8106,7 @@ impl InlineFormattingContext {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return apply_end_hang(other, hang),
+                other => return apply_end_hang(other, hang, end_overflow),
               }
             }
             false
@@ -8025,39 +8116,18 @@ impl InlineFormattingContext {
         }
       }
 
-      let start_info: Option<(usize, f32)> = items
-        .iter()
-        .enumerate()
-        .find_map(|(idx, positioned)| match &positioned.item {
-          InlineItem::StaticPositionAnchor(_) => None,
-          _ => start_hang_in_item(&positioned.item).map(|hang| (idx, hang)),
-        });
-
       let end_info: Option<(usize, f32)> = items
         .iter()
         .enumerate()
         .rev()
         .find_map(|(idx, positioned)| match &positioned.item {
           InlineItem::StaticPositionAnchor(_) => None,
-          _ => end_hang_in_item(&positioned.item).map(|hang| (idx, hang)),
+          _ => end_hang_in_item(&positioned.item, end_overflow).map(|hang| (idx, hang)),
         });
-
-      if let Some((idx, hang)) = start_info {
-        if let Some(positioned) = items.get_mut(idx) {
-          apply_start_hang(&mut positioned.item, hang);
-        }
-        // When the inline-start edge is the physical left edge (`direction:ltr`), shift the glyph
-        // left so the hanging half does not overlap the following content.
-        if !rtl {
-          if let Some(shift) = inline_shifts.get_mut(idx) {
-            *shift -= hang;
-          }
-        }
-      }
 
       if let Some((idx, hang)) = end_info {
         if let Some(positioned) = items.get_mut(idx) {
-          apply_end_hang(&mut positioned.item, hang);
+          apply_end_hang(&mut positioned.item, hang, end_overflow);
         }
         // When the inline-end edge is the physical left edge (`direction:rtl`), shift the glyph
         // left so the hanging half protrudes outward rather than overlapping preceding content.
@@ -8068,11 +8138,6 @@ impl InlineFormattingContext {
         }
       }
     }
-    let usable_width = if available_width.is_finite() {
-      available_width.max(0.0)
-    } else {
-      line.width
-    };
 
     // -----------------------------------------------------------------------
     // CSS Text 3: `hanging-punctuation`
