@@ -458,47 +458,19 @@ fn compiled_module_graph_prefers_compiled_decl_instantiation_when_ast_retained()
     let m = graph.add_module_with_specifier("m", record)?;
     graph.link_all_by_specifier();
 
-    let mut scope = heap.scope();
-    graph.evaluate_sync_with_scope(
-      &mut vm,
-      &mut scope,
-      realm.global_object(),
-      realm.id(),
-      m,
-      &mut host,
-      &mut hooks,
-    )?;
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
 
+    let mut scope = heap.scope();
     let ns_m = graph.get_module_namespace(m, &mut vm, &mut scope)?;
     let f = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_m, "f")?;
     let Value::Object(f_obj) = f else {
       return Err(VmError::InvariantViolation("expected module export `f` to be an object"));
     };
 
-    // `Function.prototype.toString` is keyed off the function's underlying call handler:
-    // - compiled user functions stringify as `[native code]`
-    // - interpreter-backed ECMAScript functions stringify with their source span.
-    //
-    // This indirectly asserts the module declaration instantiation path used during linking.
-    let f_to_string = {
-      let mut scope = scope.reborrow();
-      scope.push_root(f)?;
-      let key_s = scope.alloc_string("toString")?;
-      scope.push_root(Value::String(key_s))?;
-      let key = PropertyKey::from_string(key_s);
-      scope.get_with_host_and_hooks(&mut vm, &mut host, &mut hooks, f_obj, key, f)?
-    };
-    let to_string_value =
-      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, f_to_string, f, &[])?;
-    let Value::String(to_string_s) = to_string_value else {
-      return Err(VmError::InvariantViolation(
-        "expected f.toString() to return a string",
-      ));
-    };
-    let to_string = scope.heap().get_string(to_string_s)?.to_utf8_lossy();
+    let call_handler = scope.heap().get_function_call_handler(f_obj)?;
     assert!(
-      to_string.contains("[native code]"),
-      "expected f to be instantiated as a compiled user function, got toString(): {to_string:?}"
+      matches!(call_handler, CallHandler::User(_)),
+      "expected f to be instantiated as a compiled user function (CallHandler::User); got {call_handler:?}"
     );
 
     Ok(())

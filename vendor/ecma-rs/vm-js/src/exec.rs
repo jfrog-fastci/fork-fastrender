@@ -1639,7 +1639,7 @@ impl RuntimeEnv {
                 .ok_or(VmError::Unimplemented(
                   "environment record binding index out of bounds",
                 ))?;
- 
+
               let collides = if var_scope_lex != var_env {
                 // Ordinary function scopes: any binding in the var-scope lexical env is a lexical
                 // declaration and must reject `var`.
@@ -1656,7 +1656,7 @@ impl RuntimeEnv {
                   || !binding.mutable
                   || matches!(binding.value, crate::env::EnvBindingValue::Indirect { .. })
               };
- 
+
               if collides {
                 let intr = vm
                   .intrinsics()
