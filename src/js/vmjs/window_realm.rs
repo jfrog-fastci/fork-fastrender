@@ -2507,7 +2507,7 @@ fn storage_require_this(
   this: Value,
 ) -> Result<web_storage::StorageKind, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
 
   // `Heap::object_host_slots` only supports ordinary objects/functions. When `this` is another kind
@@ -2518,17 +2518,17 @@ fn storage_require_this(
     Err(err) => return Err(err),
   };
   let Some(slots) = slots else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
 
   if slots.b != HOST_EXOTIC_STORAGE {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   }
 
   match slots.a {
     0 => Ok(web_storage::StorageKind::Local),
     1 => Ok(web_storage::StorageKind::Session),
-    _ => Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
+    _ => Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR)),
   }
 }
 
@@ -2937,7 +2937,7 @@ fn storage_set_item_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -2978,7 +2978,7 @@ fn storage_remove_item_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -3003,7 +3003,7 @@ fn storage_clear_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let change = area.lock().clear();
@@ -3244,6 +3244,7 @@ const HISTORY_SCROLL_RESTORATION_MANUAL: u64 = 1;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
+const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = ILLEGAL_INVOCATION_ERROR;
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 #[allow(dead_code)]
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
