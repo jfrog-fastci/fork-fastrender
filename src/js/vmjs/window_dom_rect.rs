@@ -587,6 +587,39 @@ pub(crate) fn install_window_dom_rect_bindings(
     .heap_mut()
     .object_set_prototype(ro_proto, Some(intr.object_prototype()))?;
 
+  // Align with WebIDL/built-in constructor semantics:
+  // - `DOMRectReadOnly.prototype` is non-writable and non-configurable.
+  // - `DOMRectReadOnly.prototype.constructor` is non-writable and non-configurable.
+  //
+  // `vm-js` allocates native functions with normal JS `prototype` attributes (`writable: true`), so
+  // tighten the descriptor after allocation.
+  let ro_prototype_key = alloc_key(&mut scope, "prototype")?;
+  scope.define_property(
+    ro_ctor,
+    ro_prototype_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(ro_proto),
+        writable: false,
+      },
+    },
+  )?;
+  let ro_constructor_key = alloc_key(&mut scope, "constructor")?;
+  scope.define_property(
+    ro_proto,
+    ro_constructor_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(ro_ctor),
+        writable: false,
+      },
+    },
+  )?;
+
   // Cache `DOMRectReadOnly.prototype` on the global for Rust allocation helpers.
   let ro_proto_key = alloc_key(&mut scope, INTERNAL_DOMRECT_RO_PROTO_KEY)?;
   scope.define_property(
@@ -775,6 +808,34 @@ pub(crate) fn install_window_dom_rect_bindings(
   scope
     .heap_mut()
     .object_set_prototype(rect_proto, Some(ro_proto))?;
+
+  // Align with WebIDL/built-in constructor semantics (see DOMRectReadOnly notes above).
+  let rect_prototype_key = alloc_key(&mut scope, "prototype")?;
+  scope.define_property(
+    rect_ctor,
+    rect_prototype_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(rect_proto),
+        writable: false,
+      },
+    },
+  )?;
+  let rect_constructor_key = alloc_key(&mut scope, "constructor")?;
+  scope.define_property(
+    rect_proto,
+    rect_constructor_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(rect_ctor),
+        writable: false,
+      },
+    },
+  )?;
 
   // Cache `DOMRect.prototype` on the global for Rust allocation helpers.
   let rect_proto_key = alloc_key(&mut scope, INTERNAL_DOMRECT_PROTO_KEY)?;

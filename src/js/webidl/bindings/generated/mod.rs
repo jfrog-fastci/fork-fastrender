@@ -4594,6 +4594,73 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn node_contains(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        v0
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "contains",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn node_has_child_nodes(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "hasChildNodes",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn node_get_attribute_child_nodes(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -10270,6 +10337,40 @@ pub mod window {
         rt.define_data_property_str(
           proto_node,
           "replaceChild",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("contains")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(node_contains, None, "contains", 1)?;
+        rt.define_data_property_str(
+          proto_node,
+          "contains",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("hasChildNodes")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(node_has_child_nodes, None, "hasChildNodes", 0)?;
+        rt.define_data_property_str(
+          proto_node,
+          "hasChildNodes",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

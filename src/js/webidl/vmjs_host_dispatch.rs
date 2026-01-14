@@ -2787,6 +2787,148 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         Ok(Value::Object(list_obj))
       }
+      ("DocumentFragment", "querySelector", 0) => {
+        let fragment_obj = Self::require_receiver_object(receiver)?;
+        let (document_id, fragment_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_node_handle(scope.heap(), Value::Object(fragment_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Option<(NodeId, DomInterface)>, DomException> =
+          self.with_dom_host(vm, |host| {
+            Ok(
+              dom2_bindings::query_selector(host, &selectors, Some(fragment_id)).map(|found| {
+                found.map(|node_id| {
+                  let primary = host.with_dom(|dom| {
+                    if node_id.index() >= dom.nodes_len() {
+                      DomInterface::Node
+                    } else {
+                      DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                    }
+                  });
+                  (node_id, primary)
+                })
+              }),
+            )
+          })?;
+
+        match result {
+          Ok(Some((node_id, primary_interface))) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Ok(None) => Ok(Value::Null),
+          Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("DocumentFragment", "querySelectorAll", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(fragment_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        let (document_id, fragment_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_node_handle(scope.heap(), Value::Object(fragment_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper; use the
+        // realm's per-document NodeList prototype so `instanceof NodeList` works.
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(fragment_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let node_list_proto_key = key_from_str(scope, NODE_LIST_PROTOTYPE_KEY)?;
+        let node_list_proto = match scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &node_list_proto_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "missing NodeList prototype for DocumentFragment.querySelectorAll",
+            ))
+          }
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Vec<(NodeId, DomInterface)>, DomException> =
+          self.with_dom_host(vm, |host| {
+            Ok(
+              dom2_bindings::query_selector_all(host, &selectors, Some(fragment_id)).map(|nodes| {
+                host.with_dom(|dom| {
+                  nodes
+                    .into_iter()
+                    .map(|node_id| {
+                      let primary = if node_id.index() >= dom.nodes_len() {
+                        DomInterface::Node
+                      } else {
+                        DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                      };
+                      (node_id, primary)
+                    })
+                    .collect()
+                })
+              }),
+            )
+          })?;
+
+        let nodes = match result {
+          Ok(nodes) => nodes,
+          Err(err) => return Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        };
+
+        let list_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(list_obj))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(list_obj, Some(node_list_proto))?;
+
+        for (idx, (node_id, primary)) in nodes.iter().copied().enumerate() {
+          let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            node_id,
+            primary,
+          )?;
+          scope.push_root(Value::Object(wrapper))?;
+
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.define_property(
+            list_obj,
+            idx_key,
+            data_property(Value::Object(wrapper), true, true, true),
+          )?;
+        }
+
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+        scope.define_property(
+          list_obj,
+          length_key,
+          data_property(Value::Number(nodes.len() as f64), true, false, false),
+        )?;
+
+        Ok(Value::Object(list_obj))
+      }
       ("Document", "documentElement", 0) => {
         let document_obj = Self::require_receiver_object(receiver)?;
 
@@ -7836,9 +7978,24 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // Root the receiver across key allocations.
         scope.push_root(Value::Object(list_obj))?;
 
-        let idx = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
-          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-          _ => 0,
+        // Matches the handwritten vm-js shim: ToNumber + truncation toward zero, with negative
+        // indices treated as out-of-range.
+        let idx_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let mut n = match idx_value {
+          Value::Number(n) => n,
+          other => scope.heap_mut().to_number(other)?,
+        };
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        let n = n.trunc();
+        if n < 0.0 {
+          return Ok(Value::Null);
+        }
+        let idx = if n >= u32::MAX as f64 {
+          u32::MAX
+        } else {
+          n as u32
         };
 
         let key = key_from_str(scope, &idx.to_string())?;
@@ -7862,7 +8019,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           .heap()
           .object_get_own_data_property_value(list_obj, &length_key)?
         {
-          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n,
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n.trunc(),
           _ => 0.0,
         };
         Ok(Value::Number(len))
@@ -7874,9 +8031,22 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
         scope.push_root(Value::Object(collection_obj))?;
 
-        let idx = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
-          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
-          _ => 0,
+        let idx_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let mut n = match idx_value {
+          Value::Number(n) => n,
+          other => scope.heap_mut().to_number(other)?,
+        };
+        if !n.is_finite() || n.is_nan() {
+          n = 0.0;
+        }
+        let n = n.trunc();
+        if n < 0.0 {
+          return Ok(Value::Null);
+        }
+        let idx = if n >= u32::MAX as f64 {
+          u32::MAX
+        } else {
+          n as u32
         };
 
         let key = key_from_str(scope, &idx.to_string())?;
@@ -7899,7 +8069,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           .heap()
           .object_get_own_data_property_value(collection_obj, &length_key)?
         {
-          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n,
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n.trunc(),
           _ => 0.0,
         };
         Ok(Value::Number(len))
@@ -9408,6 +9578,56 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
         Ok(out)
       }
+      "NodeList" | "HTMLCollection" => {
+        let Some(Value::Object(obj)) = receiver else {
+          // Preserve existing delegation behavior for call sites that request a snapshot without an
+          // explicit receiver (primarily tests that validate delegation mechanics).
+          if let Some(values) =
+            self.try_delegate_dom_iterable_snapshot(vm, scope, receiver, interface, kind)?
+          {
+            return Ok(values);
+          }
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(obj))?;
+
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+        let len = match scope
+          .heap()
+          .object_get_own_data_property_value(obj, &length_key)?
+        {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n.trunc() as usize,
+          _ => 0,
+        };
+
+        let mut out: Vec<BindingValue> = Vec::with_capacity(len);
+        for idx in 0..len {
+          match kind {
+            IterableKind::Keys => out.push(BindingValue::Number(idx as f64)),
+            IterableKind::Values | IterableKind::Entries => {
+              let idx_key = key_from_str(scope, &idx.to_string())?;
+              let value = scope
+                .heap()
+                .object_get_own_data_property_value(obj, &idx_key)?
+                .filter(|v| !matches!(v, Value::Undefined))
+                .unwrap_or(Value::Null);
+              let value = match value {
+                Value::Null => BindingValue::Null,
+                other => BindingValue::Object(other),
+              };
+              match kind {
+                IterableKind::Values => out.push(value),
+                IterableKind::Entries => out.push(BindingValue::Sequence(vec![
+                  BindingValue::Number(idx as f64),
+                  value,
+                ])),
+                IterableKind::Keys => unreachable!(),
+              }
+            }
+          }
+        }
+        Ok(out)
+      }
       _ => {
         if let Some(values) =
           self.try_delegate_dom_iterable_snapshot(vm, scope, receiver, interface, kind)?
@@ -9933,6 +10153,59 @@ mod window_document_tests {
           const fresh = root.querySelectorAll('span');
           if (fresh === snapshot) return false;
           if (fresh.length !== 3) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_document_fragment_query_selector_all_works() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const frag = document.createDocumentFragment();
+          const a = document.createElement('span');
+          a.id = "a";
+          a.className = "x";
+          frag.appendChild(a);
+          const b = document.createElement('div');
+          b.className = "x";
+          frag.appendChild(b);
+
+          if (frag.querySelector('#a') !== a) return false;
+
+          const snapshot = frag.querySelectorAll('.x');
+          if (!(snapshot instanceof NodeList)) return false;
+          if (snapshot.length !== 2) return false;
+          if (snapshot[0] !== a) return false;
+          if (snapshot[1] !== b) return false;
+
+          // querySelectorAll returns a static NodeList.
+          const c = document.createElement('span');
+          c.className = "x";
+          frag.appendChild(c);
+          if (snapshot.length !== 2) return false;
+
+          let threw = false;
+          try { frag.querySelector('div['); } catch (e) { threw = e && e.name === 'SyntaxError'; }
+          if (!threw) return false;
+
           return true;
         } catch (e) {
           return false;
@@ -11158,7 +11431,7 @@ mod tests {
       key1,
       data_property(Value::Undefined, true, true, true),
     )?;
-    let length_key = key_from_str(&mut scope, "length")?;
+    let length_key = key_from_str(&mut scope, COLLECTION_LENGTH_KEY)?;
     scope.define_property(
       list_obj,
       length_key,
@@ -11232,6 +11505,92 @@ mod tests {
     assert!(matches!(err, VmError::TypeError("Illegal invocation")));
 
     // Avoid `Realm dropped without calling teardown()` panics in vm-js.
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_nodelist_iterable_snapshot_reads_length_and_indices() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
+    let mut scope = heap.scope();
+
+    let list_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(list_obj))?;
+
+    let v0_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(v0_obj))?;
+    let v1_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(v1_obj))?;
+
+    let idx0 = key_from_str(&mut scope, "0")?;
+    scope.define_property(
+      list_obj,
+      idx0,
+      data_property(Value::Object(v0_obj), true, true, true),
+    )?;
+    let idx1 = key_from_str(&mut scope, "1")?;
+    scope.define_property(
+      list_obj,
+      idx1,
+      data_property(Value::Object(v1_obj), true, true, true),
+    )?;
+    let length_key = key_from_str(&mut scope, COLLECTION_LENGTH_KEY)?;
+    scope.define_property(
+      list_obj,
+      length_key,
+      data_property(Value::Number(2.0), true, false, false),
+    )?;
+
+    let values = dispatch.iterable_snapshot(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      IterableKind::Values,
+    )?;
+    assert_eq!(
+      values,
+      vec![
+        BindingValue::Object(Value::Object(v0_obj)),
+        BindingValue::Object(Value::Object(v1_obj)),
+      ]
+    );
+
+    let keys = dispatch.iterable_snapshot(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      IterableKind::Keys,
+    )?;
+    assert_eq!(keys, vec![BindingValue::Number(0.0), BindingValue::Number(1.0)]);
+
+    let entries = dispatch.iterable_snapshot(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      IterableKind::Entries,
+    )?;
+    assert_eq!(
+      entries,
+      vec![
+        BindingValue::Sequence(vec![
+          BindingValue::Number(0.0),
+          BindingValue::Object(Value::Object(v0_obj)),
+        ]),
+        BindingValue::Sequence(vec![
+          BindingValue::Number(1.0),
+          BindingValue::Object(Value::Object(v1_obj)),
+        ]),
+      ]
+    );
+
     drop(scope);
     realm.teardown(&mut heap);
     Ok(())
