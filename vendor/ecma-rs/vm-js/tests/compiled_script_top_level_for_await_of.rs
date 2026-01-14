@@ -114,3 +114,66 @@ fn compiled_script_top_level_for_await_of_throw_suppresses_iterator_return_rejec
   Ok(())
 }
 
+#[test]
+fn compiled_script_top_level_for_await_of_async_iterator_close_only_observes_promise_constructor_once(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var ctorCalls = 0;
+      var returnCalls = 0;
+
+      const closePromise = Promise.resolve({});
+      Object.defineProperty(closePromise, "constructor", {
+        get() {
+          ctorCalls++;
+          return Promise;
+        },
+      });
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        return {
+          next() {
+            return Promise.resolve({ value: 1, done: false });
+          },
+          return() {
+            returnCalls++;
+            return closePromise;
+          },
+        };
+      };
+
+      for await (const x of iterable) {
+        break;
+      }
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "top-level for-await-of loops with synchronous bodies should execute via the compiled (HIR) async script path"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  // AsyncIteratorClose performs PromiseResolve on the return result exactly once; the outer
+  // suspension machinery must not PromiseResolve it again (or `promise.constructor` would be
+  // observed twice).
+  let ctor_calls = rt.exec_script("ctorCalls")?;
+  assert_eq!(ctor_calls, Value::Number(1.0));
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}

@@ -13600,6 +13600,7 @@ pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: H
 enum HirAsyncEvalResult {
   Complete,
   Await {
+    kind: crate::exec::AsyncSuspendKind,
     await_value: Value,
     resume: HirAsyncResumePoint,
     assign_reference: Option<AssignmentReference>,
@@ -13644,6 +13645,7 @@ fn hir_eval_stmt_list_until_await(
           }
         };
         return Ok(HirAsyncEvalResult::Await {
+          kind: crate::exec::AsyncSuspendKind::Await,
           await_value,
           resume: HirAsyncResumePoint::ExprStmt {
             next_stmt_index: i.saturating_add(1),
@@ -13707,6 +13709,7 @@ fn hir_eval_stmt_list_until_await(
             }
           };
           return Ok(HirAsyncEvalResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
             resume: HirAsyncResumePoint::Assignment {
               next_stmt_index: i.saturating_add(1),
@@ -13745,6 +13748,7 @@ fn hir_eval_stmt_list_until_await(
               }
             };
             return Ok(HirAsyncEvalResult::Await {
+              kind: crate::exec::AsyncSuspendKind::Await,
               await_value,
               resume: HirAsyncResumePoint::VarDecl {
                 stmt_index: i,
@@ -13805,8 +13809,9 @@ fn hir_eval_stmt_list_until_await(
       evaluator.vm.tick()?;
       let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, &[])?;
       match state.poll(evaluator, scope, body, None) {
-        Ok(ForAwaitOfPoll::Await { await_value, .. }) => {
+        Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
           return Ok(HirAsyncEvalResult::Await {
+            kind,
             await_value,
             resume: HirAsyncResumePoint::ForAwaitOf {
               next_stmt_index: i.saturating_add(1),
@@ -13998,6 +14003,7 @@ fn run_compiled_script_async(
       res.map(|_| promise)
     }
     Ok(HirAsyncEvalResult::Await {
+      kind,
       await_value,
       resume,
       assign_reference,
@@ -14054,17 +14060,22 @@ fn run_compiled_script_async(
         return Err(err);
       }
 
-      let resolve_res = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
-        vm,
-        &mut root_scope,
-        host,
-        hooks,
-        await_value,
-      );
-      let resolve_res =
-        resolve_res.map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut root_scope, err));
+      let awaited_promise_res: Result<Value, VmError> = match kind {
+        crate::exec::AsyncSuspendKind::Await => crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+          vm,
+          &mut root_scope,
+          host,
+          hooks,
+          await_value,
+        )
+        .map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut root_scope, err)),
+        crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+        crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+          "unexpected async generator yield suspension in compiled async script",
+        )),
+      };
 
-      let awaited_promise = match resolve_res {
+      let awaited_promise = match awaited_promise_res {
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
           let reason = match err {
@@ -14546,6 +14557,7 @@ pub(crate) fn hir_async_resume_continuation(
                   }
                 };
                 return Ok(HirAsyncEvalResult::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
                   resume: HirAsyncResumePoint::VarDecl {
                     stmt_index,
@@ -14685,7 +14697,8 @@ pub(crate) fn hir_async_resume_continuation(
             "hir async for-await-of resume missing state machine",
           ))?;
           match state.poll(&mut evaluator, scope, body, Some(resume_value)) {
-            Ok(ForAwaitOfPoll::Await { await_value, .. }) => Ok(HirAsyncEvalResult::Await {
+            Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(HirAsyncEvalResult::Await {
+              kind,
               await_value,
               resume: HirAsyncResumePoint::ForAwaitOf { next_stmt_index },
               assign_reference: None,
@@ -14762,6 +14775,7 @@ pub(crate) fn hir_async_resume_continuation(
         res.map(|_| Value::Undefined)
       }
       Ok(HirAsyncEvalResult::Await {
+        kind,
         await_value,
         resume,
         assign_reference,
@@ -14867,17 +14881,22 @@ pub(crate) fn hir_async_resume_continuation(
           }
         }
 
-        let resolve_res = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
-          vm,
-          &mut await_scope,
-          host,
-          hooks,
-          await_value,
-        );
-        let resolve_res =
-          resolve_res.map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+        let awaited_promise_res: Result<Value, VmError> = match kind {
+          crate::exec::AsyncSuspendKind::Await => crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            await_value,
+          )
+          .map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut await_scope, err)),
+          crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
+          crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+            "unexpected async generator yield suspension in compiled async script",
+          )),
+        };
 
-        let awaited_promise = match resolve_res {
+        let awaited_promise = match awaited_promise_res {
           Ok(p) => p,
           Err(err) if err.is_throw_completion() => {
             let reason = match err {
