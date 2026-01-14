@@ -815,6 +815,12 @@ impl MixerState {
             sink.buffer.pop_discard(output_samples);
             sink.maybe_audible.store(false, Ordering::Relaxed);
             if sink.buffer.is_empty() {
+              if sink.discontinuity_state.load(Ordering::Relaxed) == DISC_STATE_FADE_OUT {
+                sink
+                  .discontinuity_state
+                  .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+                sink.force_ramp_to_zero();
+              }
               // Best-effort: if the engine is already torn down, ignore.
               let _ = sink.activity.set_active(false);
             }
@@ -840,6 +846,12 @@ impl MixerState {
         sink.buffer.pop_discard(to_drain);
         sink.maybe_audible.store(false, Ordering::Relaxed);
         if sink.buffer.is_empty() {
+          if sink.discontinuity_state.load(Ordering::Relaxed) == DISC_STATE_FADE_OUT {
+            sink
+              .discontinuity_state
+              .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+            sink.force_ramp_to_zero();
+          }
           // Best-effort: if the engine is already torn down, ignore.
           let _ = sink.activity.set_active(false);
         }
