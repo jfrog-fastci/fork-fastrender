@@ -4500,6 +4500,52 @@ mod tests {
   }
 
   #[test]
+  fn start_scc_evaluation_returns_out_of_memory_on_members_alloc_failure() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut graph = ModuleGraph::new();
+    let module = graph.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
+
+    // Linking must succeed before simulating allocator failure.
+    graph.link(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      module,
+    )?;
+
+    // Ensure SCC caches are populated so `start_scc_evaluation` proceeds into the SCC member
+    // bookkeeping path.
+    graph.ensure_scc_info(&mut vm)?;
+
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+    let mut scope = heap.scope();
+
+    let _guard = FailAllocsGuard::new();
+    let err = graph
+      .start_scc_evaluation(
+        &mut vm,
+        &mut scope,
+        realm.global_object(),
+        realm.id(),
+        module,
+        &mut host,
+        &mut hooks,
+      )
+      .expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn teardown_clears_script_and_realm_loaded_modules_caches() -> Result<(), VmError> {
     struct Host {
       microtasks: MicrotaskQueue,
