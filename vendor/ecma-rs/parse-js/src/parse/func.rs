@@ -35,8 +35,12 @@ impl<'a> Parser<'a> {
     // `new.target` is syntactically allowed inside parameter initializers when a `new.target`
     // binding exists (functions and class elements).
     let prev_new_target_allowed = self.new_target_allowed;
+    let prev_arguments_allowed = self.arguments_allowed;
     if introduces_new_target {
       self.new_target_allowed += 1;
+      // Non-arrow functions introduce an `arguments` binding that should be visible to parameter
+      // initializers.
+      self.arguments_allowed += 1;
     }
     fn parse_params_inner(p: &mut Parser<'_>, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
       p.require(TT::ParenthesisOpen)?;
@@ -213,6 +217,7 @@ impl<'a> Parser<'a> {
 
     let res = parse_params_inner(self, ctx);
     self.new_target_allowed = prev_new_target_allowed;
+    self.arguments_allowed = prev_arguments_allowed;
     res
   }
 
@@ -242,14 +247,17 @@ impl<'a> Parser<'a> {
     ctx: ParseCtx,
   ) -> SyntaxResult<Vec<Node<Stmt>>> {
     let prev_new_target_allowed = self.new_target_allowed;
+    let prev_arguments_allowed = self.arguments_allowed;
     let prev_super_prop_allowed = self.super_prop_allowed;
     let prev_super_call_allowed = self.super_call_allowed;
     self.new_target_allowed += 1;
+    self.arguments_allowed += 1;
     // Regular functions do not have a `super` binding.
     self.super_prop_allowed = 0;
     self.super_call_allowed = 0;
     let res = self.with_arguments_bound_in_class_init(|p| p.parse_func_block_body(ctx));
     self.new_target_allowed = prev_new_target_allowed;
+    self.arguments_allowed = prev_arguments_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
     res
@@ -261,9 +269,11 @@ impl<'a> Parser<'a> {
     allow_super_call: bool,
   ) -> SyntaxResult<Vec<Node<Stmt>>> {
     let prev_new_target_allowed = self.new_target_allowed;
+    let prev_arguments_allowed = self.arguments_allowed;
     let prev_super_prop_allowed = self.super_prop_allowed;
     let prev_super_call_allowed = self.super_call_allowed;
     self.new_target_allowed += 1;
+    self.arguments_allowed += 1;
     self.super_prop_allowed += 1;
     if allow_super_call {
       self.super_call_allowed += 1;
@@ -275,6 +285,7 @@ impl<'a> Parser<'a> {
     // Methods are non-arrow functions and have their own `arguments` binding.
     let res = self.with_arguments_bound_in_class_init(|p| p.parse_func_block_body(ctx));
     self.new_target_allowed = prev_new_target_allowed;
+    self.arguments_allowed = prev_arguments_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
     res

@@ -37518,7 +37518,6 @@ fn range_common_ancestor_container_get_native(
     .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
-
 fn range_collapsed_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

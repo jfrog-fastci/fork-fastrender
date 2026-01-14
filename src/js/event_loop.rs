@@ -976,13 +976,14 @@ impl<Host: 'static> EventLoop<Host> {
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     let mut maybe = Some(callback);
-    let callback: TimerCallback<Host> =
-      box_try_new(move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
-      let runnable = maybe
-        .take()
-        .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
-      runnable(host, event_loop)
-    })
+    let callback: TimerCallback<Host> = box_try_new(
+      move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
+        let runnable = maybe
+          .take()
+          .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
+        runnable(host, event_loop)
+      },
+    )
     .ok_or_else(|| Error::Other(String::new()))?;
     Ok(self.add_timer(TimerKind::Timeout, delay, None, callback)?)
   }
@@ -1055,12 +1056,15 @@ impl<Host: 'static> EventLoop<Host> {
 
     let mut maybe = Some(callback);
     let callback: IdleCallback<Host> = box_try_new(
-      move |host: &mut Host, event_loop: &mut EventLoop<Host>, did_timeout, remaining_ms| {
-      let runnable = maybe.take().ok_or_else(|| {
-        Error::Other("requestIdleCallback callback invoked more than once".to_string())
-      })?;
-      runnable(host, event_loop, did_timeout, remaining_ms)
-    },
+      move |host: &mut Host,
+            event_loop: &mut EventLoop<Host>,
+            did_timeout: bool,
+            remaining_ms: f64| {
+        let runnable = maybe.take().ok_or_else(|| {
+          Error::Other("requestIdleCallback callback invoked more than once".to_string())
+        })?;
+        runnable(host, event_loop, did_timeout, remaining_ms)
+      },
     )
     .ok_or_else(|| Error::Other(String::new()))?;
 
@@ -1117,12 +1121,12 @@ impl<Host: 'static> EventLoop<Host> {
 
     let mut maybe = Some(callback);
     let callback: AnimationFrameCallback<Host> = box_try_new(
-      move |host: &mut Host, event_loop: &mut EventLoop<Host>, timestamp| {
-      let runnable = maybe.take().ok_or_else(|| {
-        Error::Other("requestAnimationFrame callback invoked more than once".to_string())
-      })?;
-      runnable(host, event_loop, timestamp)
-    },
+      move |host: &mut Host, event_loop: &mut EventLoop<Host>, timestamp: f64| {
+        let runnable = maybe.take().ok_or_else(|| {
+          Error::Other("requestAnimationFrame callback invoked more than once".to_string())
+        })?;
+        runnable(host, event_loop, timestamp)
+      },
     )
     .ok_or_else(|| Error::Other(String::new()))?;
 

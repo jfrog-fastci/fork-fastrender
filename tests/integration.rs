@@ -7,6 +7,7 @@ mod common;
 mod accessibility;
 mod animation;
 mod api;
+#[cfg(feature = "browser_ui")]
 mod browser_integration;
 mod determinism;
 mod dom_integration;

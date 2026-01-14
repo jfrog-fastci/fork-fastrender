@@ -6,8 +6,10 @@ use std::alloc::{alloc, Layout};
 
 type PromiseResult<T> = Result<T>;
 
-type Reaction<Host, T> =
-  Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, PromiseResult<T>) -> Result<()> + 'static>;
+type Reaction<Host, T> = Box<
+  dyn for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>, PromiseResult<T>) -> Result<()>
+    + 'static,
+>;
 
 /// Fallible `Box::new` that returns `Error::Other` on allocator OOM instead of aborting the process.
 ///
@@ -136,7 +138,8 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
 
     self.add_reaction(
       event_loop,
-      box_try_new(move |host: &mut Host, event_loop: &mut EventLoop<Host>, result| {
+      box_try_new(
+        move |host: &mut Host, event_loop: &mut EventLoop<Host>, result: PromiseResult<T>| {
         match result {
           Ok(value) => match on_fulfilled(host, &mut *event_loop, value)? {
             JsPromiseValue::Value(v) => next_resolver.resolve(&mut *event_loop, v)?,
@@ -146,20 +149,25 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
               let next_resolver = next_resolver.clone();
               p.add_reaction(
                 &mut *event_loop,
-                box_try_new(move |_host: &mut Host, event_loop: &mut EventLoop<Host>, result| {
-                  match result {
-                    Ok(v) => next_resolver.resolve(&mut *event_loop, v)?,
-                    Err(err) => next_resolver.reject(&mut *event_loop, err)?,
-                  }
-                  Ok(())
-                })?,
+                box_try_new(
+                  move |_host: &mut Host,
+                        event_loop: &mut EventLoop<Host>,
+                        result: PromiseResult<U>| {
+                    match result {
+                      Ok(v) => next_resolver.resolve(&mut *event_loop, v)?,
+                      Err(err) => next_resolver.reject(&mut *event_loop, err)?,
+                    }
+                    Ok(())
+                  },
+                )?,
               )?;
             }
           },
           Err(err) => next_resolver.reject(&mut *event_loop, err)?,
         }
         Ok(())
-      })?,
+        },
+      )?,
     )?;
 
     Ok(next)

@@ -170,11 +170,17 @@ pub struct Parser<'a> {
   in_iteration: u32,
   in_switch: u32,
   labels: Vec<LabelInfo>,
-  /// Count of active class-initialization contexts (class field initializers and static blocks)
-  /// that disallow identifier references to `arguments` (ECMA-262 `ContainsArguments` early error).
+  /// Depth of the nearest non-arrow function scope that provides an `arguments` binding.
   ///
-  /// This counter is cleared while parsing non-arrow function parameter lists / bodies, since such
-  /// functions introduce their own `arguments` binding.
+  /// - Non-arrow functions introduce an `arguments` binding for their parameters/body.
+  /// - Arrow functions do **not** introduce an `arguments` binding and instead inherit this value
+  ///   from their enclosing scope.
+  ///
+  /// This is used to implement early errors for class field initializers / static blocks where
+  /// `arguments` is syntactically disallowed unless shadowed by an inner non-arrow function.
+  arguments_allowed: u32,
+  /// Depth of "class initialization" parsing contexts where identifier reference to `arguments` is
+  /// disallowed (class field initializers and `static {}` blocks).
   disallow_arguments_in_class_init: u32,
   cancel: Option<Arc<AtomicBool>>,
   cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
@@ -214,6 +220,7 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
+      arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
       cancel,
       cancel_check: None,
@@ -242,6 +249,7 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
+      arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
       cancel: None,
       cancel_check: Some(cancel_check),
@@ -293,6 +301,50 @@ impl<'a> Parser<'a> {
   /// Callers should only use this to widen the initial grammar context *before* parsing begins.
   pub fn set_allow_top_level_yield(&mut self, allow: bool) {
     self.allow_top_level_yield = allow;
+  }
+
+  /// Execute `f` while treating `arguments` as disallowed in class initialization code.
+  ///
+  /// This models the early-error behavior for class field initializers and `static {}` blocks:
+  /// `arguments` is a syntax error unless it is *shadowed* by an inner non-arrow function (which
+  /// provides its own `arguments` binding).
+  pub fn with_disallow_arguments_in_class_init<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
+    let prev_disallow = self.disallow_arguments_in_class_init;
+    let prev_arguments_allowed = self.arguments_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow.saturating_add(1);
+    // Class initialization code does not have access to an outer `arguments` binding (even when the
+    // class is nested inside a function). Nested non-arrow functions within the initializer/block
+    // will increment `arguments_allowed` as usual.
+    self.arguments_allowed = 0;
+    let out = f(self);
+    self.arguments_allowed = prev_arguments_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow;
+    out
+  }
+
+  pub fn validate_arguments_not_disallowed_in_class_init(
+    &self,
+    loc: Loc,
+    raw_name: &str,
+  ) -> SyntaxResult<()> {
+    if self.disallow_arguments_in_class_init == 0 {
+      return Ok(());
+    }
+    if self.arguments_allowed > 0 {
+      return Ok(());
+    }
+    let Some(name) = self.identifier_name_string_value(raw_name) else {
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+    if name.as_ref() != "arguments" {
+      return Ok(());
+    }
+    Err(loc.error(
+      SyntaxErrorType::ExpectedSyntax(
+        "`arguments` is not allowed in class field initializers or static blocks",
+      ),
+      None,
+    ))
   }
 
   pub fn options(&self) -> ParseOptions {
