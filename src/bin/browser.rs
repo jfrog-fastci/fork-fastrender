@@ -17160,6 +17160,9 @@ impl App {
   fn clear_page_focus(&mut self) {
     self.flush_pending_text_input();
     self.page_has_focus = false;
+    if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
+    }
   }
 
   fn set_page_focus(&mut self, focus: bool) {
@@ -22809,9 +22812,6 @@ impl App {
   fn focus_address_bar_select_all(&mut self) {
     self.clear_page_focus();
     self.cancel_media_controls();
-    if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
-      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
-    }
     self.browser_state.chrome.request_focus_address_bar = true;
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
@@ -23740,9 +23740,6 @@ impl App {
               pos_point,
             ) {
               self.clear_page_focus();
-              if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
-                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
-              }
             }
 
             // If a popup is open, touches inside it are handled by egui. Any touch outside should
@@ -24485,7 +24482,8 @@ impl App {
             // prevents the first typed character after a chrome click (e.g. the address bar) from
             // being forwarded to the page when winit batches the click + keypress before the next
             // `RedrawRequested`.
-            if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
+            let should_clear_page_focus_for_press =
+              fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
               self.page_rect_points.map(|rect| {
                 fastrender::Rect::from_points(
                   fastrender::Point::new(rect.min.x, rect.min.y),
@@ -24493,7 +24491,8 @@ impl App {
                 )
               }),
               fastrender::Point::new(pos_points.x, pos_points.y),
-            ) {
+            );
+            if should_clear_page_focus_for_press {
               self.clear_page_focus();
             }
             if self.page_loading_overlay_blocks_input
@@ -24571,8 +24570,11 @@ impl App {
               &mut self.page_has_focus,
               &mut self.cursor_in_page,
             ) {
-              if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
-                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
+              // If we didn't already clear page focus earlier in this pointer-press handler, do it
+              // now so the worker can blur the currently focused element.
+              if !should_clear_page_focus_for_press {
+                self.clear_page_focus();
+                self.cursor_in_page = false;
               }
               return;
             }
