@@ -2623,16 +2623,18 @@ impl JsRuntime {
           let has_await = top.stx.body.iter().any(stmt_contains_await);
           {
             let mut tick = || vm_frame.tick();
-            crate::early_errors::validate_top_level(
-              &top.stx.body,
-              crate::early_errors::EarlyErrorOptions {
-                strict,
-                // `vm-js` supports async classic scripts when `await` appears anywhere in the
-                // evaluated statement list (including inside class static blocks).
-                allow_top_level_await: has_await,
-                is_module: false,
-                allow_super_call: false,
-              },
+              crate::early_errors::validate_top_level(
+                &top.stx.body,
+                crate::early_errors::EarlyErrorOptions {
+                  strict,
+                  // `vm-js` supports async classic scripts when `await` appears anywhere in the
+                  // evaluated statement list (including inside class static blocks). This is
+                  // detected without descending into nested functions, so scripts that use `await`
+                  // as an identifier remain valid.
+                  allow_top_level_await: has_await,
+                  is_module: false,
+                  allow_super_call: false,
+                },
               Some(source.text.as_ref()),
               &mut tick,
             )?;
