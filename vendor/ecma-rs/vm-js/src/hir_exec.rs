@@ -22524,6 +22524,15 @@ pub(crate) fn run_compiled_module(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
+  // Ensure the module environment is marked as a "this environment" so arrow functions created at
+  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -22821,6 +22830,15 @@ pub(crate) fn start_compiled_module_tla_evaluation(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<ModuleTlaStepResult, VmError> {
+  // Ensure the module environment is marked as a "this environment" so arrow functions created at
+  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -23054,6 +23072,16 @@ pub(crate) fn instantiate_compiled_module_decls(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
+  // Module environments provide the top-level lexical `this` binding (`undefined`) which arrow
+  // functions capture lexically. Mark the module environment as the current "this environment" so
+  // arrow functions created within it resolve the correct lexical `this` value.
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Module instantiation creates bindings and (for function declarations) pre-creates function
   // objects. Those function objects must capture the instantiating module as `[[ScriptOrModule]]`
   // so nested operations like dynamic `import()` can correctly determine their referrer.
