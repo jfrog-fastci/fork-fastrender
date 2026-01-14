@@ -46,11 +46,6 @@ use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
 use url::Url;
 
-/// Canonical scheme name for chrome-action URLs.
-///
-/// Kept as a standalone constant because it is used by tests and a small amount of UI glue code.
-pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
-
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
@@ -631,16 +626,11 @@ impl ChromeActionUrl {
   }
 }
 
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
-
 impl std::fmt::Display for ChromeActionUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str(&self.format())
   }
 }
-
-/// Backwards-compatible alias for the `chrome-action` scheme name.
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
 
 /// Parse a `chrome-action:` href value into a typed [`ChromeActionUrl`].
 ///
