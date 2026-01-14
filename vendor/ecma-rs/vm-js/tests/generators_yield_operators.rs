@@ -613,7 +613,20 @@ fn generators_yield_in_template_literals() {
           m1.value === 1 && m1.done === false &&
           m2.value === "aXb" && m2.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13 && ok14
+        // Multiple `yield` expressions inside a single substitution (comma operator).
+        function* tpl_comma_yield() { return `a${(yield 1, yield 2)}b`; }
+        const it15 = tpl_comma_yield();
+        const n1 = it15.next();
+        churn();
+        const n2 = it15.next("X");
+        churn();
+        const n3 = it15.next("Y");
+        const ok15 =
+          n1.value === 1 && n1.done === false &&
+          n2.value === 2 && n2.done === false &&
+          n3.value === "aYb" && n3.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13 && ok14 && ok15
       "#,
     )
     .unwrap();
