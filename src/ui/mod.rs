@@ -59,6 +59,7 @@ pub mod clipboard;
 pub mod media_prefs;
 pub mod window_title;
 pub mod downloads;
+pub mod save_suggestions;
 pub mod downloads_panel_policy;
 pub mod downloads_notifications;
 pub mod open_in_new_tab;
@@ -284,6 +285,7 @@ pub use browser_app::{
   RemoteSearchSuggestCache,
   TabGroupColor, TabGroupId, TabGroupState,
 };
+pub use save_suggestions::{suggested_print_filename, suggested_save_page_filename};
 pub use renderer_ipc::{FrameReadyLimits, FrameReadyViolation};
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistorySearcher, GlobalHistoryStore,
