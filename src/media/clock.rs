@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::clock::Clock;
 /// Abstraction over the master clock used for A/V sync and HTMLMediaElement timekeeping.
 ///
 /// The clock origin is intentionally unspecified; callers should only compute deltas.
@@ -36,6 +37,28 @@ pub trait MediaClock: Send + Sync + 'static {
   /// this method.
   fn is_started(&self) -> bool {
     true
+  }
+}
+
+/// Adapter that exposes a [`crate::clock::Clock`] as a [`MediaClock`].
+///
+/// This is useful when media clocking needs to reuse the host's injectable clock
+/// (e.g. deterministic JS tests with [`crate::clock::VirtualClock`]).
+#[derive(Debug, Clone)]
+pub struct ClockMediaClock {
+  clock: Arc<dyn Clock>,
+}
+
+impl ClockMediaClock {
+  #[must_use]
+  pub fn new(clock: Arc<dyn Clock>) -> Self {
+    Self { clock }
+  }
+}
+
+impl MediaClock for ClockMediaClock {
+  fn now(&self) -> Duration {
+    self.clock.now()
   }
 }
 

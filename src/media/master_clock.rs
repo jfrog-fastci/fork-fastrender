@@ -128,6 +128,18 @@ impl MasterClock {
   }
 }
 
+impl MediaClock for MasterClock {
+  fn now(&self) -> Duration {
+    MasterClock::now(self)
+  }
+
+  fn is_started(&self) -> bool {
+    // A MasterClock always has a system clock fallback, so it can produce a usable timeline
+    // immediately even if the audio clock is not started yet.
+    true
+  }
+}
+
 impl MasterClockInner {
   fn master_nanos_for_current_source(&self, system_now_nanos: i128) -> i128 {
     match self.current_source {

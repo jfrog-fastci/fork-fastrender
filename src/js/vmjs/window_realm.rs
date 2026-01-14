@@ -356,6 +356,7 @@ pub(crate) struct WindowRealmUserData {
   /// Cached native call handler id for `import.meta.resolve`.
   pub(crate) import_meta_resolve_call_id: Option<NativeFunctionId>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
+  media_master_clock: Arc<crate::media::MasterClock>,
   media_element_state_registry: MediaElementStateRegistry,
   dom_platform: Option<DomPlatform>,
   /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
@@ -501,6 +502,7 @@ impl WindowRealmUserData {
     session_storage_namespace_id: Option<u64>,
     crypto_rng_seed: Option<u64>,
     web_storage_quota_utf16_bytes: usize,
+    clock: Arc<dyn Clock>,
   ) -> Self {
     let crypto_rng_state = crypto_rng_seed
       .map(crate::js::window_crypto::crypto_rng_seed_from_u64)
@@ -525,6 +527,10 @@ impl WindowRealmUserData {
     session_storage_area
       .lock()
       .set_quota_bytes(web_storage_quota_utf16_bytes);
+
+    let system_media_clock: Arc<dyn crate::media::clock::MediaClock> =
+      Arc::new(crate::media::clock::ClockMediaClock::new(clock));
+    let media_master_clock = Arc::new(crate::media::MasterClock::new(system_media_clock));
     Self {
       window_id,
       local_storage_area,
@@ -543,6 +549,7 @@ impl WindowRealmUserData {
       module_graph: None,
       import_meta_resolve_call_id: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
+      media_master_clock,
       media_element_state_registry: MediaElementStateRegistry::default(),
       dom_platform: None,
       owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),
@@ -587,6 +594,16 @@ impl WindowRealmUserData {
 
   pub(crate) fn media_element_state_registry_mut(&mut self) -> &mut MediaElementStateRegistry {
     &mut self.media_element_state_registry
+  }
+
+  pub(crate) fn media_element_state_mut(
+    &mut self,
+    key: DomNodeKey,
+  ) -> &mut crate::js::window_media::MediaElementState {
+    let master: Arc<dyn crate::media::clock::MediaClock> = Arc::clone(&self.media_master_clock);
+    self
+      .media_element_state_registry
+      .get_or_create(key, &master)
   }
 
   pub(crate) fn sweep_media_element_state_registry_if_needed(
@@ -662,6 +679,7 @@ impl WindowRealm {
       config.session_storage_namespace_id,
       config.crypto_rng_seed,
       config.web_storage_quota_utf16_bytes,
+      Arc::clone(&config.clock),
     ));
     let realm_id = runtime.realm().id();
 
@@ -40661,6 +40679,40 @@ fn dispatch_dom_event_from_global_event_ctor_best_effort(
   Ok(())
 }
 
+fn seconds_f64_to_duration(seconds: f64) -> Duration {
+  if !(seconds.is_finite()) || seconds <= 0.0 {
+    return Duration::ZERO;
+  }
+
+  let secs_f = seconds.floor();
+  if !(secs_f.is_finite()) {
+    return Duration::ZERO;
+  }
+
+  if secs_f >= u64::MAX as f64 {
+    return Duration::MAX;
+  }
+
+  let mut secs = secs_f as u64;
+  let mut nanos_f = ((seconds - secs_f) * 1_000_000_000.0).round();
+  if !(nanos_f.is_finite()) || nanos_f <= 0.0 {
+    nanos_f = 0.0;
+  }
+
+  // `nanos_f` can round up to 1e9, in which case we carry into the seconds field.
+  let mut subsec_nanos = nanos_f as u32;
+  if subsec_nanos >= 1_000_000_000 {
+    subsec_nanos = 0;
+    secs = secs.saturating_add(1);
+  }
+
+  if secs == u64::MAX {
+    return Duration::MAX;
+  }
+
+  Duration::new(secs, subsec_nanos)
+}
+
 fn html_media_element_paused_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -40676,8 +40728,8 @@ fn html_media_element_paused_get_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  Ok(Value::Bool(state.paused))
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Bool(state.paused()))
 }
 
 fn html_media_element_current_time_get_native(
@@ -40695,8 +40747,8 @@ fn html_media_element_current_time_get_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  Ok(Value::Number(state.current_time))
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Number(state.current_time_seconds()))
 }
 
 fn html_media_element_current_time_set_native(
@@ -40718,15 +40770,16 @@ fn html_media_element_current_time_set_native(
   let mut time = scope
     .heap_mut()
     .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
-  if !time.is_finite() || time.is_nan() {
+  if !time.is_finite() || time.is_nan() || time <= 0.0 {
     time = 0.0;
   }
+  let time = seconds_f64_to_duration(time);
 
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  state.current_time = time;
+  let state = data.media_element_state_mut(key);
+  state.seek(time);
 
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
   Ok(Value::Undefined)
@@ -40751,9 +40804,9 @@ fn html_media_element_play_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  if state.paused {
-    state.paused = false;
+  let state = data.media_element_state_mut(key);
+  if state.paused() {
+    state.play();
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "play")?;
   }
 
@@ -40779,9 +40832,9 @@ fn html_media_element_pause_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  if !state.paused {
-    state.paused = true;
+  let state = data.media_element_state_mut(key);
+  if !state.paused() {
+    state.pause();
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "pause")?;
   }
 
@@ -59412,6 +59465,7 @@ mod tests {
           .dom_platform
           .as_mut()
           .expect("expected dom platform to be installed");
+        let master: Arc<dyn crate::media::clock::MediaClock> = Arc::clone(&data.media_master_clock);
         let registry = &mut data.media_element_state_registry;
 
         let mut scope = heap.scope();
@@ -59426,7 +59480,7 @@ mod tests {
             DomInterface::HTMLElement,
           )?;
           roots.push(scope.heap_mut().add_root(Value::Object(wrapper))?);
-          registry.get_or_create(DomNodeKey::new(document_id, node_id));
+          registry.get_or_create(DomNodeKey::new(document_id, node_id), &master);
         }
       }
 
@@ -59998,6 +60052,61 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_time_advances_while_playing_and_freezes_when_paused() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut config = WindowRealmConfig::new("https://example.com/");
+    config.clock = Arc::clone(&clock);
+    let mut realm = new_realm(config)?;
+
+    let t0 = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        globalThis.v = document.createElement('video');
+        globalThis.v.play();
+        return globalThis.v.currentTime;
+      })()"#,
+    )?;
+    assert_eq!(t0, Value::Number(0.0));
+
+    clock.advance(Duration::from_millis(500));
+    let t1 = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.v.currentTime")?;
+    assert_eq!(t1, Value::Number(0.5));
+
+    let t_pause = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        globalThis.v.pause();
+        return globalThis.v.currentTime;
+      })()"#,
+    )?;
+    assert_eq!(t_pause, Value::Number(0.5));
+
+    clock.advance(Duration::from_millis(500));
+    let t2 = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.v.currentTime")?;
+    assert_eq!(t2, Value::Number(0.5));
+
+    let t_resume = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        globalThis.v.play();
+        return globalThis.v.currentTime;
+      })()"#,
+    )?;
+    assert_eq!(t_resume, Value::Number(0.5));
+
+    clock.advance(Duration::from_secs(1));
+    let t3 = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.v.currentTime")?;
+    assert_eq!(t3, Value::Number(1.5));
     Ok(())
   }
 

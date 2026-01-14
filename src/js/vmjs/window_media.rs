@@ -11,24 +11,47 @@
 use crate::dom2;
 use crate::js::dom_platform::{DocumentId, DomNodeKey, DomPlatform};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use vm_js::Heap;
+
+use crate::media::clock::{MediaClock, PlaybackClock, PlaybackState};
 
 /// Minimal backing state for an `HTMLMediaElement` (`<audio>` / `<video>`).
 ///
 /// This intentionally does **not** store any GC-managed `Value`/`GcObject` handles; the state should
 /// remain cheap to keep on the host side.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct MediaElementState {
-  pub paused: bool,
-  pub current_time: f64,
+  clock: PlaybackClock,
 }
 
-impl Default for MediaElementState {
-  fn default() -> Self {
-    Self {
-      paused: true,
-      current_time: 0.0,
-    }
+impl MediaElementState {
+  pub(crate) fn new(master_clock: Arc<dyn MediaClock>) -> Self {
+    let clock = PlaybackClock::new(master_clock, Duration::ZERO);
+    // HTMLMediaElement starts out paused.
+    clock.pause();
+    Self { clock }
+  }
+
+  pub(crate) fn paused(&self) -> bool {
+    matches!(self.clock.state(), PlaybackState::Paused)
+  }
+
+  pub(crate) fn current_time_seconds(&self) -> f64 {
+    self.clock.now().as_secs_f64()
+  }
+
+  pub(crate) fn seek(&self, time: Duration) {
+    self.clock.seek(time);
+  }
+
+  pub(crate) fn play(&self) {
+    self.clock.play();
+  }
+
+  pub(crate) fn pause(&self) {
+    self.clock.pause();
   }
 }
 
@@ -48,8 +71,15 @@ impl MediaElementStateRegistry {
     self.states.is_empty()
   }
 
-  pub(crate) fn get_or_create(&mut self, key: DomNodeKey) -> &mut MediaElementState {
-    self.states.entry(key).or_default()
+  pub(crate) fn get_or_create(
+    &mut self,
+    key: DomNodeKey,
+    master_clock: &Arc<dyn MediaClock>,
+  ) -> &mut MediaElementState {
+    self
+      .states
+      .entry(key)
+      .or_insert_with(|| MediaElementState::new(Arc::clone(master_clock)))
   }
 
   /// Opportunistically sweep unreachable media element state entries.
