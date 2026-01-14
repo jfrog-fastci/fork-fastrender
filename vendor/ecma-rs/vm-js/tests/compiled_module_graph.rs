@@ -1863,10 +1863,14 @@ fn compiled_module_rejection_error_object_has_throw_site_stack() -> Result<(), V
     let key_s = scope.alloc_string("stack")?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
-    let Value::String(stack_s) = scope
-      .heap()
-      .object_get_own_data_property_value(err_obj, &key)?
-      .unwrap_or(Value::Undefined)
+    let Value::String(stack_s) = scope.get_with_host_and_hooks(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      err_obj,
+      key,
+      Value::Object(err_obj),
+    )?
     else {
       return Err(VmError::InvariantViolation(
         "expected rejection Error object to have a string `stack` property",
