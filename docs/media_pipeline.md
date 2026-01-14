@@ -191,8 +191,9 @@ Known limitations / gaps (current):
 - Seek is not currently keyframe-aware: it does not backtrack to sync samples for video.
 - MP4 sample payloads are capped (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`) to
   avoid unbounded memory usage on corrupted/adversarial files.
-- `Mp4ParseDemuxer` still builds full sample lists without explicit caps; corrupted/adversarial MP4s
-  can force large allocations.
+- `Mp4ParseDemuxer` builds full per-track sample lists but enforces caps on sample-list size (see
+  `MAX_MP4_SAMPLES_PER_TRACK` / `MAX_MP4_TOTAL_SAMPLES` in `src/media/demux/mp4parse.rs`) so
+  corrupted/adversarial MP4s can't force unbounded allocations in those lists.
 
 Other MP4 demuxers in-tree (not currently used by `NativeBackend`):
 
@@ -381,8 +382,8 @@ primarily a smoke test for `<video>/<audio>` layout and for future playback wiri
     the middle of a GOP may fail to decode until the next keyframe.
   - MP4 sample payloads are capped (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`) to
     avoid unbounded per-sample allocations on corrupted/adversarial files.
-  - `Mp4ParseDemuxer` still builds full sample lists without explicit caps; corrupted/adversarial MP4s
-    can force large allocations.
+  - `Mp4ParseDemuxer` builds full per-track sample lists, but enforces caps on sample-list size (see
+    `MAX_MP4_SAMPLES_PER_TRACK` / `MAX_MP4_TOTAL_SAMPLES` in `src/media/demux/mp4parse.rs`).
 - MP4 (mp4-crate path, `Mp4PacketDemuxer`):
   - Still in-tree (not used by `NativeBackend`), with sample-table caps + best-effort keyframe seek.
   - The `mp4` crate may allocate large sample buffers before FastRender can enforce a hard cap; a

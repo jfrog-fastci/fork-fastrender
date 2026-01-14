@@ -9,6 +9,8 @@ use crate::media::{
 use std::io::{Read, Seek, SeekFrom};
 
 const MAX_MP4_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MP4_SAMPLES_PER_TRACK: usize = 2_000_000;
+const MAX_MP4_TOTAL_SAMPLES: usize = 4_000_000;
 
 fn mp4_sample_too_large_error(track_id: u32, len: usize) -> MediaError {
   MediaError::Demux(format!(
@@ -21,6 +23,40 @@ fn check_mp4_sample_size(track_id: u32, len: usize) -> MediaResult<()> {
     return Err(mp4_sample_too_large_error(track_id, len));
   }
   Ok(())
+}
+
+fn mp4_track_too_many_samples_error(track_id: u32, sample_count: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "MP4 track has too many samples (track {track_id}, sample_count {sample_count}, cap {MAX_MP4_SAMPLES_PER_TRACK})"
+  ))
+}
+
+fn mp4_too_many_samples_total_error(total_samples: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "MP4 has too many total samples (total {total_samples}, cap {MAX_MP4_TOTAL_SAMPLES})"
+  ))
+}
+
+fn check_mp4_track_sample_count(track_id: u32, sample_count: usize) -> MediaResult<()> {
+  if sample_count > MAX_MP4_SAMPLES_PER_TRACK {
+    return Err(mp4_track_too_many_samples_error(track_id, sample_count));
+  }
+  Ok(())
+}
+
+fn mp4parse_track_sample_count(track: &mp4parse::Track) -> Option<usize> {
+  // mp4parse's SampleSizeBox does not expose the `sample_count` field directly; use the
+  // `sample_sizes` vector length when present, otherwise fall back to summing stts.
+  if let Some(stsz) = track.stsz.as_ref() {
+    if stsz.sample_size == 0 && !stsz.sample_sizes.is_empty() {
+      return Some(stsz.sample_sizes.len());
+    }
+  }
+
+  track.stts.as_ref().and_then(|stts| {
+    let total: u64 = stts.samples.iter().map(|e| u64::from(e.sample_count)).sum();
+    usize::try_from(total).ok()
+  })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -267,10 +303,20 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
     active_track_ids.sort_unstable();
 
     let mut active_tracks = Vec::new();
+    let mut total_samples = 0_usize;
     for id in active_track_ids {
       let Some(track) = ctx.tracks.iter().find(|t| t.track_id == Some(id)) else {
         continue;
       };
+
+      if let Some(sample_count) = mp4parse_track_sample_count(track) {
+        check_mp4_track_sample_count(id, sample_count)?;
+        total_samples = total_samples.saturating_add(sample_count);
+        if total_samples > MAX_MP4_TOTAL_SAMPLES {
+          return Err(mp4_too_many_samples_total_error(total_samples));
+        }
+      }
+
       let samples = build_sample_list(track)?;
       let pts_index = build_pts_index(&samples);
       active_tracks.push(ActiveTrack {
@@ -895,6 +941,30 @@ mod tests {
     );
     assert!(
       msg.contains(&format!("cap {MAX_MP4_SAMPLE_BYTES} bytes")),
+      "expected error mentioning cap, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn rejects_mp4_track_with_too_many_samples() {
+    check_mp4_track_sample_count(7, MAX_MP4_SAMPLES_PER_TRACK)
+      .expect("cap-sized sample_count should be allowed");
+
+    let sample_count = MAX_MP4_SAMPLES_PER_TRACK + 1;
+    let err = check_mp4_track_sample_count(7, sample_count).expect_err("expected sample_count error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("sample_count {sample_count}")),
+      "expected error mentioning sample_count, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {MAX_MP4_SAMPLES_PER_TRACK}")),
       "expected error mentioning cap, got {msg:?}"
     );
   }
