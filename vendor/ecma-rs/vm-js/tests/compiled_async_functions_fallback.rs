@@ -9,7 +9,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn compiled_script_falls_back_for_async_functions() -> Result<(), VmError> {
+fn compiled_script_does_not_fall_back_for_async_function_decls() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(
@@ -26,6 +26,15 @@ fn compiled_script_falls_back_for_async_functions() -> Result<(), VmError> {
     "#,
   )?;
 
+  assert!(
+    script.contains_async_functions,
+    "test script should contain at least one async function"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "scripts that only *define* async functions should be able to execute via the compiled (HIR) executor"
+  );
+
   rt.exec_compiled_script(script)?;
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -33,4 +42,3 @@ fn compiled_script_falls_back_for_async_functions() -> Result<(), VmError> {
   assert_eq!(value, Value::Number(1.0));
   Ok(())
 }
-
