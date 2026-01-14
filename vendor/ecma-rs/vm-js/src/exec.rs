@@ -5518,6 +5518,9 @@ impl<'a> Evaluator<'a> {
           BindingKind::Param,
           self.strict,
           self.this,
+          self.home_object,
+          self.derived_constructor,
+          self.this_initialized,
         )?;
 
         if idx + 1 != func.stx.parameters.len() {
@@ -5552,6 +5555,9 @@ impl<'a> Evaluator<'a> {
         BindingKind::Param,
         self.strict,
         self.this,
+        self.home_object,
+        self.derived_constructor,
+        self.this_initialized,
       )?;
     }
 
@@ -8215,6 +8221,9 @@ impl<'a> Evaluator<'a> {
             BindingKind::Var,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )?;
         }
         Ok(Completion::empty())
@@ -8246,6 +8255,9 @@ impl<'a> Evaluator<'a> {
             BindingKind::Let,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )?;
         }
         Ok(Completion::empty())
@@ -8271,6 +8283,9 @@ impl<'a> Evaluator<'a> {
             BindingKind::Const,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )?;
         }
         Ok(Completion::empty())
@@ -8299,6 +8314,9 @@ impl<'a> Evaluator<'a> {
             BindingKind::Const,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )?;
           check_disposable_resource_value(self.vm, scope, value)?;
         }
@@ -10123,6 +10141,9 @@ impl<'a> Evaluator<'a> {
       BindingKind::Let,
       self.strict,
       self.this,
+      self.home_object,
+      self.derived_constructor,
+      self.this_initialized,
     )
   }
 
@@ -10558,6 +10579,9 @@ impl<'a> Evaluator<'a> {
             kind,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )
         }
         ForInOfLhs::Assign(pat) => bind_pattern(
@@ -10571,6 +10595,9 @@ impl<'a> Evaluator<'a> {
           BindingKind::Assignment,
           self.strict,
           self.this,
+          self.home_object,
+          self.derived_constructor,
+          self.this_initialized,
         ),
       };
 
@@ -10726,6 +10753,9 @@ impl<'a> Evaluator<'a> {
             kind,
             self.strict,
             self.this,
+            self.home_object,
+            self.derived_constructor,
+            self.this_initialized,
           )
         }
         ForInOfLhs::Assign(pat) => bind_pattern(
@@ -10739,6 +10769,9 @@ impl<'a> Evaluator<'a> {
           BindingKind::Assignment,
           self.strict,
           self.this,
+          self.home_object,
+          self.derived_constructor,
+          self.this_initialized,
         ),
       };
 
@@ -11306,7 +11339,6 @@ impl<'a> Evaluator<'a> {
       let value = self.get_value_from_reference(&mut super_scope, &reference)?;
       return Ok(OptionalChainEval::Value(value));
     }
-
     let base = match self.eval_chain_base(scope, &expr.left)? {
       OptionalChainEval::Value(v) => v,
       OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
@@ -14640,6 +14672,9 @@ impl<'a> Evaluator<'a> {
               value,
               self.strict,
               self.this,
+              self.home_object,
+              self.derived_constructor,
+              self.this_initialized,
             )?;
             Ok(value)
           }
@@ -21456,6 +21491,9 @@ fn async_bind_pattern(
       kind,
       evaluator.strict,
       evaluator.this,
+      evaluator.home_object,
+      evaluator.derived_constructor,
+      evaluator.this_initialized,
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
     return match res {
@@ -21493,6 +21531,9 @@ fn async_bind_pattern(
         kind,
         evaluator.strict,
         evaluator.this,
+        evaluator.home_object,
+        evaluator.derived_constructor,
+        evaluator.this_initialized,
       )
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
       match res {
@@ -28357,6 +28398,9 @@ fn async_eval_assignment_simple(
             value,
             evaluator.strict,
             evaluator.this,
+            evaluator.home_object,
+            evaluator.derived_constructor,
+            evaluator.this_initialized,
           )?;
           Ok(AsyncEval::Complete(value))
         }
@@ -34587,6 +34631,9 @@ fn async_resume_from_frames(
                 value,
                 evaluator.strict,
                 evaluator.this,
+                evaluator.home_object,
+                evaluator.derived_constructor,
+                evaluator.this_initialized,
               ) {
                 Ok(()) => state = AsyncState::Expr(Ok(value)),
                 Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
@@ -38611,6 +38658,9 @@ fn gen_bind_var_declarator_value(
       BindingKind::Var,
       evaluator.strict,
       evaluator.this,
+      evaluator.home_object,
+      evaluator.derived_constructor,
+      evaluator.this_initialized,
     )?,
     VarDeclMode::Let => {
       let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
@@ -38625,6 +38675,9 @@ fn gen_bind_var_declarator_value(
           BindingKind::Let,
           evaluator.strict,
           evaluator.this,
+          evaluator.home_object,
+          evaluator.derived_constructor,
+          evaluator.this_initialized,
         )?;
         return Ok(());
       };
@@ -38653,6 +38706,9 @@ fn gen_bind_var_declarator_value(
           BindingKind::Const,
           evaluator.strict,
           evaluator.this,
+          evaluator.home_object,
+          evaluator.derived_constructor,
+          evaluator.this_initialized,
         )?;
         return Ok(());
       }
@@ -38689,6 +38745,9 @@ fn gen_bind_var_declarator_value(
           BindingKind::Const,
           evaluator.strict,
           evaluator.this,
+          evaluator.home_object,
+          evaluator.derived_constructor,
+          evaluator.this_initialized,
         )?;
         check_disposable_resource_value(evaluator.vm, scope, value)?;
         return Ok(());
@@ -44707,6 +44766,9 @@ fn gen_eval_assignment_expr(
                 value,
                 evaluator.strict,
                 evaluator.this,
+                evaluator.home_object,
+                evaluator.derived_constructor,
+                evaluator.this_initialized,
               ) {
                 Ok(()) => Ok(GenEval::Complete(Completion::normal(value))),
                 Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
@@ -46935,6 +46997,9 @@ fn gen_bind_pattern(
       kind,
       evaluator.strict,
       evaluator.this,
+      evaluator.home_object,
+      evaluator.derived_constructor,
+      evaluator.this_initialized,
     );
     return match res {
       Ok(()) => Ok(GenEval::Complete(Completion::empty())),
@@ -46972,6 +47037,9 @@ fn gen_bind_pattern(
         kind,
         evaluator.strict,
         evaluator.this,
+        evaluator.home_object,
+        evaluator.derived_constructor,
+        evaluator.this_initialized,
       );
       match res {
         Ok(()) => Ok(GenEval::Complete(Completion::empty())),
@@ -49504,6 +49572,9 @@ fn gen_resume_from_frames(
                   value,
                   evaluator.strict,
                   evaluator.this,
+                  evaluator.home_object,
+                  evaluator.derived_constructor,
+                  evaluator.this_initialized,
                 );
                 match res {
                   Ok(()) => state = Completion::normal(value),
@@ -54438,6 +54509,9 @@ pub(crate) fn eval_expr(
   env: &mut RuntimeEnv,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
   scope: &mut Scope<'_>,
   expr: &Node<Expr>,
 ) -> Result<Value, VmError> {
@@ -54449,10 +54523,10 @@ pub(crate) fn eval_expr(
     strict,
     this,
     new_target: Value::Undefined,
-    home_object: None,
+    home_object,
     class_constructor: None,
-    derived_constructor: false,
-    this_initialized: true,
+    derived_constructor,
+    this_initialized,
     this_root_idx: None,
   };
   evaluator.eval_expr(scope, expr)
@@ -54465,6 +54539,9 @@ pub(crate) fn eval_expr_named(
   env: &mut RuntimeEnv,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
   scope: &mut Scope<'_>,
   expr: &Node<Expr>,
   name: PropertyKey,
@@ -54477,10 +54554,10 @@ pub(crate) fn eval_expr_named(
     strict,
     this,
     new_target: Value::Undefined,
-    home_object: None,
+    home_object,
     class_constructor: None,
-    derived_constructor: false,
-    this_initialized: true,
+    derived_constructor,
+    this_initialized,
     this_root_idx: None,
   };
   evaluator.eval_expr_named(scope, expr, name)

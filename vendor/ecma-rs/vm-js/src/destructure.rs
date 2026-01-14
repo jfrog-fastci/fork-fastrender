@@ -1,7 +1,7 @@
 use crate::exec::{eval_expr, eval_expr_named, ResolvedBinding, RuntimeEnv};
 use crate::function::CallHandler;
 use crate::property::PropertyKey;
-use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
 use parse_js::ast::expr::{ComputedMemberExpr, Expr, MemberExpr};
@@ -16,6 +16,23 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
     scope,
     intr.type_error_prototype(),
     "TypeError",
+    message,
+  )?;
+  Ok(VmError::Throw(value))
+}
+
+fn throw_reference_error(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  message: &str,
+) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let value = crate::error_object::new_error(
+    scope,
+    intr.reference_error_prototype(),
+    "ReferenceError",
     message,
   )?;
   Ok(VmError::Throw(value))
@@ -86,6 +103,9 @@ pub(crate) fn bind_pattern(
   kind: BindingKind,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // Keep temporary roots local to this binding operation.
   let mut scope = scope.reborrow();
@@ -115,6 +135,9 @@ pub(crate) fn bind_pattern(
       kind,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     Pat::Arr(arr) => bind_array_pattern(
       vm,
@@ -127,6 +150,9 @@ pub(crate) fn bind_pattern(
       kind,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     Pat::AssignTarget(expr) => {
       if !matches!(kind, BindingKind::Assignment) {
@@ -144,6 +170,9 @@ pub(crate) fn bind_pattern(
         value,
         strict,
         this,
+        home_object,
+        derived_constructor,
+        this_initialized,
       )
     }
   }
@@ -159,6 +188,9 @@ pub(crate) fn bind_assignment_target(
   value: Value,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // Keep temporary roots local to this binding operation.
   let mut scope = scope.reborrow();
@@ -198,6 +230,9 @@ pub(crate) fn bind_assignment_target(
       BindingKind::Assignment,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     Expr::ArrPat(arr) => bind_array_pattern(
       vm,
@@ -210,6 +245,9 @@ pub(crate) fn bind_assignment_target(
       BindingKind::Assignment,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     Expr::Member(member) => assign_to_member(
       vm,
@@ -221,6 +259,9 @@ pub(crate) fn bind_assignment_target(
       value,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     Expr::ComputedMember(member) => assign_to_computed_member(
       vm,
@@ -232,6 +273,9 @@ pub(crate) fn bind_assignment_target(
       value,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ),
     _ => Err(VmError::Unimplemented("assignment target")),
   }
@@ -353,6 +397,9 @@ fn bind_object_pattern(
   kind: BindingKind,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
   // accessors must observe `this = value` (the original RHS value), not the boxed object.
@@ -384,6 +431,9 @@ fn bind_object_pattern(
       &prop.stx.key,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     )?;
     root_property_key(scope, key)?;
     excluded.push(key);
@@ -407,6 +457,14 @@ fn bind_object_pattern(
       Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
       ComputedMember { base: Value, key_value: Value },
+      SuperMember {
+        super_base: Option<GcObject>,
+        key: &'a str,
+      },
+      SuperComputedMember {
+        super_base: Option<GcObject>,
+        key_value: Value,
+      },
     }
 
     let mut assignment_target: Option<PropertyAssignmentTarget<'_>> = None;
@@ -433,6 +491,29 @@ fn bind_object_pattern(
                   ));
                 }
 
+                if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                  if derived_constructor && !this_initialized {
+                    return Err(throw_reference_error(
+                      vm,
+                      &mut prop_scope,
+                      "Must call super constructor in derived class before accessing 'this'",
+                    )?);
+                  }
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    prop_scope.push_root(Value::Object(base_obj))?;
+                  }
+                  return Ok(Some(PropertyAssignmentTarget::SuperMember {
+                    super_base,
+                    key: &member.stx.right,
+                  }));
+                }
+
                 let base = eval_expr(
                   vm,
                   host,
@@ -440,6 +521,9 @@ fn bind_object_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut prop_scope,
                   &member.stx.left,
                 )?;
@@ -456,6 +540,45 @@ fn bind_object_pattern(
                   ));
                 }
 
+                if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                  if derived_constructor && !this_initialized {
+                    return Err(throw_reference_error(
+                      vm,
+                      &mut prop_scope,
+                      "Must call super constructor in derived class before accessing 'this'",
+                    )?);
+                  }
+                  let key_value = eval_expr(
+                    vm,
+                    host,
+                    hooks,
+                    env,
+                    strict,
+                    this,
+                    home_object,
+                    derived_constructor,
+                    this_initialized,
+                    &mut prop_scope,
+                    &member.stx.member,
+                  )?;
+                  let key_value = prop_scope.push_root(key_value)?;
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
+                  // the evaluator's ordering for `super[expr]`.
+                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    prop_scope.push_root(Value::Object(base_obj))?;
+                  }
+                  return Ok(Some(PropertyAssignmentTarget::SuperComputedMember {
+                    super_base,
+                    key_value,
+                  }));
+                }
+
                 let base = eval_expr(
                   vm,
                   host,
@@ -463,6 +586,9 @@ fn bind_object_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut prop_scope,
                   &member.stx.object,
                 )?;
@@ -474,6 +600,9 @@ fn bind_object_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut prop_scope,
                   &member.stx.member,
                 )?;
@@ -502,12 +631,49 @@ fn bind_object_pattern(
           if let Pat::Id(id) = &*prop.stx.target.stx {
             let name_s = prop_scope.alloc_string(&id.stx.name)?;
             let key = PropertyKey::from_string(name_s);
-            eval_expr_named(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr, key)?
+            eval_expr_named(
+              vm,
+              host,
+              hooks,
+              env,
+              strict,
+              this,
+              home_object,
+              derived_constructor,
+              this_initialized,
+              &mut prop_scope,
+              default_expr,
+              key,
+            )?
           } else {
-            eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?
+            eval_expr(
+              vm,
+              host,
+              hooks,
+              env,
+              strict,
+              this,
+              home_object,
+              derived_constructor,
+              this_initialized,
+              &mut prop_scope,
+              default_expr,
+            )?
           }
         } else {
-          eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?
+          eval_expr(
+            vm,
+            host,
+            hooks,
+            env,
+            strict,
+            this,
+            home_object,
+            derived_constructor,
+            this_initialized,
+            &mut prop_scope,
+            default_expr,
+          )?
         };
       }
     }
@@ -544,6 +710,31 @@ fn bind_object_pattern(
           root_property_key(&mut prop_scope, key)?;
           assign_to_property_key(vm, host, hooks, &mut prop_scope, base, key, prop_value, strict)
         }
+        PropertyAssignmentTarget::SuperMember { super_base, key } => assign_to_super_member(
+          vm,
+          host,
+          hooks,
+          &mut prop_scope,
+          super_base,
+          key,
+          prop_value,
+          strict,
+          this,
+        ),
+        PropertyAssignmentTarget::SuperComputedMember {
+          super_base,
+          key_value,
+        } => assign_to_super_computed_member(
+          vm,
+          host,
+          hooks,
+          &mut prop_scope,
+          super_base,
+          key_value,
+          prop_value,
+          strict,
+          this,
+        ),
       };
       res?;
     } else {
@@ -558,6 +749,9 @@ fn bind_object_pattern(
         kind,
         strict,
         this,
+        home_object,
+        derived_constructor,
+        this_initialized,
       )?;
     }
   }
@@ -577,6 +771,14 @@ fn bind_object_pattern(
     Binding(ResolvedBinding<'a>),
     Member { base: Value, key: &'a str },
     ComputedMember { base: Value, key_value: Value },
+    SuperMember {
+      super_base: Option<GcObject>,
+      key: &'a str,
+    },
+    SuperComputedMember {
+      super_base: Option<GcObject>,
+      key_value: Value,
+    },
   }
 
   let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
@@ -600,7 +802,42 @@ fn bind_object_pattern(
                 return Err(VmError::Unimplemented("optional chaining assignment target"));
               }
 
-              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
+              if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                if derived_constructor && !this_initialized {
+                  return Err(throw_reference_error(
+                    vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
+                return Ok(Some(RestAssignmentTarget::SuperMember {
+                  super_base,
+                  key: &member.stx.right,
+                }));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                home_object,
+                derived_constructor,
+                this_initialized,
+                scope,
+                &member.stx.left,
+              )?;
               let base = scope.push_root(base)?;
               Ok(Some(RestAssignmentTarget::Member {
                 base,
@@ -612,10 +849,73 @@ fn bind_object_pattern(
                 return Err(VmError::Unimplemented("optional chaining assignment target"));
               }
 
-              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
+              if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                if derived_constructor && !this_initialized {
+                  return Err(throw_reference_error(
+                    vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                let key_value = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
+                  scope,
+                  &member.stx.member,
+                )?;
+                let key_value = scope.push_root(key_value)?;
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
+                // the evaluator's ordering for `super[expr]`.
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
+                return Ok(Some(RestAssignmentTarget::SuperComputedMember {
+                  super_base,
+                  key_value,
+                }));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                home_object,
+                derived_constructor,
+                this_initialized,
+                scope,
+                &member.stx.object,
+              )?;
               let base = scope.push_root(base)?;
               let key_value =
-                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
+                eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
+                  scope,
+                  &member.stx.member,
+                )?;
               let key_value = scope.push_root(key_value)?;
               Ok(Some(RestAssignmentTarget::ComputedMember { base, key_value }))
             }
@@ -670,6 +970,31 @@ fn bind_object_pattern(
         root_property_key(scope, key)?;
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_obj), strict)
       }
+      RestAssignmentTarget::SuperMember { super_base, key } => assign_to_super_member(
+        vm,
+        host,
+        hooks,
+        scope,
+        super_base,
+        key,
+        Value::Object(rest_obj),
+        strict,
+        this,
+      ),
+      RestAssignmentTarget::SuperComputedMember {
+        super_base,
+        key_value,
+      } => assign_to_super_computed_member(
+        vm,
+        host,
+        hooks,
+        scope,
+        super_base,
+        key_value,
+        Value::Object(rest_obj),
+        strict,
+        this,
+      ),
     }
   } else {
     bind_pattern(
@@ -683,6 +1008,9 @@ fn bind_object_pattern(
       kind,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     )
   }
 }
@@ -698,6 +1026,9 @@ fn bind_array_pattern(
   kind: BindingKind,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // RequireObjectCoercible (ECMA-262): array destructuring disallows null/undefined but supports
   // primitives like String via iterator protocol.
@@ -754,6 +1085,14 @@ fn bind_array_pattern(
       Binding(ResolvedBinding<'a>),
       Member { base: Value, key: &'a str },
       ComputedMember { base: Value, key_value: Value },
+      SuperMember {
+        super_base: Option<GcObject>,
+        key: &'a str,
+      },
+      SuperComputedMember {
+        super_base: Option<GcObject>,
+        key_value: Value,
+      },
     }
 
     let mut assignment_target: Option<ElementAssignmentTarget<'_>> = None;
@@ -792,6 +1131,29 @@ fn bind_array_pattern(
                   ));
                 }
 
+                if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                  if derived_constructor && !this_initialized {
+                    return Err(throw_reference_error(
+                      vm,
+                      &mut elem_scope,
+                      "Must call super constructor in derived class before accessing 'this'",
+                    )?);
+                  }
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    elem_scope.push_root(Value::Object(base_obj))?;
+                  }
+                  return Ok(Some(ElementAssignmentTarget::SuperMember {
+                    super_base,
+                    key: &member.stx.right,
+                  }));
+                }
+
                 let base = eval_expr(
                   vm,
                   host,
@@ -799,6 +1161,9 @@ fn bind_array_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut elem_scope,
                   &member.stx.left,
                 )?;
@@ -815,6 +1180,45 @@ fn bind_array_pattern(
                   ));
                 }
 
+                if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                  if derived_constructor && !this_initialized {
+                    return Err(throw_reference_error(
+                      vm,
+                      &mut elem_scope,
+                      "Must call super constructor in derived class before accessing 'this'",
+                    )?);
+                  }
+                  let key_value = eval_expr(
+                    vm,
+                    host,
+                    hooks,
+                    env,
+                    strict,
+                    this,
+                    home_object,
+                    derived_constructor,
+                    this_initialized,
+                    &mut elem_scope,
+                    &member.stx.member,
+                  )?;
+                  let key_value = elem_scope.push_root(key_value)?;
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
+                  // the evaluator's ordering for `super[expr]`.
+                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    elem_scope.push_root(Value::Object(base_obj))?;
+                  }
+                  return Ok(Some(ElementAssignmentTarget::SuperComputedMember {
+                    super_base,
+                    key_value,
+                  }));
+                }
+
                 let base = eval_expr(
                   vm,
                   host,
@@ -822,6 +1226,9 @@ fn bind_array_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut elem_scope,
                   &member.stx.object,
                 )?;
@@ -833,6 +1240,9 @@ fn bind_array_pattern(
                   env,
                   strict,
                   this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
                   &mut elem_scope,
                   &member.stx.member,
                 )?;
@@ -877,6 +1287,8 @@ fn bind_array_pattern(
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
         item = if matches!(kind, BindingKind::Param) {
+          // Default values in parameter destructuring should only infer function names when the
+          // default expression is a syntactic anonymous function/class definition.
           if let Pat::Id(id) = &*elem.target.stx {
             let name_s = match elem_scope.alloc_string(&id.stx.name) {
               Ok(s) => s,
@@ -885,14 +1297,39 @@ fn bind_array_pattern(
               }
             };
             let key = PropertyKey::from_string(name_s);
-            match eval_expr_named(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr, key) {
+            match eval_expr_named(
+              vm,
+              host,
+              hooks,
+              env,
+              strict,
+              this,
+              home_object,
+              derived_constructor,
+              this_initialized,
+              &mut elem_scope,
+              default_expr,
+              key,
+            ) {
               Ok(v) => v,
               Err(err) => {
                 return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
               }
             }
           } else {
-            match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
+            match eval_expr(
+              vm,
+              host,
+              hooks,
+              env,
+              strict,
+              this,
+              home_object,
+              derived_constructor,
+              this_initialized,
+              &mut elem_scope,
+              default_expr,
+            ) {
               Ok(v) => v,
               Err(err) => {
                 return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
@@ -900,7 +1337,19 @@ fn bind_array_pattern(
             }
           }
         } else {
-          match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
+          match eval_expr(
+            vm,
+            host,
+            hooks,
+            env,
+            strict,
+            this,
+            home_object,
+            derived_constructor,
+            this_initialized,
+            &mut elem_scope,
+            default_expr,
+          ) {
             Ok(v) => v,
             Err(err) => {
               return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
@@ -967,6 +1416,23 @@ fn bind_array_pattern(
           }
           assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
         }
+        ElementAssignmentTarget::SuperMember { super_base, key } => {
+          assign_to_super_member(vm, host, hooks, &mut elem_scope, super_base, key, item, strict, this)
+        }
+        ElementAssignmentTarget::SuperComputedMember {
+          super_base,
+          key_value,
+        } => assign_to_super_computed_member(
+          vm,
+          host,
+          hooks,
+          &mut elem_scope,
+          super_base,
+          key_value,
+          item,
+          strict,
+          this,
+        ),
       };
       if let Err(err) = res {
         return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
@@ -982,6 +1448,9 @@ fn bind_array_pattern(
       kind,
       strict,
       this,
+      home_object,
+      derived_constructor,
+      this_initialized,
     ) {
       return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
     }
@@ -1016,6 +1485,14 @@ fn bind_array_pattern(
     Binding(ResolvedBinding<'a>),
     Member { base: Value, key: &'a str },
     ComputedMember { base: Value, key_value: Value },
+    SuperMember {
+      super_base: Option<GcObject>,
+      key: &'a str,
+    },
+    SuperComputedMember {
+      super_base: Option<GcObject>,
+      key_value: Value,
+    },
   }
  
   let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
@@ -1042,8 +1519,43 @@ fn bind_array_pattern(
                   "optional chaining used in assignment target",
                 ));
               }
-   
-              let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
+
+              if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                if derived_constructor && !this_initialized {
+                  return Err(throw_reference_error(
+                    vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
+                return Ok(Some(RestAssignmentTarget::SuperMember {
+                  super_base,
+                  key: &member.stx.right,
+                }));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                home_object,
+                derived_constructor,
+                this_initialized,
+                scope,
+                &member.stx.left,
+              )?;
               let base = scope.push_root(base)?;
               Ok(Some(RestAssignmentTarget::Member {
                 base,
@@ -1056,12 +1568,74 @@ fn bind_array_pattern(
                   "optional chaining used in assignment target",
                 ));
               }
-   
-              let base =
-                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
+
+              if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                if derived_constructor && !this_initialized {
+                  return Err(throw_reference_error(
+                    vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                let key_value = eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
+                  scope,
+                  &member.stx.member,
+                )?;
+                let key_value = scope.push_root(key_value)?;
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
+                // the evaluator's ordering for `super[expr]`.
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
+                }
+                return Ok(Some(RestAssignmentTarget::SuperComputedMember {
+                  super_base,
+                  key_value,
+                }));
+              }
+
+              let base = eval_expr(
+                vm,
+                host,
+                hooks,
+                env,
+                strict,
+                this,
+                home_object,
+                derived_constructor,
+                this_initialized,
+                scope,
+                &member.stx.object,
+              )?;
               let base = scope.push_root(base)?;
               let key_value =
-                eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.member)?;
+                eval_expr(
+                  vm,
+                  host,
+                  hooks,
+                  env,
+                  strict,
+                  this,
+                  home_object,
+                  derived_constructor,
+                  this_initialized,
+                  scope,
+                  &member.stx.member,
+                )?;
               let key_value = scope.push_root(key_value)?;
               Ok(Some(RestAssignmentTarget::ComputedMember { base, key_value }))
             }
@@ -1163,6 +1737,31 @@ fn bind_array_pattern(
         }
         assign_to_property_key(vm, host, hooks, scope, base, key, Value::Object(rest_arr), strict)
       }
+      RestAssignmentTarget::SuperMember { super_base, key } => assign_to_super_member(
+        vm,
+        host,
+        hooks,
+        scope,
+        super_base,
+        key,
+        Value::Object(rest_arr),
+        strict,
+        this,
+      ),
+      RestAssignmentTarget::SuperComputedMember {
+        super_base,
+        key_value,
+      } => assign_to_super_computed_member(
+        vm,
+        host,
+        hooks,
+        scope,
+        super_base,
+        key_value,
+        Value::Object(rest_arr),
+        strict,
+        this,
+      ),
     };
     return match res {
       Ok(()) => Ok(()),
@@ -1181,6 +1780,9 @@ fn bind_array_pattern(
     kind,
     strict,
     this,
+    home_object,
+    derived_constructor,
+    this_initialized,
   );
   match bind_res {
     Ok(()) => Ok(()),
@@ -1197,6 +1799,9 @@ fn resolve_obj_pat_key(
   key: &ClassOrObjKey,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<PropertyKey, VmError> {
   match key {
     ClassOrObjKey::Direct(direct) => {
@@ -1213,7 +1818,19 @@ fn resolve_obj_pat_key(
       Ok(PropertyKey::from_string(s))
     }
     ClassOrObjKey::Computed(expr) => {
-      let value = eval_expr(vm, host, hooks, env, strict, this, scope, expr)?;
+      let value = eval_expr(
+        vm,
+        host,
+        hooks,
+        env,
+        strict,
+        this,
+        home_object,
+        derived_constructor,
+        this_initialized,
+        scope,
+        expr,
+      )?;
       // Root the computed value until `to_property_key` completes.
       let value = scope.push_root(value)?;
       let key = match scope.to_property_key(vm, host, hooks, value) {
@@ -1275,6 +1892,112 @@ fn assign_to_property_key(
     Ok(())
   }
 }
+
+fn assign_to_super_member(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  super_base: Option<GcObject>,
+  key: &str,
+  value: Value,
+  strict: bool,
+  this: Value,
+) -> Result<(), VmError> {
+  // Root receiver/value/super base across key allocation and `[[Set]]`.
+  let mut set_scope = scope.reborrow();
+  set_scope.push_roots(&[this, value])?;
+  if let Some(base_obj) = super_base {
+    set_scope.push_root(Value::Object(base_obj))?;
+  }
+
+  let key_s = set_scope.alloc_string(key)?;
+  set_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let Some(base_obj) = super_base else {
+    // Mirror `PutValue` null/undefined base behaviour by using `ToObject(null)` for the error.
+    match set_scope.to_object(vm, host, hooks, Value::Null) {
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut set_scope, msg)?),
+      Err(err) => return Err(err),
+      Ok(_) => unreachable!("ToObject(null) should throw"),
+    }
+  };
+  set_scope.push_root(Value::Object(base_obj))?;
+
+  let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+    vm,
+    &mut set_scope,
+    host,
+    hooks,
+    base_obj,
+    key,
+    value,
+    this,
+  )?;
+  if ok {
+    Ok(())
+  } else if strict {
+    Err(throw_type_error(vm, &mut set_scope, "Cannot assign to read-only property")?)
+  } else {
+    Ok(())
+  }
+}
+
+fn assign_to_super_computed_member(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  super_base: Option<GcObject>,
+  key_value: Value,
+  value: Value,
+  strict: bool,
+  this: Value,
+) -> Result<(), VmError> {
+  // Root receiver/value/key_value/super base across `ToPropertyKey`/`[[Set]]`.
+  let mut set_scope = scope.reborrow();
+  set_scope.push_roots(&[this, key_value, value])?;
+  if let Some(base_obj) = super_base {
+    set_scope.push_root(Value::Object(base_obj))?;
+  }
+
+  let key = match set_scope.to_property_key(vm, host, hooks, key_value) {
+    Ok(key) => key,
+    Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut set_scope, msg)?),
+    Err(err) => return Err(err),
+  };
+  root_property_key(&mut set_scope, key)?;
+
+  let Some(base_obj) = super_base else {
+    // Ensure `ToPropertyKey` happens before throwing for a `null` super base.
+    match set_scope.to_object(vm, host, hooks, Value::Null) {
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, &mut set_scope, msg)?),
+      Err(err) => return Err(err),
+      Ok(_) => unreachable!("ToObject(null) should throw"),
+    }
+  };
+  set_scope.push_root(Value::Object(base_obj))?;
+
+  let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+    vm,
+    &mut set_scope,
+    host,
+    hooks,
+    base_obj,
+    key,
+    value,
+    this,
+  )?;
+  if ok {
+    Ok(())
+  } else if strict {
+    Err(throw_type_error(vm, &mut set_scope, "Cannot assign to read-only property")?)
+  } else {
+    Ok(())
+  }
+}
+
 fn assign_to_member(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -1285,6 +2008,9 @@ fn assign_to_member(
   value: Value,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   if member.optional_chaining {
     return Err(VmError::InvariantViolation(
@@ -1292,10 +2018,52 @@ fn assign_to_member(
     ));
   }
 
+  if matches!(&*member.left.stx, Expr::Super(_)) {
+    if derived_constructor && !this_initialized {
+      return Err(throw_reference_error(
+        vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+    let Some(home) = home_object else {
+      return Err(VmError::InvariantViolation(
+        "super property assignment missing [[HomeObject]]",
+      ));
+    };
+    let super_base = scope.heap().object_prototype(home)?;
+    if let Some(base_obj) = super_base {
+      scope.push_root(Value::Object(base_obj))?;
+    }
+    return assign_to_super_member(
+      vm,
+      host,
+      hooks,
+      scope,
+      super_base,
+      &member.right,
+      value,
+      strict,
+      this,
+    );
+  }
+
   // Root the RHS across evaluation of the LHS object.
   let mut rhs_scope = scope.reborrow();
   rhs_scope.push_root(value)?;
-  let base = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.left)?;
+  let base = eval_expr(
+    vm,
+    host,
+    hooks,
+    env,
+    strict,
+    this,
+    home_object,
+    derived_constructor,
+    this_initialized,
+    &mut rhs_scope,
+    &member.left,
+  )?;
   // Root the base value across property-key allocation and `ToObject(base)` boxing.
   let base = rhs_scope.push_root(base)?;
 
@@ -1314,6 +2082,9 @@ fn assign_to_computed_member(
   value: Value,
   strict: bool,
   this: Value,
+  home_object: Option<GcObject>,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   if member.optional_chaining {
     return Err(VmError::InvariantViolation(
@@ -1321,14 +2092,90 @@ fn assign_to_computed_member(
     ));
   }
 
+  if matches!(&*member.object.stx, Expr::Super(_)) {
+    // `super[expr]` assignment target.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_roots(&[this, value])?;
+
+    if derived_constructor && !this_initialized {
+      return Err(throw_reference_error(
+        vm,
+        &mut key_scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+
+    let key_value = eval_expr(
+      vm,
+      host,
+      hooks,
+      env,
+      strict,
+      this,
+      home_object,
+      derived_constructor,
+      this_initialized,
+      &mut key_scope,
+      &member.member,
+    )?;
+    let key_value = key_scope.push_root(key_value)?;
+
+    let Some(home) = home_object else {
+      return Err(VmError::InvariantViolation(
+        "super property assignment missing [[HomeObject]]",
+      ));
+    };
+    // `GetSuperBase` before `ToPropertyKey` (matches evaluator ordering).
+    let super_base = key_scope.heap().object_prototype(home)?;
+    if let Some(base_obj) = super_base {
+      key_scope.push_root(Value::Object(base_obj))?;
+    }
+
+    return assign_to_super_computed_member(
+      vm,
+      host,
+      hooks,
+      &mut key_scope,
+      super_base,
+      key_value,
+      value,
+      strict,
+      this,
+    );
+  }
+
   // Root the RHS across evaluation of the LHS object/key.
   let mut rhs_scope = scope.reborrow();
   rhs_scope.push_root(value)?;
 
-  let base = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.object)?;
+  let base = eval_expr(
+    vm,
+    host,
+    hooks,
+    env,
+    strict,
+    this,
+    home_object,
+    derived_constructor,
+    this_initialized,
+    &mut rhs_scope,
+    &member.object,
+  )?;
   // Root the base across evaluation/conversion of the computed key.
   let base = rhs_scope.push_root(base)?;
-  let key_value = eval_expr(vm, host, hooks, env, strict, this, &mut rhs_scope, &member.member)?;
+  let key_value = eval_expr(
+    vm,
+    host,
+    hooks,
+    env,
+    strict,
+    this,
+    home_object,
+    derived_constructor,
+    this_initialized,
+    &mut rhs_scope,
+    &member.member,
+  )?;
   let key_value = rhs_scope.push_root(key_value)?;
   let key = match rhs_scope.to_property_key(vm, host, hooks, key_value) {
     Ok(key) => key,
