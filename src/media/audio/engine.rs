@@ -441,8 +441,11 @@ static ENGINE_OVERRIDE: OnceLock<Mutex<Option<Arc<AudioEngine>>>> = OnceLock::ne
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::media::audio::AudioClock;
   use crate::media::audio::NullAudioBackend;
+  use crate::media::audio_clock::InterpolatedAudioClock;
   use crate::testing::global_test_lock;
+  use std::time::Instant;
 
   fn all_near(samples: &[f32], expected: f32) -> bool {
     samples
@@ -550,5 +553,76 @@ mod tests {
 
     let after = AudioEngine::global();
     assert!(Arc::ptr_eq(&base, &after));
+  }
+
+  #[derive(Debug)]
+  struct FakeSink {
+    cfg: AudioStreamConfig,
+  }
+
+  impl AudioSink for FakeSink {
+    fn config(&self) -> AudioStreamConfig {
+      self.cfg
+    }
+
+    fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
+      samples.len()
+    }
+
+    fn set_volume(&self, _volume: f32) {}
+  }
+
+  #[derive(Debug)]
+  struct ClockSwitchingBackend {
+    cfg: AudioStreamConfig,
+    clock: Arc<InterpolatedAudioClock>,
+    use_instant: AtomicBool,
+  }
+
+  impl ClockSwitchingBackend {
+    fn new() -> Self {
+      let cfg = AudioStreamConfig::new(48_000, 1);
+      Self {
+        cfg,
+        clock: Arc::new(InterpolatedAudioClock::new(cfg.sample_rate_hz)),
+        use_instant: AtomicBool::new(false),
+      }
+    }
+  }
+
+  impl AudioBackend for ClockSwitchingBackend {
+    fn output_config(&self) -> AudioStreamConfig {
+      self.cfg
+    }
+
+    fn clock(&self) -> AudioClock {
+      if self.use_instant.load(Ordering::Relaxed) {
+        AudioClock::Instant {
+          start: Instant::now(),
+          sample_rate_hz: self.cfg.sample_rate_hz,
+        }
+      } else {
+        AudioClock::OutputFrames {
+          clock: self.clock.clone(),
+        }
+      }
+    }
+
+    fn create_sink(&self) -> Box<dyn AudioSink> {
+      Box::new(FakeSink { cfg: self.cfg })
+    }
+  }
+
+  #[test]
+  fn audio_engine_device_clock_reflects_backend_clock_mode_changes() {
+    let backend = Arc::new(ClockSwitchingBackend::new());
+    let engine = AudioEngine::new_with_backend(audio_engine_config(), backend.clone());
+    let clock = engine.device_clock();
+
+    // OutputFrames clock has not received any callbacks yet, so it isn't started.
+    assert!(!clock.is_started());
+
+    backend.use_instant.store(true, Ordering::Relaxed);
+    assert!(clock.is_started());
   }
 }
