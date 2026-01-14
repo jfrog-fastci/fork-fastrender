@@ -1858,7 +1858,8 @@ impl JsRuntime {
     let mut heap = heap;
     let realm = Realm::new(&mut vm, &mut heap)?;
     let env = RuntimeEnv::new(&mut heap, realm.global_object(), realm.global_lexical_env())?;
-    let mut modules = Box::new(ModuleGraph::new());
+    // Avoid `Box::new`, which can abort the process on allocator OOM.
+    let mut modules = box_try_new_vm(ModuleGraph::new())?;
     modules.set_global_lexical_env(env.lexical_env());
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
