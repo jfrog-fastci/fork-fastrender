@@ -2708,9 +2708,9 @@ fn compiled_module_default_export_async_function_uses_user_call_handler() -> Res
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "modules that only *define* async functions should be executable via the compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2825,9 +2825,9 @@ fn compiled_module_default_export_generator_function_uses_ecma_call_handler() ->
       script_a.requires_ast_fallback,
       "generator syntax should require module-level AST fallback"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(

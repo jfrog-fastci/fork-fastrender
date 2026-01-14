@@ -48623,7 +48623,9 @@ mod tests {
           let mut haystacks = std::iter::once(d.message.as_str())
             .chain(d.notes.iter().map(|s| s.as_str()));
           haystacks.any(|s| {
-            s.contains("'arguments'")
+            // `parse-js` may render the token name with quotes or backticks depending on which layer
+            // surfaces the diagnostic.
+            (s.contains("'arguments'") || s.contains("`arguments`") || s.contains("arguments"))
               && s.contains("not allowed")
               && s.contains("class field")
               && s.contains("static initialization block")
