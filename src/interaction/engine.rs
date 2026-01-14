@@ -772,6 +772,31 @@ mod tests {
   }
 
   #[test]
+  fn interaction_hash_mark_link_visited_changes_css_not_paint() {
+    let mut engine = InteractionEngine::new();
+
+    let css_before = engine.interaction_state().interaction_css_hash();
+    let paint_before = engine.interaction_state().interaction_paint_hash();
+
+    assert!(engine.mark_link_visited(42), "expected first visit to be recorded");
+
+    let css_after = engine.interaction_state().interaction_css_hash();
+    let paint_after = engine.interaction_state().interaction_paint_hash();
+
+    assert_ne!(css_before, css_after, "visited links must affect css hash");
+    assert_eq!(paint_before, paint_after, "visited links must not affect paint hash");
+
+    // Idempotent: marking the same node id again should not change the visited set or cached hash.
+    let css_stable_before = engine.interaction_state().interaction_css_hash();
+    assert!(
+      !engine.mark_link_visited(42),
+      "expected repeated visit to be a no-op"
+    );
+    let css_stable_after = engine.interaction_state().interaction_css_hash();
+    assert_eq!(css_stable_before, css_stable_after);
+  }
+
+  #[test]
   fn interaction_hash_form_state_value_changes_paint_not_css() {
     let mut state = InteractionState::default();
     let css_before = state.interaction_css_hash();
