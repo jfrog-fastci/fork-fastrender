@@ -31,6 +31,10 @@ mode_only_paths() {
 }
 
 # 1) Fix staged mode-only changes by resetting the index to HEAD.
+#
+# Important: this can *create* new unstaged mode-only diffs (the common case when you staged a
+# mode-only change while the worktree already matched the index). We therefore recompute the
+# unstaged list after resetting the index.
 staged="$(mode_only_paths --cached)"
 if [[ -n "${staged}" ]]; then
   echo "reverting staged filemode-only changes..." >&2
@@ -41,6 +45,8 @@ if [[ -n "${staged}" ]]; then
 fi
 
 # 2) Fix unstaged mode-only changes by resetting the worktree to the index.
+#
+# Recompute after any index updates above so we catch the "staged only" case too.
 unstaged="$(mode_only_paths)"
 if [[ -n "${unstaged}" ]]; then
   echo "reverting unstaged filemode-only changes..." >&2
