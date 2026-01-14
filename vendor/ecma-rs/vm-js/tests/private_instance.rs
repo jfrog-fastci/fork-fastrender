@@ -258,6 +258,67 @@ fn optional_chaining_private_instance_method_call_short_circuits_on_nullish_base
 }
 
 #[test]
+fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        #f = 'init';
+        constructor(v) { this.#f = v; }
+        method(o) { return o?.c.#f; }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b';
+      ok = ok && a.method(null) === undefined;
+      ok = ok && a.method(undefined) === undefined;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_private_method_call_after_optional_chain_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        #x = 'init';
+        constructor(v) { this.#x = v; }
+        #m() { return this.#x; }
+        method(o) { return o?.c.#m(); }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b';
+      ok = ok && a.method(null) === undefined;
+      ok = ok && a.method(undefined) === undefined;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn compiled_script_with_private_optional_chain_field_falls_back_and_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let script = CompiledScript::compile_script(
@@ -311,6 +372,83 @@ fn compiled_script_with_private_optional_chain_method_call_falls_back_and_execut
 
       let threw = false;
       try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_private_field_after_optional_chain_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      class C {
+        #f = 'init';
+        constructor(v) { this.#f = v; }
+        method(o) { return o?.c.#f; }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b';
+      ok = ok && a.method(null) === undefined;
+      ok = ok && a.method(undefined) === undefined;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_private_method_call_after_optional_chain_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      class C {
+        #x = 'init';
+        constructor(v) { this.#x = v; }
+        #m() { return this.#x; }
+        method(o) { return o?.c.#m(); }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b';
+      ok = ok && a.method(null) === undefined;
+      ok = ok && a.method(undefined) === undefined;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
 
       ok && threw
     "#,
