@@ -22,12 +22,6 @@ pub enum DomError {
   NotSupportedError,
   #[error("WrongDocumentError")]
   WrongDocumentError,
-  /// Legacy alias for [`DomError::InvalidNodeTypeError`].
-  ///
-  /// Kept to avoid breaking older call sites that referenced `InvalidNodeType` (without the
-  /// DOM-standard `Error` suffix).
-  #[error("InvalidNodeTypeError")]
-  InvalidNodeType,
   #[error("InvalidNodeTypeError")]
   InvalidNodeTypeError,
   #[error("NoModificationAllowedError")]
@@ -47,7 +41,7 @@ impl DomError {
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
       Self::WrongDocumentError => "WrongDocumentError",
-      Self::InvalidNodeType | Self::InvalidNodeTypeError => "InvalidNodeTypeError",
+      Self::InvalidNodeTypeError => "InvalidNodeTypeError",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",
     }
@@ -70,11 +64,6 @@ mod tests {
 
     assert_eq!(DomError::InvalidStateError.to_string(), "InvalidStateError");
     assert_eq!(DomError::InvalidNodeTypeError.to_string(), "InvalidNodeTypeError");
-
-    // Ensure both the legacy `InvalidNodeType` and the preferred `InvalidNodeTypeError` map to the
-    // spec-correct DOMException name.
-    assert_eq!(DomError::InvalidNodeType.code(), "InvalidNodeTypeError");
     assert_eq!(DomError::InvalidNodeTypeError.code(), "InvalidNodeTypeError");
-    assert_eq!(DomError::InvalidNodeType.to_string(), "InvalidNodeTypeError");
   }
 }
