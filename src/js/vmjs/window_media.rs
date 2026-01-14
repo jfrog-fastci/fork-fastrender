@@ -37,6 +37,7 @@ pub(crate) const HAVE_ENOUGH_DATA: u16 = 4;
 pub(crate) struct MediaElementState {
   playback: Arc<MediaPlaybackControl>,
   muted: bool,
+  muted_overridden: bool,
   volume: f64,
   /// The last resolved media URL for this element's current `src` attribute.
   ///
@@ -59,6 +60,7 @@ impl MediaElementState {
     Self {
       playback,
       muted: false,
+      muted_overridden: false,
       volume: 1.0,
       src_url: None,
       network_state: NETWORK_EMPTY,
@@ -107,8 +109,17 @@ impl MediaElementState {
     self.muted
   }
 
+  pub(crate) fn muted_effective(&self, muted_attr: bool) -> bool {
+    if self.muted_overridden {
+      self.muted
+    } else {
+      muted_attr
+    }
+  }
+
   pub(crate) fn set_muted(&mut self, muted: bool) {
     self.muted = muted;
+    self.muted_overridden = true;
   }
 
   pub(crate) fn volume(&self) -> f64 {

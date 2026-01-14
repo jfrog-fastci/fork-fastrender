@@ -3084,7 +3084,9 @@ impl BrowserTabHost {
         }
 
         let should_load = src_changed || state.ready_state < HAVE_ENOUGH_DATA;
-        let should_autoplay = autoplay && muted && state.paused() && !state.autoplay_attempted;
+        let muted_effective = state.muted_effective(muted);
+        let should_autoplay =
+          autoplay && muted_effective && state.paused() && !state.autoplay_attempted;
         if autoplay && !state.autoplay_attempted {
           state.autoplay_attempted = true;
         }

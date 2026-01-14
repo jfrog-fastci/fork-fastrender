@@ -41709,6 +41709,38 @@ fn html_media_element_src_set_native(
   element_reflected_string_set_native(vm, scope, host, hooks, callee, this, args)
 }
 
+fn html_media_element_reflected_bool_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
+  }
+  element_reflected_bool_get_native(vm, scope, host, hooks, callee, this, args)
+}
+
+fn html_media_element_reflected_bool_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
+  }
+  element_reflected_bool_set_native(vm, scope, host, hooks, callee, this, args)
+}
+
 fn html_media_element_current_src_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -42443,7 +42475,7 @@ fn html_media_element_error_get_native(
 fn html_media_element_muted_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -42452,11 +42484,12 @@ fn html_media_element_muted_get_native(
   let key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
     .require_html_media_element_handle(scope.heap(), this)?;
+  let muted_attr = html_media_element_has_attr(vm, host, key, "muted");
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
   let state = data.media_element_state_mut(key);
-  Ok(Value::Bool(state.muted()))
+  Ok(Value::Bool(state.muted_effective(muted_attr)))
 }
 
 fn html_media_element_muted_set_native(
@@ -42478,12 +42511,19 @@ fn html_media_element_muted_set_native(
   let muted_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let muted = scope.heap().to_boolean(muted_value)?;
 
-  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
-  };
-  let state = data.media_element_state_mut(key);
-  if state.muted() != muted {
+  let muted_attr = html_media_element_has_attr(vm, host, key, "muted");
+  let should_dispatch = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+    };
+    let state = data.media_element_state_mut(key);
+    let before = state.muted_effective(muted_attr);
+    // `muted` is not a reflected attribute; treat setting the IDL attribute as an override of the
+    // default mutedness (which may be derived from `<video muted>` until the property is written).
     state.set_muted(muted);
+    before != muted
+  };
+  if should_dispatch {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "volumechange")?;
   }
   Ok(Value::Undefined)
@@ -42631,15 +42671,15 @@ fn html_media_element_play_native(
   // - muted via the JS property (`video.muted = true`), OR
   // - muted via the HTML attribute (`<video muted>`), OR
   // - `controls` is present (user-visible controls imply user intent).
-  let muted_property = {
+  let muted_attr = html_media_element_has_attr(vm, host, key, "muted");
+  let controls_attr = html_media_element_has_attr(vm, host, key, "controls");
+  let muted_effective = {
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
-    data.media_element_state_mut(key).muted()
+    data.media_element_state_mut(key).muted_effective(muted_attr)
   };
-  let muted_attr = html_media_element_has_attr(vm, host, key, "muted");
-  let controls_attr = html_media_element_has_attr(vm, host, key, "controls");
-  let allowed = muted_property || muted_attr || controls_attr;
+  let allowed = muted_effective || controls_attr;
 
   if !allowed {
     let err = make_dom_exception(
@@ -53954,6 +53994,54 @@ fn init_window_globals(
       ),
     )?;
 
+    // HTMLMediaElement boolean reflected attributes.
+    //
+    // These are commonly used by real-world pages and affect FastRender's autoplay policy shims.
+    let media_reflected_bool_get_call_id =
+      vm.register_native_call(html_media_element_reflected_bool_get_native)?;
+    let media_reflected_bool_set_call_id =
+      vm.register_native_call(html_media_element_reflected_bool_set_native)?;
+
+    for (prop, attr) in [("autoplay", "autoplay"), ("controls", "controls"), ("loop", "loop")] {
+      let attr_s = scope.alloc_string(attr)?;
+      scope.push_root(Value::String(attr_s))?;
+
+      let get_name = scope.alloc_string(&format!("get {prop}"))?;
+      scope.push_root(Value::String(get_name))?;
+      let get_func = scope.alloc_native_function_with_slots(
+        media_reflected_bool_get_call_id,
+        None,
+        get_name,
+        0,
+        &[Value::String(attr_s)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(get_func))?;
+
+      let set_name = scope.alloc_string(&format!("set {prop}"))?;
+      scope.push_root(Value::String(set_name))?;
+      let set_func = scope.alloc_native_function_with_slots(
+        media_reflected_bool_set_call_id,
+        None,
+        set_name,
+        1,
+        &[Value::String(attr_s)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set_func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(set_func))?;
+
+      let prop_key = alloc_key(&mut scope, prop)?;
+      scope.define_property(
+        html_media_element_proto,
+        prop_key,
+        idl_attribute_desc(Value::Object(get_func), Value::Object(set_func)),
+      )?;
+    }
+
     // HTMLMediaElement.prototype.src ([ReflectURL] attribute USVString src)
     //
     // Browsers resolve `video.src`/`audio.src` against the document base URL (absolute URL on get),
@@ -62884,6 +62972,64 @@ mod tests {
         if (video.volume !== 0) throw new Error(`expected clamped volume 0, got ${video.volume}`);
         if (fired !== 4) throw new Error(`expected fired 4 after clamp, got ${fired}`);
 
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_muted_attribute_initializes_muted_state_until_overridden() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        video.setAttribute('muted', '');
+        if (video.muted !== true) throw new Error(`expected muted true from attribute, got ${video.muted}`);
+
+        let fired = 0;
+        video.onvolumechange = () => { fired++; };
+
+        // Overriding the IDL attribute should switch the getter away from the content attribute.
+        video.muted = false;
+        if (video.muted !== false) throw new Error(`expected muted false after override, got ${video.muted}`);
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+
+        // Content-attribute changes should not override the JS property once it's been set.
+        video.setAttribute('muted', '');
+        if (video.muted !== false) throw new Error(`expected muted false after attr set, got ${video.muted}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_controls_reflection_allows_unmuted_play() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.controls !== false) throw new Error(`expected controls false by default, got ${video.controls}`);
+        video.controls = true;
+        if (video.controls !== true) throw new Error(`expected controls true after set, got ${video.controls}`);
+
+        let fired = 0;
+        video.addEventListener('play', () => { fired++; });
+        const p = video.play();
+        if (!(p instanceof Promise)) throw new Error('expected play() promise');
+        if (video.paused !== false) throw new Error(`expected paused false after play, got ${video.paused}`);
+        if (fired !== 1) throw new Error(`expected play to fire once, got ${fired}`);
         return true;
       })()"#,
     )?;
