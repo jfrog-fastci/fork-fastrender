@@ -13000,6 +13000,7 @@ struct App {
   crash_recovery_infobar_rect: Option<egui::Rect>,
   chrome_toast: fastrender::ui::ToastState,
   chrome_toast_rect: Option<egui::Rect>,
+  download_toast_coalescer: fastrender::ui::downloads_notifications::DownloadToastCoalescer,
   session_autosave_status: Option<fastrender::ui::session_autosave::SessionAutosaveStatusHandle>,
   session_autosave_status_seen_revision: usize,
   session_autosave_status_cache: fastrender::ui::session_autosave::SessionAutosaveStatusSnapshot,
@@ -13975,6 +13976,8 @@ impl App {
       crash_recovery_infobar_rect: None,
       chrome_toast: fastrender::ui::ToastState::default(),
       chrome_toast_rect: None,
+      download_toast_coalescer:
+        fastrender::ui::downloads_notifications::DownloadToastCoalescer::default(),
       pending_page_export: None,
       session_autosave_status: None,
       session_autosave_status_seen_revision: 0,
@@ -17689,7 +17692,13 @@ impl App {
       };
 
       if let Some(event) = download_event {
-        let (kind, text) = coalesce_download_toast(self.chrome_toast.toast(), event);
+        // Ensure we don't coalesce against a toast that has already expired but hasn't been
+        // cleaned up yet due to a lack of rendered frames.
+        self.chrome_toast.expire(std::time::Instant::now());
+        let (kind, text) = {
+          let existing = self.chrome_toast.toast();
+          coalesce_download_toast(&mut self.download_toast_coalescer, existing, event)
+        };
         self.show_chrome_toast_kind(kind, text);
         request_redraw = true;
       }
@@ -27358,6 +27367,10 @@ impl App {
     let now = std::time::Instant::now();
     self.sync_tab_notifications(now);
     self.chrome_toast.expire(now);
+    {
+      let toast = self.chrome_toast.toast();
+      self.download_toast_coalescer.sync_current_toast(toast);
+    }
     if let Some(handle) = self.session_autosave_status.as_ref() {
       if let Some(snapshot) =
         handle.try_snapshot(&mut self.session_autosave_status_seen_revision)

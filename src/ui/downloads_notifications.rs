@@ -1,4 +1,6 @@
 use crate::ui::notifications::{Toast, ToastKind};
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 /// Maximum number of characters from a download file name to include in a toast.
 ///
@@ -12,14 +14,45 @@ const MAX_DOWNLOAD_TOAST_ERROR_SUMMARY_CHARS: usize = 200;
 const DOWNLOAD_TOAST_MORE_SUFFIX_PREFIX: &str = " (+";
 const DOWNLOAD_TOAST_MORE_SUFFIX_SUFFIX: &str = " more)";
 
+/// Stateful coalescer for download lifecycle toast notifications.
+///
+/// The windowed browser UI shows a single chrome toast at a time. Download events can arrive in
+/// bursts (multiple files starting/finishing quickly), so we coalesce them into one toast and keep
+/// track of which filenames we've already counted.
+#[derive(Debug, Default)]
+pub struct DownloadToastCoalescer {
+  seen_file_names: HashSet<u64>,
+}
+
+impl DownloadToastCoalescer {
+  pub fn reset(&mut self) {
+    self.seen_file_names.clear();
+  }
+
+  /// Clears internal state when the current chrome toast is no longer a download toast.
+  ///
+  /// This prevents the coalescer from retaining large state after the toast expires or is replaced
+  /// by unrelated notifications.
+  pub fn sync_current_toast(&mut self, toast: Option<&Toast>) {
+    if !toast.is_some_and(|toast| is_download_toast_text(&toast.text)) {
+      self.reset();
+    }
+  }
+}
+
 /// Minimal download lifecycle event used for generating user-facing toast notifications.
 ///
 /// This is intentionally independent of any UI framework (egui/winit) so it can be unit tested in
 /// the core crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {
-  Started { file_name: String },
-  Finished { file_name: String, outcome: DownloadOutcome },
+  Started {
+    file_name: String,
+  },
+  Finished {
+    file_name: String,
+    outcome: DownloadOutcome,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,14 +72,7 @@ impl From<crate::ui::messages::DownloadOutcome> for DownloadOutcome {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedToastText<'a> {
-  base: &'a str,
-  /// Count encoded in the `(+N more)` suffix.
-  more: usize,
-}
-
-fn parse_more_suffix(text: &str) -> ParsedToastText<'_> {
+fn strip_more_suffix(text: &str) -> &str {
   let trimmed = text.trim_end();
   if trimmed.ends_with(DOWNLOAD_TOAST_MORE_SUFFIX_SUFFIX) {
     if let Some(prefix_idx) = trimmed.rfind(DOWNLOAD_TOAST_MORE_SUFFIX_PREFIX) {
@@ -54,16 +80,19 @@ fn parse_more_suffix(text: &str) -> ParsedToastText<'_> {
       let number_end = trimmed.len() - DOWNLOAD_TOAST_MORE_SUFFIX_SUFFIX.len();
       if let Some(digits) = trimmed.get(number_start..number_end) {
         if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-          if let Ok(more) = digits.parse::<usize>() {
-            let base = trimmed.get(..prefix_idx).unwrap_or("").trim_end();
-            return ParsedToastText { base, more };
-          }
+          return trimmed.get(..prefix_idx).unwrap_or("").trim_end();
         }
       }
     }
   }
 
-  ParsedToastText { base: trimmed, more: 0 }
+  trimmed
+}
+
+fn file_name_fingerprint(file_name: &str) -> u64 {
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  file_name.hash(&mut hasher);
+  hasher.finish()
 }
 
 fn truncate_chars_with_ellipsis(value: &str, max_chars: usize) -> String {
@@ -153,8 +182,7 @@ fn download_toast_base(event: &DownloadEvent) -> (ToastKind, String, Option<Stri
 }
 
 fn is_download_toast_text(text: &str) -> bool {
-  let parsed = parse_more_suffix(text);
-  let base = parsed.base;
+  let base = strip_more_suffix(text);
   base.starts_with("Downloading ")
     || base.starts_with("Downloaded ")
     || base.starts_with("Download failed:")
@@ -162,8 +190,7 @@ fn is_download_toast_text(text: &str) -> bool {
 }
 
 fn extract_download_file_name_from_toast_text(text: &str) -> Option<String> {
-  let parsed = parse_more_suffix(text);
-  let base = parsed.base.trim();
+  let base = strip_more_suffix(text).trim();
   if base.starts_with("Downloading ") {
     let rest = base.strip_prefix("Downloading ")?;
     let rest = rest.strip_suffix('…').unwrap_or(rest);
@@ -215,24 +242,39 @@ fn extract_download_file_name_from_toast_text(text: &str) -> Option<String> {
 /// Coalescing rules:
 /// - Only applies when the existing toast is itself a download toast (determined by matching known
 ///   download toast prefixes).
-/// - Errors supersede non-errors.
+/// - Higher severity (`Error > Warning > Info`) supersedes lower.
 /// - When coalescing, append `(+N more)` where `N` is the number of additional *distinct* download
-///   file names that occurred while the toast was visible.
-/// - When the new event refers to the same file name as the current toast, the `(+N more)` counter
-///   is not incremented (avoids counting start→finish transitions for a single download).
-pub fn coalesce_download_toast(existing_toast: Option<&Toast>, event: DownloadEvent) -> (ToastKind, String) {
+///   file names observed while the toast was visible.
+/// - Start→finish transitions for a single download do not increment the counter.
+pub fn coalesce_download_toast(
+  coalescer: &mut DownloadToastCoalescer,
+  existing_toast: Option<&Toast>,
+  event: DownloadEvent,
+) -> (ToastKind, String) {
   let (new_kind, new_base_text, new_file_name) = download_toast_base(&event);
 
-  let Some(existing) = existing_toast.filter(|t| is_download_toast_text(&t.text)) else {
+  let existing = existing_toast.filter(|t| is_download_toast_text(&t.text));
+  if existing.is_none() {
+    coalescer.reset();
+  }
+
+  if let Some(file_name) = new_file_name
+    .as_deref()
+    .map(str::trim)
+    .filter(|n| !n.is_empty())
+  {
+    coalescer
+      .seen_file_names
+      .insert(file_name_fingerprint(file_name));
+  }
+
+  let Some(existing) = existing else {
     return (new_kind, new_base_text);
   };
 
-  let parsed_existing = parse_more_suffix(&existing.text);
-  let existing_base = parsed_existing.base.to_string();
-  let existing_more = parsed_existing.more;
+  let existing_base = strip_more_suffix(&existing.text).to_string();
   let existing_file_name = extract_download_file_name_from_toast_text(&existing_base);
 
-  // Decide whether to replace the visible message (while still counting the new event).
   fn kind_rank(kind: ToastKind) -> u8 {
     match kind {
       ToastKind::Info => 0,
@@ -242,23 +284,41 @@ pub fn coalesce_download_toast(existing_toast: Option<&Toast>, event: DownloadEv
   }
   let replace_message = kind_rank(new_kind) >= kind_rank(existing.kind);
 
-  // Only increment the counter when we believe a distinct download (file name) event occurred.
-  let new_file_name_norm = new_file_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
-  let existing_file_name_norm = existing_file_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
-  let increment = new_file_name_norm != existing_file_name_norm;
-  let combined_more = existing_more.saturating_add(if increment { 1 } else { 0 });
-
-  let out_kind = if replace_message { new_kind } else { existing.kind };
+  let out_kind = if replace_message {
+    new_kind
+  } else {
+    existing.kind
+  };
   let out_base = if replace_message {
     new_base_text
   } else {
     existing_base
   };
 
-  let out_text = if combined_more == 0 {
+  let base_file_name = if replace_message {
+    new_file_name
+  } else {
+    existing_file_name
+  };
+
+  let base_fp = base_file_name
+    .as_deref()
+    .map(str::trim)
+    .filter(|n| !n.is_empty())
+    .map(file_name_fingerprint);
+  if let Some(fp) = base_fp {
+    coalescer.seen_file_names.insert(fp);
+  }
+
+  let mut more = coalescer.seen_file_names.len();
+  if base_fp.is_some() {
+    more = more.saturating_sub(1);
+  }
+
+  let out_text = if more == 0 {
     out_base
   } else {
-    format!("{out_base} (+{combined_more} more)")
+    format!("{out_base} (+{more} more)")
   };
 
   (out_kind, out_text)
@@ -279,7 +339,9 @@ mod tests {
 
   #[test]
   fn mapping_started_is_info() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind, text) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Started {
         file_name: "file.txt".to_string(),
@@ -291,7 +353,9 @@ mod tests {
 
   #[test]
   fn mapping_finished_completed_is_info() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind, text) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Finished {
         file_name: "file.txt".to_string(),
@@ -304,7 +368,9 @@ mod tests {
 
   #[test]
   fn mapping_finished_cancelled_is_warning_and_includes_file_name() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind, text) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Finished {
         file_name: "file.txt".to_string(),
@@ -317,7 +383,9 @@ mod tests {
 
   #[test]
   fn mapping_finished_failed_is_error_and_includes_summary() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind, text) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Finished {
         file_name: "file.txt".to_string(),
@@ -335,9 +403,18 @@ mod tests {
 
   #[test]
   fn coalescing_different_files_increments_more() {
-    let existing = toast(ToastKind::Info, "Downloading a.txt…");
+    let mut coalescer = DownloadToastCoalescer::default();
+    let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
+      None,
+      DownloadEvent::Started {
+        file_name: "a.txt".to_string(),
+      },
+    );
+    let toast1 = toast(kind1, &text1);
     let (kind, text) = coalesce_download_toast(
-      Some(&existing),
+      &mut coalescer,
+      Some(&toast1),
       DownloadEvent::Started {
         file_name: "b.txt".to_string(),
       },
@@ -348,7 +425,9 @@ mod tests {
 
   #[test]
   fn coalescing_multiple_started_events_accumulates_more_count() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Started {
         file_name: "a.txt".to_string(),
@@ -357,6 +436,7 @@ mod tests {
     let toast1 = toast(kind1, &text1);
 
     let (kind2, text2) = coalesce_download_toast(
+      &mut coalescer,
       Some(&toast1),
       DownloadEvent::Started {
         file_name: "b.txt".to_string(),
@@ -365,6 +445,7 @@ mod tests {
     let toast2 = toast(kind2, &text2);
 
     let (kind3, text3) = coalesce_download_toast(
+      &mut coalescer,
       Some(&toast2),
       DownloadEvent::Started {
         file_name: "c.txt".to_string(),
@@ -376,10 +457,63 @@ mod tests {
   }
 
   #[test]
+  fn finishing_already_counted_file_does_not_inflate_more_count() {
+    let mut coalescer = DownloadToastCoalescer::default();
+    let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
+      None,
+      DownloadEvent::Started {
+        file_name: "a.txt".to_string(),
+      },
+    );
+    let toast1 = toast(kind1, &text1);
+
+    let (kind2, text2) = coalesce_download_toast(
+      &mut coalescer,
+      Some(&toast1),
+      DownloadEvent::Started {
+        file_name: "b.txt".to_string(),
+      },
+    );
+    let toast2 = toast(kind2, &text2);
+
+    let (kind3, text3) = coalesce_download_toast(
+      &mut coalescer,
+      Some(&toast2),
+      DownloadEvent::Started {
+        file_name: "c.txt".to_string(),
+      },
+    );
+    let toast3 = toast(kind3, &text3);
+    assert_eq!(kind3, ToastKind::Info);
+    assert_eq!(text3, "Downloading c.txt… (+2 more)");
+
+    let (kind4, text4) = coalesce_download_toast(
+      &mut coalescer,
+      Some(&toast3),
+      DownloadEvent::Finished {
+        file_name: "a.txt".to_string(),
+        outcome: DownloadOutcome::Completed,
+      },
+    );
+    assert_eq!(kind4, ToastKind::Info);
+    assert_eq!(text4, "Downloaded a.txt (+2 more)");
+  }
+
+  #[test]
   fn coalescing_same_file_does_not_increment_more() {
-    let existing = toast(ToastKind::Info, "Downloading a.txt…");
+    let mut coalescer = DownloadToastCoalescer::default();
+    let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
+      None,
+      DownloadEvent::Started {
+        file_name: "a.txt".to_string(),
+      },
+    );
+    let toast1 = toast(kind1, &text1);
     let (kind, text) = coalesce_download_toast(
-      Some(&existing),
+      &mut coalescer,
+      Some(&toast1),
       DownloadEvent::Finished {
         file_name: "a.txt".to_string(),
         outcome: DownloadOutcome::Completed,
@@ -391,7 +525,9 @@ mod tests {
 
   #[test]
   fn coalescing_multiple_completed_events_accumulates_more_count() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
       None,
       DownloadEvent::Finished {
         file_name: "a.txt".to_string(),
@@ -401,6 +537,7 @@ mod tests {
     let toast1 = toast(kind1, &text1);
 
     let (kind2, text2) = coalesce_download_toast(
+      &mut coalescer,
       Some(&toast1),
       DownloadEvent::Finished {
         file_name: "b.txt".to_string(),
@@ -410,6 +547,7 @@ mod tests {
     let toast2 = toast(kind2, &text2);
 
     let (kind3, text3) = coalesce_download_toast(
+      &mut coalescer,
       Some(&toast2),
       DownloadEvent::Finished {
         file_name: "c.txt".to_string(),
@@ -423,9 +561,19 @@ mod tests {
 
   #[test]
   fn error_supersedes_info_and_carries_more() {
-    let existing = toast(ToastKind::Info, "Downloaded a.txt");
+    let mut coalescer = DownloadToastCoalescer::default();
+    let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
+      None,
+      DownloadEvent::Finished {
+        file_name: "a.txt".to_string(),
+        outcome: DownloadOutcome::Completed,
+      },
+    );
+    let toast1 = toast(kind1, &text1);
     let (kind, text) = coalesce_download_toast(
-      Some(&existing),
+      &mut coalescer,
+      Some(&toast1),
       DownloadEvent::Finished {
         file_name: "b.txt".to_string(),
         outcome: DownloadOutcome::Failed {
@@ -446,9 +594,21 @@ mod tests {
 
   #[test]
   fn info_does_not_override_error_but_increments_more() {
-    let existing = toast(ToastKind::Error, "Download failed: a.txt\nnope");
+    let mut coalescer = DownloadToastCoalescer::default();
+    let (kind1, text1) = coalesce_download_toast(
+      &mut coalescer,
+      None,
+      DownloadEvent::Finished {
+        file_name: "a.txt".to_string(),
+        outcome: DownloadOutcome::Failed {
+          error: "nope".to_string(),
+        },
+      },
+    );
+    let toast1 = toast(kind1, &text1);
     let (kind, text) = coalesce_download_toast(
-      Some(&existing),
+      &mut coalescer,
+      Some(&toast1),
       DownloadEvent::Finished {
         file_name: "b.txt".to_string(),
         outcome: DownloadOutcome::Completed,
@@ -460,8 +620,10 @@ mod tests {
 
   #[test]
   fn non_download_toast_is_not_coalesced() {
+    let mut coalescer = DownloadToastCoalescer::default();
     let existing = toast(ToastKind::Info, "Save not implemented yet");
     let (kind, text) = coalesce_download_toast(
+      &mut coalescer,
       Some(&existing),
       DownloadEvent::Started {
         file_name: "a.txt".to_string(),
