@@ -31,16 +31,23 @@
 //!
 //! If these semantics change, update the tests in this module.
 
-use crate::ui::about_pages;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use super::string_match::contains_ascii_case_insensitive;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllowedScheme {
+  Http,
+  Https,
+  File,
+}
 
 /// Current on-disk schema version for [`GlobalHistoryStore`].
 pub const GLOBAL_HISTORY_SCHEMA_VERSION: u32 = 1;
@@ -280,7 +287,8 @@ impl GlobalHistoryStore {
     };
     let title = normalize_title(title);
 
-    let changed = self.record_normalized_at_ms(normalized.as_str(), title.as_deref(), visited_at_ms);
+    let changed =
+      self.record_normalized_at_ms(normalized.as_str(), title.as_deref(), visited_at_ms);
     changed.then_some(HistoryVisitDelta {
       url: normalized,
       title,
@@ -293,7 +301,11 @@ impl GlobalHistoryStore {
   /// This is O(delta) and avoids re-parsing the URL because the delta carries the normalized URL
   /// that acts as the store key.
   pub fn apply_visit_delta(&mut self, delta: &HistoryVisitDelta) -> bool {
-    self.record_normalized_at_ms(delta.url.as_str(), delta.title.as_deref(), delta.visited_at_ms)
+    self.record_normalized_at_ms(
+      delta.url.as_str(),
+      delta.title.as_deref(),
+      delta.visited_at_ms,
+    )
   }
 
   pub fn apply_visit_deltas(&mut self, deltas: &[HistoryVisitDelta]) -> bool {
@@ -751,10 +763,42 @@ pub fn normalize_url_for_history(url: &str) -> Option<String> {
   if trimmed.is_empty() {
     return None;
   }
-  if about_pages::is_about_url(trimmed) {
+
+  // Split out the scheme up-front so we can:
+  // - reject `about:` without allocating,
+  // - reject unsupported schemes without paying the cost of `Url::parse` (the common case is
+  //   already-normalized absolute http/https/file URLs emitted by the renderer worker).
+  let scheme_end = trimmed.find(':')?;
+  let scheme_raw = &trimmed[..scheme_end];
+  let scheme = if scheme_raw.eq_ignore_ascii_case("http") {
+    AllowedScheme::Http
+  } else if scheme_raw.eq_ignore_ascii_case("https") {
+    AllowedScheme::Https
+  } else if scheme_raw.eq_ignore_ascii_case("file") {
+    AllowedScheme::File
+  } else if scheme_raw.eq_ignore_ascii_case("about") {
     return None;
+  } else {
+    return None;
+  };
+
+  // Fast path: most navigations come from the renderer as already-normalized absolute URLs.
+  //
+  // We conservatively skip `Url::parse` only when the URL:
+  // - has no fragment (history never includes fragments),
+  // - uses a lowercase allowed scheme (`http`/`https`/`file`),
+  // - has an explicit path (`/` …) after the authority (Url adds `/` when missing),
+  // - has a lowercase/canonical authority (no userinfo, no default ports, canonical IP literals),
+  // - has canonical percent-encoding (valid, uppercase hex, and not encoding unreserved bytes),
+  // - contains no dot-segments (`/./`, `/../`, `/.`, `/..`) that Url would remove.
+  //
+  // If any check fails, we fall back to `Url::parse` to preserve canonicalization semantics.
+  if is_url_normalized_enough_for_history_fast_path(trimmed, scheme, scheme_end) {
+    return Some(trimmed.to_string());
   }
 
+  // Canonical path: `Url` handles normalization (lowercasing scheme/host, default port stripping,
+  // path normalization, etc).
   if let Ok(mut parsed) = Url::parse(trimmed) {
     // `Url` normalizes the scheme to lowercase.
     let scheme = parsed.scheme();
@@ -771,17 +815,269 @@ pub fn normalize_url_for_history(url: &str) -> Option<String> {
 
   // Best-effort fallback for weird/unparseable URLs. This should be rare (the worker generally
   // emits fully normalized absolute URLs), but keep history robust.
-  let lower = trimmed.trim_start().to_ascii_lowercase();
-  let scheme_end = lower.find(':')?;
-  let scheme = &lower[..scheme_end];
-  if scheme == "about" {
-    return None;
-  }
-  if !matches!(scheme, "http" | "https" | "file") {
-    return None;
+  Some(trimmed.split('#').next().unwrap_or(trimmed).to_string())
+}
+
+fn is_url_normalized_enough_for_history_fast_path(
+  trimmed: &str,
+  scheme: AllowedScheme,
+  scheme_end: usize,
+) -> bool {
+  // Fast-path only applies to fragment-less URLs (history strips fragments).
+  // Use a byte check to avoid UTF-8 scanning (URLs are expected to be ASCII at this stage anyway).
+  if trimmed.as_bytes().contains(&b'#') {
+    return false;
   }
 
-  Some(trimmed.split('#').next().unwrap_or(trimmed).to_string())
+  // Require lowercase scheme: `Url::parse` lowercases it, so mixed-case inputs need the slow path.
+  match scheme {
+    AllowedScheme::Http => {
+      if &trimmed[..scheme_end] != "http" {
+        return false;
+      }
+    }
+    AllowedScheme::Https => {
+      if &trimmed[..scheme_end] != "https" {
+        return false;
+      }
+    }
+    AllowedScheme::File => {
+      if &trimmed[..scheme_end] != "file" {
+        return false;
+      }
+    }
+  }
+
+  // Url serialization is ASCII-only; if non-ASCII appears here we need the full parser.
+  if !trimmed.is_ascii() {
+    return false;
+  }
+
+  let bytes = trimmed.as_bytes();
+  // Require "://": these are absolute URLs with an authority component.
+  if bytes.get(scheme_end..scheme_end + 3) != Some(&b"://"[..]) {
+    return false;
+  }
+
+  // Validate characters + percent-encoding in a single pass.
+  let mut i = 0;
+  while i < bytes.len() {
+    let b = bytes[i];
+    // Reject ASCII whitespace/control bytes. `trim()` already handled leading/trailing space, but
+    // internal whitespace would be percent-encoded by `Url`.
+    if b <= 0x20 || b == 0x7F {
+      return false;
+    }
+    // WHATWG URL treats backslash as a path separator for special schemes; `Url` normalizes it.
+    if b == b'\\' {
+      return false;
+    }
+    if b == b'%' {
+      // Must be valid percent-encoding with uppercase hex digits.
+      if i + 2 >= bytes.len() {
+        return false;
+      }
+      let h1 = bytes[i + 1];
+      let h2 = bytes[i + 2];
+      let val = match (hex_val_upper(h1), hex_val_upper(h2)) {
+        (Some(a), Some(b)) => (a << 4) | b,
+        _ => return false,
+      };
+      // Be conservative: don't accept percent-encoded unreserved bytes (`Url` will serialize these
+      // as the literal character).
+      if matches!(
+        val,
+        b'a'..=b'z'
+          | b'A'..=b'Z'
+          | b'0'..=b'9'
+          | b'-'
+          | b'.'
+          | b'_'
+          | b'~'
+      ) {
+        return false;
+      }
+      i += 3;
+      continue;
+    }
+    i += 1;
+  }
+
+  let authority_start = scheme_end + 3;
+  if authority_start >= trimmed.len() {
+    return false;
+  }
+
+  // Split authority + path (and ensure an explicit path is present).
+  let after_scheme = &trimmed[authority_start..];
+  let Some(rel_delim) = after_scheme
+    .as_bytes()
+    .iter()
+    .position(|&b| b == b'/' || b == b'?')
+  else {
+    return false;
+  };
+  let delim = authority_start + rel_delim;
+  if bytes[delim] != b'/' {
+    // Canonical Url serialization always includes a path segment; query-only URLs get `/?`.
+    return false;
+  }
+
+  let authority = &trimmed[authority_start..delim];
+
+  // `file:` URLs are canonicalized with an empty host (`file:///...`). Allow only that common case.
+  if scheme == AllowedScheme::File {
+    if !authority.is_empty() {
+      return false;
+    }
+  } else if authority.is_empty() {
+    return false;
+  }
+
+  // Reject userinfo and other authority forms the worker shouldn't emit (and that `Url` may
+  // normalize).
+  if authority.as_bytes().contains(&b'@') {
+    return false;
+  }
+  // Reject percent-encoded bytes in the authority (e.g. IPv6 zone identifiers) to keep this check
+  // simple and conservative.
+  if authority.as_bytes().contains(&b'%') {
+    return false;
+  }
+
+  // Ensure the authority is lowercase (host and scheme are lowercased by `Url`).
+  if authority.bytes().any(|b| matches!(b, b'A'..=b'Z')) {
+    return false;
+  }
+
+  // Validate host/port normalization.
+  if !authority_is_canon(scheme, authority) {
+    return false;
+  }
+
+  // Ensure the path contains no dot-segments that `Url` would remove.
+  let path_and_more = &trimmed[delim..];
+  let path_end = path_and_more
+    .as_bytes()
+    .iter()
+    .position(|&b| b == b'?')
+    .map(|o| delim + o)
+    .unwrap_or(trimmed.len());
+  let path = &trimmed[delim..path_end];
+  if path.contains("/./") || path.contains("/../") || path.ends_with("/.") || path.ends_with("/..")
+  {
+    return false;
+  }
+
+  true
+}
+
+fn hex_val_upper(b: u8) -> Option<u8> {
+  match b {
+    b'0'..=b'9' => Some(b - b'0'),
+    b'A'..=b'F' => Some(b - b'A' + 10),
+    _ => None,
+  }
+}
+
+fn authority_is_canon(scheme: AllowedScheme, authority: &str) -> bool {
+  // Split host and optional port.
+  let (host, port) = if authority.starts_with('[') {
+    let Some(end) = authority.find(']') else {
+      return false;
+    };
+    let host_inner = &authority[1..end];
+    let Ok(addr) = host_inner.parse::<Ipv6Addr>() else {
+      return false;
+    };
+    if addr.to_string() != host_inner {
+      return false;
+    }
+    let after = &authority[end + 1..];
+    if after.is_empty() {
+      (&authority[..end + 1], None)
+    } else if let Some(port_str) = after.strip_prefix(':') {
+      (&authority[..end + 1], Some(port_str))
+    } else {
+      return false;
+    }
+  } else if let Some(colon) = authority.rfind(':') {
+    let port_str = &authority[colon + 1..];
+    if port_str.is_empty() {
+      return false;
+    }
+    if !port_str.bytes().all(|b| b.is_ascii_digit()) {
+      return false;
+    }
+    (&authority[..colon], Some(port_str))
+  } else {
+    (authority, None)
+  };
+
+  // Validate host characters are in a conservative set for already-normalized URLs.
+  if !host.is_empty()
+    && !host.starts_with('[')
+    && !host
+      .bytes()
+      .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
+  {
+    return false;
+  }
+
+  // Avoid fast-pathing potential "IPv4 number" host representations (`Url` normalizes these).
+  if !host.starts_with('[') {
+    let host_no_brackets = host;
+    if !host_no_brackets.is_empty() && host_no_brackets.bytes().all(|b| b.is_ascii_digit()) {
+      // A purely-numeric host would be parsed as IPv4 and normalized.
+      return false;
+    }
+    if host_no_brackets.starts_with("0x") {
+      return false;
+    }
+    if !host_no_brackets.is_empty()
+      && host_no_brackets
+        .bytes()
+        .all(|b| b.is_ascii_digit() || b == b'.')
+    {
+      // Canonicalize dotted-quad IPv4.
+      let Ok(addr) = host_no_brackets.parse::<Ipv4Addr>() else {
+        return false;
+      };
+      if addr.to_string() != host_no_brackets {
+        return false;
+      }
+    }
+  }
+
+  if let Some(port_str) = port {
+    // No leading zeros in the canonical serialization.
+    if port_str.len() > 1 && port_str.as_bytes()[0] == b'0' {
+      return false;
+    }
+    // Valid u16 range.
+    let Ok(port_num) = port_str.parse::<u16>() else {
+      return false;
+    };
+    let default = match scheme {
+      AllowedScheme::Http => 80,
+      AllowedScheme::Https => 443,
+      AllowedScheme::File => {
+        // `file:` URLs in the worker should never have ports.
+        return false;
+      }
+    };
+    if port_num == default {
+      // Default ports are stripped by `Url` serialization.
+      return false;
+    }
+  }
+
+  // Ensure we never accept "scheme://?query" style URLs.
+  if matches!(scheme, AllowedScheme::Http | AllowedScheme::Https) && host.is_empty() {
+    return false;
+  }
+
+  true
 }
 
 fn now_unix_ms() -> u64 {
@@ -868,8 +1164,7 @@ impl GlobalHistorySearcher {
       }
       self.last_revision = store_revision;
 
-      let (indices, complete) =
-        compute_search_match_indices(store, &self.last_tokens_lower, limit);
+      let (indices, complete) = compute_search_match_indices(store, &self.last_tokens_lower, limit);
       self.cached_match_indices = indices;
       self.cached_complete = complete;
       self.cached_limit = limit;
@@ -946,6 +1241,37 @@ fn compute_search_match_indices(
 mod tests {
   use super::*;
 
+  fn normalize_url_for_history_slow(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+      return None;
+    }
+    if crate::ui::about_pages::is_about_url(trimmed) {
+      return None;
+    }
+
+    if let Ok(mut parsed) = Url::parse(trimmed) {
+      let scheme = parsed.scheme();
+      if !matches!(scheme, "http" | "https" | "file") {
+        return None;
+      }
+      parsed.set_fragment(None);
+      return Some(parsed.to_string());
+    }
+
+    let lower = trimmed.trim_start().to_ascii_lowercase();
+    let scheme_end = lower.find(':')?;
+    let scheme = &lower[..scheme_end];
+    if scheme == "about" {
+      return None;
+    }
+    if !matches!(scheme, "http" | "https" | "file") {
+      return None;
+    }
+
+    Some(trimmed.split('#').next().unwrap_or(trimmed).to_string())
+  }
+
   fn assert_url_index_consistent(store: &GlobalHistoryStore) {
     assert_eq!(
       store.url_index.len(),
@@ -967,11 +1293,13 @@ mod tests {
   fn strips_fragments_and_dedupes_by_normalized_url() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    assert!(store.record_at_ms(
-      "https://example.test/a#one".to_string(),
-      Some("A1".to_string()),
-      1
-    ).is_some());
+    assert!(store
+      .record_at_ms(
+        "https://example.test/a#one".to_string(),
+        Some("A1".to_string()),
+        1
+      )
+      .is_some());
     assert_eq!(store.entries.len(), 1);
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
@@ -979,11 +1307,13 @@ mod tests {
     assert_eq!(entry.visited_at_ms, 1);
     assert_eq!(entry.visit_count, 1);
 
-    assert!(store.record_at_ms(
-      "https://example.test/a#two".to_string(),
-      Some("A2".to_string()),
-      2
-    ).is_some());
+    assert!(store
+      .record_at_ms(
+        "https://example.test/a#two".to_string(),
+        Some("A2".to_string()),
+        2
+      )
+      .is_some());
     assert_eq!(store.entries.len(), 1);
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
@@ -1065,7 +1395,11 @@ mod tests {
 
     assert_eq!(store.entries.len(), 2);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
       vec!["https://b.example/", "https://a.example/"]
     );
     assert_eq!(store.get("https://a.example/").unwrap().visit_count, 2);
@@ -1109,16 +1443,32 @@ mod tests {
     let _ = store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
     let _ = store.record_at_ms("https://c.example/".to_string(), Some("C".to_string()), 3);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://a.example/", "https://b.example/", "https://c.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://a.example/",
+        "https://b.example/",
+        "https://c.example/"
+      ]
     );
     assert_url_index_consistent(&store);
 
     // Update a middle entry; it should move to the end and all shifted indices should update.
     let _ = store.record_at_ms("https://b.example/".to_string(), None, 4);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://a.example/", "https://c.example/", "https://b.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://a.example/",
+        "https://c.example/",
+        "https://b.example/"
+      ]
     );
     assert_eq!(store.get("https://c.example/").unwrap().visited_at_ms, 3);
     assert_eq!(store.get("https://b.example/").unwrap().visited_at_ms, 4);
@@ -1127,16 +1477,32 @@ mod tests {
     // Update the oldest entry; it should move to the end.
     let _ = store.record_at_ms("https://a.example/".to_string(), None, 5);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://c.example/", "https://b.example/", "https://a.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://c.example/",
+        "https://b.example/",
+        "https://a.example/"
+      ]
     );
     assert_url_index_consistent(&store);
 
     // Updating the most-recent entry should not reorder.
     let _ = store.record_at_ms("https://a.example/#fragment".to_string(), None, 6);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://c.example/", "https://b.example/", "https://a.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://c.example/",
+        "https://b.example/",
+        "https://a.example/"
+      ]
     );
     assert_eq!(store.get("https://a.example/").unwrap().visited_at_ms, 6);
     assert_url_index_consistent(&store);
@@ -1168,6 +1534,84 @@ mod tests {
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "file:///tmp/a.html");
     assert_eq!(store.entries[0].visit_count, 1);
+  }
+
+  #[test]
+  fn normalize_url_fast_path_matches_previous_implementation_for_common_urls() {
+    // These should cover the common "already-normalized absolute URL" case emitted by the worker,
+    // plus nearby variants that still require parsing/canonicalization.
+    for url in [
+      // https
+      "https://example.test/",
+      "https://example.test/a",
+      "https://example.test/a?b=c",
+      "https://example.test/?q=test",
+      "https://example.test/a#frag",
+      "https://example.test/?q=test#frag",
+      // http
+      "http://example.test/",
+      "http://example.test/a?b=c#frag",
+      // file
+      "file:///tmp/a.html",
+      "file:///tmp/a.html?x=1",
+      "file:///tmp/a.html#section",
+      // Canonicalization-required inputs (should still match the old output).
+      "https://example.test",         // Url adds trailing slash
+      "https://example.test?x=1",     // Url inserts `/` before `?`
+      "HTTP://Example.TEST/",         // scheme/host lowercasing
+      "http://example.test:80/",      // default port stripping
+      "https://example.test/a/../b",  // dot-segment removal
+      "https://example.test/%7euser", // percent-encoding normalization
+    ] {
+      assert_eq!(
+        normalize_url_for_history(url),
+        normalize_url_for_history_slow(url),
+        "normalization mismatch for {url}"
+      );
+    }
+  }
+
+  #[test]
+  fn normalize_url_weird_unparseable_urls_preserve_previous_behavior() {
+    for url in [
+      // Invalid IPv6 literals (missing closing bracket) should hit the best-effort fallback.
+      "https://[::1",
+      "http://[::1",
+      "https://[::1#frag",
+      // Invalid percent encoding.
+      "https://example.test/%",
+      "https://example.test/%GG",
+      // Invalid ports.
+      "http://example.test:/",
+      "http://example.test:abc/",
+    ] {
+      assert!(
+        Url::parse(url).is_err(),
+        "test URL should be unparseable by Url::parse: {url}"
+      );
+      assert_eq!(
+        normalize_url_for_history(url),
+        normalize_url_for_history_slow(url),
+        "fallback mismatch for {url}"
+      );
+    }
+  }
+
+  #[test]
+  fn normalize_url_rejects_unsupported_schemes() {
+    for url in [
+      "about:blank",
+      "javascript:alert(1)",
+      "data:text/plain,hello",
+      "ftp://example.test/",
+      "chrome://version",
+    ] {
+      assert_eq!(
+        normalize_url_for_history(url),
+        None,
+        "unsupported scheme should be rejected: {url}"
+      );
+    }
   }
 
   #[test]
@@ -1228,8 +1672,16 @@ mod tests {
     // Add a new entry at capacity; oldest should be evicted and indices rewritten.
     let _ = store.record_at_ms("https://d.example/".to_string(), None, 4);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://b.example/", "https://c.example/", "https://d.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://b.example/",
+        "https://c.example/",
+        "https://d.example/"
+      ]
     );
     assert!(store.get("https://a.example/").is_none());
     assert!(store.get("https://b.example/").is_some());
@@ -1240,16 +1692,32 @@ mod tests {
     // Moving an entry after eviction should still preserve index consistency.
     let _ = store.record_at_ms("https://b.example/".to_string(), None, 5);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://c.example/", "https://d.example/", "https://b.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://c.example/",
+        "https://d.example/",
+        "https://b.example/"
+      ]
     );
     assert_url_index_consistent(&store);
 
     // Another eviction should drop the new oldest.
     let _ = store.record_at_ms("https://e.example/".to_string(), None, 6);
     assert_eq!(
-      store.entries.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-      vec!["https://d.example/", "https://b.example/", "https://e.example/"]
+      store
+        .entries
+        .iter()
+        .map(|e| e.url.as_str())
+        .collect::<Vec<_>>(),
+      vec![
+        "https://d.example/",
+        "https://b.example/",
+        "https://e.example/"
+      ]
     );
     assert!(store.get("https://c.example/").is_none());
     assert_url_index_consistent(&store);
@@ -1375,12 +1843,23 @@ mod tests {
       ]
     }"#;
 
-    let mut store: GlobalHistoryStore = serde_json::from_str(raw).expect("legacy JSON should parse");
+    let mut store: GlobalHistoryStore =
+      serde_json::from_str(raw).expect("legacy JSON should parse");
     assert_eq!(store.entries.len(), 2);
     assert_url_index_consistent(&store);
 
-    assert_eq!(store.get("https://a.example/#frag").unwrap().title.as_deref(), Some("New"));
-    assert_eq!(store.get("https://b.example/").unwrap().title.as_deref(), Some("Bee"));
+    assert_eq!(
+      store
+        .get("https://a.example/#frag")
+        .unwrap()
+        .title
+        .as_deref(),
+      Some("New")
+    );
+    assert_eq!(
+      store.get("https://b.example/").unwrap().title.as_deref(),
+      Some("Bee")
+    );
 
     // Recording a URL that already exists after load should update in place (no duplicate entry).
     let _ = store.record_at_ms(
@@ -1649,7 +2128,11 @@ mod tests {
     let t0 = Instant::now();
     // Update a middle entry repeatedly; with a URL index this should avoid O(n) URL comparisons.
     for i in 0..1000_u32 {
-      let _ = store.record_at_ms("https://example.test/5000".to_string(), None, 10_000 + i as u64);
+      let _ = store.record_at_ms(
+        "https://example.test/5000".to_string(),
+        None,
+        10_000 + i as u64,
+      );
     }
     let dt = t0.elapsed();
     eprintln!("record 1000 updates into 10k-entry store: {dt:?}");
