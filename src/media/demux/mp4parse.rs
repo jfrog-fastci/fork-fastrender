@@ -1,3 +1,10 @@
+//! MP4 demuxer using `mp4parse`.
+//!
+//! Safety: to avoid unbounded memory usage when demuxing corrupted/adversarial files:
+//! - individual encoded samples are capped at [`MAX_MP4_SAMPLE_BYTES`], and
+//! - per-track and total sample table sizes are capped at [`MAX_MP4_SAMPLES_PER_TRACK`] and
+//!   [`MAX_MP4_TOTAL_SAMPLES`].
+
 use crate::media::track_selection::{
   select_primary_audio_track_id, select_primary_video_track_id, TrackCandidate, TrackFilterMode,
   TrackSelectionPolicy,
