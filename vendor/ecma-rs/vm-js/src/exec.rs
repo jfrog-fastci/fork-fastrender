@@ -17727,6 +17727,23 @@ fn async_frames_push(frames: &mut VecDeque<AsyncFrame>, frame: AsyncFrame) -> Re
   vecdeque_try_push_back(frames, frame)
 }
 
+fn async_frames_try_append(
+  heap: &mut Heap,
+  dst: &mut VecDeque<AsyncFrame>,
+  src: &mut VecDeque<AsyncFrame>,
+) -> Result<(), VmError> {
+  if vecdeque_try_append(dst, src).is_err() {
+    for mut frame in dst.drain(..) {
+      async_teardown_frame(heap, &mut frame);
+    }
+    for mut frame in src.drain(..) {
+      async_teardown_frame(heap, &mut frame);
+    }
+    return Err(VmError::OutOfMemory);
+  }
+  Ok(())
+}
+
 fn completion_from_expr_result(expr: Result<Value, VmError>) -> Result<Completion, VmError> {
   match expr {
     Ok(v) => Ok(Completion::normal(v)),
@@ -28467,7 +28484,7 @@ fn async_resume_from_frames(
         AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
           Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
           Ok(AsyncEval::Suspend(mut suspend)) => {
-            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
             return Ok(AsyncBodyResult::Await {
               kind: suspend.kind,
               await_value: suspend.await_value,
@@ -28701,7 +28718,7 @@ fn async_resume_from_frames(
             scope.heap_mut().remove_root(next_method_root);
             return Err(VmError::OutOfMemory);
           }
-          vecdeque_try_append(&mut out_frames, &mut frames)?;
+          async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
           return Ok(AsyncBodyResult::Await {
             kind: AsyncSuspendKind::Yield,
             await_value: value,
@@ -28740,7 +28757,7 @@ fn async_resume_from_frames(
           match async_new_begin(evaluator, scope, expr, callee_value) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -28802,7 +28819,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -28863,7 +28880,7 @@ fn async_resume_from_frames(
           match async_delete_computed_member_after_base(evaluator, scope, expr, base) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -28967,7 +28984,7 @@ fn async_resume_from_frames(
           match async_computed_member_after_base(evaluator, scope, expr, base) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29050,7 +29067,7 @@ fn async_resume_from_frames(
               match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29091,7 +29108,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -29186,7 +29203,7 @@ fn async_resume_from_frames(
                 state = AsyncState::Expr(Ok(v));
               }
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -29248,7 +29265,7 @@ fn async_resume_from_frames(
           match async_eval_expr(evaluator, scope, branch) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29275,7 +29292,7 @@ fn async_resume_from_frames(
           match async_binary_after_left(evaluator, scope, expr, left) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29363,7 +29380,7 @@ fn async_resume_from_frames(
           match async_call_begin(evaluator, scope, expr, callee_value, Value::Undefined) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29391,7 +29408,7 @@ fn async_resume_from_frames(
           match async_call_member_after_base(evaluator, scope, expr, member, base) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29419,7 +29436,7 @@ fn async_resume_from_frames(
           match async_call_computed_member_after_base(evaluator, scope, expr, member, base) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -29467,7 +29484,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -29526,7 +29543,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29616,7 +29633,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29738,7 +29755,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29844,7 +29861,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(())) => {}
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29872,7 +29889,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -29980,7 +29997,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -30070,7 +30087,7 @@ fn async_resume_from_frames(
               ) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -30134,7 +30151,7 @@ fn async_resume_from_frames(
             match async_eval_lit_template_from(evaluator, scope, expr, next_part_index, units) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30169,7 +30186,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30209,7 +30226,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30249,7 +30266,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30300,7 +30317,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30356,7 +30373,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30388,7 +30405,7 @@ fn async_resume_from_frames(
             match async_eval_import_after_specifier(evaluator, scope, expr, specifier) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30485,12 +30502,10 @@ fn async_resume_from_frames(
                     }
                     return Err(VmError::OutOfMemory);
                   }
-                  async_frames_push(
-                    &mut suspend.frames,
-                    AsyncFrame::AssignPatternAfterBind { result_root },
-                  )
-                  .expect("async_frames_push should not fail after try_reserve");
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  suspend
+                    .frames
+                    .push_back(AsyncFrame::AssignPatternAfterBind { result_root });
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
@@ -30570,7 +30585,7 @@ fn async_resume_from_frames(
             match async_eval_assignment_to_member_after_base(evaluator, scope, expr, member, base) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30602,7 +30617,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -30651,7 +30666,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31210,7 +31225,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31463,15 +31478,11 @@ fn async_resume_from_frames(
                   }
                   return Err(VmError::OutOfMemory);
                 }
-                async_frames_push(
-                  &mut suspend.frames,
-                  AsyncFrame::VarDeclAfterBinding {
-                    decl: decl_ptr,
-                    next_declarator_index: next_declarator_index.saturating_add(1),
-                  },
-                )
-                .expect("async_frames_push should not fail after try_reserve");
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                suspend.frames.push_back(AsyncFrame::VarDeclAfterBinding {
+                  decl: decl_ptr,
+                  next_declarator_index: next_declarator_index.saturating_add(1),
+                });
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31493,7 +31504,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31525,7 +31536,7 @@ fn async_resume_from_frames(
             match async_eval_var_decl(evaluator, scope, decl, next_declarator_index) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31668,18 +31679,14 @@ fn async_resume_from_frames(
                       }
                       return Err(VmError::OutOfMemory);
                     }
-                    async_frames_push(
-                      &mut suspend.frames,
-                      AsyncFrame::BindObjAfterDefault {
-                        pat,
-                        prop_index,
-                        value_root,
-                        excluded,
-                        kind,
-                      },
-                    )
-                    .expect("async_frames_push should not fail after try_reserve");
-                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    suspend.frames.push_back(AsyncFrame::BindObjAfterDefault {
+                      pat,
+                      prop_index,
+                      value_root,
+                      excluded,
+                      kind,
+                    });
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                     return Ok(AsyncBodyResult::Await {
                       kind: suspend.kind,
                       await_value: suspend.await_value,
@@ -31710,18 +31717,14 @@ fn async_resume_from_frames(
                   }
                   return Err(VmError::OutOfMemory);
                 }
-                async_frames_push(
-                  &mut suspend.frames,
-                  AsyncFrame::BindObjContinue {
-                    pat,
-                    next_prop_index: prop_index.saturating_add(1),
-                    value_root,
-                    excluded,
-                    kind,
-                  },
-                )
-                .expect("async_frames_push should not fail after try_reserve");
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                suspend.frames.push_back(AsyncFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value_root,
+                  excluded,
+                  kind,
+                });
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31747,7 +31750,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31805,18 +31808,14 @@ fn async_resume_from_frames(
                   }
                   return Err(VmError::OutOfMemory);
                 }
-                async_frames_push(
-                  &mut suspend.frames,
-                  AsyncFrame::BindObjContinue {
-                    pat,
-                    next_prop_index: prop_index.saturating_add(1),
-                    value_root,
-                    excluded,
-                    kind,
-                  },
-                )
-                .expect("async_frames_push should not fail after try_reserve");
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                suspend.frames.push_back(AsyncFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value_root,
+                  excluded,
+                  kind,
+                });
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31842,7 +31841,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31889,7 +31888,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31947,19 +31946,15 @@ fn async_resume_from_frames(
                   }
                   return Err(VmError::OutOfMemory);
                 }
-                async_frames_push(
-                  &mut suspend.frames,
-                  AsyncFrame::BindArrContinue {
-                    pat,
-                    elem_index: elem_index.saturating_add(1),
-                    array_index: array_index.saturating_add(1),
-                    len,
-                    value_root,
-                    kind,
-                  },
-                )
-                .expect("async_frames_push should not fail after try_reserve");
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                suspend.frames.push_back(AsyncFrame::BindArrContinue {
+                  pat,
+                  elem_index: elem_index.saturating_add(1),
+                  array_index: array_index.saturating_add(1),
+                  len,
+                  value_root,
+                  kind,
+                });
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -31985,7 +31980,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32033,7 +32028,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32076,7 +32071,7 @@ fn async_resume_from_frames(
             match async_eval_stmt_labelled(evaluator, scope, stmt, &[])? {
               AsyncEval::Complete(c) => state = AsyncState::Completion(c),
               AsyncEval::Suspend(mut suspend) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32105,7 +32100,7 @@ fn async_resume_from_frames(
             match async_with_after_object(evaluator, scope, stmt, &label_set, outer, object_value) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32173,7 +32168,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32264,7 +32259,7 @@ fn async_resume_from_frames(
                   evaluator.env.set_lexical_env(scope.heap_mut(), outer);
                   return Err(err);
                 }
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32300,7 +32295,7 @@ fn async_resume_from_frames(
             match async_while_after_test(evaluator, scope, stmt, label_set, v_root, test_value) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32345,7 +32340,7 @@ fn async_resume_from_frames(
           match async_while_after_body(evaluator, scope, stmt, label_set, v_root, body_completion) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32390,7 +32385,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32429,7 +32424,7 @@ fn async_resume_from_frames(
             match async_do_while_after_test(evaluator, scope, stmt, label_set, v_root, test_value) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32483,7 +32478,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32531,7 +32526,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32574,7 +32569,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32628,7 +32623,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32675,7 +32670,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32717,7 +32712,7 @@ fn async_resume_from_frames(
             match async_for_in_after_rhs(evaluator, scope, stmt, label_set, rhs_value) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32812,7 +32807,7 @@ fn async_resume_from_frames(
                 ) {
                   Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                   Ok(AsyncEval::Suspend(mut suspend)) => {
-                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                     return Ok(AsyncBodyResult::Await {
                       kind: suspend.kind,
                       await_value: suspend.await_value,
@@ -32844,7 +32839,7 @@ fn async_resume_from_frames(
                     outer_lex,
                   },
                 )?;
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -32915,7 +32910,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -32942,7 +32937,7 @@ fn async_resume_from_frames(
             match async_for_of_after_rhs(evaluator, scope, stmt, label_set, iterable) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33085,7 +33080,7 @@ fn async_resume_from_frames(
                 ) {
                   Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                   Ok(AsyncEval::Suspend(mut suspend)) => {
-                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                     return Ok(AsyncBodyResult::Await {
                       kind: suspend.kind,
                       await_value: suspend.await_value,
@@ -33118,7 +33113,7 @@ fn async_resume_from_frames(
                     outer_lex,
                   },
                 )?;
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33221,7 +33216,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -33255,7 +33250,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33310,7 +33305,7 @@ fn async_resume_from_frames(
             ) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33381,7 +33376,7 @@ fn async_resume_from_frames(
                     ) {
                       Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                       Ok(AsyncEval::Suspend(mut suspend)) => {
-                        vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                        async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                         return Ok(AsyncBodyResult::Await {
                           kind: suspend.kind,
                           await_value: suspend.await_value,
@@ -33423,7 +33418,7 @@ fn async_resume_from_frames(
                 ) {
                   Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                   Ok(AsyncEval::Suspend(mut suspend)) => {
-                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                     return Ok(AsyncBodyResult::Await {
                       kind: suspend.kind,
                       await_value: suspend.await_value,
@@ -33456,7 +33451,7 @@ fn async_resume_from_frames(
                     next_method_root,
                   },
                 )?;
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33485,7 +33480,7 @@ fn async_resume_from_frames(
                 ) {
                   Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                   Ok(AsyncEval::Suspend(mut suspend)) => {
-                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                     return Ok(AsyncBodyResult::Await {
                       kind: suspend.kind,
                       await_value: suspend.await_value,
@@ -33537,7 +33532,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -33619,7 +33614,7 @@ fn async_resume_from_frames(
             match async_switch_after_discriminant(evaluator, scope, stmt, discriminant) {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33701,7 +33696,7 @@ fn async_resume_from_frames(
             match res {
               Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
               Ok(AsyncEval::Suspend(mut suspend)) => {
-                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                 return Ok(AsyncBodyResult::Await {
                   kind: suspend.kind,
                   await_value: suspend.await_value,
@@ -33751,7 +33746,7 @@ fn async_resume_from_frames(
           ) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -33796,7 +33791,7 @@ fn async_resume_from_frames(
           match async_try_after_wrapped(evaluator, scope, stmt, wrapped_completion) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -33822,7 +33817,7 @@ fn async_resume_from_frames(
           match async_try_after_catch(evaluator, scope, stmt, catch_completion) {
             Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
             Ok(AsyncEval::Suspend(mut suspend)) => {
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
                 kind: suspend.kind,
                 await_value: suspend.await_value,
@@ -44238,5 +44233,54 @@ mod oom_arc_tests {
       .exec_module("m.js", "export const x = 1;")
       .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
+  }
+}
+
+#[cfg(test)]
+mod oom_async_frame_merge_tests {
+  use super::*;
+  use crate::test_alloc::FailAllocsGuard;
+  use crate::HeapLimits;
+
+  #[test]
+  fn async_frame_merge_is_oom_safe_and_leak_free() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let roots_before = heap.persistent_root_count();
+
+    // Create a destination frame stack with one persistent root so the teardown path must clean it
+    // up even if the merge fails.
+    let dst_root = heap.add_root(Value::Number(0.0))?;
+    let mut dst = VecDeque::new();
+    dst.push_back(AsyncFrame::AssignPatternAfterBind {
+      result_root: dst_root,
+    });
+
+    // Force `dst.try_reserve(src.len())` to grow by appending more elements than the remaining
+    // capacity can accommodate.
+    let required = dst.capacity().saturating_sub(dst.len()).saturating_add(1);
+    let mut src = VecDeque::new();
+    for i in 0..required {
+      let id = heap.add_root(Value::Number((i + 1) as f64))?;
+      src.push_back(AsyncFrame::AssignPatternAfterBind { result_root: id });
+    }
+
+    assert_eq!(
+      heap.persistent_root_count(),
+      roots_before + 1 + required,
+      "expected all test roots to be registered before merge"
+    );
+
+    let _guard = FailAllocsGuard::new();
+    let err = async_frames_try_append(&mut heap, &mut dst, &mut src).unwrap_err();
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    assert!(dst.is_empty(), "dst frames should be drained on OOM");
+    assert!(src.is_empty(), "src frames should be drained on OOM");
+    assert_eq!(
+      heap.persistent_root_count(),
+      roots_before,
+      "expected OOM merge failure to tear down all frame-owned roots"
+    );
+    Ok(())
   }
 }
