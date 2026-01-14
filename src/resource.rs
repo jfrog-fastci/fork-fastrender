@@ -13430,7 +13430,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
       let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
-      Ok(clone_fetched_resource_with_bytes(cached, bytes))
+      Ok::<FetchedResource, Error>(clone_fetched_resource_with_bytes(cached, bytes))
     }) {
       let res = result?;
       record_cache_fresh_hit();
