@@ -353,10 +353,27 @@ fn for_await_of_in_class_static_block_in_module_is_allowed() {
 }
 
 #[test]
+fn yield_expression_in_class_static_block_in_non_generator_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function f(){ class C { static { yield 0; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn yield_expression_in_class_static_block_inside_generator_is_allowed() {
   let mut rt = new_runtime();
   rt
     .exec_script("function* g(){ class C { static { yield 0; } } }")
+    .unwrap();
+}
+
+#[test]
+fn yield_expression_in_class_static_block_in_async_generator_function_is_allowed() {
+  let mut rt = new_runtime();
+  rt
+    .exec_script("async function* g(){ class C { static { yield 0; } } }")
     .unwrap();
 }
 
