@@ -1,7 +1,7 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::scroll::{apply_scroll_anchoring_between_fragment_trees, ScrollState};
 use crate::style::types::WritingMode;
-use crate::style::ComputedStyle;
+use crate::style::{block_axis_positive, ComputedStyle};
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use std::sync::Arc;
 
@@ -40,8 +40,10 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
 
   let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
-  // The scroll adjustment is the movement of the anchor fragment's origin in physical coordinates.
-  let expected_x = scroll_state.viewport.x + (anchor_new_bounds.x() - anchor_old_bounds.x());
+  // The scroll adjustment mirrors the movement of the anchor fragment in physical coordinates, but
+  // must be converted back into a logical-start-relative scroll offset using the writing mode.
+  let sign = if block_axis_positive(writing_mode) { 1.0 } else { -1.0 };
+  let expected_x = scroll_state.viewport.x + sign * (anchor_new_bounds.x() - anchor_old_bounds.x());
 
   assert!(
     (adjusted.viewport.x - expected_x).abs() < 1e-3,

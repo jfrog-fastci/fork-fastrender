@@ -1657,6 +1657,37 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
   }
 }
 
+fn viewport_rect_for_scroll_state(
+  scroll: Point,
+  viewport: Size,
+  writing_mode: WritingMode,
+  direction: Direction,
+) -> Rect {
+  // The scroll state uses logical-start-relative offsets (clamped to non-negative values). Convert
+  // them into a visible viewport rectangle expressed in the fragment tree's physical coordinate
+  // space.
+  //
+  // When the logical start edge for an axis is on the opposite side (e.g. RTL inline axis or
+  // `writing-mode: vertical-rl` block axis), increasing the scroll offset moves the visible window
+  // towards negative coordinates, so the viewport origin becomes `-scroll`.
+  let x_is_inline = inline_axis_is_horizontal(writing_mode);
+  let x_positive = if x_is_inline {
+    inline_axis_positive(writing_mode, direction)
+  } else {
+    block_axis_positive(writing_mode)
+  };
+  let y_is_inline = !x_is_inline;
+  let y_positive = if y_is_inline {
+    inline_axis_positive(writing_mode, direction)
+  } else {
+    block_axis_positive(writing_mode)
+  };
+
+  let origin_x = if x_positive { scroll.x } else { -scroll.x };
+  let origin_y = if y_positive { scroll.y } else { -scroll.y };
+  Rect::from_xywh(origin_x, origin_y, viewport.width, viewport.height)
+}
+
 /// Convenience wrapper for applying scroll anchoring between two layout results.
 ///
 /// This function captures scroll anchors from `prev` and then applies them to `next`, returning the

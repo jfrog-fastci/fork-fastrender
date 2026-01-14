@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::geometry::{Point, Rect, Size};
-use crate::style::types::OverflowAnchor;
+use crate::style::types::{Direction, OverflowAnchor, WritingMode};
+use crate::style::{block_axis_positive, inline_axis_is_horizontal, inline_axis_positive};
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
 use super::ScrollState;
 
@@ -48,7 +49,42 @@ fn point_sub(a: Point, b: Point) -> Point {
 }
 
 fn sanitize_point(p: Point) -> Point {
-  Point::new(if p.x.is_finite() { p.x } else { 0.0 }, if p.y.is_finite() { p.y } else { 0.0 })
+  Point::new(
+    if p.x.is_finite() { p.x.max(0.0) } else { 0.0 },
+    if p.y.is_finite() { p.y.max(0.0) } else { 0.0 },
+  )
+}
+
+fn writing_mode_and_direction_from_style(
+  style: Option<&crate::ComputedStyle>,
+) -> (WritingMode, Direction) {
+  style
+    .map(|style| (style.writing_mode, style.direction))
+    .unwrap_or((WritingMode::HorizontalTb, Direction::Ltr))
+}
+
+fn axis_signs_for_scroll_state(writing_mode: WritingMode, direction: Direction) -> (f32, f32) {
+  // Scroll offsets are expressed as logical-start-relative distances (non-negative). Convert a
+  // physical delta (fragment movement in physical x/y coordinates) into a scroll offset delta by
+  // applying the axis sign: for axes where increasing scroll moves the viewport towards negative
+  // coordinates, the delta must be negated.
+  let x_is_inline = inline_axis_is_horizontal(writing_mode);
+  let x_positive = if x_is_inline {
+    inline_axis_positive(writing_mode, direction)
+  } else {
+    block_axis_positive(writing_mode)
+  };
+  let y_is_inline = !x_is_inline;
+  let y_positive = if y_is_inline {
+    inline_axis_positive(writing_mode, direction)
+  } else {
+    block_axis_positive(writing_mode)
+  };
+
+  (
+    if x_positive { 1.0 } else { -1.0 },
+    if y_positive { 1.0 } else { -1.0 },
+  )
 }
 
 fn approx_eq_point(a: Point, b: Point, epsilon: f32) -> bool {
@@ -227,16 +263,20 @@ fn find_anchor_origin_in_subtree(
 
 fn viewport_scrollport(tree: &FragmentTree, viewport_scroll: Point) -> Rect {
   let viewport = tree.viewport_size();
-  Rect::from_xywh(viewport_scroll.x, viewport_scroll.y, viewport.width, viewport.height)
+  let (writing_mode, direction) =
+    writing_mode_and_direction_from_style(tree.root.style.as_deref());
+  super::viewport_rect_for_scroll_state(
+    viewport_scroll,
+    viewport,
+    writing_mode,
+    direction,
+  )
 }
 
 fn element_scrollport(container: &FragmentNode, offset: Point) -> Rect {
-  Rect::from_xywh(
-    offset.x,
-    offset.y,
-    container.bounds.width(),
-    container.bounds.height(),
-  )
+  let viewport = Size::new(container.bounds.width(), container.bounds.height());
+  let (writing_mode, direction) = writing_mode_and_direction_from_style(container.style.as_deref());
+  super::viewport_rect_for_scroll_state(offset, viewport, writing_mode, direction)
 }
 
 fn select_viewport_anchor(tree: &FragmentTree, scroll: Point) -> Option<ScrollAnchor> {
@@ -494,9 +534,15 @@ fn apply_one_adjustment(
   current_scroll: Point,
   prev_anchor: ScrollAnchor,
   new_anchor_origin: Point,
+  writing_mode: WritingMode,
+  direction: Direction,
 ) -> Point {
   let delta = point_sub(new_anchor_origin, prev_anchor.origin);
-  point_add(current_scroll, delta)
+  let (x_sign, y_sign) = axis_signs_for_scroll_state(writing_mode, direction);
+  sanitize_point(point_add(
+    current_scroll,
+    Point::new(x_sign * delta.x, y_sign * delta.y),
+  ))
 }
 
 /// Apply scroll anchoring adjustments to a scroll state given anchors captured from the previous
@@ -512,6 +558,8 @@ pub fn apply_scroll_anchoring(
 ) -> (ScrollState, ScrollAnchorSnapshot) {
   let mut next_scroll = scroll.clone();
   let mut next_snapshot = ScrollAnchorSnapshot::default();
+  let (viewport_writing_mode, viewport_direction) =
+    writing_mode_and_direction_from_style(new_tree.root.style.as_deref());
 
   // Viewport scroll anchoring.
   if let Some(prev_anchor) = previous.viewport {
@@ -523,7 +571,13 @@ pub fn apply_scroll_anchoring(
       false,
     );
     if let Some(new_origin) = new_origin {
-      next_scroll.viewport = apply_one_adjustment(sanitize_point(next_scroll.viewport), prev_anchor, new_origin);
+      next_scroll.viewport = apply_one_adjustment(
+        sanitize_point(next_scroll.viewport),
+        prev_anchor,
+        new_origin,
+        viewport_writing_mode,
+        viewport_direction,
+      );
       next_snapshot.viewport = Some(ScrollAnchor {
         box_id: prev_anchor.box_id,
         origin: new_origin,
@@ -544,11 +598,12 @@ pub fn apply_scroll_anchoring(
     let Some(container) = find_fragment_by_box_id(new_tree, container_id) else {
       continue;
     };
+    let (writing_mode, direction) = writing_mode_and_direction_from_style(container.style.as_deref());
 
     let new_origin =
       find_anchor_origin_in_subtree(container, prev_anchor.box_id, Point::ZERO, false);
     if let Some(new_origin) = new_origin {
-      let adjusted = apply_one_adjustment(current_offset, prev_anchor, new_origin);
+      let adjusted = apply_one_adjustment(current_offset, prev_anchor, new_origin, writing_mode, direction);
       next_scroll.elements.insert(container_id, adjusted);
       next_snapshot.elements.insert(
         container_id,
@@ -567,6 +622,9 @@ pub fn apply_scroll_anchoring(
   }
 
   // Ensure newly-scrolled containers also have anchors for future relayouts.
+  next_scroll
+    .elements
+    .retain(|_, offset| *offset != Point::ZERO);
   for (&container_id, &offset) in &next_scroll.elements {
     if next_snapshot.elements.contains_key(&container_id) {
       continue;
@@ -576,11 +634,7 @@ pub fn apply_scroll_anchoring(
     }
   }
 
-  // Keep a canonical representation matching other scroll routines: missing vs zero offsets should
-  // not create spurious diffs.
-  next_scroll
-    .elements
-    .retain(|_, offset| *offset != Point::ZERO);
+  next_scroll.update_deltas_from(scroll);
 
   (next_scroll, next_snapshot)
 }
