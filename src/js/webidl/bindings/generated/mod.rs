@@ -1731,7 +1731,7 @@ pub mod window {
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let rt = &mut rt;
-    Err(rt.throw_type_error("Illegal constructor"))
+    Err(rt.throw_type_error("Document constructor cannot be invoked without 'new'"))
   }
 
   #[allow(dead_code)]
@@ -1746,8 +1746,49 @@ pub mod window {
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let rt = &mut rt;
-    let _ = (host, hooks, callee, args, new_target);
-    Err(rt.throw_type_error("Illegal constructor"))
+    let _ = (callee, args, new_target);
+
+    // `new Document()` is a historical extension supported by browsers; it creates a detached,
+    // windowless XML document.
+    //
+    // Delegate to the existing `document.implementation.createDocument(null, null, null)` native
+    // path so we reuse the realm-owned document infrastructure (wrapper setup, owned `dom2::Document`
+    // storage, adoption semantics, etc).
+    let document_obj = rt
+      .vm
+      .user_data::<crate::js::window_realm::WindowRealmUserData>()
+      .and_then(|data| data.document_obj())
+      .ok_or_else(|| rt.throw_type_error("Illegal invocation"))?;
+
+    // Root `document_obj` while allocating property keys.
+    rt.scope.push_root(Value::Object(document_obj))?;
+    let implementation_key = rt.property_key("implementation")?;
+    let implementation_v = rt.vm.get_with_host_and_hooks(
+      host,
+      &mut rt.scope,
+      hooks,
+      document_obj,
+      implementation_key,
+    )?;
+    let Value::Object(impl_obj) = implementation_v else {
+      return Err(rt.throw_type_error("Document constructor requires document.implementation"));
+    };
+
+    // Root while resolving + calling `createDocument`.
+    rt.scope.push_root(Value::Object(impl_obj))?;
+    let create_document_key = rt.property_key("createDocument")?;
+    let create_document_func =
+      rt.vm
+        .get_with_host_and_hooks(host, &mut rt.scope, hooks, impl_obj, create_document_key)?;
+
+    rt.vm.call_with_host_and_hooks(
+      host,
+      &mut rt.scope,
+      hooks,
+      create_document_func,
+      Value::Object(impl_obj),
+      &[Value::Null, Value::Null, Value::Null],
+    )
   }
 
   #[allow(dead_code)]

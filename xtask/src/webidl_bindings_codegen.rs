@@ -189,8 +189,7 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
     // can reference local additions (e.g. `FastRenderChrome`) while still catching typos.
     let parsed = crate::webidl::parse_webidl(&snapshot_idl).context("parse WebIDL")?;
     let resolved = crate::webidl::resolve::resolve_webidl_world(&parsed);
-    let interface_allowlist =
-      window_parse_allowlisted_interfaces(&resolved, &manifest.interfaces)?;
+    let interface_allowlist = window_parse_allowlisted_interfaces(&resolved, &manifest.interfaces)?;
     WebIdlBindingsCodegenConfig {
       mode: WebIdlBindingsGenerationMode::Allowlist,
       allow_interfaces: interface_allowlist.keys().cloned().collect(),
@@ -394,7 +393,10 @@ fn ensure_all_runtime_callbacks_defined_in_bindings_modules(src: &str) -> Result
   Ok(())
 }
 
-fn ensure_all_runtime_callbacks_defined_in_single_module(module_name: &str, src: &str) -> Result<()> {
+fn ensure_all_runtime_callbacks_defined_in_single_module(
+  module_name: &str,
+  src: &str,
+) -> Result<()> {
   use std::collections::BTreeSet;
 
   // 1) Collect all function definitions in this module.
@@ -847,7 +849,10 @@ fn window_parse_interface_entry(
           iface.name, member.raw
         )
       })?;
-      let InterfaceMember::Operation { name: Some(name), .. } = &parsed else {
+      let InterfaceMember::Operation {
+        name: Some(name), ..
+      } = &parsed
+      else {
         continue;
       };
       if name == op_name {
@@ -1937,7 +1942,9 @@ fn generate_bindings_module_for_target_unformatted(
   // `Promise<T>` and `async sequence<T>` conversions currently surface as opaque JS objects to the
   // host (the element/inner types are metadata; iteration/awaiting happens in host code).
   out.push_str("    ConvertedValue::Promise { promise, .. } => BindingValue::Object(promise),\n");
-  out.push_str("    ConvertedValue::AsyncSequence { object, .. } => BindingValue::Object(object),\n");
+  out.push_str(
+    "    ConvertedValue::AsyncSequence { object, .. } => BindingValue::Object(object),\n",
+  );
   out.push_str("    ConvertedValue::Sequence { elem_ty, values } => {\n");
   out.push_str(
     "      let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> = Vec::with_capacity(values.len());\n",
@@ -2815,7 +2822,14 @@ fn order_selected_interfaces_by_inheritance_vmjs<'a>(
     if !is_global_iface(&iface.name) {
       if let Some(parent) = iface.inherits.as_deref() {
         if selected.contains_key(parent) && !is_global_iface(parent) {
-          visit(parent, selected, is_global_iface, visiting, visited, ordered)?;
+          visit(
+            parent,
+            selected,
+            is_global_iface,
+            visiting,
+            visited,
+            ordered,
+          )?;
         }
       }
     }
@@ -2830,7 +2844,14 @@ fn order_selected_interfaces_by_inheritance_vmjs<'a>(
     if is_global_iface(name) {
       globals.push(&selected[name]);
     } else {
-      visit(name, selected, is_global_iface, &mut visiting, &mut visited, &mut ordered)?;
+      visit(
+        name,
+        selected,
+        is_global_iface,
+        &mut visiting,
+        &mut visited,
+        &mut ordered,
+      )?;
     }
   }
 
@@ -4296,7 +4317,9 @@ fn emit_binding_value_expr_from_webidl_value(v: &webidl::ir::WebIdlValue) -> Str
       }
     }
 
-    webidl::ir::WebIdlValue::Union { value, .. } => emit_binding_value_expr_from_webidl_value(value),
+    webidl::ir::WebIdlValue::Union { value, .. } => {
+      emit_binding_value_expr_from_webidl_value(value)
+    }
     webidl::ir::WebIdlValue::PlatformObject(_) => "BindingValue::Undefined".to_string(),
   }
 }
@@ -6072,7 +6095,10 @@ fn emit_union_conversion_expr(
       IdlType::Record { .. } => {
         let _ = record_member.get_or_insert(member);
       }
-      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) | IdlType::Annotated { .. } => {}
+      IdlType::Union(_)
+      | IdlType::Promise(_)
+      | IdlType::Nullable(_)
+      | IdlType::Annotated { .. } => {}
     }
   }
 
@@ -7375,9 +7401,14 @@ fn write_constructor_wrapper_vmjs(
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str("  let rt = &mut rt;\n");
+  let call_without_new_message = if interface == "Document" {
+    "Document constructor cannot be invoked without 'new'"
+  } else {
+    "Illegal constructor"
+  };
   out.push_str(&format!(
     "  Err(rt.throw_type_error({msg_lit}))\n",
-    msg_lit = rust_string_literal("Illegal constructor")
+    msg_lit = rust_string_literal(call_without_new_message)
   ));
   out.push_str("}\n\n");
 
@@ -7394,6 +7425,34 @@ fn write_constructor_wrapper_vmjs(
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str("  let rt = &mut rt;\n");
   if overloads.is_empty() {
+    if interface == "Document" {
+      out.push_str("  let _ = (callee, args, new_target);\n\n");
+      out.push_str(
+        "  // `new Document()` is a historical extension supported by browsers; it creates a detached,\n  // windowless XML document.\n  //\n  // Delegate to the existing `document.implementation.createDocument(null, null, null)` native\n  // path so we reuse the realm-owned document infrastructure (wrapper setup, owned `dom2::Document`\n  // storage, adoption semantics, etc).\n",
+      );
+      out.push_str(
+        "  let document_obj = rt\n    .vm\n    .user_data::<crate::js::window_realm::WindowRealmUserData>()\n    .and_then(|data| data.document_obj())\n    .ok_or_else(|| rt.throw_type_error(\"Illegal invocation\"))?;\n\n",
+      );
+      out.push_str("  // Root `document_obj` while allocating property keys.\n");
+      out.push_str("  rt.scope.push_root(Value::Object(document_obj))?;\n");
+      out.push_str("  let implementation_key = rt.property_key(\"implementation\")?;\n");
+      out.push_str("  let implementation_v = rt\n    .vm\n    .get_with_host_and_hooks(host, &mut rt.scope, hooks, document_obj, implementation_key)?;\n");
+      out.push_str("  let Value::Object(impl_obj) = implementation_v else {\n");
+      out.push_str(
+        "    return Err(rt.throw_type_error(\n      \"Document constructor requires document.implementation\",\n    ));\n  };\n\n",
+      );
+      out.push_str("  // Root while resolving + calling `createDocument`.\n");
+      out.push_str("  rt.scope.push_root(Value::Object(impl_obj))?;\n");
+      out.push_str("  let create_document_key = rt.property_key(\"createDocument\")?;\n");
+      out.push_str(
+        "  let create_document_func = rt\n    .vm\n    .get_with_host_and_hooks(host, &mut rt.scope, hooks, impl_obj, create_document_key)?;\n\n",
+      );
+      out.push_str(
+        "  rt.vm.call_with_host_and_hooks(\n    host,\n    &mut rt.scope,\n    hooks,\n    create_document_func,\n    Value::Object(impl_obj),\n    &[Value::Null, Value::Null, Value::Null],\n  )\n",
+      );
+      out.push_str("}\n\n");
+      return;
+    }
     out.push_str("  let _ = (host, hooks, callee, args, new_target);\n");
     out.push_str("  Err(rt.throw_type_error(\"Illegal constructor\"))\n");
     out.push_str("}\n\n");
@@ -7890,7 +7949,10 @@ fn emit_union_conversion_expr_vmjs(
       IdlType::Record { .. } => {
         let _ = record_member.get_or_insert(member);
       }
-      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) | IdlType::Annotated { .. } => {}
+      IdlType::Union(_)
+      | IdlType::Promise(_)
+      | IdlType::Nullable(_)
+      | IdlType::Annotated { .. } => {}
     }
   }
 
