@@ -90,6 +90,7 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 
 # Timeline profiling (Perfetto/Chrome trace) for the windowed browser UI event loop.
 # Close the browser window to finish recording (the trace is written on exit).
+# Use FASTR_TRACE_MAX_EVENTS=<N> to cap retained trace events (default 200000).
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release \
   --trace-out target/browser_trace.json \
   about:test-layout-stress
