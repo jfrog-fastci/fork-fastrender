@@ -1,11 +1,12 @@
 use crate::error::RenderStage;
 use crate::media::{
-  MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
-  MediaVideoInfo,
+  MediaAudioInfo, MediaCodec, MediaData, MediaError, MediaPacket, MediaResult, MediaTrackInfo,
+  MediaTrackType, MediaVideoInfo,
 };
 use crate::render_control::{check_root, check_root_periodic};
 use std::io::{Read, Seek};
 use std::ops::Range;
+use std::sync::Arc;
 use thiserror::Error;
 
 const MP4_DEMUX_DEADLINE_STRIDE: usize = 1024;
@@ -118,7 +119,7 @@ impl TrackState {
 }
 
 pub struct Mp4Demuxer {
-  bytes: Vec<u8>,
+  bytes: Arc<[u8]>,
   tracks: Vec<MediaTrackInfo>,
   track_states: Vec<TrackState>,
   active_track_indices: Vec<usize>,
@@ -135,12 +136,13 @@ impl Mp4Demuxer {
 
   pub fn from_bytes(bytes: Vec<u8>) -> MediaResult<Self> {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
+    let bytes: Arc<[u8]> = bytes.into();
 
-    let moov = find_top_level_box(&bytes, fourcc(b"moov"))
+    let moov = find_top_level_box(bytes.as_ref(), fourcc(b"moov"))
       .map_err(map_parse_error)?
       .ok_or_else(|| MediaError::Demux(Mp4ParseError::MissingBox("moov").to_string()))?;
 
-    let tracks_boxes = parse_moov(&bytes, moov).map_err(map_parse_error)?;
+    let tracks_boxes = parse_moov(bytes.as_ref(), moov).map_err(map_parse_error)?;
     if tracks_boxes.is_empty() {
       return Err(MediaError::Demux(
         Mp4ParseError::MissingBox("trak").to_string(),
@@ -230,8 +232,8 @@ impl Mp4Demuxer {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
     loop {
-      // Pick the track whose next sample has the smallest PTS.
-      let mut best: Option<(usize, u64, u64)> = None; // (track_idx, pts, track_id)
+      // Pick the track whose next sample has the smallest DTS (decode timestamp).
+      let mut best: Option<(usize, u64, u64)> = None; // (track_idx, dts, track_id)
 
       for &track_idx in &self.active_track_indices {
         let track = &mut self.track_states[track_idx];
@@ -248,19 +250,19 @@ impl Mp4Demuxer {
           continue;
         }
 
-        let pts = track.samples[track.next_sample].pts_ns;
+        let dts = track.samples[track.next_sample].dts_ns;
         let id = track.id;
         match best {
-          None => best = Some((track_idx, pts, id)),
-          Some((_, best_pts, best_id)) => {
-            if pts < best_pts || (pts == best_pts && id < best_id) {
-              best = Some((track_idx, pts, id));
+          None => best = Some((track_idx, dts, id)),
+          Some((_, best_dts, best_id)) => {
+            if dts < best_dts || (dts == best_dts && id < best_id) {
+              best = Some((track_idx, dts, id));
             }
           }
         }
       }
 
-      let Some((track_idx, _pts, _id)) = best else {
+      let Some((track_idx, _dts, _id)) = best else {
         return Ok(None);
       };
 
@@ -287,7 +289,10 @@ impl Mp4Demuxer {
         dts_ns: sample.dts_ns,
         pts_ns: sample.pts_ns,
         duration_ns: sample.duration_ns,
-        data: self.bytes[start..end].to_vec().into(),
+        data: MediaData::Shared {
+          bytes: self.bytes.clone(),
+          range: start..end,
+        },
         is_keyframe: sample.is_sync,
       }));
     }
@@ -1183,6 +1188,7 @@ fn build_track_state(t: TrackBoxes, id: u64) -> ParseResult<TrackState> {
       .ok_or(Mp4ParseError::Invalid("stts shorter than sample_count"))?;
     let ctts_off = ctts_iter.next_i64().unwrap_or(0);
 
+    sample.dts_ns = ticks_to_ns(dts_ticks, timescale);
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
     min_pts_ticks = min_pts_ticks.min(pts_ticks);
     sample.duration_ns = ticks_to_ns(i64::from(dur_ticks), timescale);
@@ -1306,19 +1312,23 @@ mod tests {
 
     let mut saw_video = false;
     let mut saw_audio = false;
-    let mut last_video_dts = None;
-    let mut last_audio_dts = None;
+    let mut last_video_dts = None::<u64>;
+    let mut last_audio_dts = None::<u64>;
     for _ in 0..256 {
       let Some(pkt) = demuxer.next_packet().expect("read packet") else {
         break;
       };
+      assert!(
+        !pkt.as_slice().is_empty(),
+        "demuxed packet should have non-empty data"
+      );
       if pkt.track_id == video_track {
         if let Some(prev) = last_video_dts {
           assert!(
             pkt.dts_ns >= prev,
-            "expected monotonic video DTS ({} < {})",
-            pkt.dts_ns,
-            prev
+            "video DTS must be non-decreasing (prev {}ns, got {}ns)",
+            prev,
+            pkt.dts_ns
           );
         }
         last_video_dts = Some(pkt.dts_ns);
@@ -1328,9 +1338,9 @@ mod tests {
         if let Some(prev) = last_audio_dts {
           assert!(
             pkt.dts_ns >= prev,
-            "expected monotonic audio DTS ({} < {})",
-            pkt.dts_ns,
-            prev
+            "audio DTS must be non-decreasing (prev {}ns, got {}ns)",
+            prev,
+            pkt.dts_ns
           );
         }
         last_audio_dts = Some(pkt.dts_ns);
@@ -1348,8 +1358,8 @@ mod tests {
 
     let mut post_seek_video = false;
     let mut post_seek_audio = false;
-    let mut post_seek_last_video_dts = None;
-    let mut post_seek_last_audio_dts = None;
+    let mut last_video_dts = None::<u64>;
+    let mut last_audio_dts = None::<u64>;
     for _ in 0..256 {
       let Some(pkt) = demuxer.next_packet().expect("read packet") else {
         break;
@@ -1361,27 +1371,27 @@ mod tests {
         seek_target_ns
       );
       if pkt.track_id == video_track {
-        if let Some(prev) = post_seek_last_video_dts {
+        if let Some(prev) = last_video_dts {
           assert!(
             pkt.dts_ns >= prev,
-            "expected monotonic video DTS after seek ({} < {})",
-            pkt.dts_ns,
-            prev
+            "video DTS must be non-decreasing after seek (prev {}ns, got {}ns)",
+            prev,
+            pkt.dts_ns
           );
         }
-        post_seek_last_video_dts = Some(pkt.dts_ns);
+        last_video_dts = Some(pkt.dts_ns);
         post_seek_video = true;
       }
       if pkt.track_id == audio_track {
-        if let Some(prev) = post_seek_last_audio_dts {
+        if let Some(prev) = last_audio_dts {
           assert!(
             pkt.dts_ns >= prev,
-            "expected monotonic audio DTS after seek ({} < {})",
-            pkt.dts_ns,
-            prev
+            "audio DTS must be non-decreasing after seek (prev {}ns, got {}ns)",
+            prev,
+            pkt.dts_ns
           );
         }
-        post_seek_last_audio_dts = Some(pkt.dts_ns);
+        last_audio_dts = Some(pkt.dts_ns);
         post_seek_audio = true;
       }
       if post_seek_video && post_seek_audio {
