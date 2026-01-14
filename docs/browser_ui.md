@@ -402,6 +402,7 @@ The session file format is versioned (currently v2) and includes:
 - One or more windows (each with tabs + active tab index)
 - Per-tab zoom
 - Best-effort per-tab scroll restoration
+  - CI integration tests exercise scroll persistence via the headless smoke hook `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SCROLL_TO_Y` (see [env-vars.md](env-vars.md)).
 - Pinned tabs and tab groups (when used)
 - Per-window recently closed tabs (for “Reopen closed tab”)
 - Downloads history (shared across windows/profile-global)

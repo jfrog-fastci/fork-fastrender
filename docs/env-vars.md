@@ -225,6 +225,13 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - This is expected to be the same schema as the bookmarks file on disk (`BookmarkStore`), but legacy bookmark list schemas are still accepted and migrated.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history store used by headless smoke mode with an explicit JSON value.
   - This is expected to be the same schema as the history file on disk (`PersistedGlobalHistoryStore`), but legacy list schemas are still accepted and migrated.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SCROLL_TO_Y=<css_px>` – **test-only** hook: in headless smoke mode, drive a scroll operation and persist the observed scroll offset into the on-disk session file (used by integration tests to validate scroll persistence across runs).
+  - Type: positive float CSS px (e.g. `240`).
+  - When set to a value `> 0`, the headless smoke harness:
+    - Forces the worker-backed UI↔renderer path even for trusted `about:` pages (instead of the in-process `FastRender` path).
+    - Sends `UiToWorker::ScrollTo` to the active tab, triggers a repaint, then waits for a `WorkerToUi::FrameReady` whose `scroll_state.viewport.y` is within ~2px of the target.
+    - Writes the observed scroll offset into `BrowserSessionTab.scroll_css` before saving the session to disk.
+  - Ignored when unset/empty/`0`. Negative/non-finite values are rejected.
 
 ### Browser UI crash URL hooks (test-only)
 
