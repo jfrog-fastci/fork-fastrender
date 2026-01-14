@@ -10360,9 +10360,10 @@ impl ForAwaitOfState {
         )
         .map_err(|err| crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut close_scope, err))?;
 
+      // Await the `return` result using the same Promise resolution semantics as `Await`:
+      // - observe `.constructor` for Promise objects,
+      // - but do not wrap promise subclasses (no derived promise / no @@species side effects).
       close_scope.push_root(return_result)?;
-      // Await the `return` result using the shared await Promise resolution helper so `AsyncIteratorClose`
-      // does not trigger Promise species side effects when the iterator returns a Promise object.
       let awaited = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
         evaluator.vm,
         &mut close_scope,
