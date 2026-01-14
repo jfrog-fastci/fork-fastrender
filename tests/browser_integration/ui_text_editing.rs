@@ -116,6 +116,121 @@ fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
 }
 
 #[test]
+fn line_backspace_deletes_to_start_of_textarea_line() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (500, 200);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 420px; height: 120px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta">abc
+def
+ghi</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus textarea.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move caret to second line, after "de".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::LineBackspace))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("abc\nf\nghi"),
+    "expected LineBackspace to delete from caret to start of the current textarea line"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn line_delete_deletes_to_end_of_textarea_line() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (500, 200);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 420px; height: 120px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta">abc
+def
+ghi</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus textarea.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move caret to second line, after "d".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::LineDelete))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("abc\nd\nghi"),
+    "expected LineDelete to delete from caret to end of the current textarea line"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn appearance_none_text_input_auto_scrolls_and_click_to_place_accounts_for_scroll() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

@@ -128,6 +128,16 @@ pub enum InteractionAction {
 pub enum KeyAction {
   Backspace,
   Delete,
+  /// Delete from the caret to the start of the current line.
+  ///
+  /// - For single-line `<input>` elements, this is equivalent to deleting `[0..caret]`.
+  /// - For `<textarea>`, "line" is newline-delimited (between `\n` characters).
+  LineBackspace,
+  /// Delete from the caret to the end of the current line.
+  ///
+  /// - For single-line `<input>` elements, this is equivalent to deleting `[caret..len]`.
+  /// - For `<textarea>`, "line" is newline-delimited (between `\n` characters).
+  LineDelete,
   WordBackspace,
   WordDelete,
   Enter,
@@ -4365,7 +4375,12 @@ fn text_delete_range_for_key(
 ) -> Option<(usize, usize, usize)> {
   if !matches!(
     key,
-    KeyAction::Backspace | KeyAction::Delete | KeyAction::WordBackspace | KeyAction::WordDelete
+    KeyAction::Backspace
+      | KeyAction::Delete
+      | KeyAction::LineBackspace
+      | KeyAction::LineDelete
+      | KeyAction::WordBackspace
+      | KeyAction::WordDelete
   ) {
     return None;
   }
@@ -4376,6 +4391,29 @@ fn text_delete_range_for_key(
     match key {
       KeyAction::Backspace => prev_grapheme_cluster(current, caret)?,
       KeyAction::Delete => next_grapheme_cluster(current, caret)?,
+      KeyAction::LineBackspace | KeyAction::LineDelete => {
+        let boundary_bytes = char_boundary_bytes(current);
+        let len = boundary_bytes.len().saturating_sub(1);
+        let caret = caret.min(len);
+        let caret_byte = *boundary_bytes.get(caret).unwrap_or(&current.len());
+
+        let prev_newline = current[..caret_byte].rfind('\n');
+        let next_newline = current[caret_byte..].find('\n').map(|off| caret_byte + off);
+
+        let line_start = prev_newline
+          .map(|idx| char_idx_at_byte(&boundary_bytes, idx.saturating_add(1)))
+          .unwrap_or(0);
+        let line_end = next_newline
+          .map(|idx| char_idx_at_byte(&boundary_bytes, idx))
+          .unwrap_or(len);
+
+        let (start, end) = if matches!(key, KeyAction::LineBackspace) {
+          (line_start, caret)
+        } else {
+          (caret, line_end)
+        };
+        (start < end).then_some((start, end))?
+      }
       KeyAction::WordBackspace => {
         let word_chars = word_char_classes(current);
         word_backspace_range(&word_chars, caret)?
@@ -11601,6 +11639,8 @@ impl InteractionEngine {
       match key {
         KeyAction::Backspace
         | KeyAction::Delete
+        | KeyAction::LineBackspace
+        | KeyAction::LineDelete
         | KeyAction::WordBackspace
         | KeyAction::WordDelete => {
           if !can_edit_value {
@@ -12604,6 +12644,8 @@ impl InteractionEngine {
     match key {
       KeyAction::Backspace
       | KeyAction::Delete
+      | KeyAction::LineBackspace
+      | KeyAction::LineDelete
       | KeyAction::WordBackspace
       | KeyAction::WordDelete
       | KeyAction::ArrowLeft
@@ -13089,6 +13131,8 @@ impl InteractionEngine {
     match key {
       KeyAction::Backspace
       | KeyAction::Delete
+      | KeyAction::LineBackspace
+      | KeyAction::LineDelete
       | KeyAction::WordBackspace
       | KeyAction::WordDelete
       | KeyAction::ArrowLeft

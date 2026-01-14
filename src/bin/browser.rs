@@ -5139,6 +5139,27 @@ fn map_page_key_action(
   })
 }
 
+#[cfg(feature = "browser_ui")]
+fn map_macos_line_delete_key_action(
+  modifiers: winit::event::ModifiersState,
+  key: winit::event::VirtualKeyCode,
+) -> Option<fastrender::interaction::KeyAction> {
+  // On macOS, Cmd+Backspace/Delete are common "delete to beginning/end of line" shortcuts.
+  if !cfg!(target_os = "macos") {
+    return None;
+  }
+  if !modifiers.logo() || modifiers.alt() {
+    return None;
+  }
+  match key {
+    winit::event::VirtualKeyCode::Back => {
+      Some(fastrender::interaction::KeyAction::LineBackspace)
+    }
+    winit::event::VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::LineDelete),
+    _ => None,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -5569,6 +5590,34 @@ mod profile_shortcut_tests {
     assert_eq!(
       profile_shortcut_action(modifiers, VirtualKeyCode::H),
       Some(ProfileShortcutAction::ToggleHistoryPanel)
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui", target_os = "macos"))]
+mod macos_line_delete_key_action_tests {
+  use super::map_macos_line_delete_key_action;
+  use winit::event::{ModifiersState, VirtualKeyCode};
+
+  fn cmd_mods() -> ModifiersState {
+    let mut out = ModifiersState::empty();
+    out.insert(ModifiersState::LOGO);
+    out
+  }
+
+  #[test]
+  fn cmd_backspace_maps_to_line_backspace() {
+    assert_eq!(
+      map_macos_line_delete_key_action(cmd_mods(), VirtualKeyCode::Back),
+      Some(fastrender::interaction::KeyAction::LineBackspace)
+    );
+  }
+
+  #[test]
+  fn cmd_delete_maps_to_line_delete() {
+    assert_eq!(
+      map_macos_line_delete_key_action(cmd_mods(), VirtualKeyCode::Delete),
+      Some(fastrender::interaction::KeyAction::LineDelete)
     );
   }
 }
@@ -25340,6 +25389,14 @@ impl App {
             } else {
               fastrender::interaction::KeyAction::WordRight
             },
+          });
+          return;
+        }
+
+        if let Some(line_delete_action) = map_macos_line_delete_key_action(self.modifiers, key) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: line_delete_action,
           });
           return;
         }
