@@ -68525,6 +68525,37 @@ mod tests {
   }
 
   #[test]
+  fn range_insert_node_adopts_owned_document_node_into_host_document() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const foreignDoc = document.implementation.createHTMLDocument('');\n\
+        const range = document.createRange();\n\
+        range.setStart(document.body, 0);\n\
+        range.setEnd(document.body, 0);\n\
+\n\
+        const node = foreignDoc.createElement('div');\n\
+        node.id = 'x';\n\
+        if (node.ownerDocument !== foreignDoc) return 'pre_owner_document';\n\
+\n\
+        range.insertNode(node);\n\
+\n\
+        if (node.ownerDocument !== document) return 'owner_document';\n\
+        if (node.parentNode !== document.body) return 'parent';\n\
+        if (document.body.firstChild !== node) return 'position';\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn range_surround_contents_adopts_cross_document_new_parent_and_preserves_shims() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
