@@ -72,6 +72,8 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_MODULEPRELOAD_STYLESHEETS=0|1` – opt into treating `<link rel=modulepreload as=style>` as stylesheet candidates (defaults to off).
 - `FASTR_FETCH_ALTERNATE_STYLESHEETS=0|1` – allow skipping `<link rel="alternate stylesheet">` entries when disabled (defaults to on).
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` – opt out of browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (enabled by default).
+- `FASTR_FETCH_STRICT_MIME=0|1` – enable/disable strict MIME sanity checks for HTTP subresources (enabled by default).
+  - When enabled, obviously wrong content-types (e.g. HTML/JSON served where an image/media/font is expected) are rejected early to avoid confusing downstream failures.
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
 - Media playback (A/V sync tolerances; values are integer milliseconds, underscores allowed):
   - Preferred:
