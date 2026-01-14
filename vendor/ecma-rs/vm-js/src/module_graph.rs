@@ -1822,6 +1822,16 @@ impl ModuleGraph {
       // bindings to it.
       if self.modules[idx].environment.is_none() {
         let env = scope.env_create(self.global_lexical_env)?;
+        // Modules have a top-level `this` value of `undefined` (unlike classic scripts, where
+        // top-level `this` is the global object). Arrow functions defined at module top level must
+        // be able to resolve their lexical `this`/`new.target` bindings, so the module environment
+        // must act as a "this environment" root.
+        scope
+          .heap_mut()
+          .env_set_this_value(env, Some(Value::Undefined))?;
+        scope
+          .heap_mut()
+          .env_set_new_target(env, Some(Value::Undefined))?;
         scope.push_env_root(env)?;
         let root = scope.heap_mut().add_env_root(env)?;
         self.modules[idx].environment = Some(root);

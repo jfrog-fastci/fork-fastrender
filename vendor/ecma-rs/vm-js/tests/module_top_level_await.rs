@@ -548,6 +548,7 @@ fn compiled_module_top_level_await_compound_assignment_reads_lhs_before_await() 
   let mut m: Option<ModuleId> = None;
   let mut eval_promise_root: Option<vm_js::RootId> = None;
 
+  // Ensure module graph persistent roots are released even if the test panics or returns early.
   let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), VmError> {
     let script = CompiledScript::compile_module(
       &mut heap,
