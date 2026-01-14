@@ -324,6 +324,10 @@ mod class_field_initializers_super_tests;
 mod compiled_derived_constructor_tests;
 
 #[cfg(test)]
+#[path = "../tests/unit/global_declaration_instantiation.rs"]
+mod global_declaration_instantiation_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/symbol_constructor.rs"]
 mod symbol_constructor_tests;
 

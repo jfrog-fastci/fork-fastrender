@@ -405,6 +405,26 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   Ok(VmError::Throw(value))
 }
 
+fn throw_syntax_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let value = crate::new_syntax_error_object(scope, &intr, message)?;
+  Ok(VmError::Throw(value))
+}
+
+#[inline]
+fn global_var_binding_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: false,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
 #[inline]
 fn patch_stack_top_frame_best_effort(
   stack: &mut Vec<StackFrame>,
@@ -1583,6 +1603,24 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(())
   }
 
+  fn has_restricted_global_property(
+    &mut self,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    name: &str,
+  ) -> Result<bool, VmError> {
+    // GlobalEnvironmentRecord.HasRestrictedGlobalProperty (ECMA-262).
+    //
+    // Returns true iff the global object has an own property `name` that is non-configurable.
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(Value::Object(global_object))?;
+    let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
+    let existing = key_scope
+      .heap()
+      .object_get_own_property_with_tick(global_object, &key, || self.vm.tick())?;
+    Ok(existing.is_some_and(|d| !d.configurable))
+  }
+
   fn collect_pat_idents(
     &mut self,
     body: &hir_js::Body,
@@ -1639,6 +1677,203 @@ impl<'vm> HirEvaluator<'vm> {
     }
     let mut visited: usize = 0;
     visit(self, body, pat_id, out, &mut visited)
+  }
+
+  fn collect_var_declared_names(
+    &mut self,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
+    for stmt_id in stmts {
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      match &stmt.kind {
+        hir_js::StmtKind::Var(decl) => {
+          if decl.kind == hir_js::VarDeclKind::Var {
+            for declarator in &decl.declarators {
+              self.vm.tick()?;
+              let mut names: Vec<hir_js::NameId> = Vec::new();
+              self.collect_pat_idents(body, declarator.pat, &mut names)?;
+              for name_id in names {
+                out.insert(self.resolve_name(name_id)?);
+              }
+            }
+          }
+        }
+        hir_js::StmtKind::For { init, body: inner, .. } => {
+          if let Some(hir_js::ForInit::Var(decl)) = init {
+            if decl.kind == hir_js::VarDeclKind::Var {
+              for declarator in &decl.declarators {
+                self.vm.tick()?;
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, declarator.pat, &mut names)?;
+                for name_id in names {
+                  out.insert(self.resolve_name(name_id)?);
+                }
+              }
+            }
+          }
+          self.collect_var_declared_names(body, std::slice::from_ref(inner), out)?;
+        }
+        hir_js::StmtKind::ForIn { left, body: inner, .. } => {
+          if let hir_js::ForHead::Var(decl) = left {
+            if decl.kind == hir_js::VarDeclKind::Var {
+              for declarator in &decl.declarators {
+                self.vm.tick()?;
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, declarator.pat, &mut names)?;
+                for name_id in names {
+                  out.insert(self.resolve_name(name_id)?);
+                }
+              }
+            }
+          }
+          self.collect_var_declared_names(body, std::slice::from_ref(inner), out)?;
+        }
+        hir_js::StmtKind::Block(inner) => {
+          self.collect_var_declared_names(body, inner.as_slice(), out)?;
+        }
+        hir_js::StmtKind::If {
+          consequent,
+          alternate,
+          ..
+        } => {
+          self.collect_var_declared_names(body, std::slice::from_ref(consequent), out)?;
+          if let Some(alt) = alternate {
+            self.collect_var_declared_names(body, std::slice::from_ref(alt), out)?;
+          }
+        }
+        hir_js::StmtKind::While { body: inner, .. }
+        | hir_js::StmtKind::DoWhile { body: inner, .. }
+        | hir_js::StmtKind::Labeled { body: inner, .. }
+        | hir_js::StmtKind::With { body: inner, .. } => {
+          self.collect_var_declared_names(body, std::slice::from_ref(inner), out)?;
+        }
+        hir_js::StmtKind::Try {
+          block,
+          catch,
+          finally_block,
+        } => {
+          self.collect_var_declared_names(body, std::slice::from_ref(block), out)?;
+          if let Some(catch) = catch {
+            self.collect_var_declared_names(body, std::slice::from_ref(&catch.body), out)?;
+          }
+          if let Some(finally_block) = finally_block {
+            self.collect_var_declared_names(body, std::slice::from_ref(finally_block), out)?;
+          }
+        }
+        hir_js::StmtKind::Switch { cases, .. } => {
+          for case in cases {
+            self.collect_var_declared_names(body, case.consequent.as_slice(), out)?;
+          }
+        }
+        _ => {}
+      }
+    }
+    Ok(())
+  }
+
+  fn collect_global_lexical_decl_names(
+    &mut self,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
+    // GlobalDeclarationInstantiation only considers lexically-scoped declarations in the global
+    // statement list (not those nested inside blocks/loops).
+    for stmt_id in stmts {
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      match &stmt.kind {
+        hir_js::StmtKind::Var(decl) => {
+          if matches!(
+            decl.kind,
+            hir_js::VarDeclKind::Let
+              | hir_js::VarDeclKind::Const
+              | hir_js::VarDeclKind::Using
+              | hir_js::VarDeclKind::AwaitUsing
+          ) {
+            for declarator in &decl.declarators {
+              self.vm.tick()?;
+              let mut names: Vec<hir_js::NameId> = Vec::new();
+              self.collect_pat_idents(body, declarator.pat, &mut names)?;
+              for name_id in names {
+                out.insert(self.resolve_name(name_id)?);
+              }
+            }
+          }
+        }
+        hir_js::StmtKind::Decl(def_id) => {
+          let def = self
+            .hir()
+            .def(*def_id)
+            .ok_or(VmError::InvariantViolation(
+              "hir def id missing from compiled script",
+            ))?;
+          let Some(body_id) = def.body else {
+            continue;
+          };
+          let decl_body = self.get_body(body_id)?;
+          if decl_body.kind != hir_js::BodyKind::Class {
+            continue;
+          }
+          let name = self.resolve_name(def.name)?;
+          if name.as_str() == "<anonymous>" {
+            // `export default class {}` uses the engine-internal `*default*` binding created during
+            // module linking. Do not create/check a binding named `"<anonymous>"`.
+            continue;
+          }
+          out.insert(name);
+        }
+        _ => {}
+      }
+    }
+    Ok(())
+  }
+
+  fn validate_global_lexical_decls(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    // GlobalDeclarationInstantiation runtime checks for global lexical declarations:
+    // - reject collisions with existing global var/function declarations (`[[VarNames]]`),
+    // - reject redeclaring existing global lexical bindings,
+    // - reject creating a lexical binding when the global object has a restricted (non-configurable)
+    //   property.
+    let global_object = self.env.global_object();
+    let global_lex = self.env.lexical_env();
+
+    let mut names: HashSet<String> = HashSet::new();
+    self.collect_global_lexical_decl_names(body, stmts, &mut names)?;
+
+    for name in names {
+      self.vm.tick()?;
+      if self.vm.global_var_names_contains(name.as_str()) {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+      if scope.heap().env_has_binding(global_lex, name.as_str())? {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+      if self.has_restricted_global_property(scope, global_object, name.as_str())? {
+        return Err(throw_syntax_error(
+          self.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+    }
+    Ok(())
   }
 
   fn instantiate_function_decls(
@@ -1762,17 +1997,33 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
             EcmaFunctionKind::Decl,
           )?;
-          // Root the function object while assigning into the environment.
-          let mut assign_scope = scope.reborrow();
-          assign_scope.push_root(Value::Object(func_obj))?;
-          self.env.set_var(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut assign_scope,
-            name.as_str(),
-            Value::Object(func_obj),
-          )?;
+          // Global function declarations in classic scripts must create a non-deletable
+          // (non-configurable) global property, even when an existing configurable property is
+          // present (ECMA-262 `CreateGlobalFunctionBinding`).
+          if matches!(self.env.var_env(), VarEnv::GlobalObject) {
+            let global_object = self.env.global_object();
+            // Root the function object across key allocation + property definition.
+            let mut def_scope = scope.reborrow();
+            def_scope.push_root(Value::Object(func_obj))?;
+            let key = PropertyKey::from_string(def_scope.alloc_string(name.as_str())?);
+            def_scope.define_property(
+              global_object,
+              key,
+              global_var_binding_desc(Value::Object(func_obj)),
+            )?;
+          } else {
+            // Root the function object while assigning into the environment.
+            let mut assign_scope = scope.reborrow();
+            assign_scope.push_root(Value::Object(func_obj))?;
+            self.env.set_var(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut assign_scope,
+              name.as_str(),
+              Value::Object(func_obj),
+            )?;
+          }
         }
         // Strict mode: only top-level function declarations are var-scoped.
         //
@@ -12224,6 +12475,90 @@ pub(crate) fn run_compiled_script(
   // not partially pollute the global environment.
   evaluator.early_error_missing_initializers_in_stmt_list(body, body.root_stmts.as_slice())?;
 
+  // GlobalDeclarationInstantiation runtime checks for global lexical declarations must run before
+  // we create any bindings so invalid programs do not partially pollute the global environment.
+  //
+  // Only apply these checks when executing in the realm's global lexical environment (not e.g.
+  // direct eval, which uses a nested lexical environment with `VarEnv::GlobalObject`).
+  let is_global_script_env = matches!(evaluator.env.var_env(), VarEnv::GlobalObject)
+    && scope.heap().env_outer(evaluator.env.lexical_env())?.is_none();
+  let mut global_var_names_to_insert: Vec<String> = Vec::new();
+  if is_global_script_env {
+    evaluator.validate_global_lexical_decls(scope, body, body.root_stmts.as_slice())?;
+
+    // Pre-compute var/function names for:
+    // - collision checks against existing global lexical bindings, and
+    // - best-effort `[[VarNames]]` tracking.
+    let mut var_declared_names: HashSet<String> = HashSet::new();
+    evaluator.collect_var_declared_names(body, body.root_stmts.as_slice(), &mut var_declared_names)?;
+
+    let mut function_declared_names: HashSet<String> = HashSet::new();
+    for stmt_id in body.root_stmts.as_slice() {
+      evaluator.vm.tick()?;
+      let stmt = evaluator.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Decl(def_id) = stmt.kind else {
+        continue;
+      };
+      let def = evaluator
+        .hir()
+        .def(def_id)
+        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+      let Some(body_id) = def.body else {
+        continue;
+      };
+      let decl_body = evaluator.get_body(body_id)?;
+      if decl_body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let name = evaluator.resolve_name(def.name)?;
+      if name.as_str() == "<anonymous>" {
+        continue;
+      }
+      function_declared_names.insert(name);
+    }
+
+    // Step 6-ish: reject var/function names that collide with existing global lexical declarations.
+    let global_lex = evaluator.env.lexical_env();
+    for name in var_declared_names.iter().chain(function_declared_names.iter()) {
+      evaluator.vm.tick()?;
+      if scope.heap().env_has_binding(global_lex, name.as_str())? {
+        return Err(throw_syntax_error(
+          evaluator.vm,
+          scope,
+          "Identifier has already been declared",
+        )?);
+      }
+    }
+
+    // Best-effort `[[VarNames]]` tracking: only extend the set for `var` bindings that actually
+    // create a new non-deletable global property (i.e. the global object did not already have an
+    // own property for that name).
+    //
+    // This matches V8: `Object.defineProperty(globalThis, "x", { configurable: true, ... }); var x;`
+    // does not prevent a later `let x;` in a separate script.
+    global_var_names_to_insert
+      .try_reserve(var_declared_names.len().saturating_add(function_declared_names.len()))
+      .map_err(|_| VmError::OutOfMemory)?;
+    for name in &var_declared_names {
+      evaluator.vm.tick()?;
+      let existed = {
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(Value::Object(global_object))?;
+        let key = PropertyKey::from_string(key_scope.alloc_string(name.as_str())?);
+        key_scope
+          .heap()
+          .object_get_own_property_with_tick(global_object, &key, || evaluator.vm.tick())?
+          .is_some()
+      };
+      if !existed {
+        global_var_names_to_insert.push(name.clone());
+      }
+    }
+    for name in &function_declared_names {
+      global_var_names_to_insert.push(name.clone());
+    }
+  }
+
   // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
   // ReferenceError.
   evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
@@ -12239,6 +12574,10 @@ pub(crate) fn run_compiled_script(
     body.root_stmts.as_slice(),
     evaluator.env.lexical_env(),
   )?;
+
+  if is_global_script_env && !global_var_names_to_insert.is_empty() {
+    evaluator.vm.global_var_names_insert_all(global_var_names_to_insert)?;
+  }
 
   match evaluator.eval_root_stmt_list(scope, body, body.root_stmts.as_slice())? {
     Flow::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
@@ -13946,6 +14285,75 @@ fn run_compiled_script_async(
     // Some early errors are still checked at runtime during instantiation so invalid declarations do
     // not partially pollute the global environment.
     evaluator.early_error_missing_initializers_in_stmt_list(body, body.root_stmts.as_slice())?;
+
+    let is_global_script_env = matches!(evaluator.env.var_env(), VarEnv::GlobalObject)
+      && scope.heap().env_outer(evaluator.env.lexical_env())?.is_none();
+    let mut global_var_names_to_insert: Vec<String> = Vec::new();
+    if is_global_script_env {
+      evaluator.validate_global_lexical_decls(scope, body, body.root_stmts.as_slice())?;
+
+      let mut var_declared_names: HashSet<String> = HashSet::new();
+      evaluator.collect_var_declared_names(body, body.root_stmts.as_slice(), &mut var_declared_names)?;
+
+      let mut function_declared_names: HashSet<String> = HashSet::new();
+      for stmt_id in body.root_stmts.as_slice() {
+        evaluator.vm.tick()?;
+        let stmt = evaluator.get_stmt(body, *stmt_id)?;
+        let hir_js::StmtKind::Decl(def_id) = stmt.kind else {
+          continue;
+        };
+        let def = evaluator
+          .hir()
+          .def(def_id)
+          .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+        let Some(body_id) = def.body else {
+          continue;
+        };
+        let decl_body = evaluator.get_body(body_id)?;
+        if decl_body.kind != hir_js::BodyKind::Function {
+          continue;
+        }
+        let name = evaluator.resolve_name(def.name)?;
+        if name.as_str() == "<anonymous>" {
+          continue;
+        }
+        function_declared_names.insert(name);
+      }
+
+      let global_lex = evaluator.env.lexical_env();
+      for name in var_declared_names.iter().chain(function_declared_names.iter()) {
+        evaluator.vm.tick()?;
+        if scope.heap().env_has_binding(global_lex, name.as_str())? {
+          return Err(throw_syntax_error(
+            evaluator.vm,
+            scope,
+            "Identifier has already been declared",
+          )?);
+        }
+      }
+
+      global_var_names_to_insert
+        .try_reserve(var_declared_names.len().saturating_add(function_declared_names.len()))
+        .map_err(|_| VmError::OutOfMemory)?;
+      for name in &var_declared_names {
+        evaluator.vm.tick()?;
+        let existed = {
+          let mut key_scope = scope.reborrow();
+          key_scope.push_root(Value::Object(global_object))?;
+          let key = PropertyKey::from_string(key_scope.alloc_string(name.as_str())?);
+          key_scope
+            .heap()
+            .object_get_own_property_with_tick(global_object, &key, || evaluator.vm.tick())?
+            .is_some()
+        };
+        if !existed {
+          global_var_names_to_insert.push(name.clone());
+        }
+      }
+      for name in &function_declared_names {
+        global_var_names_to_insert.push(name.clone());
+      }
+    }
     // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
     // ReferenceError.
     evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
@@ -13959,6 +14367,10 @@ fn run_compiled_script_async(
       body.root_stmts.as_slice(),
       evaluator.env.lexical_env(),
     )?;
+
+    if is_global_script_env && !global_var_names_to_insert.is_empty() {
+      evaluator.vm.global_var_names_insert_all(global_var_names_to_insert)?;
+    }
 
     let eval = hir_eval_stmt_list_until_await(
       &mut evaluator,

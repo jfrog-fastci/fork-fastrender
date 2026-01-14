@@ -5512,22 +5512,46 @@ impl<'a> Evaluator<'a> {
     }
 
     // Step 18: Create global var bindings (undefined-initialized properties on the global object).
+    //
+    // Track which `var` bindings actually created a new **non-deletable** global property so we
+    // can extend the realm-scoped `[[VarNames]]` set accordingly. If the global object already has
+    // an own property for `name`, `CreateGlobalVarBinding` is a no-op and must **not** add the name
+    // to `[[VarNames]]` (mirroring V8: `var x` on an existing configurable property does not
+    // prevent a later `let x` declaration in another script).
+    let mut created_var_names: Vec<String> = Vec::new();
     for &name in &declared_var_names {
       self.tick()?;
+      // Snapshot whether the global object already has an own property for `name` before we create
+      // the global var binding.
+      let existed = {
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(Value::Object(global_object))?;
+        let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
+        key_scope
+          .heap()
+          .object_get_own_property_with_tick(global_object, &key, || self.tick())?
+          .is_some()
+      };
       self.env.declare_var(self.vm, scope, name)?;
+      if !existed {
+        created_var_names
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        created_var_names.push(try_clone_string(name)?);
+      }
     }
 
     // Record `var`/function declaration names for future GlobalDeclarationInstantiation checks.
     let mut record: Vec<String> = Vec::new();
     record
       .try_reserve(
-        declared_var_names
+        created_var_names
           .len()
           .saturating_add(functions_to_initialize.len()),
       )
       .map_err(|_| VmError::OutOfMemory)?;
-    for &name in &declared_var_names {
-      record.push(try_clone_string(name)?);
+    for name in created_var_names {
+      record.push(name);
     }
     for decl in functions_to_initialize {
       // Safe: scripts always have named function declarations here.
