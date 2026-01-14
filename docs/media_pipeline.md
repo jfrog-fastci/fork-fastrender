@@ -95,6 +95,10 @@ Notes on timestamps:
 - `MediaPacket.dts_ns` is the decode timestamp and is expected to be monotonic in demux order.
 - `MediaPacket.pts_ns` is the presentation timestamp and **may be non-monotonic** for video streams
   with B-frame reordering. Demuxers must not reorder packets **within a track** by PTS.
+- `MediaPacket.duration_ns` is the best-effort per-packet duration (0 if unknown).
+  - Some codec layers can decode multiple frames from a single packet (notably VP9 "superframes");
+    in that case FastRender distributes `pts_ns`/`duration_ns` across the decoded
+    `DecodedVideoFrame`s so per-frame scheduling still works.
 
 ## Container demux
 
@@ -265,7 +269,8 @@ Input contract:
 
 Output:
 
-- `DecodedVideoFrame` with RGBA8 pixels (OpenH264 decodes to YUV and the code converts to RGBA).
+- `DecodedVideoFrame` with RGBA8 pixels plus `pts_ns`/`duration_ns` (OpenH264 decodes to YUV and the
+  code converts to RGBA).
 
 ### VP9 (implemented): bundled libvpx
 
@@ -281,6 +286,9 @@ Current status:
 - `WebmDemuxer` can emit VP9 packets.
 - `MediaDecodePipeline` uses `src/media/decoder.rs::create_video_decoder` to construct a libvpx-backed
   `codecs::vp9::Vp9Decoder` (feature: `codec_vp9_libvpx` or `media`).
+- VP9 note: a single compressed VP9 packet may yield multiple decoded frames (superframes). When the
+  container provides a non-zero per-packet duration, FastRender distributes the duration across the
+  decoded `DecodedVideoFrame`s so their `pts_ns`/`duration_ns` remain useful for scheduling.
 - `src/media/player.rs` also uses `codecs::vp9` directly for a minimal WebM/VP9 playback loop.
 
 Build notes:
@@ -440,7 +448,7 @@ The codebase provides a small “narrow waist”:
 - demuxers should emit `MediaTrackInfo` + `MediaPacket` with `dts_ns`/`pts_ns`/`duration_ns`,
 - decoders should consume `MediaPacket` and emit either:
   - `DecodedAudioChunk` (for audio), or
-  - decoded video frames (RGBA/YUV) plus a timestamp,
+  - decoded video frames (RGBA/YUV) plus `pts_ns`/`duration_ns`,
 - paint-facing layers should be non-blocking and read from a cache (`MediaFrameProvider`).
 
 When adding new pieces, keep them deterministic and avoid introducing hard system dependencies into
