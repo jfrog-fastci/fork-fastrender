@@ -236,21 +236,22 @@ fn optional_chaining_private_instance_method_call_short_circuits_on_nullish_base
   let value = rt
     .exec_script(
       r#"
+      let side = 0;
       class C {
         #x = 'ok';
         #m() { return this.#x; }
-        static call(obj) { return obj?.#m(); }
+        static call(obj) { return obj?.#m(++side); }
       }
 
       let ok = true;
-      ok = ok && C.call(new C()) === 'ok';
-      ok = ok && C.call(null) === undefined;
-      ok = ok && C.call(undefined) === undefined;
+      ok = ok && C.call(new C()) === 'ok' && side === 1;
+      ok = ok && C.call(null) === undefined && side === 1;
+      ok = ok && C.call(undefined) === undefined && side === 1;
 
       let threw = false;
       try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok && threw && side === 1
     "#,
     )
     .unwrap();
@@ -293,25 +294,26 @@ fn optional_chaining_private_method_call_after_optional_chain_short_circuits_on_
   let value = rt
     .exec_script(
       r#"
+      let side = 0;
       class C {
         #x = 'init';
         constructor(v) { this.#x = v; }
         #m() { return this.#x; }
-        method(o) { return o?.c.#m(); }
+        method(o) { return o?.c.#m(++side); }
       }
 
       const a = new C('a');
       const b = new C('b');
 
       let ok = true;
-      ok = ok && a.method({ c: b }) === 'b';
-      ok = ok && a.method(null) === undefined;
-      ok = ok && a.method(undefined) === undefined;
+      ok = ok && a.method({ c: b }) === 'b' && side === 1;
+      ok = ok && a.method(null) === undefined && side === 1;
+      ok = ok && a.method(undefined) === undefined && side === 1;
 
       let threw = false;
       try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok && threw && side === 1
     "#,
     )
     .unwrap();
@@ -359,21 +361,22 @@ fn compiled_script_with_private_optional_chain_method_call_falls_back_and_execut
     rt.heap_mut(),
     "<inline>",
     r#"
+      let side = 0;
       class C {
         #x = 'ok';
         #m() { return this.#x; }
-        static call(obj) { return obj?.#m(); }
+        static call(obj) { return obj?.#m(++side); }
       }
 
       let ok = true;
-      ok = ok && C.call(new C()) === 'ok';
-      ok = ok && C.call(null) === undefined;
-      ok = ok && C.call(undefined) === undefined;
+      ok = ok && C.call(new C()) === 'ok' && side === 1;
+      ok = ok && C.call(null) === undefined && side === 1;
+      ok = ok && C.call(undefined) === undefined && side === 1;
 
       let threw = false;
       try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok && threw && side === 1
     "#,
   )?;
 
@@ -432,25 +435,26 @@ fn compiled_script_with_private_method_call_after_optional_chain_falls_back_and_
     rt.heap_mut(),
     "<inline>",
     r#"
+      let side = 0;
       class C {
         #x = 'init';
         constructor(v) { this.#x = v; }
         #m() { return this.#x; }
-        method(o) { return o?.c.#m(); }
+        method(o) { return o?.c.#m(++side); }
       }
 
       const a = new C('a');
       const b = new C('b');
 
       let ok = true;
-      ok = ok && a.method({ c: b }) === 'b';
-      ok = ok && a.method(null) === undefined;
-      ok = ok && a.method(undefined) === undefined;
+      ok = ok && a.method({ c: b }) === 'b' && side === 1;
+      ok = ok && a.method(null) === undefined && side === 1;
+      ok = ok && a.method(undefined) === undefined && side === 1;
 
       let threw = false;
       try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok && threw && side === 1
     "#,
   )?;
 
