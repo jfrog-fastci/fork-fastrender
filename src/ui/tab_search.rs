@@ -66,9 +66,12 @@ pub fn ranked_matches_into(query: &str, tabs: &[BrowserTabState], out: &mut Vec<
     if let Some(pos) = find_ascii_case_insensitive(title, needle_lower.as_ref()) {
       best = Some(if pos == 0 { 0 } else { 2 });
     }
-    if let Some(pos) = find_ascii_case_insensitive(url, needle_lower.as_ref()) {
-      let score = if pos == 0 { 1 } else { 3 };
-      best = Some(best.map_or(score, |existing| existing.min(score)));
+    // If the title already matches at the best possible score (prefix), skip scanning the URL.
+    if best != Some(0) {
+      if let Some(pos) = find_ascii_case_insensitive(url, needle_lower.as_ref()) {
+        let score = if pos == 0 { 1 } else { 3 };
+        best = Some(best.map_or(score, |existing| existing.min(score)));
+      }
     }
 
     if let Some(score) = best {
