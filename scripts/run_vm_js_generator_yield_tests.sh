@@ -57,3 +57,8 @@ run_vm_js_test generators_assignment_update_yield_in_base
 # Keep the test target name stable: CI relies on this exact integration test name.
 run_vm_js_test generators_binary_ops_yield
 run_vm_js_test generators_binary_more_ops_yield
+
+# Optional chaining + yield interaction (short-circuiting + this binding).
+run_vm_js_test generators_optional_chaining_yield
+run_vm_js_test generators_optional_chaining_yield_star
+run_vm_js_test generators_optional_chaining_super_property_yield
