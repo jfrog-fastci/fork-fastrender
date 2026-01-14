@@ -22439,6 +22439,10 @@ impl App {
     ctx: &egui::Context,
     prev_rect: Option<egui::Rect>,
   ) {
+    use fastrender::ui::CursorKind;
+    use fastrender::ui::PointerButton;
+    use fastrender::ui::UiToWorker;
+
     let cursor_pos_points = self
       .last_cursor_pos_points
       .or_else(|| ctx.input(|i| i.pointer.hover_pos()));
@@ -22449,6 +22453,40 @@ impl App {
         .open_media_controls_rect
         .is_some_and(|rect| rect.contains(pos))
     });
+
+    if !self.pointer_captured && now_contains_cursor {
+      // If the media controls overlay appears under a stationary cursor, clear any active page hover
+      // state so hovered-link status and cursor overrides don't remain "stuck" beneath the overlay.
+      let active_tab_id = self.browser_state.active_tab_id();
+      let should_clear = self.cursor_in_page
+        || active_tab_id.is_some_and(|tab_id| {
+          self.browser_state.tab(tab_id).is_some_and(|tab| {
+            tab.hovered_url.is_some() || !matches!(tab.cursor, CursorKind::Default)
+          })
+        });
+
+      if should_clear {
+        self.pending_pointer_move = None;
+        self.cursor_in_page = false;
+
+        if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id)) {
+          tab.hovered_url = None;
+          tab.hover_tooltip = None;
+          tab.cursor = CursorKind::Default;
+        }
+
+        if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
+          let _ = self.send_worker_msg(UiToWorker::PointerMove {
+            tab_id,
+            pos_css: (-1.0, -1.0),
+            button: PointerButton::None,
+            modifiers: map_modifiers(self.modifiers),
+          });
+        }
+
+        self.window.request_redraw();
+      }
+    }
 
     if !self.pointer_captured
       && !self.media_controls_overlay_pointer_capture
