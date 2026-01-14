@@ -660,6 +660,9 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
 ) -> ScrollState {
   // Determine which containers were snapped in the previous layout.
   prev_tree.ensure_scroll_metadata();
+  // Ensure overflow metadata is available for clamping in the new layout even when no scroll snap
+  // containers are currently snapped.
+  new_tree.ensure_scroll_metadata();
   let prev_metadata = prev_tree.scroll_metadata.clone().unwrap_or_default();
   let snapped_prev = super::apply_scroll_snap(prev_tree, scroll).state;
   let epsilon = 0.1;
@@ -713,6 +716,25 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
     .map(|state| state.bounds)
   {
     next_scroll.viewport = bounds.clamp(next_scroll.viewport);
+  }
+
+  // Mirror paint-time element scroll clamping so layout-only flushes can't leave element scroll
+  // offsets outside their new bounds (which would later be corrected during paint).
+  let element_ids: Vec<usize> = next_scroll.elements.keys().copied().collect();
+  for id in element_ids {
+    let Some(container) = find_fragment_by_box_id(new_tree, id) else {
+      continue;
+    };
+    let desired = sanitize_point(next_scroll.elements.get(&id).copied().unwrap_or(Point::ZERO));
+    let bounds = super::scroll_bounds_for_fragment(
+      container,
+      Point::ZERO,
+      container.bounds.size,
+      scrollport_viewport,
+      false,
+      false,
+    );
+    next_scroll.elements.insert(id, bounds.clamp(desired));
   }
 
   next_scroll.update_deltas_from(scroll);
