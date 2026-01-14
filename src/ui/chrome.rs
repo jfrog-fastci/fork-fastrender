@@ -93,6 +93,98 @@ impl LoadingTextWidthCache {
   }
 }
 
+#[derive(Debug, Clone)]
+struct WarningBadgeUiCache {
+  warning: Option<Arc<str>>,
+  badge_icon: BrowserIcon,
+  a11y_label: Option<Arc<str>>,
+}
+
+impl Default for WarningBadgeUiCache {
+  fn default() -> Self {
+    Self {
+      warning: None,
+      badge_icon: BrowserIcon::Info,
+      a11y_label: None,
+    }
+  }
+}
+
+impl WarningBadgeUiCache {
+  fn update(&mut self, warning: Option<&str>) {
+    let Some(warning) = warning.map(str::trim).filter(|s| !s.is_empty()) else {
+      return;
+    };
+    if self.warning.as_deref() == Some(warning) && self.a11y_label.is_some() {
+      return;
+    }
+
+    self.warning = Some(Arc::from(warning));
+    let Some(presentation) = crate::ui::classify_warning_toast(Some(warning)) else {
+      self.badge_icon = BrowserIcon::Info;
+      self.a11y_label = None;
+      return;
+    };
+
+    self.badge_icon = match presentation.icon {
+      crate::ui::WarningToastIcon::Info => BrowserIcon::Info,
+      crate::ui::WarningToastIcon::ViewportClamp => BrowserIcon::ZoomOut,
+      crate::ui::WarningToastIcon::WarningInsecure => BrowserIcon::WarningInsecure,
+    };
+    let label = presentation
+      .summary
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(|summary| format!("{}: {summary}", presentation.title))
+      .unwrap_or(presentation.title);
+    self.a11y_label = Some(Arc::from(label));
+  }
+
+  fn badge_icon(&self) -> BrowserIcon {
+    self.badge_icon
+  }
+
+  fn a11y_label(&self) -> &str {
+    self.a11y_label.as_deref().unwrap_or("Warning")
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ErrorBadgeUiCache {
+  error: Option<Arc<str>>,
+  a11y_label: Option<Arc<str>>,
+}
+
+impl ErrorBadgeUiCache {
+  fn update(&mut self, error: Option<&str>) {
+    let Some(error) = error.map(str::trim).filter(|s| !s.is_empty()) else {
+      return;
+    };
+    if self.error.as_deref() == Some(error) && self.a11y_label.is_some() {
+      return;
+    }
+    self.error = Some(Arc::from(error));
+
+    let first_line = error.lines().next().unwrap_or(error).trim();
+    let label = if first_line.chars().count() > 160 {
+      let prefix = "Error: ";
+      let mut out = String::with_capacity(prefix.len() + 160 + 1);
+      out.push_str(prefix);
+      out.extend(first_line.chars().take(160));
+      out.push('…');
+      out
+    } else {
+      format!("Error: {first_line}")
+    };
+    self.a11y_label = Some(Arc::from(label));
+  }
+
+  fn a11y_label(&self) -> &str {
+    self.a11y_label.as_deref().unwrap_or("Error")
+  }
+}
+
 #[derive(Debug, Clone, Default)]
 struct AddressBarDisplayGalleyCache {
   // Key: the active URL generation counter from `ChromeAddressBarCache`.
@@ -2235,6 +2327,17 @@ pub fn chrome_ui_with_bookmarks(
               downloads_panel_open,
             );
 
+            let warn_badge_cache_id = address_bar_id.with("warn_badge_cache");
+            let err_badge_cache_id = address_bar_id.with("err_badge_cache");
+            let mut warn_badge_cache: WarningBadgeUiCache = ctx.data_mut(|d| {
+              std::mem::take(d.get_temp_mut_or_default::<WarningBadgeUiCache>(warn_badge_cache_id))
+            });
+            let mut err_badge_cache: ErrorBadgeUiCache = ctx.data_mut(|d| {
+              std::mem::take(d.get_temp_mut_or_default::<ErrorBadgeUiCache>(err_badge_cache_id))
+            });
+            warn_badge_cache.update(warn_msg);
+            err_badge_cache.update(err_msg);
+
             {
               let downloads_toggle_label = if downloads_panel_open {
                 "Hide downloads"
@@ -2378,8 +2481,6 @@ pub fn chrome_ui_with_bookmarks(
               }
             }
 
-            ctx.data_mut(|d| d.insert_temp(downloads_label_cache_id, downloads_label_cache));
-
             // Loading status (optional; shown to the right of downloads).
             if loading && !is_compact {
               let resp = ui.add(
@@ -2410,24 +2511,8 @@ pub fn chrome_ui_with_bookmarks(
                 40,
               );
               let warn_bg = with_alpha(warn_bg_base, warn_t);
-              let (badge_icon, a11y_label) = warn_msg
-                .and_then(|warn| crate::ui::classify_warning_toast(Some(warn)))
-                .map(|presentation| {
-                  let summary = presentation
-                    .summary
-                    .as_deref()
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|summary| format!("{}: {summary}", presentation.title))
-                    .unwrap_or_else(|| presentation.title.clone());
-                  let icon = match presentation.icon {
-                    crate::ui::WarningToastIcon::Info => BrowserIcon::Info,
-                    crate::ui::WarningToastIcon::ViewportClamp => BrowserIcon::ZoomOut,
-                    crate::ui::WarningToastIcon::WarningInsecure => BrowserIcon::WarningInsecure,
-                  };
-                  (icon, summary)
-                })
-                // The badge can still be visible while fading out (warn_msg already cleared).
-                .unwrap_or_else(|| (BrowserIcon::Info, "Warning".to_string()));
+              let badge_icon = warn_badge_cache.badge_icon();
+              let a11y_label = warn_badge_cache.a11y_label();
               let resp = egui::Frame::none()
                 .fill(warn_bg)
                 .rounding(badge_rounding)
@@ -2435,8 +2520,8 @@ pub fn chrome_ui_with_bookmarks(
                 .show(ui, |ui| {
                   let icon_resp = icon_tinted(ui, badge_icon, ui.spacing().icon_width, warn_fg);
                   icon_resp.widget_info({
-                    let label = a11y_label.clone();
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                    let label = a11y_label;
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
                   });
                 })
                 .response;
@@ -2455,20 +2540,7 @@ pub fn chrome_ui_with_bookmarks(
                 40,
               );
               let err_bg = with_alpha(err_bg_base, err_t);
-              let a11y_label = err_msg
-                .map(|err| {
-                  let first_line = err.lines().next().unwrap_or(err).trim();
-                  if first_line.chars().count() > 160 {
-                    format!(
-                      "Error: {}…",
-                      first_line.chars().take(160).collect::<String>()
-                    )
-                  } else {
-                    format!("Error: {first_line}")
-                  }
-                })
-                // The badge can still be visible while fading out (err_msg already cleared).
-                .unwrap_or_else(|| "Error".to_string());
+              let a11y_label = err_badge_cache.a11y_label();
               let resp = egui::Frame::none()
                 .fill(err_bg)
                 .rounding(badge_rounding)
@@ -2477,8 +2549,8 @@ pub fn chrome_ui_with_bookmarks(
                   let icon_resp =
                     icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
                   icon_resp.widget_info({
-                    let label = a11y_label.clone();
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                    let label = a11y_label;
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
                   });
                 })
                 .response;
@@ -2618,6 +2690,12 @@ pub fn chrome_ui_with_bookmarks(
                 actions.push(ChromeAction::ToggleBookmarkForActiveTab);
               }
             }
+
+            ctx.data_mut(|d| {
+              d.insert_temp(downloads_label_cache_id, downloads_label_cache);
+              d.insert_temp(warn_badge_cache_id, warn_badge_cache);
+              d.insert_temp(err_badge_cache_id, err_badge_cache);
+            });
           });
         });
       });
