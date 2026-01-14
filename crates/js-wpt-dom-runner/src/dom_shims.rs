@@ -826,7 +826,20 @@ const DOM_SHIM: &str = r##"
   }
 
   function compoundMatches(compound, el, scopeEl) {
-    if (!(el instanceof Element)) return false;
+    if (!(el instanceof Element)) {
+      // Allow `:scope` to match non-Element scoping roots (DocumentFragment/ShadowRoot) when the
+      // compound contains *only* `:scope`.
+      if (
+        compound.isScope &&
+        el === scopeEl &&
+        !compound.tag &&
+        !compound.id &&
+        (!compound.classes || compound.classes.length === 0)
+      ) {
+        return true;
+      }
+      return false;
+    }
     if (compound.isScope && el !== scopeEl) return false;
     if (compound.tag && compound.tag !== "*") {
       if (String(el.tagName).toLowerCase() !== compound.tag.toLowerCase()) return false;
@@ -1872,6 +1885,46 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
+  Element.prototype.insertAdjacentHTML = function (position, html) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    var where = String(position).toLowerCase();
+    var parent = null;
+    var reference = null;
+    var contextTag = "div";
+    if (where === "beforebegin") {
+      parent = this.parentNode;
+      if (!parent) return;
+      reference = this;
+      if (parent instanceof Element) contextTag = String(parent.tagName).toLowerCase();
+    } else if (where === "afterbegin") {
+      parent = this;
+      reference = this.firstChild;
+      contextTag = String(this.tagName).toLowerCase();
+    } else if (where === "beforeend") {
+      parent = this;
+      reference = null;
+      contextTag = String(this.tagName).toLowerCase();
+    } else if (where === "afterend") {
+      parent = this.parentNode;
+      if (!parent) return;
+      reference = this.nextSibling;
+      if (parent instanceof Element) contextTag = String(parent.tagName).toLowerCase();
+    } else {
+      throw new TypeError(
+        "Failed to execute 'insertAdjacentHTML' on 'Element': The provided position is not valid."
+      );
+    }
+
+    var tmp = g.document.createElement(contextTag);
+    tmp.innerHTML = String(html);
+    var frag = g.document.createDocumentFragment();
+    while (tmp.firstChild) {
+      frag.appendChild(tmp.firstChild);
+    }
+    parent.insertBefore(frag, reference);
+  };
+
   Element.prototype.matches = function (selectors) {
     nodeIdFromThis(this);
     if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
@@ -1949,7 +2002,7 @@ const DOM_SHIM: &str = r##"
       }
     }.bind(this));
 
-    return out;
+    return makeStaticNodeList(out);
   };
 
   Document.prototype.querySelector = function (selectors) {
@@ -1957,6 +2010,41 @@ const DOM_SHIM: &str = r##"
   };
   Document.prototype.querySelectorAll = function (selectors) {
     return g.document.documentElement.querySelectorAll(selectors);
+  };
+
+  DocumentFragment.prototype.querySelector = function (selectors) {
+    nodeIdFromThis(this);
+    var parsed = parseSelectorList(selectors);
+    var found = null;
+    traverseElementSubtree(this, function (el) {
+      if (found) return;
+      for (var i = 0; i < parsed.length; i++) {
+        if (matchesSelectorChain(el, parsed[i], this, this)) {
+          found = el;
+          return;
+        }
+      }
+    }.bind(this));
+    return found;
+  };
+
+  DocumentFragment.prototype.querySelectorAll = function (selectors) {
+    nodeIdFromThis(this);
+    var parsed = parseSelectorList(selectors);
+    var out = [];
+    var seen = new Set();
+    traverseElementSubtree(this, function (el) {
+      var id = nodeIdFromThis(el);
+      if (seen.has(id)) return;
+      for (var i = 0; i < parsed.length; i++) {
+        if (matchesSelectorChain(el, parsed[i], this, this)) {
+          seen.add(id);
+          out.push(el);
+          return;
+        }
+      }
+    }.bind(this));
+    return makeStaticNodeList(out);
   };
 
   Node.prototype.appendChild = function (child) {
@@ -3166,15 +3254,18 @@ impl Dom {
       return Ok(Vec::new());
     }
 
-    let namespace_ok = match namespace {
-      None => true,
-      Some("*") => true,
-      Some("") => true,
-      Some(HTML_NAMESPACE) => true,
-      Some(_) => false,
-    };
-    if !namespace_ok {
-      return Ok(Vec::new());
+    // This shim models all elements as being in the HTML namespace (we do not currently track
+    // namespaces per-node). Match the DOM Standard's behavior for the cases exercised by the
+    // curated WPT corpus:
+    //
+    // - `namespace = "*" or HTML_NAMESPACE` matches.
+    // - `namespace = null or ""` (treated as null) matches only nodes in the null namespace,
+    //   which this shim never creates.
+    // - Any other namespace yields no matches.
+    match namespace {
+      None | Some("") => return Ok(Vec::new()),
+      Some("*") | Some(HTML_NAMESPACE) => {}
+      Some(_) => return Ok(Vec::new()),
     }
 
     if local_name == "*" {

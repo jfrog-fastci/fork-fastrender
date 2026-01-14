@@ -134,46 +134,10 @@ status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
 
 [[expectations]]
-id = "dom/collections/nodelist-childnodes-live.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend relies on a minimal DOM shim; NodeList live semantics are validated on vm-js."
-
-[[expectations]]
-id = "dom/collections/nodelist-queryselectorall-static.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend relies on a minimal DOM shim; NodeList snapshot semantics are validated on vm-js."
-
-[[expectations]]
 id = "dom/collections/htmlcollection-children.window.js"
 backend = "quickjs"
 status = "xfail"
 reason = "QuickJS backend uses minimal DOM shims; Element.children and element-sibling traversal are not implemented."
-
-[[expectations]]
-id = "dom/collections/getelementsbytagname-live.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "Document/Element.getElementsByTagName is not implemented/exposed yet (method missing)."
-
-[[expectations]]
-id = "dom/collections/getelementsbyclassname-live.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "Document/Element.getElementsByClassName is not implemented/exposed yet (method missing)."
-
-[[expectations]]
-id = "dom/collections/getelementsbyname-live.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "Document.getElementsByName is not implemented/exposed yet (method missing)."
-
-[[expectations]]
-id = "dom/collections/getelementsbytagnamens.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "Document/Element.getElementsByTagNameNS is not implemented/exposed yet (method missing)."
 
 [[expectations]]
 id = "dom/treewalker_navigation.window.js"
