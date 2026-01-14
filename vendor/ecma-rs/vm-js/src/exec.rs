@@ -16168,6 +16168,17 @@ pub(crate) enum GenFrame {
     stmt: *const ForOfStmt,
     label_set: Vec<String>,
   },
+  /// Continue a `for..of` loop after binding the next iteration value suspends.
+  ///
+  /// This is used when the loop's LHS binding/assignment pattern contains `yield` (e.g. in a
+  /// default initializer or computed property key).
+  ForOfAfterBind {
+    stmt: *const ForOfStmt,
+    label_set: Vec<String>,
+    iterator_record: iterator::IteratorRecord,
+    outer_lex: GcEnv,
+    v: Value,
+  },
   /// Continue a `for..of` loop after evaluating the body statement list.
   ForOfAfterBody {
     stmt: *const ForOfStmt,
@@ -16442,6 +16453,17 @@ impl Trace for GenFrame {
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterTest { v, .. } => tracer.trace_value(*v),
+      GenFrame::ForOfAfterBind {
+        iterator_record,
+        outer_lex,
+        v,
+        ..
+      } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
+        tracer.trace_value(*v);
+        tracer.trace_env(*outer_lex);
+      }
       GenFrame::ForOfAfterBody {
         iterator_record, v, ..
       } => {
@@ -35357,10 +35379,6 @@ fn gen_eval_for_of(
     ));
   }
 
-  if for_in_of_lhs_contains_yield(&stmt.lhs) {
-    return Err(VmError::Unimplemented("yield in for-of binding pattern"));
-  }
-
   let mut label_vec: Vec<String> = Vec::new();
   label_vec
     .try_reserve_exact(label_set.len())
@@ -35525,7 +35543,7 @@ fn gen_for_of_loop(
       }
     }
 
-    let bind_res: Result<(), VmError> = match &stmt.lhs {
+    let bind_eval = match &stmt.lhs {
       ForInOfLhs::Decl((mode, pat_decl)) => {
         let kind = match *mode {
           VarDeclMode::Var => BindingKind::Var,
@@ -35533,38 +35551,37 @@ fn gen_for_of_loop(
           VarDeclMode::Const => BindingKind::Const,
           VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
         };
-        bind_pattern(
-          evaluator.vm,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          scope,
-          evaluator.env,
-          &pat_decl.stx.pat.stx,
-          value,
-          kind,
-          evaluator.strict,
-          evaluator.this,
-        )
+        gen_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)?
       }
-      ForInOfLhs::Assign(pat) => bind_pattern(
-        evaluator.vm,
-        &mut *evaluator.host,
-        &mut *evaluator.hooks,
-        scope,
-        evaluator.env,
-        &pat.stx,
-        value,
-        BindingKind::Assignment,
-        evaluator.strict,
-        evaluator.this,
-      ),
+      ForInOfLhs::Assign(pat) => {
+        gen_bind_pattern(evaluator, scope, &pat.stx, value, BindingKind::Assignment)?
+      }
     };
 
-    if let Err(err) = bind_res {
-      if iter_env_created {
-        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+    match bind_eval {
+      GenEval::Complete(bind_completion) => {
+        if bind_completion.is_abrupt() {
+          if iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          }
+          let completion =
+            evaluator.iterator_close_on_completion(scope, iterator_record, bind_completion)?;
+          return Ok(GenEval::Complete(completion));
+        }
       }
-      return Err(evaluator.iterator_close_on_error(scope, iterator_record, err));
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ForOfAfterBind {
+            stmt: stmt as *const ForOfStmt,
+            label_set,
+            iterator_record: *iterator_record,
+            outer_lex,
+            v,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
     }
 
     let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
@@ -35615,6 +35632,94 @@ fn gen_for_of_loop(
         )?;
         return Ok(GenEval::Suspend(suspend));
       }
+    }
+  }
+}
+
+fn gen_for_of_after_bind(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &ForOfStmt,
+  label_set: Vec<String>,
+  iterator_record: &mut iterator::IteratorRecord,
+  outer_lex: GcEnv,
+  v_root_idx: usize,
+  mut v: Value,
+  bind_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  scope.heap_mut().root_stack[v_root_idx] = v;
+
+  let iter_env_created = matches!(
+    &stmt.lhs,
+    ForInOfLhs::Decl((mode, _))
+      if matches!(
+        *mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      )
+  );
+
+  if bind_completion.is_abrupt() {
+    if iter_env_created {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+    }
+    let completion = evaluator.iterator_close_on_completion(scope, iterator_record, bind_completion)?;
+    return Ok(GenEval::Complete(completion));
+  }
+
+  let body_eval = gen_eval_for_body(evaluator, scope, &stmt.body.stx);
+  let body_eval = match body_eval {
+    Ok(v) => v,
+    Err(err) => {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+      return Err(evaluator.iterator_close_on_error(scope, iterator_record, err));
+    }
+  };
+
+  match body_eval {
+    GenEval::Complete(body_completion) => {
+      if iter_env_created {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+      }
+
+      if !Evaluator::loop_continues(&body_completion, &label_set) {
+        let completion = body_completion.update_empty(Some(v));
+        let completion = evaluator.iterator_close_on_completion(scope, iterator_record, completion)?;
+        let result = Evaluator::normalise_iteration_break(completion);
+        return Ok(GenEval::Complete(result));
+      }
+
+      if let Some(value) = body_completion.value() {
+        v = value;
+        scope.heap_mut().root_stack[v_root_idx] = value;
+      }
+
+      gen_for_of_loop(
+        evaluator,
+        scope,
+        stmt,
+        label_set,
+        iterator_record,
+        outer_lex,
+        v_root_idx,
+        v,
+      )
+    }
+    GenEval::Suspend(mut suspend) => {
+      if iter_env_created {
+        gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+      }
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ForOfAfterBody {
+          stmt: stmt as *const ForOfStmt,
+          label_set,
+          iterator_record: *iterator_record,
+          v,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
     }
   }
 }
@@ -41068,6 +41173,36 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::ForOfAfterBind {
+        stmt,
+        label_set,
+        iterator_record,
+        outer_lex,
+        v,
+      } => {
+        let v_root_idx = scope.heap().root_stack.len();
+        scope.push_root(v)?;
+        let stmt = unsafe { &*stmt };
+        let mut iterator_record = iterator_record;
+        match gen_for_of_after_bind(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          &mut iterator_record,
+          outer_lex,
+          v_root_idx,
+          v,
+          state,
+        )? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
       GenFrame::ForOfAfterBody {
         stmt,
         label_set,
@@ -41154,7 +41289,7 @@ fn gen_root_values_for_continuation(
       | GenFrame::DoWhileAfterTest { .. } => {
         needed = needed.saturating_add(1);
       }
-      GenFrame::ForOfAfterBody { .. } => {
+      GenFrame::ForOfAfterBind { .. } | GenFrame::ForOfAfterBody { .. } => {
         needed = needed.saturating_add(3);
       }
       GenFrame::SwitchAfterCaseExpr { .. } => {
@@ -41249,7 +41384,10 @@ fn gen_root_values_for_continuation(
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterTest { v, .. } => values.push(*v),
-      GenFrame::ForOfAfterBody {
+      GenFrame::ForOfAfterBind {
+        iterator_record, v, ..
+      }
+      | GenFrame::ForOfAfterBody {
         iterator_record, v, ..
       } => {
         values.push(iterator_record.iterator);

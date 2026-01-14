@@ -104,6 +104,58 @@ fn generator_yield_in_object_destructuring_binding_default() {
 }
 
 #[test]
+fn generator_yield_in_for_of_object_destructuring_binding_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let out;
+          for (let {a: x = yield 1} of [{}]) {
+            out = x;
+          }
+          return out;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next(5);
+        return r2.done === true && r2.value === 5;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_for_of_object_destructuring_computed_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let out;
+          for (let {[(yield 1)]: x} of [{k: 7}]) {
+            out = x;
+          }
+          return out;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next("k");
+        return r2.done === true && r2.value === 7;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_array_destructuring_default_preserves_assignment_result() {
   let mut rt = new_runtime();
   let value = rt
