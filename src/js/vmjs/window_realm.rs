@@ -62771,7 +62771,6 @@ mod tests {
 
     let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new());
     let mut config = WindowRealmConfig::new("https://example.com/");
-    // Clone the concrete clock, then coerce into the trait-object type used by the realm config.
     config.clock = clock.clone();
     let mut realm = new_realm(config)?;
 

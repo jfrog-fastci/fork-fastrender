@@ -19,6 +19,8 @@ fn no_merge_conflict_markers_present() {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let search_roots = [
     repo_root.join("src"),
+    repo_root.join("crates"),
+    repo_root.join("xtask"),
     repo_root.join("tests"),
     repo_root.join("benches"),
     repo_root.join("fuzz"),
