@@ -32,6 +32,37 @@ fn generator_logical_or_assignment_member_base_yield_short_circuits_rhs_yield() 
 }
 
 #[test]
+fn generator_logical_or_assignment_member_base_yield_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var yielded = { a: 100 };
+        var resumed = { a: 1 };
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 0; })();
+        }
+        function* g() {
+          // Yield in the member base expression happens first.
+          // After resuming, the operator must short-circuit and never evaluate the RHS yield*.
+          return (yield yielded).a ||= (yield* rhs());
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(resumed);
+        r1.value === yielded && r1.done === false &&
+        r2.value === 1 && r2.done === true &&
+        called === false &&
+        resumed.a === 1 && yielded.a === 100
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_or_assignment_member_base_yield_then_rhs_yield_assigns_to_resumed_base() {
   let mut rt = new_runtime();
   let value = rt
@@ -88,4 +119,3 @@ fn generator_logical_or_assignment_computed_member_base_yield_evaluates_key_afte
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-

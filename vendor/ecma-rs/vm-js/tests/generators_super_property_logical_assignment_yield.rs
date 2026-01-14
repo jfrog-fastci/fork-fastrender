@@ -88,6 +88,222 @@ fn generator_super_nullish_coalescing_assignment_short_circuits_without_yield() 
 }
 
 #[test]
+fn generator_super_logical_and_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            // RHS contains a yield*, but must not be evaluated because `super.x` is falsy.
+            const r = (super.x &&= (yield* rhs()));
+            return r === 0 && this._x === 0 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_logical_or_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 1; }
+          *gen() {
+            // RHS contains a yield*, but must not be evaluated because `super.x` is truthy.
+            const r = (super.x ||= (yield* rhs()));
+            return r === 1 && this._x === 1 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_nullish_coalescing_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            // RHS contains a yield*, but must not be evaluated because `super.x` is non-nullish.
+            const r = (super.x ??= (yield* rhs()));
+            return r === 0 && this._x === 0 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_logical_or_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 0; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 1; }
+          *gen() {
+            // Yield in the computed key expression happens first.
+            // Because `super.x` is truthy, `||=` must short-circuit and never evaluate the RHS yield*.
+            const r = (super[(yield "k")] ||= (yield* rhs()));
+            return r === 1 && this._x === 1 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true &&
+        called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_logical_and_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 0; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            // Yield in the computed key expression happens first.
+            // Because `super.x` is falsy, `&&=` must short-circuit and never evaluate the RHS yield*.
+            const r = (super[(yield "k")] &&= (yield* rhs()));
+            return r === 0 && this._x === 0 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true &&
+        called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_nullish_coalescing_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 0; })();
+        }
+
+        class B {
+          get x(){ log.push("get"); return this._x; }
+          set x(v){ log.push("set:" + v); this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            // Yield in the computed key expression happens first.
+            // Because `super.x` is non-nullish, `??=` must short-circuit and never evaluate the RHS yield*.
+            const r = (super[(yield "k")] ??= (yield* rhs()));
+            return r === 0 && this._x === 0 && called === false && log.join(",") === "get";
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true &&
+        called === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_super_logical_or_assignment_captures_super_base_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt

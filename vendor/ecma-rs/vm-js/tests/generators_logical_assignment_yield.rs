@@ -148,6 +148,174 @@ fn generator_nullish_coalescing_assignment_short_circuits_without_yield_star() {
 }
 
 #[test]
+fn generator_logical_or_assignment_short_circuits_member_expr_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 1 };
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because o.a is truthy.
+          const r = (o.a ||= (yield* rhs()));
+          return r === 1 && o.a === 1 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_short_circuits_member_expr_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because o.a is falsy.
+          const r = (o.a &&= (yield* rhs()));
+          return r === 0 && o.a === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_short_circuits_member_expr_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because o.a is non-nullish.
+          const r = (o.a ??= (yield* rhs()));
+          return r === 0 && o.a === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_or_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 1 };
+          var k = "a";
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 0; })();
+          }
+          // Yield in the computed key expression happens first.
+          // Because o.a is truthy, `||=` must short-circuit and never evaluate the RHS yield*.
+          const r = (o[(yield "k", k)] ||= (yield* rhs()));
+          return r === 1 && o.a === 1 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next();
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          var k = "a";
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 0; })();
+          }
+          // Yield in the computed key expression happens first.
+          // Because o.a is falsy, `&&=` must short-circuit and never evaluate the RHS yield*.
+          const r = (o[(yield "k", k)] &&= (yield* rhs()));
+          return r === 0 && o.a === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next();
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_with_yield_in_computed_key_short_circuits_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          var k = "a";
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 0; })();
+          }
+          // Yield in the computed key expression happens first.
+          // Because o.a is non-nullish, `??=` must short-circuit and never evaluate the RHS yield*.
+          const r = (o[(yield "k", k)] ??= (yield* rhs()));
+          return r === 0 && o.a === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next();
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_or_assignment_captures_binding_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt

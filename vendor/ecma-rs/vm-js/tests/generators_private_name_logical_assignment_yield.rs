@@ -7,6 +7,99 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
+fn generator_private_field_logical_or_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class C {
+          static #x = 1;
+          static getX(){ return this.#x; }
+          static *g(){
+            // RHS contains a yield*, but must not be evaluated because #x is truthy.
+            const r = (this.#x ||= (yield* rhs()));
+            return r === 1 && this.#x === 1 && called === false;
+          }
+        }
+
+        const it = C.g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false && C.getX() === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_private_field_logical_and_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class C {
+          static #x = 0;
+          static getX(){ return this.#x; }
+          static *g(){
+            // RHS contains a yield*, but must not be evaluated because #x is falsy.
+            const r = (this.#x &&= (yield* rhs()));
+            return r === 0 && this.#x === 0 && called === false;
+          }
+        }
+
+        const it = C.g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false && C.getX() === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_private_field_nullish_coalescing_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var called = false;
+        function rhs() {
+          called = true;
+          return (function*() { yield 1; })();
+        }
+
+        class C {
+          static #x = 0;
+          static getX(){ return this.#x; }
+          static *g(){
+            // RHS contains a yield*, but must not be evaluated because #x is non-nullish.
+            const r = (this.#x ??= (yield* rhs()));
+            return r === 0 && this.#x === 0 && called === false;
+          }
+        }
+
+        const it = C.g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true && called === false && C.getX() === 0
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_private_field_nullish_coalescing_assignment_captures_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt
