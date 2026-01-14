@@ -4,7 +4,7 @@ pub mod pat;
 pub mod util;
 mod regex_unicode_property;
 
-use super::ParseCtx;
+use super::{AsiContext, ParseCtx};
 use super::Parser;
 use crate::ast::expr::pat::IdPat;
 use crate::ast::expr::ArrowFuncExpr;
@@ -460,12 +460,16 @@ impl<'a> Parser<'a> {
         return Err(arrow.error(SyntaxErrorType::LineTerminatorAfterArrowFunctionParameters));
       }
       let is_module = p.is_module();
+      // The surrounding parse context may be `AsiContext::StatementHeader` (e.g. when an arrow
+      // function appears in a `for (...)` header). That context only controls ASI in the *header*
+      // itself; nested function bodies still use ordinary statement ASI rules.
       let fn_body_ctx = ctx.with_rules(ParsePatternRules {
         await_allowed: if is_module { false } else { !is_async },
         yield_allowed: !is_module,
         await_expr_allowed: is_async,
         yield_expr_allowed: false,
-      });
+      })
+      .with_asi(AsiContext::Statements);
       let simple_params = Parser::is_simple_parameter_list(&parameters);
       // Arrow functions do not introduce a `new.target` binding; they can only reference
       // `new.target` if one is provided by an enclosing non-arrow function or class element.
@@ -600,12 +604,17 @@ impl<'a> Parser<'a> {
           None
         };
         // Parameters and body use the function's own context, not the parent's
-        let fn_ctx = ctx.with_rules(ParsePatternRules {
-          await_allowed: if is_module { false } else { !is_async },
-          yield_allowed: if is_module { false } else { !generator },
-          await_expr_allowed: is_async,
-          yield_expr_allowed: generator,
-        });
+        // The surrounding parse context may be `AsiContext::StatementHeader` (e.g. when a function
+        // expression appears in a `for (...)` header). That context only controls ASI in the
+        // *header* itself; nested function bodies still use ordinary statement ASI rules.
+        let fn_ctx = ctx
+          .with_rules(ParsePatternRules {
+            await_allowed: if is_module { false } else { !is_async },
+            yield_allowed: if is_module { false } else { !generator },
+            await_expr_allowed: is_async,
+            yield_expr_allowed: generator,
+          })
+          .with_asi(AsiContext::Statements);
         p.with_arguments_bound_in_class_init(|p| {
           // Regular functions do not have a `super` binding. Ensure we don't inherit
           // `super` allowances from an enclosing method/constructor when parsing

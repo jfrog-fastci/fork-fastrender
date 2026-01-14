@@ -1,5 +1,8 @@
 use crate::bigint::JsBigInt;
-use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
+use crate::destructure::{
+  bind_assignment_target, bind_pattern, is_anonymous_function_definition,
+  maybe_set_anonymous_function_name, BindingKind,
+};
 use crate::error_object::new_error;
 use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::for_in::ForInEnumerator;
@@ -5727,13 +5730,28 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    // Collect var-scoped function declarations (in source order) for steps 10/17.
+    // Collect var-scoped function declarations (in source order) for steps 10/17, and Annex B
+    // block-level function declaration names (treated as `var` for global binding creation).
     let mut function_decls: Vec<&Node<FuncDecl>> = Vec::new();
-    self.collect_var_scoped_function_decls_in_stmt_list(stmts, &mut function_decls)?;
+    let mut annex_b_block_function_names: Vec<&str> = Vec::new();
+    self.collect_var_scoped_function_decls_in_stmt_list(
+      stmts,
+      &mut function_decls,
+      &mut annex_b_block_function_names,
+    )?;
 
     // Collect var-declared names (in source order) for steps 6/12/18.
     let mut var_decl_names: Vec<String> = Vec::new();
     self.collect_var_declared_names_in_stmt_list(stmts, &mut var_decl_names)?;
+    // Annex B: block-level ordinary function declarations create global *var* bindings (initialized
+    // to `undefined`) at script instantiation time.
+    for &name in &annex_b_block_function_names {
+      self.tick()?;
+      var_decl_names
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      var_decl_names.push(try_clone_string(name)?);
+    }
 
     // Step 6: For each name in varNames, reject collisions with existing lexical declarations.
     let mut var_names_to_check: Vec<&str> = Vec::new();
@@ -6526,13 +6544,34 @@ impl<'a> Evaluator<'a> {
         // We still treat function declarations in "statement position" (e.g. `if (cond)
         // function f() {}`) as var-scoped here, since they are not evaluated within an explicit
         // block lexical environment in the current AST representation.
-        if in_stmt_list
-          || (Self::is_annex_b_eligible_sloppy_function_decl(decl) && !in_block_stmt_list)
-        {
-          self.instantiate_function_decl(scope, decl)
-        } else {
-          Ok(())
+        if in_stmt_list {
+          return self.instantiate_function_decl(scope, decl);
         }
+
+        if !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+          // Non-ordinary (async/generator) function declarations are never Annex B var-scoped.
+          return Ok(());
+        }
+
+        if !in_block_stmt_list {
+          // Statement-position function declaration: instantiate in the var environment now.
+          return self.instantiate_function_decl(scope, decl);
+        }
+
+        // Annex B block-level function declaration in a nested block statement list:
+        // - Create the *var* binding at instantiation time (like `var f;`), so references to `f`
+        //   outside the block observe `undefined` instead of ReferenceError.
+        // - Defer function-object creation to block entry so it captures the block lexical
+        //   environment, and so runtime evaluation can update the var binding when control reaches
+        //   the declaration.
+        let Some(name) = &decl.stx.name else {
+          if decl.stx.export_default {
+            return Ok(());
+          }
+          return Err(VmError::Unimplemented("anonymous function declaration"));
+        };
+        self.env.declare_var(self.vm, scope, &name.stx.name)?;
+        Ok(())
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
@@ -7410,6 +7449,7 @@ impl<'a> Evaluator<'a> {
     &mut self,
     stmts: &'s [Node<Stmt>],
     out: &mut Vec<&'s Node<FuncDecl>>,
+    annex_b_block_function_names: &mut Vec<&'s str>,
   ) -> Result<(), VmError> {
     if self.strict {
       for stmt in stmts {
@@ -7424,7 +7464,7 @@ impl<'a> Evaluator<'a> {
     }
 
     for stmt in stmts {
-      self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out, true)?;
+      self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out, annex_b_block_function_names, true, false)?;
     }
     Ok(())
   }
@@ -7433,76 +7473,169 @@ impl<'a> Evaluator<'a> {
     &mut self,
     stmt: &'s Stmt,
     out: &mut Vec<&'s Node<FuncDecl>>,
+    annex_b_block_function_names: &mut Vec<&'s str>,
     in_stmt_list: bool,
+    in_block_stmt_list: bool,
   ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
-        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+        let Some(name) = &decl.stx.name else {
+          if decl.stx.export_default {
+            return Ok(());
+          }
+          return Err(VmError::Unimplemented("anonymous function declaration"));
+        };
+        let name_str = name.stx.name.as_str();
+
+        if in_stmt_list {
           out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           out.push(decl);
+          return Ok(());
         }
+
+        if !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+          // Non-ordinary function declarations are never Annex B var-scoped (but they *are* var-scoped
+          // at script top-level, which is handled above by `in_stmt_list`).
+          return Ok(());
+        }
+
+        if in_block_stmt_list {
+          annex_b_block_function_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          annex_b_block_function_names.push(name_str);
+          return Ok(());
+        }
+
+        // Statement-position function declaration.
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.push(decl);
         Ok(())
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
-          self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(
+            &stmt.stx,
+            out,
+            annex_b_block_function_names,
+            /* in_stmt_list */ false,
+            /* in_block_stmt_list */ true,
+          )?;
         }
         Ok(())
       }
       Stmt::If(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.consequent.stx, out, false)?;
+        self.collect_var_scoped_function_decls_in_stmt(
+          &stmt.stx.consequent.stx,
+          out,
+          annex_b_block_function_names,
+          false,
+          false,
+        )?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.collect_var_scoped_function_decls_in_stmt(&alt.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(&alt.stx, out, annex_b_block_function_names, false, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
         for s in &stmt.stx.wrapped.stx.body {
-          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(
+            &s.stx,
+            out,
+            annex_b_block_function_names,
+            false,
+            true,
+          )?;
         }
         if let Some(catch) = &stmt.stx.catch {
           for s in &catch.stx.body {
-            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+            self.collect_var_scoped_function_decls_in_stmt(
+              &s.stx,
+              out,
+              annex_b_block_function_names,
+              false,
+              true,
+            )?;
           }
         }
         if let Some(finally) = &stmt.stx.finally {
           for s in &finally.stx.body {
-            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+            self.collect_var_scoped_function_decls_in_stmt(
+              &s.stx,
+              out,
+              annex_b_block_function_names,
+              false,
+              true,
+            )?;
           }
         }
         Ok(())
       }
-      Stmt::With(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false)
-      }
-      Stmt::While(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false)
-      }
-      Stmt::DoWhile(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false)
-      }
+      Stmt::With(stmt) => self.collect_var_scoped_function_decls_in_stmt(
+        &stmt.stx.body.stx,
+        out,
+        annex_b_block_function_names,
+        false,
+        false,
+      ),
+      Stmt::While(stmt) => self.collect_var_scoped_function_decls_in_stmt(
+        &stmt.stx.body.stx,
+        out,
+        annex_b_block_function_names,
+        false,
+        false,
+      ),
+      Stmt::DoWhile(stmt) => self.collect_var_scoped_function_decls_in_stmt(
+        &stmt.stx.body.stx,
+        out,
+        annex_b_block_function_names,
+        false,
+        false,
+      ),
       Stmt::ForTriple(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(
+            &s.stx,
+            out,
+            annex_b_block_function_names,
+            false,
+            true,
+          )?;
         }
         Ok(())
       }
       Stmt::ForIn(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(
+            &s.stx,
+            out,
+            annex_b_block_function_names,
+            false,
+            true,
+          )?;
         }
         Ok(())
       }
       Stmt::ForOf(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          self.collect_var_scoped_function_decls_in_stmt(
+            &s.stx,
+            out,
+            annex_b_block_function_names,
+            false,
+            true,
+          )?;
         }
         Ok(())
       }
-      Stmt::Label(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.statement.stx, out, false)
-      }
+      Stmt::Label(stmt) => self.collect_var_scoped_function_decls_in_stmt(
+        &stmt.stx.statement.stx,
+        out,
+        annex_b_block_function_names,
+        false,
+        false,
+      ),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -7510,7 +7643,13 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
           }
           for s in &branch.stx.body {
-            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+            self.collect_var_scoped_function_decls_in_stmt(
+              &s.stx,
+              out,
+              annex_b_block_function_names,
+              false,
+              true,
+            )?;
           }
         }
         Ok(())
@@ -8199,6 +8338,11 @@ impl<'a> Evaluator<'a> {
             continue;
           };
           let value = self.eval_expr(scope, init)?;
+          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+            if is_anonymous_function_definition(init) {
+              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+            }
+          }
           bind_pattern(
             self.vm,
             &mut *self.host,
@@ -8220,7 +8364,15 @@ impl<'a> Evaluator<'a> {
       VarDeclMode::Let => {
         for declarator in &decl.declarators {
           let value = match &declarator.initializer {
-            Some(init) => self.eval_expr(scope, init)?,
+            Some(init) => {
+              let value = self.eval_expr(scope, init)?;
+              if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+                if is_anonymous_function_definition(init) {
+                  maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+                }
+              }
+              value
+            }
             None => {
               self.tick()?;
               // Destructuring declarations require an initializer (early error in real JS).
@@ -8260,6 +8412,11 @@ impl<'a> Evaluator<'a> {
             ));
           };
           let value = self.eval_expr(scope, init)?;
+          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+            if is_anonymous_function_definition(init) {
+              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+            }
+          }
 
           bind_pattern(
             self.vm,
@@ -8291,6 +8448,11 @@ impl<'a> Evaluator<'a> {
             return Err(syntax_error(declarator.pattern.loc, message));
           };
           let value = self.eval_expr(scope, init)?;
+          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+            if is_anonymous_function_definition(init) {
+              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+            }
+          }
 
           bind_pattern(
             self.vm,
@@ -10531,8 +10693,8 @@ impl<'a> Evaluator<'a> {
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
  
-          // Each iteration of a lexical `for-in` loop must start with uninitialized bindings for
-          // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+          // Pre-create all bindings in the per-iteration environment so destructuring defaults
+          // observe TDZ semantics (matching `ForDeclarationBindingInstantiation`).
           let mutable = *mode == VarDeclMode::Let;
           if let Err(err) = self.instantiate_lexical_names_from_pat(
             &mut iter_scope,
@@ -10707,8 +10869,8 @@ impl<'a> Evaluator<'a> {
           self.env.set_lexical_env(iter_scope.heap_mut(), env);
           iter_env = Some(env);
  
-          // Each iteration of a lexical `for-of` loop must start with uninitialized bindings for
-          // `BoundNames(ForDeclaration)` so TDZ semantics apply while evaluating binding defaults.
+          // Pre-create all bindings in the per-iteration environment so destructuring defaults
+          // observe TDZ semantics (matching `ForDeclarationBindingInstantiation`).
           let mutable = *mode == VarDeclMode::Let;
           if let Err(err) = self.instantiate_lexical_names_from_pat(
             &mut iter_scope,

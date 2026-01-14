@@ -1021,6 +1021,15 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     stmt: &Stmt,
     out: &mut HashSet<String>,
   ) -> Result<(), VmError> {
+    self.collect_sloppy_function_decl_names_in_stmt(stmt, out, /* in_stmt_list */ true)
+  }
+
+  fn collect_sloppy_function_decl_names_in_stmt(
+    &mut self,
+    stmt: &Stmt,
+    out: &mut HashSet<String>,
+    in_stmt_list: bool,
+  ) -> Result<(), VmError> {
     self.step()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
@@ -1031,6 +1040,15 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           self.push_error(decl.loc, "anonymous function declaration")?;
           return Ok(());
         };
+
+        // In non-strict mode, Annex B var-scoping only applies to *ordinary* function declarations
+        // in nested blocks. Async/generator function declarations are always block-scoped.
+        let func = &decl.stx.function.stx;
+        let annex_b_eligible = !func.async_ && !func.generator;
+        if !in_stmt_list && !annex_b_eligible {
+          return Ok(());
+        }
+
         let name_str = name.stx.name.as_str();
         if !out.contains(name_str) {
           out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
@@ -1040,55 +1058,55 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
-          self.collect_sloppy_function_decl_names(&stmt.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx, out, /* in_stmt_list */ false)?;
         }
         Ok(())
       }
       Stmt::If(stmt) => {
-        self.collect_sloppy_function_decl_names(&stmt.stx.consequent.stx, out)?;
+        self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.consequent.stx, out, false)?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.collect_sloppy_function_decl_names(&alt.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&alt.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
         for s in &stmt.stx.wrapped.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         if let Some(catch) = &stmt.stx.catch {
           for s in &catch.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         if let Some(finally) = &stmt.stx.finally {
           for s in &finally.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         Ok(())
       }
-      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
-      Stmt::While(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
-      Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
+      Stmt::With(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::While(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
       Stmt::ForTriple(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::ForIn(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::ForOf(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
-      Stmt::Label(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.statement.stx, out),
+      Stmt::Label(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.statement.stx, out, false),
       Stmt::Switch(stmt) => {
         const BRANCH_STEP_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -1096,7 +1114,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             self.step()?;
           }
           for s in &branch.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         Ok(())

@@ -1,6 +1,6 @@
 use crate::exec::{eval_expr, eval_expr_named, ResolvedBinding, RuntimeEnv};
 use crate::function::CallHandler;
-use crate::property::PropertyKey;
+use crate::property::{PropertyKey, PropertyKind};
 use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
@@ -333,16 +333,6 @@ fn bind_identifier(
   kind: BindingKind,
   strict: bool,
 ) -> Result<(), VmError> {
-  // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
-  // infer its `name` from the identifier.
-  //
-  // Note: this does **not** apply to ordinary function parameter binding (which binds arbitrary
-  // argument values). Name inference for default parameter initializers is handled at expression
-  // evaluation time.
-  if !matches!(kind, BindingKind::Param) {
-    maybe_set_anonymous_function_name(scope, value, name)?;
-  }
-
   match kind {
     BindingKind::Var => env.set_var(vm, host, hooks, scope, name, value),
     BindingKind::Param => {
@@ -382,7 +372,17 @@ fn bind_identifier(
   }
 }
 
-fn maybe_set_anonymous_function_name(
+pub(crate) fn is_anonymous_function_definition(expr: &Node<Expr>) -> bool {
+  match &*expr.stx {
+    Expr::Func(func) => func.stx.name.is_none(),
+    Expr::Class(class) => class.stx.name.is_none(),
+    // Arrow functions do not have an explicit name position.
+    Expr::ArrowFunc(_) => true,
+    _ => false,
+  }
+}
+
+pub(crate) fn maybe_set_anonymous_function_name(
   scope: &mut Scope<'_>,
   value: Value,
   name: &str,
@@ -390,14 +390,11 @@ fn maybe_set_anonymous_function_name(
   let Value::Object(func_obj) = value else {
     return Ok(());
   };
- 
+
   // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
   // they are not function objects and should not have their `name` mutated.
-  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-    Ok(f) => (
-      f.name,
-      matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
-    ),
+  let is_native_non_constructable = match scope.heap().get_function(func_obj) {
+    Ok(f) => matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
     Err(VmError::NotCallable) => return Ok(()),
     Err(err) => return Err(err),
   };
@@ -409,18 +406,34 @@ fn maybe_set_anonymous_function_name(
   if is_native_non_constructable {
     return Ok(());
   }
-  if !scope
-    .heap()
-    .get_string(current_name)?
-    .as_code_units()
-    .is_empty()
-  {
-    return Ok(());
-  }
 
-  // Root the function object while allocating the new name string and redefining `name`.
+  // Root the function object while probing/modifying its `name` property: key allocation and
+  // `set_function_name` can trigger GC.
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(func_obj))?;
+
+  // In spec terms, this is the `HasOwnProperty(F, "name")` check. `vm-js` eagerly defines
+  // `F.name` at function allocation, so we approximate the spec by treating an **empty string**
+  // `name` data property as "missing" (and therefore eligible for inference), while avoiding
+  // clobbering a `static name() {}` method (where `name` is a function object).
+  let name_key_s = scope.common_key_name()?;
+  scope.push_root(Value::String(name_key_s))?;
+  let existing = scope
+    .heap()
+    .get_own_property(func_obj, PropertyKey::String(name_key_s))?;
+  let should_set = match existing {
+    None => true,
+    Some(desc) => match desc.kind {
+      PropertyKind::Data {
+        value: Value::String(s),
+        ..
+      } => scope.heap().get_string(s)?.as_code_units().is_empty(),
+      _ => false,
+    },
+  };
+  if !should_set {
+    return Ok(());
+  }
 
   let name_s = scope.alloc_string(name)?;
   crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::String(name_s), None)?;
@@ -773,6 +786,23 @@ fn bind_object_pattern(
             default_expr,
           )?
         };
+
+        // `SingleNameBinding` name inference (`IsAnonymousFunctionDefinition` / `SetFunctionName`).
+        //
+        // Important: only apply this when the *default initializer* is actually evaluated (i.e.
+        // when the property value is `undefined`).
+        if is_anonymous_function_definition(default_expr) {
+          // Binding patterns (let/const/var/params): infer from the binding identifier.
+          if !matches!(kind, BindingKind::Assignment) {
+            if let Pat::Id(id) = &*prop.stx.target.stx {
+              maybe_set_anonymous_function_name(&mut prop_scope, prop_value, id.stx.name.as_str())?;
+            }
+          } else if let Some(PropertyAssignmentTarget::Binding(binding)) = assignment_target.as_ref()
+          {
+            // Destructuring assignment: infer from the identifier reference name.
+            maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
+          }
+        }
       }
     }
 
@@ -784,7 +814,6 @@ fn bind_object_pattern(
 
       let res = match target {
         PropertyAssignmentTarget::Binding(binding) => {
-          maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
           env.set_resolved_binding(vm, host, hooks, &mut prop_scope, binding, prop_value, strict)
         }
         PropertyAssignmentTarget::Member { base, key } => {
@@ -1460,6 +1489,28 @@ fn bind_array_pattern(
             }
           }
         };
+
+        // `SingleNameBinding` name inference (`IsAnonymousFunctionDefinition` / `SetFunctionName`).
+        //
+        // Important: only apply this when the *default initializer* is actually evaluated (i.e.
+        // when the iterator value is `undefined`).
+        if is_anonymous_function_definition(default_expr) {
+          // Binding patterns (let/const/var/params): infer from the binding identifier.
+          if !matches!(kind, BindingKind::Assignment) {
+            if let Pat::Id(id) = &*elem.target.stx {
+              if let Err(err) =
+                maybe_set_anonymous_function_name(&mut elem_scope, item, id.stx.name.as_str())
+              {
+                return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+              }
+            }
+          } else if let Some(ElementAssignmentTarget::Binding(binding)) = assignment_target.as_ref()
+          {
+            if let Err(err) = maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name()) {
+              return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+            }
+          }
+        }
       }
     }
 
@@ -1476,9 +1527,6 @@ fn bind_array_pattern(
 
       let res = match target {
         ElementAssignmentTarget::Binding(binding) => {
-          if let Err(err) = maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name()) {
-            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
-          }
           env.set_resolved_binding(vm, host, hooks, &mut elem_scope, binding, item, strict)
         }
         ElementAssignmentTarget::Member { base, key } => {
