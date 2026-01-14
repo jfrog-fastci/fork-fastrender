@@ -205,6 +205,26 @@ fn generator_binary_strict_inequality_yield_on_both_sides() {
 }
 
 #[test]
+fn generator_binary_abstract_inequality_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) != (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("5");
+      var r3 = it.next(5);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_relational_greater_yield_on_both_sides() {
   let mut rt = new_runtime();
   let value = rt
@@ -280,6 +300,52 @@ fn generator_binary_nested_expression_preserves_outer_left_across_inner_yields()
       r2.value === 2 && r2.done === false &&
       r3.value === 3 && r3.done === false &&
       r4.done === true && r4.value === 20
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_operator_precedence_with_multiple_yields() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      // `*` has higher precedence than `+`: a + (b * c)
+      function* g(){ return (yield 1) + (yield 2) * (yield 3); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(10);
+      var r3 = it.next(5);
+      var r4 = it.next(2);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.done === true && r4.value === 20
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_exponentiation_is_right_associative_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      // `**` is right-associative: a ** (b ** c)
+      function* g(){ return (yield 1) ** (yield 2) ** (yield 3); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(2);
+      var r3 = it.next(3);
+      var r4 = it.next(2);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.done === true && r4.value === 512
     "#,
     )
     .unwrap();
