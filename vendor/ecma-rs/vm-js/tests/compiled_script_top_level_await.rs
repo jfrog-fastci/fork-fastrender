@@ -301,6 +301,60 @@ fn compiled_script_top_level_await_assignment_roots_lhs_reference_across_gc() ->
 }
 
 #[test]
+fn compiled_script_top_level_await_assignment_rejection_does_not_put_value() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      function getObj() { log.push("target"); return { set x(v) { log.push("set:" + v); } }; }
+      getObj().x = await Promise.reject((log.push("rhs"), "boom"));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The LHS assignment reference and await argument should have executed, but the setter and
+  // following statements should not have.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "target,rhs");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(value_to_utf8(&rt, reason), "boom");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "target,rhs");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_in_member_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
