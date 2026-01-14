@@ -1561,7 +1561,9 @@ impl ModuleGraph {
       });
     }
 
-    let exports_boxed = export_entries.into_boxed_slice();
+    // Avoid `Vec::into_boxed_slice`, which can perform an infallible reallocation if the vector
+    // has spare capacity.
+    let exports_boxed = try_vec_into_boxed_slice(export_entries)?;
 
     // Attach the exports list to the (already-allocated) namespace object.
     //
@@ -3956,6 +3958,56 @@ fn module_request_from_specifier(specifier: &str) -> Result<ModuleRequest, VmErr
   Ok(ModuleRequest::new(specifier_owned, Vec::new()))
 }
 
+fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
+  use std::alloc::{alloc, Layout};
+  use std::ptr;
+
+  let len = v.len();
+  let cap = v.capacity();
+
+  // Special-case empty vectors: represent these without any allocation.
+  if len == 0 {
+    v = Vec::new();
+  } else if cap != len {
+    // Convert to an exact-length allocation without calling `Vec::shrink_to_fit` /
+    // `Vec::into_boxed_slice`, which would reallocate infallibly and can abort the host process on
+    // allocator OOM.
+    let layout = Layout::array::<T>(len).map_err(|_| VmError::OutOfMemory)?;
+    // SAFETY: we allocate `len` elements with the same alignment/layout as `Box<[T]>` expects.
+    unsafe {
+      let raw = alloc(layout) as *mut T;
+      if raw.is_null() {
+        return Err(VmError::OutOfMemory);
+      }
+
+      // Move elements into the new allocation.
+      for i in 0..len {
+        ptr::write(raw.add(i), ptr::read(v.as_ptr().add(i)));
+      }
+
+      // Drop the old allocation without dropping elements (they were moved).
+      v.set_len(0);
+      drop(v);
+
+      return Ok(Box::from_raw(std::slice::from_raw_parts_mut(raw, len)));
+    }
+  }
+
+  debug_assert_eq!(
+    v.len(),
+    v.capacity(),
+    "try_vec_into_boxed_slice must only box exact-capacity Vecs"
+  );
+
+  // Convert without allocation now that `len == capacity`.
+  let len = v.len();
+  let ptr = v.as_mut_ptr();
+  std::mem::forget(v);
+  // SAFETY: `ptr` came from a `Vec<T>` allocation, and `len == capacity` ensures the allocation
+  // layout matches `Box<[T]>`'s slice layout.
+  unsafe { Ok(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len))) }
+}
+
 /// Accessor getter for Module Namespace export properties.
 ///
 /// Module namespace objects expose each export as a non-configurable, enumerable accessor property
@@ -4402,6 +4454,24 @@ mod tests {
     drop(scope);
     graph.teardown(&mut vm, &mut heap);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn try_vec_into_boxed_slice_returns_out_of_memory_on_trim_alloc_failure() -> Result<(), VmError> {
+    // Construct a vec with spare capacity so boxing requires a reallocation to an exact-sized
+    // slice.
+    let mut v: Vec<u8> = Vec::new();
+    v.try_reserve_exact(2).map_err(|_| VmError::OutOfMemory)?;
+    v.push(1);
+    if v.capacity() == v.len() {
+      v.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+    }
+    assert!(v.capacity() > v.len(), "expected spare capacity");
+
+    let _guard = FailAllocsGuard::new();
+    let err = try_vec_into_boxed_slice(v).expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
     Ok(())
   }
 }
