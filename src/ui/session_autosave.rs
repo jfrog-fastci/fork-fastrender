@@ -919,13 +919,20 @@ fn quarantine_corrupt_session_file(path: &Path) -> Result<Option<PathBuf>, Strin
 
   match std::fs::symlink_metadata(path) {
     Ok(meta) => {
+      // The session path should normally be a regular file. We also allow symlinks so advanced
+      // setups (e.g. redirecting session storage) still get quarantine behavior.
+      //
+      // Critically, refuse to rename directories: `session.json` may be intentionally pointed at a
+      // directory as a portable "unwritable path" test case, and renaming it aside would be
+      // destructive.
       if meta.is_dir() {
         return Err(format!(
           "refusing to quarantine session file {}: path is a directory",
           path.display()
         ));
       }
-      if !meta.is_file() {
+      let ty = meta.file_type();
+      if !(ty.is_file() || ty.is_symlink()) {
         return Err(format!(
           "refusing to quarantine session file {}: path is not a regular file",
           path.display()
@@ -958,9 +965,9 @@ fn quarantine_corrupt_session_file(path: &Path) -> Result<Option<PathBuf>, Strin
     }
 
     let quarantined_path = parent_dir.join(&quarantined_name);
-    match quarantined_path.try_exists() {
-      Ok(true) => continue,
-      Ok(false) => {}
+    match std::fs::symlink_metadata(&quarantined_path) {
+      Ok(_) => continue,
+      Err(err) if err.kind() == io::ErrorKind::NotFound => {}
       Err(err) => {
         return Err(format!(
           "failed to check whether quarantine destination {} exists: {err}",
