@@ -716,6 +716,29 @@ fn expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr:
   !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
 }
 
+fn expr_is_logical_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
+  let Expr::Binary(binary) = &*expr.stx else {
+    return false;
+  };
+  if !matches!(
+    binary.stx.operator,
+    OperatorName::AssignmentLogicalAnd
+      | OperatorName::AssignmentLogicalOr
+      | OperatorName::AssignmentNullishCoalescing
+  ) {
+    return false;
+  }
+  let Some(arg) = expr_direct_await_arg(&binary.stx.right) else {
+    return false;
+  };
+  if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
+    return false;
+  }
+  // The compiled evaluator does not support nested `await` within the assignment target (including
+  // computed member keys) or within the awaited operand.
+  !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
+}
+
 fn expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
   let Expr::Binary(binary) = &*expr.stx else {
     return false;
@@ -1261,12 +1284,14 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // - `await <expr>;`
       // - `x = await <expr>;`
       // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
+      // - `x ||= await <expr>;` / `x &&= await <expr>;` / `x ??= await <expr>;`
       // - `({ ... } = await <expr>);` / `[ ... ] = await <expr>;` (destructuring assignment patterns)
       // - `({ x = await <expr> } = obj);` (object destructuring assignment with await in defaults/computed keys)
       Stmt::Expr(expr_stmt) => {
         let expr = &expr_stmt.stx.expr;
         expr_is_direct_await_without_nested_await(expr)
           || expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+          || expr_is_logical_assignment_with_direct_await_rhs_without_nested_await(expr)
           || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr)
           || expr_is_object_destructuring_assignment_with_supported_await(expr)
       }

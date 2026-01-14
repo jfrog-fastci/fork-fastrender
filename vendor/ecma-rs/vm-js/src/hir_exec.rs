@@ -18446,7 +18446,7 @@ impl HirAsyncState {
         }
 
         // Fast-path assignments where the RHS is a direct await expression (e.g.
-        // `x = await foo();` / `x += await foo();`).
+        // `x = await foo();` / `x += await foo();` / `x ||= await foo();`).
         if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
           let compound_op = matches!(
             op,
@@ -18463,15 +18463,25 @@ impl HirAsyncState {
               | hir_js::AssignOp::BitAndAssign
               | hir_js::AssignOp::BitXorAssign
           );
-            if *op == hir_js::AssignOp::Assign || compound_op {
-              let rhs = evaluator.get_expr(body, *value)?;
-              if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-                for _ in 0..label_tick_count {
-                  evaluator.vm.tick()?;
-                }
-                // Budget once for the statement and once for the await expression itself.
+          let logical_op = matches!(
+            op,
+            hir_js::AssignOp::LogicalAndAssign
+              | hir_js::AssignOp::LogicalOrAssign
+              | hir_js::AssignOp::NullishAssign
+          );
+
+          if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
+            let rhs = evaluator.get_expr(body, *value)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+              for _ in 0..label_tick_count {
                 evaluator.vm.tick()?;
+              }
+              // Budget once for the statement itself.
+              evaluator.vm.tick()?;
+              // Budget once for the await expression itself when the RHS will actually execute.
+              if !logical_op {
                 evaluator.vm.tick()?;
+              }
 
               // Destructuring assignment (`({x} = await <expr>);` / `[x] = await <expr>;`) evaluates
               // the RHS first and does not resolve an assignment reference prior to awaiting.
@@ -18480,9 +18490,9 @@ impl HirAsyncState {
                 target_pat.kind,
                 hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
               ) {
-                if compound_op {
+                if compound_op || logical_op {
                   return Err(VmError::InvariantViolation(
-                    "compound assignment used with a destructuring pattern",
+                    "logical/compound assignment used with a destructuring pattern",
                   ));
                 }
 
@@ -18574,6 +18584,43 @@ impl HirAsyncState {
                 };
                 await_scope.push_root(left)?;
                 left_root = Some(await_scope.heap_mut().add_root(left)?);
+              }
+
+              // Logical assignment (`&&=`, `||=`, `??=`) can short-circuit: the awaited operand must
+              // not be evaluated when no assignment occurs.
+              if logical_op {
+                let left = match evaluator.get_value_from_assignment_reference(&mut await_scope, &reference) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      &mut await_scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
+                    return match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => Err(other),
+                    };
+                  }
+                };
+
+                let should_assign = match *op {
+                  hir_js::AssignOp::LogicalAndAssign => await_scope.heap().to_boolean(left)?,
+                  hir_js::AssignOp::LogicalOrAssign => !await_scope.heap().to_boolean(left)?,
+                  hir_js::AssignOp::NullishAssign => matches!(left, Value::Null | Value::Undefined),
+                  _ => unreachable!(),
+                };
+                if !should_assign {
+                  self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                  continue;
+                }
+
+                // Budget once for the await expression itself.
+                evaluator.vm.tick()?;
               }
 
               let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
