@@ -8994,6 +8994,7 @@ impl InlineFormattingContext {
           if split_offset == 0 {
             text.advance_for_layout = 0.0;
             text.paint_offset = 0.0;
+            text.layout_shift = 0.0;
             return (true, None);
           }
 
@@ -9004,6 +9005,7 @@ impl InlineFormattingContext {
           };
           after.advance_for_layout = 0.0;
           after.paint_offset = 0.0;
+          after.layout_shift = 0.0;
           *item = InlineItem::Text(before);
           (true, Some(InlineItem::Text(after)))
         }
