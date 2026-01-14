@@ -116,3 +116,41 @@ fn generator_optional_chain_computed_member_does_not_evaluate_key_when_base_is_n
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_optional_chain_nullish_base_skips_yield_in_computed_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = null?.[(yield "should-not-yield")];
+        return r === undefined;
+      }
+      var it = g();
+      var r = it.next();
+      r.value === true && r.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_nullish_base_skips_yield_in_computed_key_and_args() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var r = null?.x[(yield "should-not-yield-key")](yield "should-not-yield-arg");
+        return r === undefined;
+      }
+      var it = g();
+      var r = it.next();
+      r.value === true && r.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
