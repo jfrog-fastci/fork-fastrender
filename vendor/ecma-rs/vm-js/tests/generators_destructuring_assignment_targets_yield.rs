@@ -263,3 +263,50 @@ fn generator_array_destructuring_assignment_target_super_computed_is_evaluated_b
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_destructuring_rest_target_super_computed_is_evaluated_before_iterator_step() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(iterable) {
+              [...super[(yield (log.push("yield"), 1))]] = iterable;
+              return this._k.length === 3 && this._k[0] === 1 && this._k[2] === 3;
+            }
+          }
+          var iterable = {
+            [Symbol.iterator]() {
+              var i = 0;
+              return {
+                next() {
+                  log.push("next");
+                  if (i >= 3) return { value: undefined, done: true };
+                  i += 1;
+                  return { value: i, done: false };
+                }
+              };
+            }
+          };
+          var it = (new Derived()).g(iterable);
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return (
+            r2.done === true &&
+            r2.value === true &&
+            log.join("|") === "yield|next|next|next|next|set"
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
