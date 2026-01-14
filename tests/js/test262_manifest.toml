@@ -547,6 +547,16 @@ id = "language/statements/class/elements/privatefieldget-typeerror-4.js"
 status = "pass"
 
 [[expectations]]
+id = "language/statements/class/elements/get-access-of-missing-private-getter.js"
+status = "xfail"
+reason = "vm-js: Private accessors do not yet enforce the spec-mandated TypeError when reading a setter-only private accessor (missing [[Get]])."
+
+[[expectations]]
+id = "language/statements/class/elements/get-access-of-missing-private-static-getter.js"
+status = "xfail"
+reason = "vm-js: Private static accessors do not yet enforce the spec-mandated TypeError when reading a setter-only private accessor (missing [[Get]])."
+
+[[expectations]]
 id = "language/statements/class/elements/privategetter-on-proxy.js"
 status = "xfail"
 reason = "vm-js: private getter access on Proxy instances is still buggy (invalid handle)."
@@ -1192,6 +1202,11 @@ glob = "built-ins/Array/prototype/indexOf/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js"
+status = "skip"
+reason = "Performance: vm-js can exceed the curated suite's per-test 10s timeout when scanning very sparse arrays with large lengths (this test passes with a higher timeout)."
+
+[[expectations]]
 id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-grow.js"
 status = "skip"
 reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
@@ -1465,13 +1480,11 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptors/primitive-strings.js"
-status = "xfail"
-reason = "vm-js: String exotic object property descriptors (length + index properties) are not fully implemented for Object.getOwnPropertyDescriptors."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Object/getOwnPropertyDescriptors/tamper-with-global-object.js"
-status = "xfail"
-reason = "vm-js: String exotic object property descriptors (length + index properties) are not fully implemented for Object.getOwnPropertyDescriptors."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Object/fromEntries/**"
@@ -1519,386 +1532,17 @@ glob = "built-ins/Object/prototype/isPrototypeOf/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-2-38.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-3-14.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-118.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-120.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-121.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-122.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-124.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-125.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-126.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-127.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-128.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-129.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-130.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-131.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-132.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-133.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-134.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-135.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-136.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-138.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-139.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-140.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-141.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-142.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-143.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-144.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-145.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-146.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-147.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-148.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-149.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-150.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-151.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-152.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-156.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-157.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-158.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-159.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-162.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-163.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-165.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-166.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-167.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-19.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-20.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-21.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-211.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-212.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-213.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-214.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-215.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-216.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-217.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-218.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-219.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-22.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-220.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-221.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-222.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-23.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-24.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-29.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-30.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-32.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-33.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-45.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-51.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-53.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-60.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-65.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-67.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-68.js"
-status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-79.js"
+glob = "built-ins/Object/prototype/hasOwnProperty/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-80.js"
+glob = "built-ins/Object/prototype/toString/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-81.js"
-status = "pass"
-
-[[expectations]]
-id = "built-ins/Object/getOwnPropertyDescriptor/primitive-string.js"
+id = "built-ins/Object/prototype/toString/symbol-tag-override-instances.js"
 status = "xfail"
-reason = "vm-js: Object.getOwnPropertyDescriptor edge cases (built-in property descriptors / String exotic objects) are not fully implemented."
+reason = "vm-js: Object.prototype.toString @@toStringTag override handling is still incomplete."
 
 # --- RegExp + String (regex methods) ---
 #

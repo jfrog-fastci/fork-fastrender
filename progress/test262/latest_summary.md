@@ -81,58 +81,58 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 17336 |
-| Matched upstream expected | 17056 (98.38%) |
-| Mismatched upstream expected | 280 (1.62%) |
+| Total cases | 17387 |
+| Matched upstream expected | 17103 (98.37%) |
+| Mismatched upstream expected | 284 (1.63%) |
 | Timeouts | 0 |
-| Skipped | 42 |
+| Skipped | 44 |
 | Unexpected mismatches | 0 |
 
 ### Outcomes (runner)
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17014 |
-| failed | 280 |
+| passed | 17059 |
+| failed | 284 |
 | timed_out | 0 |
-| skipped | 42 |
+| skipped | 44 |
 
 ### Expectations (manifest)
 
 | Kind | Count |
 | --- | ---: |
-| pass | 9825 |
-| xfail | 7469 |
-| skip | 42 |
+| pass | 10186 |
+| xfail | 7157 |
+| skip | 44 |
 | flaky | 0 |
 
 ### Results vs expectations
 
 | Status | Count |
 | --- | ---: |
-| PASS | 9825 |
+| PASS | 10186 |
 | FAIL (unexpected) | 0 |
-| XFAIL | 280 |
-| XPASS | 7189 |
-| SKIP | 42 |
+| XFAIL | 284 |
+| XPASS | 6873 |
+| SKIP | 44 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7171 | 14 | 0.19% | 6757 | 0 | 14 | 372 | 42 |
-| language | 10146 | 9880 | 266 | 2.62% | 3063 | 0 | 266 | 6817 | 0 |
+| built-ins | 7185 | 7171 | 14 | 0.19% | 7113 | 0 | 14 | 14 | 44 |
+| language | 10197 | 9927 | 270 | 2.65% | 3068 | 0 | 270 | 6859 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7179 | 247 | 3.44% | 2031 | 0 | 247 | 4901 | 0 |
-| `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
-| `built-ins/Array` | 1503 | 6 | 0.40% | 1455 | 0 | 6 | 0 | 42 |
+| `language/statements` | 7188 | 251 | 3.49% | 2036 | 0 | 251 | 4901 | 0 |
+| `language/expressions` | 2379 | 19 | 0.80% | 1032 | 0 | 19 | 1328 | 0 |
+| `built-ins/Array` | 1503 | 6 | 0.40% | 1453 | 0 | 6 | 0 | 44 |
 | `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 0 | 6 | 0 | 0 |
-| `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
+| `built-ins/Object` | 1692 | 2 | 0.12% | 1690 | 0 | 2 | 0 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
@@ -144,7 +144,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 280 (100.00%)
+- exception/other: 284 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -170,8 +170,8 @@ Mismatched cases by high-level bucket:
 | 16 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
 | 17 | exception/other | 4 | `Expected SameValue(«0», «2») to be true` |
 | 18 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
-| 19 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
-| 20 | exception/other | 3 | `Expected SameValue(«6», «undefined») to be true` |
+| 19 | exception/other | 4 | `get operation on private accessor without getter should throw TypeError Expected a TypeError to be thrown but no exception was thrown at all` |
+| 20 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
 
 ## Timed-out tests
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (26 shown / 247 mismatches)
+### `language/statements` (26 shown / 251 mismatches)
 
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#non_strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
