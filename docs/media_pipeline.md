@@ -410,6 +410,9 @@ primarily a smoke test for `<video>/<audio>` layout and for future playback wiri
     (notably Opus).
 - Opus:
   - Only mapping family 0 mono/stereo is supported today (no multichannel mapping tables).
+- Video decode:
+  - Decoded RGBA frame allocations are hard-capped (see `src/media/video_limits.rs`) to avoid OOM on
+    corrupted/adversarial content.
 - Audio output:
   - Real audio output is feature-gated (`audio_cpal`) and not yet routed from the media decode
     pipeline into the audio engine/backends.
