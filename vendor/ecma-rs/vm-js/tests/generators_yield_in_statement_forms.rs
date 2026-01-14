@@ -189,6 +189,96 @@ fn generator_yield_in_for_in_body_survives_gc_and_resumes_enumeration() -> Resul
 }
 
 #[test]
+fn generator_yield_in_for_of_rhs_preserves_tdz() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+    function* g() {
+      try {
+        for (let k of ((yield 1), k)) {}
+        return "no error";
+      } catch (e) {
+        return e.name;
+      }
+    }
+
+    const it = g();
+    const a = it.next();
+    const b = it.next();
+    a.value === 1 && a.done === false &&
+    b.done === true && b.value === "ReferenceError"
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_yield_in_for_of_binding_default_preserves_per_iteration_envs() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let value = rt.exec_script(
+    r#"
+    function* g() {
+      const fns = [];
+      for (let [x = (yield "default")] of [[undefined], [1]]) {
+        fns.push(() => x);
+        yield x;
+      }
+      return fns.map(fn => fn()).join(",");
+    }
+
+    const it = g();
+    const a = it.next();
+    const b = it.next("X");
+    const c = it.next();
+    const d = it.next();
+
+    a.value === "default" && a.done === false &&
+    b.value === "X" && b.done === false &&
+    c.value === 1 && c.done === false &&
+    d.done === true && d.value === "X,1"
+  "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_yield_in_for_of_body_survives_gc_and_resumes_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  rt.exec_script(
+    r#"
+    function* g() {
+      for (let v of [1, 2, 3]) {
+        yield v;
+        // Allocate some objects after the yield so resumption triggers GC while the continuation
+        // frames are temporarily moved onto the Rust stack.
+        const tmp = [];
+        for (let i = 0; i < 200; i++) {
+          tmp.push({ i });
+        }
+      }
+      return "done";
+    }
+    globalThis.it = g();
+  "#,
+  )?;
+
+  assert_eq!(rt.exec_script("it.next().value === 1")?, Value::Bool(true));
+  rt.heap.collect_garbage();
+  assert_eq!(rt.exec_script("it.next().value === 2")?, Value::Bool(true));
+  rt.heap.collect_garbage();
+  assert_eq!(rt.exec_script("it.next().value === 3")?, Value::Bool(true));
+  rt.heap.collect_garbage();
+  assert_eq!(
+    rt.exec_script("(()=>{const r = it.next(); return r.done === true && r.value === 'done';})()")?,
+    Value::Bool(true)
+  );
+
+  Ok(())
+}
+
+#[test]
 fn generator_yield_in_switch_discriminant_case_and_body() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   let value = rt.exec_script(
