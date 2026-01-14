@@ -306,3 +306,25 @@ fn generator_yield_in_delete_expression_computed_key() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_in_private_in_operator_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          #x;
+          *g() { return #x in (yield 0); }
+        }
+        var c = new C();
+        var it = c.g();
+        var r1 = it.next();
+        var r2 = it.next(c);
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

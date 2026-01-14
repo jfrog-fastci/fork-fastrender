@@ -16123,6 +16123,8 @@ pub(crate) enum GenFrame {
     expr: *const BinaryExpr,
     left: Value,
   },
+  /// Continue a private `#x in <expr>` brand check after evaluating the RHS.
+  PrivateInAfterRight { expr: *const BinaryExpr },
 
   /// Continue a simple assignment after evaluating the RHS (binding target).
   AssignAfterRhsBinding { name: *const String },
@@ -35505,6 +35507,45 @@ fn gen_eval_expr_chain(
       }
     },
     Expr::Binary(binary)
+      if binary.stx.operator == OperatorName::In
+        && (matches!(&*binary.stx.left.stx, Expr::Id(id) if id.stx.name.starts_with('#'))
+          || matches!(&*binary.stx.left.stx, Expr::IdPat(id) if id.stx.name.starts_with('#'))) =>
+    {
+      // `#x in <expr>` is a private brand check, not an identifier reference expression.
+      let private_name = match &*binary.stx.left.stx {
+        Expr::Id(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+        Expr::IdPat(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "private in-expression left operand is not a private identifier",
+          ))
+        }
+      };
+
+      match gen_eval_expr(evaluator, scope, &binary.stx.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => Ok(GenEval::Complete(Completion::normal(
+            async_apply_private_in_operator(
+              evaluator,
+              scope,
+              private_name,
+              v.unwrap_or(Value::Undefined),
+            )?,
+          ))),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::PrivateInAfterRight {
+              expr: &*binary.stx as *const BinaryExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
         OperatorName::Assignment
@@ -38879,6 +38920,30 @@ fn gen_resume_from_frames(
               Ok(out) => state = Completion::normal(out),
               Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
             }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+      GenFrame::PrivateInAfterRight { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let private_name = match &*expr.left.stx {
+            Expr::Id(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+            Expr::IdPat(id) if id.stx.name.starts_with('#') => id.stx.name.as_str(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "private-in frame missing private identifier left operand",
+              ))
+            }
+          };
+          match async_apply_private_in_operator(
+            evaluator,
+            scope,
+            private_name,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
           }
         }
         abrupt => state = abrupt,
