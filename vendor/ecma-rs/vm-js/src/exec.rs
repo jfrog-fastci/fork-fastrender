@@ -16027,6 +16027,55 @@ impl<'a> Evaluator<'a> {
             Ok(value)
           }
           _ => {
+            // `super[expr] = rhs` is special: unlike ordinary computed member assignment, the
+            // `ToPropertyKey` coercion is deferred until `PutValue` (ECMA-262 6.2.5.6).
+            //
+            // This means:
+            // - `GetThisBinding` happens before evaluating the key expression,
+            // - the key expression is evaluated to a *value* before `GetSuperBase`,
+            // - `GetSuperBase` is observed before `ToPropertyKey`, and
+            // - RHS evaluation happens before `ToPropertyKey`.
+            if let Expr::ComputedMember(member) = &*expr.left.stx {
+              if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+                  "super property access missing [[HomeObject]]",
+                ))?;
+                let mut assign_scope = scope.reborrow();
+                // Root `this` binding state (may be a DerivedConstructorState cell) and `[[HomeObject]]`
+                // across key/RHS evaluation (any step can allocate / trigger GC).
+                assign_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+
+                // `GetThisBinding` before evaluating the computed key expression.
+                let receiver = self.get_this_binding(&mut assign_scope)?;
+                assign_scope.push_root(receiver)?;
+
+                // Evaluate key expression to a value first.
+                let member_value = self.eval_expr(&mut assign_scope, &member.stx.member)?;
+                assign_scope.push_root(member_value)?;
+
+                // Spec: `GetSuperBase` observed before `ToPropertyKey` (test262:
+                // `prop-expr-getsuperbase-before-topropertykey-putvalue.js`).
+                let base = self.get_super_base(&mut assign_scope)?;
+                // Keep base alive across RHS evaluation + key coercion.
+                assign_scope.push_root(base)?;
+
+                // Evaluate RHS before `ToPropertyKey` coercion of the super-reference key.
+                let value = self.eval_expr(&mut assign_scope, &expr.right)?;
+                assign_scope.push_root(value)?;
+
+                // `ToPropertyKey` occurs during `PutValue` (after RHS), per spec.
+                let key = self.to_property_key_operator(&mut assign_scope, member_value)?;
+                match key {
+                  PropertyKey::String(s) => assign_scope.push_root(Value::String(s))?,
+                  PropertyKey::Symbol(s) => assign_scope.push_root(Value::Symbol(s))?,
+                };
+
+                let reference = Reference::SuperProperty { base, key, receiver };
+                self.put_value_to_reference(&mut assign_scope, &reference, value)?;
+                return Ok(value);
+              }
+            }
+
             let reference = self.eval_reference(scope, &expr.left)?;
             let mut rhs_scope = scope.reborrow();
             self.root_reference(&mut rhs_scope, &reference)?;

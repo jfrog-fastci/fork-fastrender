@@ -8997,7 +8997,86 @@ impl<'vm> HirEvaluator<'vm> {
         // Destructuring assignment patterns evaluate the RHS first.
         let pat = self.get_pat(body, target)?;
         match &pat.kind {
-          hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
+          hir_js::PatKind::Ident(_) => {
+            let reference = self.eval_assignment_reference(scope, body, target)?;
+
+            let mut scope = scope.reborrow();
+            self.root_assignment_reference(&mut scope, &reference)?;
+
+            let v = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(v)?;
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+            Ok(v)
+          }
+          hir_js::PatKind::AssignTarget(expr_id) => {
+            // `super[expr] = rhs` is special: unlike ordinary computed member assignment, the
+            // `ToPropertyKey` coercion is deferred until `PutValue` (ECMA-262 6.2.5.6). This means
+            // RHS evaluation must be observed *before* key coercion side effects.
+            //
+            // The compiled executor normally represents assignment targets as `AssignmentReference`,
+            // which stores a `PropertyKey`. Handle this case explicitly so we can delay
+            // `ToPropertyKey` until after evaluating the RHS.
+            let target_expr = self.get_expr(body, *expr_id)?;
+            if let hir_js::ExprKind::Member(member) = &target_expr.kind {
+              let object_expr = self.get_expr(body, member.object)?;
+              if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+                if member.optional {
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
+                }
+                if let hir_js::ObjectKey::Computed(key_expr_id) = &member.property {
+                  let raw_this = self.this;
+                  let home_object = self
+                    .home_object
+                    .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
+                  let mut scope = scope.reborrow();
+                  // Root `this` binding state + `[[HomeObject]]` across key/RHS evaluation.
+                  scope.push_roots(&[raw_this, Value::Object(home_object)])?;
+
+                  // `GetThisBinding` before evaluating the computed key expression.
+                  let receiver = self.resolve_this_binding(&mut scope)?;
+                  scope.push_root(receiver)?;
+
+                  // Evaluate key expression to a value first.
+                  let key_value = self.eval_expr(&mut scope, body, *key_expr_id)?;
+                  scope.push_root(key_value)?;
+
+                  // Capture super base (`GetSuperBase`) before `ToPropertyKey` (test262:
+                  // `prop-expr-getsuperbase-before-topropertykey-putvalue.js`).
+                  let super_base = scope.get_prototype_of_with_host_and_hooks(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    home_object,
+                  )?;
+                  if let Some(super_base_obj) = super_base {
+                    scope.push_root(Value::Object(super_base_obj))?;
+                  }
+
+                  // Evaluate RHS before `ToPropertyKey` coercion of the super-reference key.
+                  let v = self.eval_expr(&mut scope, body, value)?;
+                  scope.push_root(v)?;
+
+                  // `ToPropertyKey` occurs during `PutValue` (after RHS), per spec.
+                  let key =
+                    scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+                  root_property_key(&mut scope, key)?;
+
+                  let reference = AssignmentReference::SuperProperty {
+                    super_base,
+                    receiver,
+                    key,
+                  };
+                  self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+                  self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+                  return Ok(v);
+                }
+              }
+            }
+
+            // Default assignment target semantics (identifiers + non-super members).
             let reference = self.eval_assignment_reference(scope, body, target)?;
 
             let mut scope = scope.reborrow();
