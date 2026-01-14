@@ -618,3 +618,49 @@ fn run(cli: Cli) -> Result<(), String> {
 
   Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parse_event_filter_accepts_aliases() {
+    assert_eq!(parse_event_filter("idle_summary").unwrap(), EventFilter::IdleSample);
+    assert_eq!(parse_event_filter("idle_sample").unwrap(), EventFilter::IdleSample);
+    assert_eq!(parse_event_filter("cpu").unwrap(), EventFilter::CpuSummary);
+    assert_eq!(parse_event_filter("cpu_summary").unwrap(), EventFilter::CpuSummary);
+    assert_eq!(
+      parse_event_filter("memory").unwrap(),
+      EventFilter::MemorySummary
+    );
+    assert_eq!(
+      parse_event_filter("memory_summary").unwrap(),
+      EventFilter::MemorySummary
+    );
+    assert_eq!(
+      parse_event_filter("tab-switch").unwrap(),
+      EventFilter::TabSwitch
+    );
+  }
+
+  #[test]
+  fn event_timestamp_ms_extracts_v2_timestamps() {
+    let frame_json = r#"{"event":"frame","t_ms":123,"ui_frame_ms":1.0}"#;
+    let event: BrowserPerfLogEvent = serde_json::from_str(frame_json).expect("parse frame");
+    assert_eq!(event_timestamp_ms(&event), Some(123));
+
+    let mem_json = r#"{"event":"memory_summary","ts_ms":456,"rss_bytes":1}"#;
+    let event: BrowserPerfLogEvent = serde_json::from_str(mem_json).expect("parse memory_summary");
+    assert_eq!(event_timestamp_ms(&event), Some(456));
+  }
+
+  #[test]
+  fn matches_event_filter_scroll_matches_mouse_wheel_input() {
+    let input_json = r#"{"event":"input","t_ms":10,"input_kind":"mouse_wheel","input_to_present_ms":3.0}"#;
+    let event: BrowserPerfLogEvent = serde_json::from_str(input_json).expect("parse input");
+
+    assert!(matches_event_filter(&event, EventFilter::Input));
+    assert!(matches_event_filter(&event, EventFilter::Scroll));
+    assert!(!matches_event_filter(&event, EventFilter::Resize));
+  }
+}
