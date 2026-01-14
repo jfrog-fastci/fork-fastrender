@@ -1272,68 +1272,6 @@ fn open_typed_in_new_tab_state(
   ))
 }
 
-/// Build a best-effort open-tabs snapshot for debug `about:` pages.
-///
-/// The windowed browser UI owns the authoritative tab list for a window; `about:` page templates
-/// expect a lightweight snapshot of tab ids + committed URLs.
-#[cfg(any(test, feature = "browser_ui"))]
-fn about_open_tabs_snapshot_from_browser_state(
-  browser_state: &fastrender::ui::BrowserAppState,
-) -> Vec<fastrender::ui::about_pages::OpenTabSnapshot> {
-  use fastrender::ui::about_pages::OpenTabSnapshot;
-
-  // Clamp/normalize using the same untrusted helpers used for worker-provided chrome strings so
-  // extremely large URLs cannot bloat the snapshot.
-  const MAX_URL_BYTES: usize = fastrender::ui::protocol_limits::MAX_URL_BYTES;
-  const MAX_TITLE_BYTES: usize = fastrender::ui::protocol_limits::MAX_TITLE_BYTES;
-
-  let active_tab_id = browser_state.active_tab_id().map(|id| id.0);
-
-  browser_state
-    .tabs
-    .iter()
-    .map(|tab| {
-      let url = tab
-        .committed_url
-        .as_deref()
-        .or(tab.current_url.as_deref())
-        .unwrap_or("");
-      let url = fastrender::ui::untrusted::sanitize_untrusted_text(url, MAX_URL_BYTES);
-      let title = tab
-        .committed_title
-        .as_deref()
-        .or(tab.title.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|title| fastrender::ui::untrusted::sanitize_untrusted_text(title, MAX_TITLE_BYTES))
-        .filter(|t| !t.is_empty());
-      // Prefer the cached site key derived from the navigation URL to avoid re-parsing URLs while
-      // building the snapshot (used by `about:processes`).
-      let site_key = tab.renderer_site_key.as_ref().map(|key| key.to_string());
-      let renderer_process = tab.renderer_process.map(|id| id.raw());
-      let is_active = active_tab_id == Some(tab.id.0);
-      OpenTabSnapshot {
-        window_id: None,
-        tab_id: tab.id.0,
-        url,
-        title,
-        site_key,
-        renderer_process,
-        is_active,
-        loading: tab.loading,
-        crashed: tab.crashed,
-        unresponsive: tab.unresponsive,
-        renderer_crashed: tab.renderer_crashed,
-        crash_reason: tab.crash_reason.clone(),
-        renderer_protocol_violation: tab
-          .renderer_protocol_violation
-          .as_ref()
-          .map(|v| v.to_string()),
-      }
-    })
-    .collect()
-}
-
 #[cfg(any(test, feature = "browser_ui"))]
 fn truncate_utf8_str_to_bytes(value: &str, max_bytes: usize) -> String {
   if max_bytes == 0 {
@@ -9847,6 +9785,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut any_about_bookmarks_visible = false;
     let mut any_about_processes_visible = false;
     for win in windows.values() {
+      if win.app.window_occluded || win.app.window_minimized {
+        continue;
+      }
       let Some(url) = win
         .app
         .browser_state
@@ -24106,26 +24047,9 @@ impl App {
   }
 
   fn sync_about_open_tabs_snapshot(&self) {
-    // `about:processes` is a best-effort debug page. Avoid doing per-tab URL/site-key work during
-    // normal browsing by only syncing the open-tabs snapshot while the page is actually visible.
-    let about_processes_visible = self
-      .browser_state
-      .active_tab()
-      .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
-      .is_some_and(|url| {
-        let base = url
-          .trim()
-          .split(|c| matches!(c, '?' | '#'))
-          .next()
-          .unwrap_or(url);
-        base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES)
-      });
-    if !about_processes_visible {
-      return;
-    }
-    fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(
-      about_open_tabs_snapshot_from_browser_state(&self.browser_state),
-    );
+    // Open-tabs snapshots are rebuilt centrally in `MainEventsCleared` so they can include all
+    // windows and be throttled. This per-window hook is intentionally a no-op to avoid overwriting
+    // the multi-window snapshot used by `about:processes`.
   }
 
   fn needs_redraw_for_profile_update(&self, update: ProfileUpdateKind<'_>) -> bool {
