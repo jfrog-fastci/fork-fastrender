@@ -1802,3 +1802,125 @@ fn generator_for_of_iterator_is_closed_on_throw_while_suspended_in_object_patter
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_return_while_suspended_in_array_pattern_elem_super_computed_member_key()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var outerReturnCount = 0;
+          var innerNextCount = 0;
+          var innerReturnCount = 0;
+
+          var innerIterable = {
+            [Symbol.iterator]() {
+              return {
+                next() { innerNextCount++; return { value: 1, done: false }; },
+                return() { innerReturnCount++; return { done: true }; },
+              };
+            },
+          };
+
+          var iterable = {
+            [Symbol.iterator]() {
+              var done = false;
+              return {
+                next() {
+                  if (done) return { value: undefined, done: true };
+                  done = true;
+                  return { value: innerIterable, done: false };
+                },
+                return() { outerReturnCount++; return { done: true }; },
+              };
+            },
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([super[yield 1]] of iterable) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var r2 = it.return("done");
+          return (
+            r2.done === true &&
+            r2.value === "done" &&
+            outerReturnCount === 1 &&
+            innerReturnCount === 1 &&
+            innerNextCount === 0 &&
+            inst._k === undefined
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_throw_while_suspended_in_array_pattern_elem_super_computed_member_key()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var outerReturnCount = 0;
+          var innerNextCount = 0;
+          var innerReturnCount = 0;
+
+          var innerIterable = {
+            [Symbol.iterator]() {
+              return {
+                next() { innerNextCount++; return { value: 1, done: false }; },
+                return() { innerReturnCount++; return { done: true }; },
+              };
+            },
+          };
+
+          var iterable = {
+            [Symbol.iterator]() {
+              var done = false;
+              return {
+                next() {
+                  if (done) return { value: undefined, done: true };
+                  done = true;
+                  return { value: innerIterable, done: false };
+                },
+                return() { outerReturnCount++; return { done: true }; },
+              };
+            },
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([super[yield 1]] of iterable) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var threw = false;
+          try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+          return threw === true &&
+            outerReturnCount === 1 &&
+            innerReturnCount === 1 &&
+            innerNextCount === 0 &&
+            inst._k === undefined;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

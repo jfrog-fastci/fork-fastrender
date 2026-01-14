@@ -1283,3 +1283,103 @@ fn generator_for_in_array_destructuring_iterator_is_closed_on_throw_while_suspen
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_in_array_destructuring_iterator_is_closed_on_return_while_suspended_in_elem_super_computed_member_key(
+)
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCount = 0;
+          var returnCount = 0;
+          String.prototype[Symbol.iterator] = function() {
+            var s = String(this);
+            var i = 0;
+            return {
+              next() {
+                nextCount++;
+                if (i < s.length) return { value: s[i++], done: false };
+                return { value: undefined, done: true };
+              },
+              return() { returnCount++; return { done: true }; },
+            };
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([super[yield 1]] in {abc: 0}) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var r2 = it.return("done");
+          return (
+            r2.done === true &&
+            r2.value === "done" &&
+            nextCount === 0 &&
+            returnCount === 1 &&
+            inst._k === undefined
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_array_destructuring_iterator_is_closed_on_throw_while_suspended_in_elem_super_computed_member_key(
+)
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCount = 0;
+          var returnCount = 0;
+          String.prototype[Symbol.iterator] = function() {
+            var s = String(this);
+            var i = 0;
+            return {
+              next() {
+                nextCount++;
+                if (i < s.length) return { value: s[i++], done: false };
+                return { value: undefined, done: true };
+              },
+              return() { returnCount++; return { done: true }; },
+            };
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([super[yield 1]] in {abc: 0}) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var threw = false;
+          try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+          return (
+            threw === true &&
+            nextCount === 0 &&
+            returnCount === 1 &&
+            inst._k === undefined
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
