@@ -163,3 +163,103 @@ fn generator_binary_relational_comparison_yield_on_both_sides() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_binary_abstract_equality_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) == (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("5");
+      var r3 = it.next(5);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_strict_inequality_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) !== (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(0);
+      var r3 = it.next(0);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_relational_greater_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) > (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(2);
+      var r3 = it.next(1);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_relational_less_than_or_equal_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) <= (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(3);
+      var r3 = it.next(2);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_relational_greater_than_or_equal_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1) >= (yield 2); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(5);
+      var r3 = it.next(5);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
