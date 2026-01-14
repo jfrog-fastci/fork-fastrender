@@ -38007,12 +38007,21 @@ fn gen_eval_lit_obj_apply_valued_member(
   match val {
     ClassOrObjVal::Prop(Some(value_expr)) => {
       if expr_contains_yield(value_expr) {
-        match gen_eval_expr(evaluator, scope, value_expr)? {
+        let mut value_scope = scope.reborrow();
+        let key_root = match key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        };
+        // Root `obj` and `key` across evaluating the value expression, which can allocate and
+        // trigger GC before reaching a yield boundary.
+        value_scope.push_roots(&[Value::Object(obj), key_root])?;
+
+        match gen_eval_expr(evaluator, &mut value_scope, value_expr)? {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               let value = v.unwrap_or(Value::Undefined);
               let apply_res: Result<(), VmError> = (|| {
-                let mut member_scope = scope.reborrow();
+                let mut member_scope = value_scope.reborrow();
                 member_scope.push_root(Value::Object(obj))?;
                 member_scope.push_root(value)?;
                 match &key {
@@ -38032,7 +38041,11 @@ fn gen_eval_lit_obj_apply_valued_member(
                 Ok(())
               })();
               if let Err(err) = apply_res {
-                return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut value_scope,
+                  err,
+                )?));
               }
               Ok(GenEval::Complete(Completion::empty()))
             }
@@ -43940,6 +43953,15 @@ fn gen_root_values_for_continuation(
       }
       GenFrame::NewArgs { args, .. } => {
         needed = needed.saturating_add(1).saturating_add(args.len());
+      }
+      GenFrame::LitArrAfterSingle { .. } | GenFrame::LitArrAfterSpread { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::LitObjAfterComputedKey { .. } | GenFrame::LitObjAfterSpread { .. } => {
+        needed = needed.saturating_add(1);
+      }
+      GenFrame::LitObjAfterPropValue { .. } => {
+        needed = needed.saturating_add(2);
       }
       GenFrame::AssignAfterRhs {
         base,
