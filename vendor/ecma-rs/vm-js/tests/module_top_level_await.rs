@@ -855,10 +855,10 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
   // multiple ancestors become available at once:
   // - E fulfilling first decrements C to 1 pending dependency (no execList yet),
   // - D fulfilling next makes both B and C available, and sorting must execute B before C.
-  let exec_after_e = graph.async_module_execution_fulfilled(e)?;
+  let exec_after_e = graph.async_module_execution_fulfilled(&mut vm, e)?;
   assert!(exec_after_e.is_empty());
 
-  let exec_after_d = graph.async_module_execution_fulfilled(d)?;
+  let exec_after_d = graph.async_module_execution_fulfilled(&mut vm, d)?;
   assert_eq!(exec_after_d, vec![b, c]);
 
   Ok(())

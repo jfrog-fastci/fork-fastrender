@@ -873,9 +873,11 @@ impl ModuleGraph {
 
   fn gather_available_ancestors(
     &mut self,
+    vm: &mut Vm,
     module: ModuleId,
     exec_list: &mut Vec<ModuleId>,
   ) -> Result<(), VmError> {
+    vm.tick()?;
     let idx = module_index(module);
     if idx >= self.modules.len() {
       return Err(VmError::invalid_handle());
@@ -883,6 +885,9 @@ impl ModuleGraph {
 
     let parents_len = self.async_eval_states[idx].async_parent_modules.len();
     for parent_i in 0..parents_len {
+      if parent_i % 32 == 0 && parent_i != 0 {
+        vm.tick()?;
+      }
       let parent = self.async_eval_states[idx].async_parent_modules[parent_i];
       if exec_list.contains(&parent) {
         continue;
@@ -908,7 +913,7 @@ impl ModuleGraph {
           .map_err(|_| VmError::OutOfMemory)?;
         exec_list.push(parent);
         if !self.modules[parent_idx].has_tla {
-          self.gather_available_ancestors(parent, exec_list)?;
+          self.gather_available_ancestors(vm, parent, exec_list)?;
         }
       }
     }
@@ -925,8 +930,10 @@ impl ModuleGraph {
   /// execute module code.
   pub fn async_module_execution_fulfilled(
     &mut self,
+    vm: &mut Vm,
     module: ModuleId,
   ) -> Result<Vec<ModuleId>, VmError> {
+    vm.tick()?;
     let idx = module_index(module);
     if idx >= self.modules.len() {
       return Err(VmError::invalid_handle());
@@ -943,21 +950,25 @@ impl ModuleGraph {
     self.async_eval_states[idx].async_evaluation_order = AsyncEvaluationOrder::Done;
 
     let mut exec_list: Vec<ModuleId> = Vec::new();
-    self.gather_available_ancestors(module, &mut exec_list)?;
+    self.gather_available_ancestors(vm, module, &mut exec_list)?;
 
-    exec_list.sort_unstable_by(|a, b| {
-      let a_order = self
-        .async_eval_states
-        .get(module_index(*a))
-        .and_then(|s| s.async_evaluation_order.as_integer())
-        .unwrap_or(u64::MAX);
-      let b_order = self
-        .async_eval_states
-        .get(module_index(*b))
-        .and_then(|s| s.async_evaluation_order.as_integer())
-        .unwrap_or(u64::MAX);
-      a_order.cmp(&b_order)
-    });
+    crate::tick::sort_unstable_by_with_ticks(
+      &mut exec_list,
+      |a, b| {
+        let a_order = self
+          .async_eval_states
+          .get(module_index(*a))
+          .and_then(|s| s.async_evaluation_order.as_integer())
+          .unwrap_or(u64::MAX);
+        let b_order = self
+          .async_eval_states
+          .get(module_index(*b))
+          .and_then(|s| s.async_evaluation_order.as_integer())
+          .unwrap_or(u64::MAX);
+        a_order.cmp(&b_order)
+      },
+      || vm.tick(),
+    )?;
 
     // Spec invariant: all elements are sorted by their integer order.
     debug_assert!(exec_list.windows(2).all(|w| match w {
