@@ -588,6 +588,64 @@ mod tests {
   }
 
   #[test]
+  fn string_object_prefers_domstring_over_async_sequence_overload_without_probing_iterators() {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads: f(async sequence<any>) vs f(DOMString)
+    let overloads = vec![
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::AsyncSequence(Box::new(IdlType::Any)),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::String(StringType::DomString),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    // If overload resolution tried to probe @@asyncIterator/@@iterator for async sequence matching,
+    // it would trigger these getters and throw. The special-case (d) must treat String objects as
+    // strings when a string overload is present.
+    let throwing_getter = rt
+      .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let async_iter_key = rt.symbol_async_iterator().unwrap();
+    rt.define_accessor_property(string_obj, async_iter_key, throwing_getter, Value::Undefined, true)
+      .unwrap();
+    let iter_key = rt.symbol_iterator().unwrap();
+    rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+      .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 1);
+
+    let [ConvertedArgument::Value(WebIdlValue::String(v))] = out.values.as_slice() else {
+      panic!("expected exactly one converted DOMString argument");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
   fn string_object_prefers_domstring_over_record_overload_without_probing_properties() {
     let mut rt = VmJsRuntime::new();
 
@@ -833,6 +891,115 @@ mod tests {
     // member is present.
     let throwing_getter = rt
       .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let iter_key = rt.symbol_iterator().unwrap();
+    rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+      .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(member_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let WebIdlValue::String(v) = value.as_ref() else {
+      panic!("expected string union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
+  fn string_object_union_prefers_domstring_over_frozen_array_without_probing_iterator() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((FrozenArray<any> or DOMString))
+    let union_ty = IdlType::Union(vec![
+      IdlType::FrozenArray(Box::new(IdlType::Any)),
+      IdlType::String(StringType::DomString),
+    ]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    // If union conversion tried to probe @@iterator for FrozenArray conversion, it would trigger
+    // this getter and throw. The special-case (d) must treat String objects as strings when a
+    // string member is present.
+    let throwing_getter = rt
+      .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let iter_key = rt.symbol_iterator().unwrap();
+    rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+      .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::Union { member_ty, value })] = out.values.as_slice()
+    else {
+      panic!("expected union conversion");
+    };
+    assert_eq!(member_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let WebIdlValue::String(v) = value.as_ref() else {
+      panic!("expected string union member");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
+  fn string_object_union_prefers_domstring_over_async_sequence_without_probing_iterators() {
+    let mut rt = VmJsRuntime::new();
+
+    // One overload: f((async sequence<any> or DOMString))
+    let union_ty = IdlType::Union(vec![
+      IdlType::AsyncSequence(Box::new(IdlType::Any)),
+      IdlType::String(StringType::DomString),
+    ]);
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: union_ty,
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    // If union conversion tried to probe @@asyncIterator/@@iterator for async sequence conversion,
+    // it would trigger these getters and throw. The special-case (d) must treat String objects as
+    // strings when a string member is present.
+    let throwing_getter = rt
+      .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let async_iter_key = rt.symbol_async_iterator().unwrap();
+    rt.define_accessor_property(string_obj, async_iter_key, throwing_getter, Value::Undefined, true)
       .unwrap();
     let iter_key = rt.symbol_iterator().unwrap();
     rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
