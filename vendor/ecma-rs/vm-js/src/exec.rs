@@ -16077,6 +16077,16 @@ pub(crate) enum GenFrame {
     member: *const ComputedMemberExpr,
     base: Value,
   },
+  /// Continue an assignment expression to a `super[expr]` computed member target after evaluating
+  /// the member key expression.
+  ///
+  /// Unlike ordinary computed members, `super[expr]` does not evaluate a base expression; instead
+  /// it resolves a Super Reference using `[[HomeObject]].[[Prototype]]` and the current `this`
+  /// binding as the receiver.
+  AssignSuperComputedMemberAfterMember {
+    expr: *const BinaryExpr,
+    member: *const ComputedMemberExpr,
+  },
   /// Continue a simple assignment after evaluating the RHS.
   AssignAfterRhs {
     expr: *const BinaryExpr,
@@ -36874,26 +36884,66 @@ fn gen_eval_assignment_to_computed_member(
     ));
   }
 
-  match gen_eval_expr(evaluator, scope, &member.object)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_base(
-        evaluator,
+  // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
+  // reference.
+  if matches!(&*member.object.stx, Expr::Super(_)) {
+    if evaluator.derived_constructor && !evaluator.this_initialized {
+      return Err(throw_reference_error(
+        evaluator.vm,
         scope,
-        expr,
-        member,
-        v.unwrap_or(Value::Undefined),
-      ),
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::AssignComputedMemberAfterBase {
-          expr: expr as *const BinaryExpr,
-          member: member as *const ComputedMemberExpr,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+    let receiver = evaluator.this;
+
+    // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(receiver)?;
+    match gen_eval_expr(evaluator, &mut member_scope, &member.member)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_assignment_to_super_computed_member_after_member(
+          evaluator,
+          &mut member_scope,
+          expr,
+          member,
+          v.unwrap_or(Value::Undefined),
+          receiver,
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::AssignSuperComputedMemberAfterMember {
+            expr: expr as *const BinaryExpr,
+            member: member as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    }
+  } else {
+    match gen_eval_expr(evaluator, scope, &member.object)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_base(
+          evaluator,
+          scope,
+          expr,
+          member,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::AssignComputedMemberAfterBase {
+            expr: expr as *const BinaryExpr,
+            member: member as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
     }
   }
 }
@@ -36958,6 +37008,29 @@ fn gen_eval_assignment_to_computed_member_after_member(
   }
 
   let reference = Reference::Property { base, key };
+  gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
+}
+
+fn gen_eval_assignment_to_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  _member: &ComputedMemberExpr,
+  member_value: Value,
+  receiver: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_roots(&[receiver, member_value])?;
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+
+  // Root the key across `GetSuperBase()` which can invoke proxy traps.
+  match key {
+    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+  };
+
+  let base = evaluator.get_super_base(&mut key_scope)?;
+  let reference = Reference::SuperProperty { base, key, receiver };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
 
@@ -39350,6 +39423,29 @@ fn gen_resume_from_frames(
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignSuperComputedMemberAfterMember { expr, member } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let member = unsafe { &*member };
+          match gen_eval_assignment_to_super_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            member,
+            v.unwrap_or(Value::Undefined),
+            evaluator.this,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
