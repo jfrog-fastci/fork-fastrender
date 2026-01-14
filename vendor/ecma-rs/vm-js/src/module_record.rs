@@ -2762,7 +2762,6 @@ fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
 mod tests {
   use super::{ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry, SourceTextModuleRecord};
   use crate::{Heap, HeapLimits, SourceText, TerminationReason, Vm, VmError, VmOptions};
-  use std::sync::Arc;
 
   fn assert_syntax(result: Result<SourceTextModuleRecord, VmError>) {
     match result {
@@ -2782,10 +2781,12 @@ mod tests {
     opts.default_fuel = Some(0);
     let mut vm = Vm::new(opts);
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let source = Arc::new(
-      SourceText::new_charged(&mut heap, "https://example.invalid/module.js", "export const x = 1;")
-        .expect("SourceText::new_charged"),
-    );
+    let source = SourceText::new_charged_arc(
+      &mut heap,
+      "https://example.invalid/module.js",
+      "export const x = 1;",
+    )
+    .expect("SourceText::new_charged");
 
     let err = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)
       .expect_err("expected fuel budget to terminate parsing");
