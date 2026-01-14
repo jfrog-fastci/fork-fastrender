@@ -2865,11 +2865,20 @@ impl InlineFormattingContext {
           //
           // Preserve clearing line breaks (`<br clear=...>`) because dropping them would prevent
           // float clearance from being applied.
+          let mut trailing_iter = current_items
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, item)| !matches!(item, InlineItem::StaticPositionAnchor(_)));
+          let last = trailing_iter.next();
           let last_is_non_clearing_break = matches!(
-            current_items.last(),
+            last.map(|(_, item)| item),
             Some(InlineItem::HardBreak(clear)) if !clear.is_clearing()
           );
           if last_is_non_clearing_break {
+            let Some((last_idx, _)) = last else {
+              unreachable!("break matched from last item but last item was none");
+            };
             // A leading `<br>` (e.g. `<div><br><div>block</div></div>`) should still create an
             // empty line, so only drop the trailing hard break when the inline segment contains
             // real in-flow content before it.
@@ -2879,8 +2888,15 @@ impl InlineFormattingContext {
                 InlineItem::HardBreak(_) | InlineItem::StaticPositionAnchor(_)
               )
             });
-            if has_non_break_content {
-              current_items.pop();
+            // Multiple consecutive `<br>`s before the block must still create empty lines (e.g.
+            // `text<br><br><div>` produces one blank line). Only treat the boundary `<br>` as
+            // redundant when it's the sole trailing break.
+            let previous_is_break = matches!(
+              trailing_iter.next().map(|(_, item)| item),
+              Some(InlineItem::HardBreak(_))
+            );
+            if has_non_break_content && !previous_is_break {
+              current_items.remove(last_idx);
             }
           }
           flush_current(&mut segments, &mut current_items);

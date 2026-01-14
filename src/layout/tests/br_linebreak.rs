@@ -168,8 +168,18 @@ fn multiple_brs_before_block_create_blank_line() {
   //
   // Real-world markup (e.g. the Hacker News footer) uses `<br><br>` before a `<form>` to insert a
   // blank line between sections; preserve that spacing.
-  let lines = line_texts("<div>hello<br><br><div>block</div></div>");
-  assert_eq!(lines, ["hello", ""]);
+  let lines = line_texts_and_heights("<div>hello<br><br><div>block</div></div>");
+  // Ignore any synthetic trailing cursor line (height=0) used for internal layout bookkeeping.
+  let visible: Vec<(String, f32)> = lines.into_iter().filter(|(_, h)| *h > 0.01).collect();
+  assert_eq!(visible.len(), 2, "expected exactly two visible line boxes");
+  let texts: Vec<&str> = visible.iter().map(|(t, _)| t.trim()).collect();
+  assert_eq!(texts, ["hello", ""]);
+  assert!(
+    (visible[1].1 - visible[0].1).abs() < 0.05,
+    "blank line height was {} but text line height was {}",
+    visible[1].1,
+    visible[0].1
+  );
 }
 
 #[test]

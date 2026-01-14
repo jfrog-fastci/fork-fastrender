@@ -16,31 +16,32 @@
     "layout": 34.05967062195122,
     "paint": 19.033345347560974
   },
-  "notes": "",
+  "notes": "Fixed consecutive <br> handling before block siblings (HN footer uses <br><br> before a <form>). We now drop only a single redundant boundary break so multiple breaks still produce a blank line.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 126086,
-    "diff_percent": 13.134,
-    "perceptual": 0.5794,
+    "diff_pixels": 85329,
+    "diff_percent": 8.8884,
+    "perceptual": 0.0377,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 96,
-      "y": 8,
+      "x": 149,
+      "y": 13,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        219,
+        87,
+        0,
         255
       ],
       "rendered_rgba": [
-        252,
-        214,
-        188,
+        255,
+        102,
+        0,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

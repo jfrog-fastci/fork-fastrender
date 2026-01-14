@@ -843,7 +843,26 @@ impl AnonymousBoxCreator {
               .last()
               .is_some_and(|node| node.style.clear != Clear::None);
             if has_non_break_content && !is_clearing {
-              inline_run.pop();
+              // Only drop the trailing `<br>` when it's the *only* line break at the boundary.
+              //
+              // Multiple consecutive `<br>`s before a block-level sibling must still create empty
+              // lines (e.g. `text<br><br><div>` produces one blank line), so preserve them.
+              let mut has_previous_break = false;
+              let mut idx = inline_run.len().saturating_sub(1);
+              while idx > 0 {
+                idx -= 1;
+                let node = &inline_run[idx];
+                if Self::is_collapsible_whitespace_text_node(node) {
+                  continue;
+                }
+                if matches!(node.box_type, BoxType::LineBreak(_)) {
+                  has_previous_break = true;
+                }
+                break;
+              }
+              if !has_previous_break {
+                inline_run.pop();
+              }
             }
           }
         }
