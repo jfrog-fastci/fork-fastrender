@@ -60,6 +60,42 @@ fn generator_resume_roots_new_args_frame_values() {
 }
 
 #[test]
+fn generator_resume_roots_call_args_frame_values() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          return ({{ m: function (a, b) {{ return a.x + b; }} }}).m({{ x: 40 }}, (yield 1));
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(2);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 42 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
 fn generator_resume_roots_exponentiation_assignment_frame_values() {
   let mut rt = new_runtime_gc();
   rt
