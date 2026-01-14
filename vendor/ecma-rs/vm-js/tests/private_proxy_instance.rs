@@ -52,3 +52,107 @@ fn private_accessors_do_not_invoke_proxy_traps_when_receiver_is_a_proxy() -> Res
   Ok(())
 }
 
+#[test]
+fn private_fields_do_not_invoke_proxy_get_traps_when_receiver_is_a_proxy_instance() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      let log = [];
+
+      class ProxyBase {
+        constructor() {
+          return new Proxy(this, {
+            get(obj, prop) {
+              log.push(prop);
+              return obj[prop];
+            }
+          });
+        }
+      }
+
+      class Test extends ProxyBase {
+        #f = 3;
+        method() { return this.#f; }
+      }
+
+      const t = new Test();
+      const r = t.method();
+      r === 3 && log.length === 1 && log[0] === "method"
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn private_methods_do_not_invoke_proxy_get_traps_when_receiver_is_a_proxy_instance() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      let log = [];
+
+      class ProxyBase {
+        constructor() {
+          return new Proxy(this, {
+            get(obj, prop) {
+              log.push(prop);
+              return obj[prop];
+            }
+          });
+        }
+      }
+
+      class Test extends ProxyBase {
+        #f() { return 3; }
+        method() { return this.#f(); }
+      }
+
+      const t = new Test();
+      const r = t.method();
+      r === 3 && log.length === 1 && log[0] === "method"
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn private_getters_do_not_invoke_proxy_get_traps_when_receiver_is_a_proxy_instance() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      let log = [];
+
+      class ProxyBase {
+        constructor() {
+          return new Proxy(this, {
+            get(obj, prop) {
+              log.push(prop);
+              return obj[prop];
+            }
+          });
+        }
+      }
+
+      class Test extends ProxyBase {
+        get #f() { return 3; }
+        method() { return this.#f; }
+      }
+
+      const t = new Test();
+      const r = t.method();
+      r === 3 && log.length === 1 && log[0] === "method"
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
