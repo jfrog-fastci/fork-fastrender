@@ -178,8 +178,29 @@ pub fn node_name<Host: DomHost + ?Sized>(host: &Host, node: NodeId) -> String {
       return String::new();
     };
     match &node.kind {
-      NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
-      NodeKind::Slot { .. } => "SLOT".to_string(),
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        prefix,
+        ..
+      } => {
+        let qualified = match prefix.as_deref() {
+          Some(prefix) => format!("{prefix}:{tag_name}"),
+          None => tag_name.to_string(),
+        };
+        if dom.is_html_case_insensitive_namespace(namespace) {
+          qualified.to_ascii_uppercase()
+        } else {
+          qualified
+        }
+      }
+      NodeKind::Slot { namespace, .. } => {
+        if dom.is_html_case_insensitive_namespace(namespace) {
+          "SLOT".to_string()
+        } else {
+          "slot".to_string()
+        }
+      }
       NodeKind::Text { .. } => "#text".to_string(),
       NodeKind::ProcessingInstruction { target, .. } => target.to_string(),
       NodeKind::Comment { .. } => "#comment".to_string(),
@@ -199,8 +220,29 @@ pub fn tag_name<Host: DomHost + ?Sized>(host: &Host, element: NodeId) -> String 
       return String::new();
     };
     match &node.kind {
-      NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
-      NodeKind::Slot { .. } => "SLOT".to_string(),
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        prefix,
+        ..
+      } => {
+        let qualified = match prefix.as_deref() {
+          Some(prefix) => format!("{prefix}:{tag_name}"),
+          None => tag_name.to_string(),
+        };
+        if dom.is_html_case_insensitive_namespace(namespace) {
+          qualified.to_ascii_uppercase()
+        } else {
+          qualified
+        }
+      }
+      NodeKind::Slot { namespace, .. } => {
+        if dom.is_html_case_insensitive_namespace(namespace) {
+          "SLOT".to_string()
+        } else {
+          "slot".to_string()
+        }
+      }
       _ => String::new(),
     }
   })
@@ -1035,6 +1077,7 @@ pub fn style_set_property<Host: DomHost + ?Sized>(
 mod tests {
   use super::*;
   use crate::js::host_document::HostDocumentState;
+  use crate::{dom2::Document, dom::SVG_NAMESPACE};
 
   #[test]
   fn text_content_get_text_node() {
@@ -1191,5 +1234,73 @@ mod tests {
     assert_eq!(get_elements_by_tag_name(&host, doc, "div"), vec![outer]);
     assert_eq!(get_elements_by_class_name(&host, doc, "foo"), vec![outer, a]);
     assert_eq!(get_elements_by_class_name(&host, doc, "foo bar"), vec![outer]);
+  }
+
+  #[test]
+  fn tag_name_uppercasing_matches_web_platform() {
+    let root = crate::dom::parse_html("<!doctype html><div id=host></div>").unwrap();
+    let host = HostDocumentState::from_renderer_dom(&root);
+
+    let host_el = host.dom().get_element_by_id("host").expect("host element");
+    assert_eq!(tag_name(&host, host_el), "DIV");
+    assert_eq!(node_name(&host, host_el), "DIV");
+  }
+
+  #[test]
+  fn tag_name_preserves_case_for_svg_elements_in_html_document() {
+    let root = crate::dom::parse_html("<!doctype html><svg id=host></svg>").unwrap();
+    let host = HostDocumentState::from_renderer_dom(&root);
+
+    let host_el = host.dom().get_element_by_id("host").expect("host element");
+    let namespace = host.with_dom(|dom| match &dom.node(host_el).kind {
+      NodeKind::Element { namespace, .. } => namespace.clone(),
+      _ => panic!("expected <svg> to parse into an Element node"),
+    });
+    assert_eq!(
+      namespace, SVG_NAMESPACE,
+      "<svg> element should use SVG namespace in HTML documents"
+    );
+
+    assert_eq!(tag_name(&host, host_el), "svg");
+    assert_eq!(node_name(&host, host_el), "svg");
+  }
+
+  #[test]
+  fn tag_name_includes_prefix_for_xml_documents() {
+    struct TestHost {
+      dom: Document,
+    }
+
+    impl DomHost for TestHost {
+      fn with_dom<R, F>(&self, f: F) -> R
+      where
+        F: FnOnce(&Document) -> R,
+      {
+        f(&self.dom)
+      }
+
+      fn mutate_dom<R, F>(&mut self, f: F) -> R
+      where
+        F: FnOnce(&mut Document) -> (R, bool),
+      {
+        let (result, _changed) = f(&mut self.dom);
+        result
+      }
+    }
+
+    let mut doc = Document::new_xml();
+    let el = doc.create_element_ns("Foo", "urn:example", Some("p"));
+
+    // Ensure `tagName`/`nodeName` return the qualified name (including prefix) for XML documents.
+    let host = TestHost { dom: doc };
+    assert_eq!(tag_name(&host, el), "p:Foo");
+    assert_eq!(node_name(&host, el), "p:Foo");
+
+    // Sanity check: XML documents should not upper-case names.
+    let mut doc = Document::new_xml();
+    let el = doc.create_element("Bar", "");
+    let host = TestHost { dom: doc };
+    assert_eq!(tag_name(&host, el), "Bar");
+    assert_eq!(node_name(&host, el), "Bar");
   }
 }

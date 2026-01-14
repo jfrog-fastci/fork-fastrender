@@ -66961,8 +66961,7 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks =
-      DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
@@ -67001,8 +67000,7 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks =
-      DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;

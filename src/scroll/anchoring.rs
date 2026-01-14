@@ -99,6 +99,16 @@ fn rect_is_finite(rect: Rect) -> bool {
   point_is_finite(rect.origin) && rect.size.width.is_finite() && rect.size.height.is_finite()
 }
 
+#[inline]
+fn point_add(a: Point, b: Point) -> Point {
+  Point::new(a.x + b.x, a.y + b.y)
+}
+
+#[inline]
+fn point_sub(a: Point, b: Point) -> Point {
+  Point::new(a.x - b.x, a.y - b.y)
+}
+
 fn checked_point_add(a: Point, b: Point) -> Option<Point> {
   let x = a.x + b.x;
   let y = a.y + b.y;
