@@ -112,7 +112,18 @@ pub(crate) trait DomIdLookupExt: DomIdLookup {
   }
 }
 
-impl<T: DomIdLookup + ?Sized> DomIdLookupExt for T {}
+// NOTE: We intentionally avoid a blanket `impl<T: DomIdLookup> DomIdLookupExt for T` so specific
+// index implementations can provide a faster `id_for_ptr` (e.g. an O(1) pointer->id hash map)
+// without unstable specialization.
+
+impl DomIdLookupExt for DomIndex<'_> {
+  #[inline]
+  fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    DomIndex::id_for_ptr(self, ptr)
+  }
+}
+
+impl DomIdLookupExt for super::dom_index::DomIndex {}
 
 pub(crate) struct BoxIndex<'a> {
   id_to_ptr: Vec<*const BoxNode>,

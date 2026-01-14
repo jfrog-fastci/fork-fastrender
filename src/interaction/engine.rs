@@ -554,6 +554,11 @@ impl super::effective_disabled::DomIdLookup for DomIndexMut {
   }
 }
 
+// Allow `hit_test_dom_with_indices` to reuse this prebuilt DOM index without requiring a separate
+// wrapper type. Pointer->id lookups currently fall back to a linear scan; only the hit-test module's
+// internal `DomIndex` maintains an O(1) pointer map.
+impl super::hit_test::DomIdLookupExt for DomIndexMut {}
+
 fn element_id_for_node(index: &DomIndexMut, node_id: usize) -> Option<String> {
   index
     .node(node_id)
