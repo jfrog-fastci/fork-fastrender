@@ -776,6 +776,10 @@ impl<'a> Parser<'a> {
       // Method with type parameters or parenthesis
       TT::ChevronLeft | TT::ParenthesisOpen => {
         // Parse as method
+        let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+        // Class methods introduce their own `arguments` binding; do not apply the class initializer
+        // early error within the method's parameters/body.
+        self.disallow_arguments_in_class_init = 0;
         let method = self.with_loc(|p| {
           let func = p.with_loc(|p| {
             // TypeScript: generic type parameters
@@ -865,7 +869,9 @@ impl<'a> Parser<'a> {
             })
           })?;
           Ok(ClassOrObjMethod { func })
-        })?;
+        });
+        self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+        let method = method?;
         Ok(ClassOrObjVal::Method(method))
       }
       // Property with initializer
@@ -941,6 +947,10 @@ impl<'a> Parser<'a> {
     } else {
       self.class_or_obj_key(ctx)?
     };
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    // Methods introduce their own `arguments` binding; do not apply the class initializer early
+    // error within the method's parameters/body.
+    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -1013,7 +1023,9 @@ impl<'a> Parser<'a> {
         return_type,
         body,
       })
-    })?;
+    });
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    let func = func?;
     let val = func.wrap(|func| ClassOrObjMethod { func });
     Ok((key, val))
   }
@@ -1032,6 +1044,10 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(ClassOrObjKey, Node<ClassOrObjGetter>)> {
     self.require(TT::KeywordGet)?;
     let key = self.class_or_obj_key(ctx)?;
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    // Getters introduce their own `arguments` binding; do not apply the class initializer early
+    // error within the getter body.
+    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -1166,7 +1182,9 @@ impl<'a> Parser<'a> {
         return_type,
         body,
       })
-    })?;
+    });
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    let func = func?;
     let val = func.wrap(|func| ClassOrObjGetter { func });
     Ok((key, val))
   }
@@ -1185,6 +1203,10 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(ClassOrObjKey, Node<ClassOrObjSetter>)> {
     self.require(TT::KeywordSet)?;
     let key = self.class_or_obj_key(ctx)?;
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    // Setters introduce their own `arguments` binding; do not apply the class initializer early
+    // error within the setter's parameters/body.
+    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -1411,7 +1433,9 @@ impl<'a> Parser<'a> {
       p.super_call_allowed = prev_super_call_allowed;
       p.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
       res
-    })?;
+    });
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    let func = func?;
     let val = func.wrap(|func| ClassOrObjSetter { func });
     Ok((key, val))
   }

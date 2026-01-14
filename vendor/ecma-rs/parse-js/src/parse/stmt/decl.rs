@@ -178,7 +178,12 @@ impl<'a> Parser<'a> {
   }
 
   pub fn func_decl(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<FuncDecl>> {
-    self.with_loc(|p| {
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    // Class field initializers and static initialization blocks disallow `arguments` identifier
+    // references, but regular functions introduce their own `arguments` binding. Disable the
+    // check while parsing the function declaration's parameters and body.
+    self.disallow_arguments_in_class_init = 0;
+    let res = self.with_loc(|p| {
       let export = p.consume_if(TT::KeywordExport).is_match();
       let export_default = export && p.consume_if(TT::KeywordDefault).is_match();
       let is_async = p.consume_if(TT::KeywordAsync).is_match();
@@ -279,7 +284,9 @@ impl<'a> Parser<'a> {
         name,
         function,
       })
-    })
+    });
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    res
   }
 
   pub fn class_decl(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassDecl>> {

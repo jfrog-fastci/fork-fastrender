@@ -557,7 +557,12 @@ impl<'a> Parser<'a> {
   }
 
   pub fn func_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<FuncExpr>> {
-    self.with_loc(|p| {
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    // Class field initializers and static initialization blocks disallow `arguments` identifier
+    // references (an early error), but regular functions introduce their own `arguments` binding.
+    // Temporarily disable the check while parsing the function's parameters and body.
+    self.disallow_arguments_in_class_init = 0;
+    let res = self.with_loc(|p| {
       let is_async = p.consume_if(TT::KeywordAsync).is_match();
       p.require(TT::KeywordFunction)?;
       let generator = p.consume_if(TT::Asterisk).is_match();
@@ -642,7 +647,9 @@ impl<'a> Parser<'a> {
         })
       })?;
       Ok(FuncExpr { name, func })
-    })
+    });
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    res
   }
 
   pub fn class_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassExpr>> {

@@ -348,3 +348,86 @@ fn generator_array_literal_multiple_yields_mixed_single_and_spread() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_yield_in_spread_get_iterator_happens_after_resume() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = '';
+      var obj = {};
+       Object.defineProperty(obj, Symbol.iterator, {
+         get: function () {
+           log += 'i';
+           return function () {
+             log += 'c';
+             var done = false;
+             return {
+               next: function () {
+                 log += 'n';
+                 if (done) return { done: true };
+                 done = true;
+                 return { value: 1, done: false };
+               }
+             };
+           };
+         }
+       });
+
+      function* g() { return [ ...(yield 0) ]; }
+      var it = g();
+      var r1 = it.next();
+      var log_before = log;
+      var r2 = it.next(obj);
+
+      r1.value === 0 && r1.done === false &&
+      log_before === '' &&
+      r2.done === true &&
+      Array.isArray(r2.value) &&
+       r2.value.length === 1 &&
+       r2.value[0] === 1 &&
+       log === 'icnn'
+     "#,
+     )
+     .unwrap();
+   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_literal_yield_in_spread_next_throw_does_not_invoke_return() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = '';
+      var iterable = {};
+      iterable[Symbol.iterator] = function () {
+        return {
+          next: function () { log += 'n'; throw 'boom'; },
+          return: function () { log += 'r'; return { done: true }; }
+        };
+      };
+
+      function* g() { return [ ...(yield 0) ]; }
+      var it = g();
+      var r1 = it.next();
+
+      var threw = false;
+      try {
+        it.next(iterable);
+      } catch (e) {
+        threw = (e === 'boom');
+      }
+
+      var r2 = it.next();
+
+      r1.value === 0 && r1.done === false &&
+      threw === true &&
+      log === 'n' &&
+      r2.done === true && r2.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
