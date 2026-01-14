@@ -984,6 +984,7 @@ impl BrowserDocumentDom2 {
           &mut prepared.fragment_tree,
           next_viewport,
           &current_scroll_state,
+          None,
         );
         self.set_scroll_state(anchored);
       }

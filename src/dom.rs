@@ -3170,6 +3170,35 @@ pub fn enumerate_dom_ids(root: &DomNode) -> HashMap<*const DomNode, usize> {
   ids
 }
 
+/// Find an immutable reference to the node with the given stable pre-order id.
+///
+/// The id scheme matches [`enumerate_dom_ids`]: ids are 1-based and assigned by a depth-first
+/// pre-order traversal.
+///
+/// This helper uses an explicit stack to avoid stack overflows on extremely deep/degenerate trees.
+pub fn find_node_by_preorder_id<'a>(root: &'a DomNode, id: usize) -> Option<&'a DomNode> {
+  if id == 0 {
+    return None;
+  }
+
+  let mut next_id = 1usize;
+  let mut stack: Vec<&DomNode> = Vec::new();
+  stack.push(root);
+
+  while let Some(current) = stack.pop() {
+    if next_id == id {
+      return Some(current);
+    }
+    next_id += 1;
+
+    for child in current.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  None
+}
+
 /// Find a mutable reference to the node with the given stable pre-order id.
 ///
 /// The id scheme matches [`enumerate_dom_ids`]: ids are 1-based and assigned by a depth-first

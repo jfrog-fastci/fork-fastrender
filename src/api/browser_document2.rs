@@ -393,6 +393,7 @@ impl BrowserDocument2 {
           prepared.fragment_tree(),
           &old_scroll_state,
           prepared.layout_viewport(),
+          None,
         );
         self.options.scroll_x = anchored.viewport.x;
         self.options.scroll_y = anchored.viewport.y;

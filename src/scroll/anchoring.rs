@@ -746,6 +746,7 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
   new_tree: &mut FragmentTree,
   scrollport_viewport: Size,
   scroll: &ScrollState,
+  viewport_priority: Option<ScrollAnchoringPriorityCandidate>,
 ) -> ScrollState {
   // Determine which containers were snapped in the previous layout.
   prev_tree.ensure_scroll_metadata();
@@ -782,8 +783,13 @@ pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
     }
   }
 
-  let mut next_scroll =
-    apply_scroll_anchoring_between_trees(prev_tree, new_tree, scroll, scrollport_viewport);
+  let mut next_scroll = apply_scroll_anchoring_between_trees(
+    prev_tree,
+    new_tree,
+    scroll,
+    scrollport_viewport,
+    viewport_priority,
+  );
 
   if snapped_viewport || !snapped_elements.is_empty() {
     let snapped_after = super::apply_scroll_snap(new_tree, &next_scroll).state;
@@ -1050,6 +1056,7 @@ pub fn apply_scroll_anchoring_between_trees(
   next: &FragmentTree,
   old_scroll: &ScrollState,
   viewport: Size,
+  viewport_priority: Option<ScrollAnchoringPriorityCandidate>,
 ) -> ScrollState {
   // Determine scroll-container nesting depth from the previous layout tree so processing order is
   // stable across the relayout.
@@ -1097,7 +1104,16 @@ pub fn apply_scroll_anchoring_between_trees(
     let Some(scrollport_old) = scrollport_rect_in_page(&prev_scrolled, old_scroll, viewport, container) else {
       continue;
     };
-    let Some(anchor_id) = select_anchor_box_id(&prev_scrolled, container, scrollport_old) else {
+    let anchor_id = match container {
+      ScrollAnchorContainer::Viewport => viewport_priority
+        .and_then(|candidate| {
+          viewport_anchor_for_priority_candidate(&prev_scrolled, scrollport_old, candidate)
+        })
+        .map(|anchor| anchor.box_id)
+        .or_else(|| select_anchor_box_id(&prev_scrolled, container, scrollport_old)),
+      ScrollAnchorContainer::Element(_) => select_anchor_box_id(&prev_scrolled, container, scrollport_old),
+    };
+    let Some(anchor_id) = anchor_id else {
       continue;
     };
     let Some(anchor_old) =

@@ -87,6 +87,7 @@ mod select_listbox_multiple_selection;
 mod select_listbox_wheel_scroll;
 mod scroll_snap_wheel_scroll_accumulate;
 mod user_validity_common_form_controls;
+mod scroll_anchoring_focus_priority;
 mod support;
 mod tab;
 mod tab_js_realm_navigation_reset;

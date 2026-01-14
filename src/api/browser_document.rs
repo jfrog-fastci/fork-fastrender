@@ -8,7 +8,7 @@ use crate::interaction::{form_controls, InteractionState};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::scroll::ScrollState;
-use crate::tree::box_tree::BoxTree;
+use crate::tree::box_tree::{AnonymousType, BoxNode, BoxTree, BoxType, InlineBox};
 use crate::tree::fragment_tree::FragmentTree;
 use rustc_hash::FxHashMap;
 use std::collections::{hash_map::DefaultHasher, HashMap};
@@ -260,6 +260,137 @@ fn apply_paint_interaction_state_to_fragment_tree(
     }
   }
 }
+fn is_text_editable_focus_target(node: &DomNode) -> bool {
+  let Some(tag) = node.tag_name() else {
+    return false;
+  };
+
+  if tag.eq_ignore_ascii_case("textarea") {
+    return true;
+  }
+
+  if tag.eq_ignore_ascii_case("input") {
+    // Default `type` is "text".
+    let ty = node
+      .get_attribute_ref("type")
+      .map(super::trim_ascii_whitespace)
+      .filter(|v| !v.is_empty())
+      .unwrap_or("text");
+
+    // Match the heuristic used by the interaction engine: treat any non-button-ish, non-choice-ish
+    // input type as a text-editable control.
+    return !ty.eq_ignore_ascii_case("hidden")
+      && !ty.eq_ignore_ascii_case("submit")
+      && !ty.eq_ignore_ascii_case("reset")
+      && !ty.eq_ignore_ascii_case("button")
+      && !ty.eq_ignore_ascii_case("image")
+      && !ty.eq_ignore_ascii_case("file")
+      && !ty.eq_ignore_ascii_case("checkbox")
+      && !ty.eq_ignore_ascii_case("radio")
+      && !ty.eq_ignore_ascii_case("range")
+      && !ty.eq_ignore_ascii_case("color");
+  }
+
+  // Minimal contenteditable support: treat a focused node with `contenteditable` enabled as a text
+  // editing host. Full inherited `contenteditable` resolution is not yet implemented, but this
+  // covers common direct usage.
+  if node
+    .get_attribute_ref("contenteditable")
+    .map(super::trim_ascii_whitespace)
+    .is_some_and(|v| {
+      !v.is_empty() && !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("inherit")
+    })
+  {
+    return true;
+  }
+
+  false
+}
+
+fn is_non_atomic_inline_box_type(box_type: &BoxType) -> bool {
+  match box_type {
+    BoxType::Inline(InlineBox {
+      formatting_context: None,
+    }) => true,
+    BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => true,
+    _ => false,
+  }
+}
+
+/// Spec note for CSS Scroll Anchoring §2.2:
+///
+/// If the priority candidate is a non-atomic inline, use the nearest ancestor that is not a
+/// non-atomic inline.
+fn priority_anchor_box_id_for_styled_node_id(
+  box_tree: &BoxTree,
+  styled_node_id: usize,
+) -> Option<usize> {
+  // Find the principal box for the styled node id, tracking the ancestor stack so we can climb to
+  // the nearest ancestor that is not a non-atomic inline.
+  let mut ancestors: Vec<&BoxNode> = Vec::new();
+  // (node, exiting)
+  let mut stack: Vec<(&BoxNode, bool)> = Vec::new();
+  stack.push((&box_tree.root, false));
+
+  while let Some((node, exiting)) = stack.pop() {
+    if exiting {
+      ancestors.pop();
+      continue;
+    }
+
+    ancestors.push(node);
+
+    // Principal boxes are the first non-pseudo box for the styled id in pre-order traversal.
+    if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+      let mut candidate = node;
+      if is_non_atomic_inline_box_type(&candidate.box_type) {
+        // Walk ancestors from nearest → root, skipping the candidate itself.
+        for ancestor in ancestors.iter().rev().skip(1) {
+          if ancestor.generated_pseudo.is_some() {
+            continue;
+          }
+          if !is_non_atomic_inline_box_type(&ancestor.box_type) {
+            candidate = ancestor;
+            break;
+          }
+        }
+      }
+      return Some(candidate.id);
+    }
+
+    // Post-order pop for this node.
+    stack.push((node, true));
+
+    // Match pre-order traversal used elsewhere in the box tree: children first (left-to-right),
+    // then footnote body.
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push((body, false));
+    }
+    for child in node.children.iter().rev() {
+      stack.push((child, false));
+    }
+  }
+
+  None
+}
+
+fn focused_text_editable_priority_candidate(
+  dom: &DomNode,
+  box_tree: &BoxTree,
+  interaction_state: &InteractionState,
+) -> Option<ScrollAnchoringPriorityCandidate> {
+  let focused = interaction_state.focused?;
+  let node = crate::dom::find_node_by_preorder_id(dom, focused)?;
+  if !is_text_editable_focus_target(node) {
+    return None;
+  }
+  let box_id = priority_anchor_box_id_for_styled_node_id(box_tree, focused)?;
+  Some(ScrollAnchoringPriorityCandidate::BoxId {
+    box_id,
+    point: None,
+  })
+}
+
 impl BrowserDocument {
   /// Creates a new live document from an HTML string using a fresh renderer.
   pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {
@@ -1232,53 +1363,6 @@ impl BrowserDocument {
           }
         };
 
-      // Scroll anchoring: adjust the scroll offsets to keep an anchor stable across this relayout.
-      //
-      // This is a best-effort implementation intended to avoid visible jumps when content above the
-      // viewport changes (CSS Scroll Anchoring Module Level 1). When an embedding supplies a
-      // priority candidate (e.g. active find-in-page match), anchoring starts from it.
-      if let Some(prev_prepared) = prev_prepared.as_ref() {
-        let scroll_state = self.scroll_state();
-        let snapshot = crate::scroll::anchoring::capture_scroll_anchors_with_priority(
-          prev_prepared.fragment_tree(),
-          &scroll_state,
-          self.scroll_anchoring_priority_candidate,
-        );
-        let (anchored, _next_snapshot) = crate::scroll::anchoring::apply_scroll_anchoring(
-          &snapshot,
-          prepared.fragment_tree(),
-          &scroll_state,
-        );
-
-        let viewport_delta = Point::new(
-          anchored.viewport.x - scroll_state.viewport.x,
-          anchored.viewport.y - scroll_state.viewport.y,
-        );
-
-        let mut element_deltas: HashMap<usize, Point> = HashMap::new();
-        for (&id, old_offset) in &scroll_state.elements {
-          let new_offset = anchored.elements.get(&id).copied().unwrap_or(Point::ZERO);
-          let delta = Point::new(new_offset.x - old_offset.x, new_offset.y - old_offset.y);
-          if delta != Point::ZERO {
-            element_deltas.insert(id, delta);
-          }
-        }
-        for (&id, &new_offset) in &anchored.elements {
-          if scroll_state.elements.contains_key(&id) {
-            continue;
-          }
-          if new_offset != Point::ZERO {
-            element_deltas.insert(id, new_offset);
-          }
-        }
-
-        self.options.scroll_x = anchored.viewport.x;
-        self.options.scroll_y = anchored.viewport.y;
-        self.options.scroll_delta = viewport_delta;
-        self.options.element_scroll_offsets = anchored.elements.clone();
-        self.options.element_scroll_deltas = element_deltas;
-      }
-
       let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
         None => {
@@ -1303,11 +1387,17 @@ impl BrowserDocument {
       if let Some(prev_prepared) = prev_prepared.as_mut() {
         let current_scroll_state = self.scroll_state();
         let next_viewport = prepared.layout_viewport();
+        let priority_candidate = interaction_state
+          .and_then(|state| {
+            focused_text_editable_priority_candidate(&self.dom, prev_prepared.box_tree(), state)
+          })
+          .or(self.scroll_anchoring_priority_candidate);
         let anchored = crate::scroll::apply_scroll_anchoring_with_scroll_snap(
           &mut prev_prepared.fragment_tree,
           &mut prepared.fragment_tree,
           next_viewport,
           &current_scroll_state,
+          priority_candidate,
         );
         // Synchronize the document scroll state with the anchor adjustment. This is a scroll event,
         // but it should not mark style/layout dirty; only paint needs a fresh frame.
