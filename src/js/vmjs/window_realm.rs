@@ -37546,6 +37546,7 @@ fn range_common_ancestor_container_get_native(
     .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
+
 fn range_end_offset_get_native(
   vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -42245,6 +42246,10 @@ fn html_media_element_play_native(
     }
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "play")?;
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "playing")?;
+    // Deliver at least one `timeupdate` for scripts that key off progress events instead of
+    // `playing`. Real browsers dispatch `timeupdate` periodically while playback advances; FastRender
+    // currently provides a single best-effort signal at playback start.
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "timeupdate")?;
   }
 
   // Resolve once playback has started (after firing `playing`).
