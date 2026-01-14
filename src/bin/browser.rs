@@ -26447,15 +26447,6 @@ impl App {
   }
 
   fn handle_accesskit_action_request(&mut self, request: accesskit::ActionRequest) {
-    match &self.chrome_a11y {
-      ChromeA11yBackend::Egui => {
-        // Feed the action request into egui so widgets can respond (e.g. focus, click).
-        self.egui_state.on_accesskit_action_request(request);
-        return;
-      }
-      ChromeA11yBackend::FastRender(_) => {}
-    }
-
     fn is_scroll_action(action: accesskit::Action) -> bool {
       matches!(
         action,
@@ -26470,55 +26461,60 @@ impl App {
       )
     }
 
-    // Page (document) node actions: verify the request targets the active document generation
-    // before forwarding to the worker. This prevents stale screen-reader requests (targeting nodes
-    // from a previous navigation) from affecting the newly loaded page.
-    if let Some((tab_id, generation, dom_node_id)) =
-      fastrender::ui::decode_page_node_id(request.target)
-    {
-      let Some(active_tab) = self.browser_state.active_tab_id() else {
-        return;
-      };
-      if tab_id != active_tab {
-        return;
-      }
-      let current_generation = self
+    // Page (document) node actions: route to the worker using our `NodeId` encoding.
+    //
+    // This is handled here (instead of via egui's `InputState::has_accesskit_action_request`)
+    // because the injected page subtree nodes are not egui widgets and therefore do not have
+    // `egui::Id`s.
+    let active_tab_id = self.browser_state.active_tab_id();
+    let current_generation = active_tab_id.and_then(|tab_id| {
+      self
         .browser_state
-        .tab(active_tab)
+        .tab(tab_id)
         .and_then(|tab| tab.page_accessibility.as_ref())
-        .map(|snap| snap.document_generation);
-      if current_generation != Some(generation) {
+        .map(|snap| snap.document_generation)
+    });
+
+    if let Some(route) =
+      route_page_accesskit_action_request(&request, active_tab_id, current_generation)
+    {
+      match route {
+        PageAccesskitActionRoute::Ignored => {
+          return;
+        }
+        PageAccesskitActionRoute::Current { msg } => {
+          // Treat page action requests from assistive technology as a strong signal that the user
+          // wants to interact with the page (not the browser chrome). Make sure the page focus
+          // surface is active so subsequent keyboard events are routed to the worker.
+          let focus_changed = apply_page_focus_for_accesskit_action(
+            accesskit::Action::Focus,
+            &mut self.page_has_focus,
+            &mut self.browser_state.chrome,
+          );
+          // Cancel any in-flight address bar edit so chrome doesn't keep capturing keyboard input.
+          if focus_changed {
+            self.browser_state.set_address_bar_editing(false);
+            self.window.request_redraw();
+          }
+          self.chrome_has_text_focus = false;
+
+          if let Some(msg) = msg {
+            let _ = self.send_worker_msg(msg);
+          }
+          return;
+        }
+      }
+    }
+
+    // Non-page action requests (e.g. egui chrome widgets) are routed to the selected chrome
+    // accessibility backend.
+    match &self.chrome_a11y {
+      ChromeA11yBackend::Egui => {
+        // Feed the action request into egui so widgets can respond (e.g. focus, click).
+        self.egui_state.on_accesskit_action_request(request);
         return;
       }
-
-      // Translate OS AccessKit requests into our backend-agnostic UI↔worker protocol messages.
-      let msg = match request.action {
-        accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {
-          Some(fastrender::ui::UiToWorker::A11yScrollIntoView {
-            tab_id,
-            node_id: dom_node_id,
-          })
-        }
-        accesskit::Action::ShowContextMenu => Some(fastrender::ui::UiToWorker::A11yShowContextMenu {
-          tab_id,
-          node_id: Some(dom_node_id),
-        }),
-        accesskit::Action::Focus => Some(fastrender::ui::UiToWorker::A11ySetFocus {
-          tab_id,
-          node_id: dom_node_id,
-        }),
-        accesskit::Action::Click | accesskit::Action::Default => {
-          Some(fastrender::ui::UiToWorker::A11yActivate {
-            tab_id,
-            node_id: dom_node_id,
-          })
-        }
-        _ => None,
-      };
-      if let Some(msg) = msg {
-        let _ = self.send_worker_msg(msg);
-      }
-      return;
+      ChromeA11yBackend::FastRender(_) => {}
     }
 
     match request.action {
@@ -29237,6 +29233,74 @@ fn ensure_page_focus_cleared_for_chrome_click(
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+enum PageAccesskitActionRoute {
+  /// An AccessKit action request targeted at a page `NodeId`, but not for the currently active
+  /// `(tab_id, document_generation)` (or when no active document is available). This should be
+  /// ignored and **not** forwarded into egui.
+  Ignored,
+  /// A request targeting a node in the currently active page accessibility subtree.
+  ///
+  /// `msg` is `None` for unsupported actions; callers should still treat the request as "handled"
+  /// (to avoid forwarding unknown page-node requests into egui).
+  Current {
+    msg: Option<fastrender::ui::UiToWorker>,
+  },
+}
+
+#[cfg(feature = "browser_ui")]
+fn route_page_accesskit_action_request(
+  request: &accesskit::ActionRequest,
+  active_tab_id: Option<fastrender::ui::TabId>,
+  current_document_generation: Option<u32>,
+) -> Option<PageAccesskitActionRoute> {
+  // If this `NodeId` doesn't belong to the page namespace, let the chrome accessibility backend
+  // handle it (egui widgets or the minimal compositor tree).
+  let Some((tab_id, generation, dom_node_id)) =
+    fastrender::ui::decode_page_node_id(request.target)
+  else {
+    return None;
+  };
+
+  let Some(active_tab_id) = active_tab_id else {
+    return Some(PageAccesskitActionRoute::Ignored);
+  };
+  if tab_id != active_tab_id {
+    return Some(PageAccesskitActionRoute::Ignored);
+  }
+  if current_document_generation != Some(generation) {
+    return Some(PageAccesskitActionRoute::Ignored);
+  }
+
+  // Translate OS AccessKit requests into our backend-agnostic UI↔worker protocol messages.
+  let msg = match request.action {
+    accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {
+      Some(fastrender::ui::UiToWorker::A11yScrollIntoView {
+        tab_id,
+        node_id: dom_node_id,
+      })
+    }
+    accesskit::Action::ShowContextMenu => Some(fastrender::ui::UiToWorker::A11yShowContextMenu {
+      tab_id,
+      node_id: Some(dom_node_id),
+    }),
+    accesskit::Action::Focus => Some(fastrender::ui::UiToWorker::A11ySetFocus {
+      tab_id,
+      node_id: dom_node_id,
+    }),
+    accesskit::Action::Click | accesskit::Action::Default => {
+      Some(fastrender::ui::UiToWorker::A11yActivate {
+        tab_id,
+        node_id: dom_node_id,
+      })
+    }
+    _ => None,
+  };
+
+  Some(PageAccesskitActionRoute::Current { msg })
+}
+
+#[cfg(feature = "browser_ui")]
 fn apply_page_focus_for_accesskit_action(
   action: accesskit::Action,
   page_has_focus: &mut bool,
@@ -29829,6 +29893,81 @@ mod page_focus_tests {
     assert!(!ok);
     assert!(!page_has_focus);
     assert!(!cursor_in_page);
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_node_accesskit_action_routing_tests {
+  use super::{route_page_accesskit_action_request, PageAccesskitActionRoute};
+  use fastrender::ui::{encode_page_node_id, TabId, UiToWorker};
+  use std::num::NonZeroU128;
+
+  fn node_id_from_u128(raw: u128) -> accesskit::NodeId {
+    accesskit::NodeId(NonZeroU128::new(raw).expect("test node id must be non-zero"))
+  }
+
+  #[test]
+  fn routes_focus_action_request_for_current_page_node() {
+    let tab_id = TabId(1);
+    let gen = 2u32;
+    let dom_node_id = 42usize;
+    let target = encode_page_node_id(tab_id, gen, dom_node_id);
+    let request = accesskit::ActionRequest {
+      target,
+      action: accesskit::Action::Focus,
+      data: None,
+    };
+
+    let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(gen))
+      .expect("expected request to be recognized as a page node");
+    let msg = match route {
+      PageAccesskitActionRoute::Current { msg } => msg,
+      other => panic!("expected current route, got {other:?}"),
+    };
+
+    match msg {
+      Some(UiToWorker::A11ySetFocus {
+        tab_id: got_tab,
+        node_id: got_node,
+      }) => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(got_node, dom_node_id);
+      }
+      other => panic!("expected A11ySetFocus msg, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn ignores_stale_generation_page_node_requests() {
+    let tab_id = TabId(1);
+    let current_gen = 2u32;
+    let stale_target = encode_page_node_id(tab_id, current_gen - 1, 1);
+    let request = accesskit::ActionRequest {
+      target: stale_target,
+      action: accesskit::Action::Focus,
+      data: None,
+    };
+
+    let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(current_gen));
+    assert!(
+      matches!(route, Some(PageAccesskitActionRoute::Ignored)),
+      "expected stale request to be ignored, got {route:?}"
+    );
+  }
+
+  #[test]
+  fn non_page_node_ids_are_not_routed() {
+    let tab_id = TabId(1);
+    let gen = 1u32;
+    let chrome_target = node_id_from_u128(1);
+    let request = accesskit::ActionRequest {
+      target: chrome_target,
+      action: accesskit::Action::Focus,
+      data: None,
+    };
+
+    let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(gen));
+    assert!(route.is_none(), "expected non-page target to return None");
   }
 }
 
