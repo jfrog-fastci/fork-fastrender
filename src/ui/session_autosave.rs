@@ -1657,6 +1657,41 @@ mod tests {
   }
 
   #[test]
+  fn failed_save_restores_corrupted_session_file_in_sync_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let corrupted = b"this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let save_fn: SaveSessionFn = Arc::new(|_path, _session| Err("disk full".to_string()));
+    let autosave = SessionAutosave::new_with_debounce_and_saver_forced_spawn_failure(
+      path.clone(),
+      Duration::from_millis(10),
+      save_fn,
+    );
+
+    // In the synchronous fallback path, request_save executes immediately.
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+
+    // Save failed: the corrupt session should still be present at the original path, not left in a
+    // `.corrupt.*` quarantine file.
+    let on_disk = std::fs::read(&path).unwrap();
+    assert_eq!(on_disk, corrupted);
+
+    let quarantine_exists = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .any(|entry| {
+        entry
+          .file_name()
+          .to_str()
+          .is_some_and(|name| name.starts_with("session.json.corrupt."))
+      });
+    assert!(!quarantine_exists, "expected no quarantine file on failed save");
+  }
+
+  #[test]
   fn records_error_state_on_failure() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
