@@ -21,13 +21,14 @@ fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_def
     "compiled_async_functions_fallback_with_hooks.js",
     r#"
       var result = 0;
+      const thisObj = {};
 
       async function f() {
-        return this === globalThis ? 1 : -100;
+        return this === globalThis ? 1 : (this === thisObj ? 6 : -100);
       }
 
       const g = async function () {
-        return this === globalThis ? 2 : -100;
+        return this === globalThis ? 2 : (this === thisObj ? 7 : -100);
       };
 
       const h = async () => (this === globalThis ? 3 : -100);
@@ -42,7 +43,11 @@ fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_def
       const inst = new C();
 
       f().then(v => { result += v; });
+      // Ensure explicit receiver binding is preserved when async function bodies execute via
+      // call-time AST fallback.
+      f.call(thisObj).then(v => { result += v; });
       g().then(v => { result += v; });
+      g.call(thisObj).then(v => { result += v; });
       // Async arrow functions execute via call-time AST fallback; ensure they still use *lexical*
       // `this` rather than the call-site receiver (even when invoked via `.call`).
       h.call({}).then(v => { result += v; });
@@ -74,6 +79,6 @@ fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_def
   }
 
   let value = rt.exec_script("result")?;
-  assert_eq!(value, Value::Number(15.0));
+  assert_eq!(value, Value::Number(28.0));
   Ok(())
 }
