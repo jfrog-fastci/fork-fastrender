@@ -23,6 +23,19 @@ test(() => {
 
 test(() => {
   const frag1 = document.createDocumentFragment();
+  frag1.appendChild(document.createElement("a"));
+  frag1.appendChild(document.createElement("b"));
+
+  const frag2 = document.createDocumentFragment();
+  // Same children, different order.
+  frag2.appendChild(document.createElement("b"));
+  frag2.appendChild(document.createElement("a"));
+
+  assert_false(frag1.isEqualNode(frag2), "different child order should compare unequal");
+}, "Node.isEqualNode detects different child order");
+
+test(() => {
+  const frag1 = document.createDocumentFragment();
   const div1 = document.createElement("div");
   div1.setAttribute("a", "1");
   div1.setAttribute("b", "2");
@@ -50,4 +63,3 @@ test(() => {
     "changing a descendant should make fragments compare unequal",
   );
 }, "Node.isEqualNode works across documents and ignores attribute order");
-
