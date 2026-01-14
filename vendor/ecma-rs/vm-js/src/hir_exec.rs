@@ -597,6 +597,30 @@ impl<'vm> HirEvaluator<'vm> {
     self.script.hir.as_ref()
   }
 
+  fn is_default_export_anonymous_class_decl(&self, def_id: hir_js::DefId) -> bool {
+    self.script.hir.hir.exports.iter().any(|export| {
+      let hir_js::ExportKind::Default(default) = &export.kind else {
+        return false;
+      };
+      matches!(
+        &default.value,
+        hir_js::ExportDefaultValue::Class { def, name: None, .. } if *def == def_id
+      )
+    })
+  }
+
+  fn is_default_export_anonymous_function_decl(&self, def_id: hir_js::DefId) -> bool {
+    self.script.hir.hir.exports.iter().any(|export| {
+      let hir_js::ExportKind::Default(default) = &export.kind else {
+        return false;
+      };
+      matches!(
+        &default.value,
+        hir_js::ExportDefaultValue::Function { def, name: None, .. } if *def == def_id
+      )
+    })
+  }
+
   fn resolve_name(&self, id: hir_js::NameId) -> Result<String, VmError> {
     Ok(
       self
@@ -1617,6 +1641,36 @@ impl<'vm> HirEvaluator<'vm> {
           if annex_b && (func_meta.async_ || func_meta.generator) {
             continue;
           }
+          // `export default function() {}` uses an engine-internal `*default*` binding created by
+          // module linking. The lowered `DefData.name` is `"<anonymous>"` and must not create a
+          // concrete var binding.
+          if self.is_default_export_anonymous_function_decl(*def_id) {
+            let func_obj = self.alloc_user_function_object(
+              scope,
+              body_id,
+              "default",
+              /* is_arrow */ false,
+              /* is_constructable */ true,
+              /* name_binding */ None,
+              EcmaFunctionKind::Decl,
+            )?;
+
+            let mut init_scope = scope.reborrow();
+            init_scope.push_root(Value::Object(func_obj))?;
+            let binding_env = self.env.lexical_env();
+            let binding_name = "*default*";
+            if !init_scope.heap().env_has_binding(binding_env, binding_name)? {
+              return Err(VmError::InvariantViolation(
+                "export default function declaration missing *default* binding",
+              ));
+            }
+            init_scope.heap_mut().env_initialize_binding(
+              binding_env,
+              binding_name,
+              Value::Object(func_obj),
+            )?;
+            continue;
+          }
           let name = self.resolve_name(def.name)?;
           if name.as_str() == "<anonymous>" {
             // `export default function() {}` is represented by `hir-js` as a default-exported
@@ -1777,6 +1831,12 @@ impl<'vm> HirEvaluator<'vm> {
           };
           let decl_body = self.get_body(body_id)?;
           if decl_body.kind != hir_js::BodyKind::Class {
+            continue;
+          }
+          // `export default class {}` uses an engine-internal `*default*` binding created by module
+          // linking. The lowered `DefData.name` is `"<anonymous>"` and must not create a concrete
+          // lexical binding during instantiation.
+          if self.is_default_export_anonymous_class_decl(*def_id) {
             continue;
           }
           let name = self.resolve_name(def.name)?;
@@ -2953,16 +3013,21 @@ impl<'vm> HirEvaluator<'vm> {
           }
           Ok(Flow::empty())
         } else if decl_body.kind == hir_js::BodyKind::Class {
-          let name = self.resolve_name(def.name)?;
-          let (binding_name, func_name, inner_binding_name) = if name.as_str() == "<anonymous>" {
-            if !def.is_default_export {
-              return Err(VmError::Unimplemented("anonymous class declaration (hir-js compiled path)"));
-            }
-            ("*default*", "default", None)
+          let is_default_anon = self.is_default_export_anonymous_class_decl(*def_id);
+          let name = if is_default_anon {
+            None
           } else {
-            let s = name.as_str();
-            (s, s, Some(s))
+            Some(self.resolve_name(def.name)?)
           };
+          let (binding_name, func_name, inner_binding): (&str, &str, Option<&str>) =
+            if is_default_anon {
+              ("*default*", "default", None)
+            } else {
+              let name = name
+                .as_deref()
+                .ok_or(VmError::InvariantViolation("class name resolution failed"))?;
+              (name, name, Some(name))
+            };
 
           // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
           // outer is the surrounding lexical environment. That environment contains an immutable
@@ -2972,12 +3037,8 @@ impl<'vm> HirEvaluator<'vm> {
           let class_env = scope.env_create(Some(outer))?;
           self.env.set_lexical_env(scope.heap_mut(), class_env);
 
-          // Evaluate the class definition with an inner immutable name binding when the declaration
-          // has an explicit name.
-          let result = match inner_binding_name {
-            Some(inner) => self.eval_class(scope, decl_body, Some(inner), func_name, None),
-            None => self.eval_class(scope, decl_body, None, func_name, None),
-          };
+          // Evaluate the class definition with (optional) inner immutable name binding.
+          let result = self.eval_class(scope, decl_body, inner_binding, func_name, None);
           // Restore the outer environment regardless of how class evaluation completes.
           self.env.set_lexical_env(scope.heap_mut(), outer);
           let func_obj = result?;
@@ -2990,6 +3051,11 @@ impl<'vm> HirEvaluator<'vm> {
           init_scope.push_root(Value::Object(func_obj))?;
 
           if !init_scope.heap().env_has_binding(outer, binding_name)? {
+            if is_default_anon {
+              return Err(VmError::InvariantViolation(
+                "export default class declaration missing *default* binding",
+              ));
+            }
             // Non-block statement contexts may not have performed lexical hoisting yet.
             init_scope.env_create_mutable_binding(outer, binding_name)?;
           }
@@ -9094,6 +9160,10 @@ impl<'vm> HirEvaluator<'vm> {
         let super_root_len = scope.heap().root_stack.len();
         scope.push_root(super_value)?;
         let _super_root_guard = RootStackTruncateGuard::new(scope.heap_mut(), super_root_len);
+
+        // Count instance **public** fields so the class constructor wrapper can preallocate its
+        // hidden native-slot storage.
+        let mut instance_field_count: usize = 0;
       // Find an explicit constructor, if present.
       let mut ctor_member: Option<&hir_js::ClassMember> = None;
       for member in class_meta.members.iter() {
@@ -9101,11 +9171,23 @@ impl<'vm> HirEvaluator<'vm> {
         if member.static_ {
           continue;
         }
-        if matches!(member.kind, hir_js::ClassMemberKind::Constructor { .. }) {
-          if ctor_member.is_some() {
-            return Err(VmError::TypeError("A class may only have one constructor"));
+
+        match &member.kind {
+          hir_js::ClassMemberKind::Constructor { .. } => {
+            if ctor_member.is_some() {
+              return Err(VmError::TypeError("A class may only have one constructor"));
+            }
+            ctor_member = Some(member);
           }
-          ctor_member = Some(member);
+          hir_js::ClassMemberKind::Field { key, .. } => {
+            if matches!(key, hir_js::ClassMemberKey::Private(_)) {
+              continue;
+            }
+            instance_field_count = instance_field_count
+              .checked_add(1)
+              .ok_or(VmError::OutOfMemory)?;
+          }
+          _ => {}
         }
       }
 
@@ -9187,7 +9269,7 @@ impl<'vm> HirEvaluator<'vm> {
           ctor_length,
           ctor_body_func,
           super_value,
-          /* instance_field_count */ 0,
+          instance_field_count,
         )?;
 
         // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
@@ -9332,127 +9414,232 @@ impl<'vm> HirEvaluator<'vm> {
        }
 
         // Define prototype and static methods/accessors.
-        let mut static_blocks: Vec<hir_js::BodyId> = Vec::new();
+        enum StaticInitElement {
+          Block(hir_js::BodyId),
+          Field { key: Value, initializer: Value },
+        }
+
+        let mut static_inits: Vec<StaticInitElement> = Vec::new();
+        let mut instance_field_idx: usize = 0;
         for member in class_meta.members.iter() {
-         self.vm.tick()?;
+          self.vm.tick()?;
 
-         match &member.kind {
-           hir_js::ClassMemberKind::Constructor { .. } => {
-            // The actual `constructor(...) { ... }` body is represented by the class constructor
-            // object itself (and its hidden body function).
-            continue;
-          }
-           hir_js::ClassMemberKind::Field { .. } => {
-             return Err(VmError::Unimplemented("class fields"));
-           }
-           hir_js::ClassMemberKind::StaticBlock { body, .. } => {
-             static_blocks.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-             static_blocks.push(*body);
-             continue;
-           }
-           hir_js::ClassMemberKind::Method {
-             body,
-             key,
-             kind,
-            ..
-          } => {
-            let target_obj = if member.static_ { func_obj } else { prototype_obj };
+          match &member.kind {
+            hir_js::ClassMemberKind::Constructor { .. } => {
+              // The actual `constructor(...) { ... }` body is represented by the class constructor
+              // object itself (and its hidden body function).
+              continue;
+            }
+            hir_js::ClassMemberKind::StaticBlock { body, .. } => {
+              static_inits.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+              static_inits.push(StaticInitElement::Block(*body));
+              continue;
+            }
+            hir_js::ClassMemberKind::Field { initializer, key, .. } => {
+              let target_obj = if member.static_ { func_obj } else { prototype_obj };
 
-            let mut member_scope = class_scope.reborrow();
-            member_scope.push_root(Value::Object(target_obj))?;
+              let mut member_scope = class_scope.reborrow();
+              member_scope.push_root(Value::Object(target_obj))?;
 
-            let key = self.eval_class_member_key(&mut member_scope, class_body, key)?;
-            root_property_key(&mut member_scope, key)?;
+              let key = self.eval_class_member_key(&mut member_scope, class_body, key)?;
+              root_property_key(&mut member_scope, key)?;
 
-            let Some(body_id) = body else {
-              return Err(VmError::Unimplemented(
-                "class methods without bodies (hir-js compiled path)",
-              ));
-            };
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
 
-            // Allocate the method function object (non-constructable), and apply `SetFunctionName`
-            // based on the property key. This matches interpreter semantics and handles getter/setter
-            // prefixes and Symbol keys.
-            let func_obj_member = self.alloc_user_function_object(
-              &mut member_scope,
-              *body_id,
-              /* name */ "",
-              /* is_arrow */ false,
-              /* is_constructable */ false,
-              /* name_binding */ None,
-              EcmaFunctionKind::ClassMember,
-            )?;
-            member_scope
-              .heap_mut()
-              .set_function_home_object(func_obj_member, Some(target_obj))?;
+              // Create a function object for `= <expr>` initializers so they can be evaluated later
+              // with the correct `this` value.
+              let init_value = match initializer {
+                Some(init_body_id) => {
+                  let init_body = hir
+                    .body(*init_body_id)
+                    .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+                  let init_func =
+                    self.alloc_class_field_initializer_function(&mut member_scope, init_body.span)?;
+                  member_scope
+                    .heap_mut()
+                    .set_function_home_object(init_func, Some(target_obj))?;
+                  Value::Object(init_func)
+                }
+                None => Value::Undefined,
+              };
 
-            match kind {
-              hir_js::ClassMethodKind::Method => {
-                crate::function_properties::set_function_name(&mut member_scope, func_obj_member, key, None)?;
-                member_scope.define_property_or_throw(
-                  target_obj,
-                  key,
-                  PropertyDescriptorPatch {
-                    value: Some(Value::Object(func_obj_member)),
-                    writable: Some(true),
-                    enumerable: Some(false),
-                    configurable: Some(true),
-                    ..Default::default()
-                  },
+              if member.static_ {
+                // Static field: defer initialization until after the element definition pass.
+                // Drop `member_scope` early so we can push persistent roots onto `class_scope`.
+                drop(member_scope);
+                class_scope.push_root(key_value)?;
+                class_scope.push_root(init_value)?;
+                static_inits.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+                static_inits.push(StaticInitElement::Field {
+                  key: key_value,
+                  initializer: init_value,
+                });
+              } else {
+                // Instance field: store as `(key, initializer)` in the class constructor's native
+                // slots so `[[Construct]]` can initialize them per instance.
+                let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+                  .saturating_add(instance_field_idx.saturating_mul(2));
+                member_scope
+                  .heap_mut()
+                  .set_function_native_slot(func_obj, slot_base, key_value)?;
+                member_scope.heap_mut().set_function_native_slot(
+                  func_obj,
+                  slot_base.saturating_add(1),
+                  init_value,
                 )?;
-              }
-              hir_js::ClassMethodKind::Getter => {
-                crate::function_properties::set_function_name(
-                  &mut member_scope,
-                  func_obj_member,
-                  key,
-                  Some("get"),
-                )?;
-                member_scope.define_property_or_throw(
-                  target_obj,
-                  key,
-                  PropertyDescriptorPatch {
-                    get: Some(Value::Object(func_obj_member)),
-                    enumerable: Some(false),
-                    configurable: Some(true),
-                    ..Default::default()
-                  },
-                )?;
-              }
-              hir_js::ClassMethodKind::Setter => {
-                crate::function_properties::set_function_name(
-                  &mut member_scope,
-                  func_obj_member,
-                  key,
-                  Some("set"),
-                )?;
-                member_scope.define_property_or_throw(
-                  target_obj,
-                  key,
-                  PropertyDescriptorPatch {
-                    set: Some(Value::Object(func_obj_member)),
-                    enumerable: Some(false),
-                    configurable: Some(true),
-                    ..Default::default()
-                  },
-                )?;
+                instance_field_idx = instance_field_idx
+                  .checked_add(1)
+                  .ok_or(VmError::OutOfMemory)?;
               }
             }
-           }
-         }
-       }
+            hir_js::ClassMemberKind::Method {
+              body,
+              key,
+              kind,
+              ..
+            } => {
+              let target_obj = if member.static_ { func_obj } else { prototype_obj };
 
-       // Evaluate class static blocks after defining methods/accessors, in source order.
-       //
-       // This matches ECMA-262 `ClassDefinitionEvaluation`, where static initialization elements run
-       // in a second pass after the element definition pass.
-       for body_id in static_blocks {
-         self.vm.tick()?;
-         let block_body = hir
-           .body(body_id)
-           .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
-         self.eval_class_static_block_hir(&mut class_scope, func_obj, block_body)?;
-       }
+              let mut member_scope = class_scope.reborrow();
+              member_scope.push_root(Value::Object(target_obj))?;
+
+              let key = self.eval_class_member_key(&mut member_scope, class_body, key)?;
+              root_property_key(&mut member_scope, key)?;
+
+              let Some(body_id) = body else {
+                return Err(VmError::Unimplemented(
+                  "class methods without bodies (hir-js compiled path)",
+                ));
+              };
+
+              // Allocate the method function object (non-constructable), and apply `SetFunctionName`
+              // based on the property key. This matches interpreter semantics and handles
+              // getter/setter prefixes and Symbol keys.
+              let func_obj_member = self.alloc_user_function_object(
+                &mut member_scope,
+                *body_id,
+                /* name */ "",
+                /* is_arrow */ false,
+                /* is_constructable */ false,
+                /* name_binding */ None,
+                EcmaFunctionKind::ClassMember,
+              )?;
+              member_scope
+                .heap_mut()
+                .set_function_home_object(func_obj_member, Some(target_obj))?;
+
+              match kind {
+                hir_js::ClassMethodKind::Method => {
+                  crate::function_properties::set_function_name(
+                    &mut member_scope,
+                    func_obj_member,
+                    key,
+                    None,
+                  )?;
+                  member_scope.define_property_or_throw(
+                    target_obj,
+                    key,
+                    PropertyDescriptorPatch {
+                      value: Some(Value::Object(func_obj_member)),
+                      writable: Some(true),
+                      enumerable: Some(false),
+                      configurable: Some(true),
+                      ..Default::default()
+                    },
+                  )?;
+                }
+                hir_js::ClassMethodKind::Getter => {
+                  crate::function_properties::set_function_name(
+                    &mut member_scope,
+                    func_obj_member,
+                    key,
+                    Some("get"),
+                  )?;
+                  member_scope.define_property_or_throw(
+                    target_obj,
+                    key,
+                    PropertyDescriptorPatch {
+                      get: Some(Value::Object(func_obj_member)),
+                      enumerable: Some(false),
+                      configurable: Some(true),
+                      ..Default::default()
+                    },
+                  )?;
+                }
+                hir_js::ClassMethodKind::Setter => {
+                  crate::function_properties::set_function_name(
+                    &mut member_scope,
+                    func_obj_member,
+                    key,
+                    Some("set"),
+                  )?;
+                  member_scope.define_property_or_throw(
+                    target_obj,
+                    key,
+                    PropertyDescriptorPatch {
+                      set: Some(Value::Object(func_obj_member)),
+                      enumerable: Some(false),
+                      configurable: Some(true),
+                      ..Default::default()
+                    },
+                  )?;
+                }
+              }
+            }
+          }
+        }
+
+        // Evaluate class static initialization elements (public static fields and static blocks) in
+        // source order.
+        //
+        // This matches ECMA-262 `ClassDefinitionEvaluation`, where static initialization elements run
+        // in a second pass after the element definition pass.
+        for init in static_inits {
+          self.vm.tick()?;
+          match init {
+            StaticInitElement::Block(body_id) => {
+              let block_body = hir
+                .body(body_id)
+                .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+              self.eval_class_static_block_hir(&mut class_scope, func_obj, block_body)?;
+            }
+            StaticInitElement::Field { key, initializer } => {
+              let key = match key {
+                Value::String(s) => PropertyKey::from_string(s),
+                Value::Symbol(s) => PropertyKey::from_symbol(s),
+                Value::Undefined => {
+                  return Err(VmError::InvariantViolation("static field key is undefined"))
+                }
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "static field key is not a string or symbol",
+                  ))
+                }
+              };
+              let value = match initializer {
+                Value::Object(func) => self.vm.call_with_host_and_hooks(
+                  &mut *self.host,
+                  &mut class_scope,
+                  &mut *self.hooks,
+                  Value::Object(func),
+                  Value::Object(func_obj),
+                  &[],
+                )?,
+                Value::Undefined => Value::Undefined,
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "static field initializer is not a function or undefined",
+                  ))
+                }
+              };
+              class_scope.push_root(value)?;
+              class_scope.create_data_property_or_throw(func_obj, key, value)?;
+            }
+          }
+        }
 
        Ok(func_obj)
      })();
@@ -9545,6 +9732,73 @@ impl<'vm> HirEvaluator<'vm> {
         "class static block produced Continue flow (early errors should prevent this)",
       )),
     }
+  }
+
+  fn alloc_class_field_initializer_function(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr_span: diagnostics::TextRange,
+  ) -> Result<GcObject, VmError> {
+    // Mirror `exec.rs::eval_class`:
+    // class field initializers are represented as ordinary strict-mode callable functions created
+    // by parsing `(function(){ return <expr>; })` snippets (see `EcmaFunctionKind::ClassFieldInitializer`).
+    //
+    // This allows both static field initialization and per-instance field initialization to share the
+    // same `vm.call` machinery and ensures `eval()` inside initializers uses a function-scoped
+    // variable environment (rather than polluting the surrounding class/module env).
+    let closure_env = self.env.lexical_env();
+
+    // Root the class lexical environment across allocation in case it triggers GC.
+    let mut init_scope = scope.reborrow();
+    init_scope.push_env_root(closure_env)?;
+
+    // Compute a stable span key matching interpreter semantics (env prefix/base offsets).
+    let rel_start = expr_span.start.saturating_sub(self.env.prefix_len());
+    let rel_end = expr_span.end.saturating_sub(self.env.prefix_len());
+    let span_start = self.env.base_offset().saturating_add(rel_start);
+    let span_end = self.env.base_offset().saturating_add(rel_end);
+
+    let code_id = self.vm.register_ecma_function(
+      self.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::ClassFieldInitializer,
+    )?;
+
+    // Field initializer functions are always strict mode and have `length = 0`.
+    let name_s = init_scope.alloc_string("")?;
+    init_scope.push_root(Value::String(name_s))?;
+    let func_obj = init_scope.alloc_ecma_function(
+      code_id,
+      /* is_constructable */ false,
+      name_s,
+      0,
+      ThisMode::Strict,
+      /* is_strict */ true,
+      Some(closure_env),
+    )?;
+    init_scope.push_root(Value::Object(func_obj))?;
+
+    // Best-effort `[[Prototype]]` / `[[Realm]]` metadata.
+    if let Some(intr) = self.vm.intrinsics() {
+      init_scope
+        .heap_mut()
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+    }
+    init_scope
+      .heap_mut()
+      .set_function_realm(func_obj, self.env.global_object())?;
+    if let Some(realm) = self.vm.current_realm() {
+      init_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      init_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
+
+    Ok(func_obj)
   }
 
   fn eval_class_member_key(
@@ -11615,7 +11869,6 @@ pub(crate) fn run_compiled_module(
     !script.contains_async_generators,
     "run_compiled_module cannot execute async-generator modules; ModuleGraph must fall back to the AST evaluator"
   );
-
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,

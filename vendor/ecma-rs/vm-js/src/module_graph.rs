@@ -4,7 +4,7 @@ use crate::exec::{
 };
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
-use crate::hir_exec::instantiate_compiled_module_decls;
+use crate::hir_exec::{instantiate_compiled_module_decls, run_compiled_module};
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
@@ -2831,6 +2831,34 @@ impl ModuleGraph {
             return Ok(());
           }
         }
+      } else if let Some(compiled) = compiled {
+        match run_compiled_module(
+          vm,
+          scope,
+          host,
+          hooks,
+          state.global_object,
+          state.realm_id,
+          module,
+          module_env,
+          compiled,
+        ) {
+          Ok(()) => {
+            state.next_member_index = state.next_member_index.saturating_add(1);
+            continue;
+          }
+          Err(err) => {
+            let reason = if let Some(thrown) = err.thrown_value() {
+              thrown
+            } else {
+              self.cache_module_error_from_err(vm, scope, idx, &err)?;
+              self.module_errored_value(vm, scope, idx)?
+            };
+            self.scc_eval_states[root_idx] = None;
+            self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+            return Ok(());
+          }
+        }
       } else {
         // Non-TLA modules can execute via either:
         // - the compiled executor (HIR), if present and safe, or
@@ -3156,7 +3184,12 @@ impl ModuleGraph {
 
     // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
     // when intrinsics are available.
+    //
+    // Preserve `VmError::Unimplemented` as-is so embeddings using the sync API can reliably detect
+    // unsupported language features (e.g. top-level await) without having to decode thrown Error
+    // objects.
     match result {
+      Err(err @ VmError::Unimplemented(_)) => Err(err),
       Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
         &*vm,
         scope,
