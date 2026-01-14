@@ -5734,7 +5734,8 @@ mod tests {
       let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
       let output = ctx.end_frame();
 
-      let (_id, node) = expect_accesskit_node_named(&output, "Show downloads");
+      let expected_label = if open { "Hide downloads" } else { "Show downloads" };
+      let (_id, node) = expect_accesskit_node_named(&output, expected_label);
       assert_eq!(
         node.is_expanded(),
         expected_expanded,
