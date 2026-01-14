@@ -196,12 +196,7 @@ impl<'a> Parser<'a> {
   }
 
   pub fn func_decl(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<FuncDecl>> {
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    // Class field initializers and static initialization blocks disallow `arguments` identifier
-    // references, but regular functions introduce their own `arguments` binding. Disable the
-    // check while parsing the function declaration's parameters and body.
-    self.disallow_arguments_in_class_init = 0;
-    let res = self.with_loc(|p| {
+    self.with_loc(|p| {
       let export = p.consume_if(TT::KeywordExport).is_match();
       let export_default = export && p.consume_if(TT::KeywordDefault).is_match();
       let is_async = p.consume_if(TT::KeywordAsync).is_match();
@@ -237,63 +232,65 @@ impl<'a> Parser<'a> {
           await_expr_allowed: is_async,
           yield_expr_allowed: generator,
         });
-        // Regular functions do not have a `super` binding. Ensure we don't inherit
-        // `super` allowances from an enclosing method/constructor when parsing
-        // parameter initializers.
-        let prev_super_prop_allowed = p.super_prop_allowed;
-        let prev_super_call_allowed = p.super_call_allowed;
-        p.super_prop_allowed = 0;
-        p.super_call_allowed = 0;
-        let parameters = p.func_params(fn_ctx);
-        p.super_prop_allowed = prev_super_prop_allowed;
-        p.super_call_allowed = prev_super_call_allowed;
-        let parameters = parameters?;
-        // TypeScript: return type annotation (may be type predicate)
-        let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-          Some(p.type_expr_or_predicate(ctx)?)
-        } else {
-          None
-        };
-        // TypeScript: function overload signatures have no body
-        let body = if p.peek().typ == TT::BraceOpen {
-          let contains_use_strict =
-            p.is_strict_ecmascript() && p.has_use_strict_directive_in_block_body()?;
-          let simple_params = Parser::is_simple_parameter_list(&parameters);
-          if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-            return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-              "`use strict` directive not allowed with a non-simple parameter list",
-            )));
-          }
+        p.with_arguments_bound_in_class_init(|p| {
+          // Regular functions do not have a `super` binding. Ensure we don't inherit
+          // `super` allowances from an enclosing method/constructor when parsing
+          // parameter initializers.
+          let prev_super_prop_allowed = p.super_prop_allowed;
+          let prev_super_call_allowed = p.super_call_allowed;
+          p.super_prop_allowed = 0;
+          p.super_call_allowed = 0;
+          let parameters = p.func_params(fn_ctx);
+          p.super_prop_allowed = prev_super_prop_allowed;
+          p.super_call_allowed = prev_super_call_allowed;
+          let parameters = parameters?;
+          // TypeScript: return type annotation (may be type predicate)
+          let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+            Some(p.type_expr_or_predicate(ctx)?)
+          } else {
+            None
+          };
+          // TypeScript: function overload signatures have no body
+          let body = if p.peek().typ == TT::BraceOpen {
+            let contains_use_strict =
+              p.is_strict_ecmascript() && p.has_use_strict_directive_in_block_body()?;
+            let simple_params = Parser::is_simple_parameter_list(&parameters);
+            if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+              return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+                "`use strict` directive not allowed with a non-simple parameter list",
+              )));
+            }
 
-          let prev_strict_mode = p.strict_mode;
-          if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-            p.strict_mode += 1;
-          }
-          let res = (|| {
-            p.validate_formal_parameters(name.as_ref(), &parameters, simple_params, false)?;
-            p.parse_non_arrow_func_block_body(fn_ctx)
-          })();
-          p.strict_mode = prev_strict_mode;
-          Some(res?.into())
-        } else {
-          if p.is_strict_ecmascript() {
-            return Err(
-              p.peek()
-                .error(SyntaxErrorType::RequiredTokenNotFound(TT::BraceOpen)),
-            );
-          }
-          // Overload signature - consume semicolon or allow ASI
-          let _ = p.consume_if(TT::Semicolon);
-          None
-        };
-        Ok(Func {
-          arrow: false,
-          async_: is_async,
-          generator,
-          type_parameters,
-          parameters,
-          return_type,
-          body,
+            let prev_strict_mode = p.strict_mode;
+            if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+              p.strict_mode += 1;
+            }
+            let res = (|| {
+              p.validate_formal_parameters(name.as_ref(), &parameters, simple_params, false)?;
+              p.parse_non_arrow_func_block_body(fn_ctx)
+            })();
+            p.strict_mode = prev_strict_mode;
+            Some(res?.into())
+          } else {
+            if p.is_strict_ecmascript() {
+              return Err(
+                p.peek()
+                  .error(SyntaxErrorType::RequiredTokenNotFound(TT::BraceOpen)),
+              );
+            }
+            // Overload signature - consume semicolon or allow ASI
+            let _ = p.consume_if(TT::Semicolon);
+            None
+          };
+          Ok(Func {
+            arrow: false,
+            async_: is_async,
+            generator,
+            type_parameters,
+            parameters,
+            return_type,
+            body,
+          })
         })
       })?;
       Ok(FuncDecl {
@@ -302,9 +299,7 @@ impl<'a> Parser<'a> {
         name,
         function,
       })
-    });
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    res
+    })
   }
 
   pub fn class_decl(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassDecl>> {

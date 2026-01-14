@@ -557,12 +557,7 @@ impl<'a> Parser<'a> {
   }
 
   pub fn func_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<FuncExpr>> {
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    // Class field initializers and static initialization blocks disallow `arguments` identifier
-    // references (an early error), but regular functions introduce their own `arguments` binding.
-    // Temporarily disable the check while parsing the function's parameters and body.
-    self.disallow_arguments_in_class_init = 0;
-    let res = self.with_loc(|p| {
+    self.with_loc(|p| {
       let is_async = p.consume_if(TT::KeywordAsync).is_match();
       p.require(TT::KeywordFunction)?;
       let generator = p.consume_if(TT::Asterisk).is_match();
@@ -600,56 +595,56 @@ impl<'a> Parser<'a> {
           await_expr_allowed: is_async,
           yield_expr_allowed: generator,
         });
-        // Regular functions do not have a `super` binding. Ensure we don't inherit
-        // `super` allowances from an enclosing method/constructor when parsing
-        // parameter initializers.
-        let prev_super_prop_allowed = p.super_prop_allowed;
-        let prev_super_call_allowed = p.super_call_allowed;
-        p.super_prop_allowed = 0;
-        p.super_call_allowed = 0;
-        let parameters = p.func_params(fn_ctx);
-        p.super_prop_allowed = prev_super_prop_allowed;
-        p.super_call_allowed = prev_super_call_allowed;
-        let parameters = parameters?;
-        // TypeScript: return type annotation - may be type predicate
-        let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-          Some(p.type_expr_or_predicate(ctx)?)
-        } else {
-          None
-        };
-        let contains_use_strict =
-          p.is_strict_ecmascript() && p.has_use_strict_directive_in_block_body()?;
-        let simple_params = Parser::is_simple_parameter_list(&parameters);
-        if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-          return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-            "`use strict` directive not allowed with a non-simple parameter list",
-          )));
-        }
+        p.with_arguments_bound_in_class_init(|p| {
+          // Regular functions do not have a `super` binding. Ensure we don't inherit
+          // `super` allowances from an enclosing method/constructor when parsing
+          // parameter initializers.
+          let prev_super_prop_allowed = p.super_prop_allowed;
+          let prev_super_call_allowed = p.super_call_allowed;
+          p.super_prop_allowed = 0;
+          p.super_call_allowed = 0;
+          let parameters = p.func_params(fn_ctx);
+          p.super_prop_allowed = prev_super_prop_allowed;
+          p.super_call_allowed = prev_super_call_allowed;
+          let parameters = parameters?;
+          // TypeScript: return type annotation - may be type predicate
+          let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+            Some(p.type_expr_or_predicate(ctx)?)
+          } else {
+            None
+          };
+          let contains_use_strict =
+            p.is_strict_ecmascript() && p.has_use_strict_directive_in_block_body()?;
+          let simple_params = Parser::is_simple_parameter_list(&parameters);
+          if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+            return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+              "`use strict` directive not allowed with a non-simple parameter list",
+            )));
+          }
 
-        let prev_strict_mode = p.strict_mode;
-        if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-          p.strict_mode += 1;
-        }
-        let res = (|| {
-          p.validate_formal_parameters(name.as_ref(), &parameters, simple_params, false)?;
-          p.parse_non_arrow_func_block_body(fn_ctx)
-        })();
-        p.strict_mode = prev_strict_mode;
-        let body = res?.into();
-        Ok(Func {
-          arrow: false,
-          async_: is_async,
-          generator,
-          type_parameters,
-          parameters,
-          return_type,
-          body: Some(body),
+          let prev_strict_mode = p.strict_mode;
+          if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+            p.strict_mode += 1;
+          }
+          let res = (|| {
+            p.validate_formal_parameters(name.as_ref(), &parameters, simple_params, false)?;
+            p.parse_non_arrow_func_block_body(fn_ctx)
+          })();
+          p.strict_mode = prev_strict_mode;
+          let body = res?.into();
+          Ok(Func {
+            arrow: false,
+            async_: is_async,
+            generator,
+            type_parameters,
+            parameters,
+            return_type,
+            body: Some(body),
+          })
         })
       })?;
       Ok(FuncExpr { name, func })
-    });
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    res
+    })
   }
 
   pub fn class_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<ClassExpr>> {

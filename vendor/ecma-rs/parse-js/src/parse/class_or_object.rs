@@ -775,10 +775,6 @@ impl<'a> Parser<'a> {
       // Method with type parameters or parenthesis
       TT::ChevronLeft | TT::ParenthesisOpen => {
         // Parse as method
-        let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-        // Class methods introduce their own `arguments` binding; do not apply the class initializer
-        // early error within the method's parameters/body.
-        self.disallow_arguments_in_class_init = 0;
         let method = self.with_loc(|p| {
           let func = p.with_loc(|p| {
             // TypeScript: generic type parameters
@@ -798,79 +794,80 @@ impl<'a> Parser<'a> {
                await_expr_allowed: false,
                yield_expr_allowed: false,
              });
-             // `super` is allowed in method/constructor parameter initializers.
-             // `super()` is only allowed in derived constructors.
-             let prev_super_prop_allowed = p.super_prop_allowed;
-             let prev_super_call_allowed = p.super_call_allowed;
-             p.super_prop_allowed += 1;
-             if is_constructor && is_derived_class {
-               p.super_call_allowed += 1;
-             } else {
-               p.super_call_allowed = 0;
-             }
-             let parameters = p.func_params(fn_ctx);
-             p.super_prop_allowed = prev_super_prop_allowed;
-             p.super_call_allowed = prev_super_call_allowed;
-             let parameters = parameters?;
-             // TypeScript: return type annotation
-             let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-               Some(p.type_expr_or_predicate(ctx)?)
-             } else {
-               None
-            };
-            let simple_params = Parser::is_simple_parameter_list(&parameters);
-            let contains_use_strict = p.peek().typ == TT::BraceOpen
-              && p.is_strict_ecmascript()
-              && p.has_use_strict_directive_in_block_body()?;
-            if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-              return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-                "`use strict` directive not allowed with a non-simple parameter list",
-              )));
-            }
-
-            let prev_strict_mode = p.strict_mode;
-            if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-              p.strict_mode += 1;
-            }
-            // TypeScript: method overload signatures and abstract methods have no body
-            // Also check if next token could start a new member (for overloads without semicolons)
-            let next_could_be_new_member = Self::probable_class_member_start(p.peek().typ);
-            // For constructors, if next token is not an opening brace, it's an overload signature
-            let constructor_without_body = is_constructor && p.peek().typ != TT::BraceOpen;
-
-            let res = (|| {
-              p.validate_formal_parameters(None, &parameters, simple_params, true)?;
-              let body = if p.peek().typ == TT::Semicolon
-                || (abstract_ && p.peek().typ != TT::BraceOpen)
-                || (next_could_be_new_member && p.peek().typ != TT::BraceOpen)
-                || constructor_without_body
-              {
-                let _ = p.consume_if(TT::Semicolon);
-                None
+             p.with_arguments_bound_in_class_init(|p| {
+               // `super` is allowed in method/constructor parameter initializers.
+               // `super()` is only allowed in derived constructors.
+               let prev_super_prop_allowed = p.super_prop_allowed;
+               let prev_super_call_allowed = p.super_call_allowed;
+               p.super_prop_allowed += 1;
+               if is_constructor && is_derived_class {
+                 p.super_call_allowed += 1;
                } else {
-                 Some(
-                   p.parse_method_block_body(fn_ctx, is_constructor && is_derived_class)?
-                     .into(),
-                 )
-               };
-              Ok(body)
-            })();
-            p.strict_mode = prev_strict_mode;
-            let body = res?;
-            Ok(Func {
-              arrow: false,
-              async_: false,
-              generator: false,
-              type_parameters,
-              parameters,
-              return_type,
-              body,
-            })
-          })?;
+                 p.super_call_allowed = 0;
+               }
+               let parameters = p.func_params(fn_ctx);
+               p.super_prop_allowed = prev_super_prop_allowed;
+               p.super_call_allowed = prev_super_call_allowed;
+               let parameters = parameters?;
+               // TypeScript: return type annotation
+               let return_type =
+                 if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+                   Some(p.type_expr_or_predicate(ctx)?)
+                 } else {
+                   None
+                 };
+               let simple_params = Parser::is_simple_parameter_list(&parameters);
+               let contains_use_strict = p.peek().typ == TT::BraceOpen
+                 && p.is_strict_ecmascript()
+                 && p.has_use_strict_directive_in_block_body()?;
+               if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+                 return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+                   "`use strict` directive not allowed with a non-simple parameter list",
+                 )));
+               }
+
+               let prev_strict_mode = p.strict_mode;
+               if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+                 p.strict_mode += 1;
+               }
+               // TypeScript: method overload signatures and abstract methods have no body
+               // Also check if next token could start a new member (for overloads without semicolons)
+               let next_could_be_new_member = Self::probable_class_member_start(p.peek().typ);
+               // For constructors, if next token is not an opening brace, it's an overload signature
+               let constructor_without_body = is_constructor && p.peek().typ != TT::BraceOpen;
+
+               let res = (|| {
+                 p.validate_formal_parameters(None, &parameters, simple_params, true)?;
+                 let body = if p.peek().typ == TT::Semicolon
+                   || (abstract_ && p.peek().typ != TT::BraceOpen)
+                   || (next_could_be_new_member && p.peek().typ != TT::BraceOpen)
+                   || constructor_without_body
+                 {
+                   let _ = p.consume_if(TT::Semicolon);
+                   None
+                 } else {
+                   Some(
+                     p.parse_method_block_body(fn_ctx, is_constructor && is_derived_class)?
+                       .into(),
+                   )
+                 };
+                 Ok(body)
+               })();
+               p.strict_mode = prev_strict_mode;
+               let body = res?;
+               Ok(Func {
+                 arrow: false,
+                 async_: false,
+                 generator: false,
+                 type_parameters,
+                 parameters,
+                 return_type,
+                 body,
+               })
+             })
+           })?;
           Ok(ClassOrObjMethod { func })
-        });
-        self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-        let method = method?;
+        })?;
         Ok(ClassOrObjVal::Method(method))
       }
       // Property with initializer
@@ -946,10 +943,6 @@ impl<'a> Parser<'a> {
     } else {
       self.class_or_obj_key(ctx)?
     };
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    // Methods introduce their own `arguments` binding; do not apply the class initializer early
-    // error within the method's parameters/body.
-    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -967,64 +960,64 @@ impl<'a> Parser<'a> {
         await_expr_allowed: is_async,
         yield_expr_allowed: is_generator,
       });
-      // `super` is allowed in object/class methods. `super()` is never valid here.
-      let prev_super_prop_allowed = p.super_prop_allowed;
-      let prev_super_call_allowed = p.super_call_allowed;
-      p.super_prop_allowed += 1;
-      p.super_call_allowed = 0;
-      let parameters = p.func_params(fn_ctx);
-      p.super_prop_allowed = prev_super_prop_allowed;
-      p.super_call_allowed = prev_super_call_allowed;
-      let parameters = parameters?;
-      // TypeScript: return type annotation - may be type predicate
-      let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-        Some(p.type_expr_or_predicate(ctx)?)
-      } else {
-        None
-      };
-      let simple_params = Parser::is_simple_parameter_list(&parameters);
-      let contains_use_strict = p.peek().typ == TT::BraceOpen
-        && p.is_strict_ecmascript()
-        && p.has_use_strict_directive_in_block_body()?;
-      if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-        return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-          "`use strict` directive not allowed with a non-simple parameter list",
-        )));
-      }
-
-      let prev_strict_mode = p.strict_mode;
-      if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-        p.strict_mode += 1;
-      }
-      // TypeScript: method overload signatures and abstract methods have no body
-      // Method overloads are indicated by a semicolon instead of a body
-      let res = (|| {
-        p.validate_formal_parameters(None, &parameters, simple_params, true)?;
-        let body = if p.peek().typ == TT::Semicolon
-          || (abstract_ && p.peek().typ != TT::BraceOpen)
-          || (Self::probable_class_member_start(p.peek().typ) && p.peek().typ != TT::BraceOpen)
-        {
-          let _ = p.consume_if(TT::Semicolon);
-          None
+      p.with_arguments_bound_in_class_init(|p| {
+        // `super` is allowed in object/class methods. `super()` is never valid here.
+        let prev_super_prop_allowed = p.super_prop_allowed;
+        let prev_super_call_allowed = p.super_call_allowed;
+        p.super_prop_allowed += 1;
+        p.super_call_allowed = 0;
+        let parameters = p.func_params(fn_ctx);
+        p.super_prop_allowed = prev_super_prop_allowed;
+        p.super_call_allowed = prev_super_call_allowed;
+        let parameters = parameters?;
+        // TypeScript: return type annotation - may be type predicate
+        let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+          Some(p.type_expr_or_predicate(ctx)?)
         } else {
-          Some(p.parse_method_block_body(fn_ctx, false)?.into())
+          None
         };
-        Ok(body)
-      })();
-      p.strict_mode = prev_strict_mode;
-      let body = res?;
-      Ok(Func {
-        arrow: false,
-        async_: is_async,
-        generator: is_generator,
-        type_parameters,
-        parameters,
-        return_type,
-        body,
+        let simple_params = Parser::is_simple_parameter_list(&parameters);
+        let contains_use_strict = p.peek().typ == TT::BraceOpen
+          && p.is_strict_ecmascript()
+          && p.has_use_strict_directive_in_block_body()?;
+        if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+          return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+            "`use strict` directive not allowed with a non-simple parameter list",
+          )));
+        }
+
+        let prev_strict_mode = p.strict_mode;
+        if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+          p.strict_mode += 1;
+        }
+        // TypeScript: method overload signatures and abstract methods have no body
+        // Method overloads are indicated by a semicolon instead of a body
+        let res = (|| {
+          p.validate_formal_parameters(None, &parameters, simple_params, true)?;
+          let body = if p.peek().typ == TT::Semicolon
+            || (abstract_ && p.peek().typ != TT::BraceOpen)
+            || (Self::probable_class_member_start(p.peek().typ) && p.peek().typ != TT::BraceOpen)
+          {
+            let _ = p.consume_if(TT::Semicolon);
+            None
+          } else {
+            Some(p.parse_method_block_body(fn_ctx, false)?.into())
+          };
+          Ok(body)
+        })();
+        p.strict_mode = prev_strict_mode;
+        let body = res?;
+        Ok(Func {
+          arrow: false,
+          async_: is_async,
+          generator: is_generator,
+          type_parameters,
+          parameters,
+          return_type,
+          body,
+        })
       })
-    });
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    let func = func?;
+    })?;
     let val = func.wrap(|func| ClassOrObjMethod { func });
     Ok((key, val))
   }
@@ -1043,10 +1036,6 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(ClassOrObjKey, Node<ClassOrObjGetter>)> {
     self.require(TT::KeywordGet)?;
     let key = self.class_or_obj_key(ctx)?;
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    // Getters introduce their own `arguments` binding; do not apply the class initializer early
-    // error within the getter body.
-    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -1057,25 +1046,26 @@ impl<'a> Parser<'a> {
       } else {
         None
       };
-      // TypeScript-style recovery: allow getters without parentheses.
-      if p.peek().typ != TT::ParenthesisOpen {
-        if p.should_recover() {
-          return Ok(Func {
-            arrow: false,
-            async_: false,
-            generator: false,
-            type_parameters,
-            parameters: Vec::new(),
-            return_type: None,
-            body: None,
-          });
+      p.with_arguments_bound_in_class_init(|p| {
+        // TypeScript-style recovery: allow getters without parentheses.
+        if p.peek().typ != TT::ParenthesisOpen {
+          if p.should_recover() {
+            return Ok(Func {
+              arrow: false,
+              async_: false,
+              generator: false,
+              type_parameters,
+              parameters: Vec::new(),
+              return_type: None,
+              body: None,
+            });
+          }
+          return Err(
+            p.peek()
+              .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
+          );
         }
-        return Err(
-          p.peek()
-            .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
-        );
-      }
-      p.require(TT::ParenthesisOpen)?;
+        p.require(TT::ParenthesisOpen)?;
 
       // TypeScript: Check for optional `this` parameter in getter
       // Syntax: get x(this: Type): ReturnType
@@ -1172,18 +1162,17 @@ impl<'a> Parser<'a> {
       })();
       p.strict_mode = prev_strict_mode;
       let body = res?;
-      Ok(Func {
-        arrow: false,
-        async_: false,
-        generator: false,
-        type_parameters,
-        parameters,
-        return_type,
-        body,
+        Ok(Func {
+          arrow: false,
+          async_: false,
+          generator: false,
+          type_parameters,
+          parameters,
+          return_type,
+          body,
+        })
       })
-    });
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    let func = func?;
+    })?;
     let val = func.wrap(|func| ClassOrObjGetter { func });
     Ok((key, val))
   }
@@ -1202,10 +1191,6 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(ClassOrObjKey, Node<ClassOrObjSetter>)> {
     self.require(TT::KeywordSet)?;
     let key = self.class_or_obj_key(ctx)?;
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    // Setters introduce their own `arguments` binding; do not apply the class initializer early
-    // error within the setter's parameters/body.
-    self.disallow_arguments_in_class_init = 0;
     let func = self.with_loc(|p| {
       // TypeScript: generic type parameters
       let type_parameters = if !p.is_strict_ecmascript()
@@ -1216,73 +1201,68 @@ impl<'a> Parser<'a> {
       } else {
         None
       };
-      // TypeScript-style recovery: allow setters without parentheses.
-      if p.peek().typ != TT::ParenthesisOpen {
-        if p.should_recover() {
-          // Missing parentheses - create synthetic parameter for error recovery
-          let loc = p.peek().loc;
-          let synthetic_pattern = Node::new(
-            loc,
-            PatDecl {
-              pat: Node::new(
-                loc,
-                IdPat {
-                  name: String::from("_"),
-                },
-              )
-              .into_wrapped(),
-            },
-          );
-          let param_loc = synthetic_pattern.loc;
-          return Ok(Func {
-            arrow: false,
-            async_: false,
-            generator: false,
-            type_parameters,
-            parameters: vec![Node::new(
-              param_loc,
-              ParamDecl {
-                decorators: Vec::new(),
-                rest: false,
-                optional: false,
-                accessibility: None,
-                readonly: false,
-                pattern: synthetic_pattern,
-                type_annotation: None,
-                default_value: None,
+      p.with_arguments_bound_in_class_init(|p| {
+        // TypeScript-style recovery: allow setters without parentheses.
+        if p.peek().typ != TT::ParenthesisOpen {
+          if p.should_recover() {
+            // Missing parentheses - create synthetic parameter for error recovery
+            let loc = p.peek().loc;
+            let synthetic_pattern = Node::new(
+              loc,
+              PatDecl {
+                pat: Node::new(
+                  loc,
+                  IdPat {
+                    name: String::from("_"),
+                  },
+                )
+                .into_wrapped(),
               },
-            )],
-            return_type: None,
-            body: None,
-          });
+            );
+            let param_loc = synthetic_pattern.loc;
+            return Ok(Func {
+              arrow: false,
+              async_: false,
+              generator: false,
+              type_parameters,
+              parameters: vec![Node::new(
+                param_loc,
+                ParamDecl {
+                  decorators: Vec::new(),
+                  rest: false,
+                  optional: false,
+                  accessibility: None,
+                  readonly: false,
+                  pattern: synthetic_pattern,
+                  type_annotation: None,
+                  default_value: None,
+                },
+              )],
+              return_type: None,
+              body: None,
+            });
+          }
+          return Err(
+            p.peek()
+              .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
+          );
         }
-        return Err(
-          p.peek()
-            .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
-        );
-      }
-
-      // Setters introduce their own `arguments` binding, so class initializer `ContainsArguments`
-      // early errors do not apply within the setter's parameter list or body.
-      let prev_disallow_arguments_in_class_init = p.disallow_arguments_in_class_init;
-      p.disallow_arguments_in_class_init = 0;
-
-      let prev_new_target_allowed = p.new_target_allowed;
-      let prev_super_prop_allowed = p.super_prop_allowed;
-      let prev_super_call_allowed = p.super_call_allowed;
-      p.new_target_allowed += 1;
-      p.super_prop_allowed += 1;
-      p.super_call_allowed = 0;
-      let res = p.with_arguments_bound_in_class_init(|p| {
-        p.require(TT::ParenthesisOpen)?;
-        // Setters are not generators or async, so yield/await can be used as identifiers
-        let is_module = p.is_module();
-        let setter_ctx = ctx.with_rules(ParsePatternRules {
-          await_allowed: !is_module,
-          yield_allowed: !is_module,
-          await_expr_allowed: false,
-          yield_expr_allowed: false,
-        });
+        let prev_new_target_allowed = p.new_target_allowed;
+        let prev_super_prop_allowed = p.super_prop_allowed;
+        let prev_super_call_allowed = p.super_call_allowed;
+        p.new_target_allowed += 1;
+        p.super_prop_allowed += 1;
+        p.super_call_allowed = 0;
+        let res = (|| {
+          p.require(TT::ParenthesisOpen)?;
+          // Setters are not generators or async, so yield/await can be used as identifiers
+          let is_module = p.is_module();
+          let setter_ctx = ctx.with_rules(ParsePatternRules {
+            await_allowed: !is_module,
+            yield_allowed: !is_module,
+            await_expr_allowed: false,
+            yield_expr_allowed: false,
+          });
 
         // TypeScript: Check for optional `this` parameter in setter
         // Syntax: set x(this: Type, value: ValueType)
@@ -1426,15 +1406,13 @@ impl<'a> Parser<'a> {
           return_type: None,
           body,
         })
-      });
-      p.new_target_allowed = prev_new_target_allowed;
-      p.super_prop_allowed = prev_super_prop_allowed;
-      p.super_call_allowed = prev_super_call_allowed;
-      p.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-      res
-    });
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    let func = func?;
+        })();
+        p.new_target_allowed = prev_new_target_allowed;
+        p.super_prop_allowed = prev_super_prop_allowed;
+        p.super_call_allowed = prev_super_call_allowed;
+        res
+      })
+    })?;
     let val = func.wrap(|func| ClassOrObjSetter { func });
     Ok((key, val))
   }
@@ -1556,7 +1534,10 @@ impl<'a> Parser<'a> {
       let method = self.with_loc(|p| {
         let func = p.with_loc(|p| {
           let parameters = Vec::new();
-          let body = Some(p.parse_non_arrow_func_block_body(ctx)?.into());
+          let body = Some(
+            p.with_arguments_bound_in_class_init(|p| p.parse_non_arrow_func_block_body(ctx))?
+              .into(),
+          );
           Ok(Func {
             arrow: false,
             async_: false,
@@ -1624,66 +1605,69 @@ impl<'a> Parser<'a> {
               None
             };
             let is_module = p.is_module();
-            let fn_ctx = ctx.with_rules(ParsePatternRules {
-              await_allowed: if is_module { false } else { !is_async },
-              yield_allowed: if is_module { false } else { !is_generator },
-              await_expr_allowed: is_async,
-              yield_expr_allowed: is_generator,
-            });
-            // `super` is allowed in methods. `super()` is never valid here.
-            let prev_super_prop_allowed = p.super_prop_allowed;
-            let prev_super_call_allowed = p.super_call_allowed;
-            p.super_prop_allowed += 1;
-            p.super_call_allowed = 0;
-            let parameters = p.func_params(fn_ctx);
-            p.super_prop_allowed = prev_super_prop_allowed;
-            p.super_call_allowed = prev_super_call_allowed;
-            let parameters = parameters?;
-            // TypeScript: return type annotation
-            let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
-              Some(p.type_expr_or_predicate(ctx)?)
-            } else {
-              None
-            };
-            let simple_params = Parser::is_simple_parameter_list(&parameters);
-            let contains_use_strict = p.peek().typ == TT::BraceOpen
-              && p.is_strict_ecmascript()
-              && p.has_use_strict_directive_in_block_body()?;
-            if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
-              return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
-                "`use strict` directive not allowed with a non-simple parameter list",
-              )));
-            }
-
-            let prev_strict_mode = p.strict_mode;
-            if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
-              p.strict_mode += 1;
-            }
-            // TypeScript: method overload signatures and abstract methods have no body
-            // Method overloads are indicated by a semicolon instead of a body
-            let res = (|| {
-              p.validate_formal_parameters(None, &parameters, simple_params, true)?;
-              let body =
-                if p.peek().typ == TT::Semicolon || (abstract_ && p.peek().typ != TT::BraceOpen) {
-                  let _ = p.consume_if(TT::Semicolon);
-                  None
-                } else {
-                  Some(p.parse_method_block_body(fn_ctx, false)?.into())
-                };
-              Ok(body)
-            })();
-            p.strict_mode = prev_strict_mode;
-            let body = res?;
-            Ok(Func {
-              arrow: false,
-              async_: is_async,
-              generator: is_generator,
-              type_parameters,
-              parameters,
-              return_type,
-              body,
-            })
-          })?;
+             let fn_ctx = ctx.with_rules(ParsePatternRules {
+               await_allowed: if is_module { false } else { !is_async },
+               yield_allowed: if is_module { false } else { !is_generator },
+               await_expr_allowed: is_async,
+               yield_expr_allowed: is_generator,
+             });
+             p.with_arguments_bound_in_class_init(|p| {
+               // `super` is allowed in methods. `super()` is never valid here.
+               let prev_super_prop_allowed = p.super_prop_allowed;
+               let prev_super_call_allowed = p.super_call_allowed;
+               p.super_prop_allowed += 1;
+               p.super_call_allowed = 0;
+               let parameters = p.func_params(fn_ctx);
+               p.super_prop_allowed = prev_super_prop_allowed;
+               p.super_call_allowed = prev_super_call_allowed;
+               let parameters = parameters?;
+               // TypeScript: return type annotation
+               let return_type =
+                 if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
+                   Some(p.type_expr_or_predicate(ctx)?)
+                 } else {
+                   None
+                 };
+               let simple_params = Parser::is_simple_parameter_list(&parameters);
+               let contains_use_strict = p.peek().typ == TT::BraceOpen
+                 && p.is_strict_ecmascript()
+                 && p.has_use_strict_directive_in_block_body()?;
+               if p.is_strict_ecmascript() && contains_use_strict && !simple_params {
+                 return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax(
+                   "`use strict` directive not allowed with a non-simple parameter list",
+                 )));
+               }
+ 
+               let prev_strict_mode = p.strict_mode;
+               if p.is_strict_ecmascript() && contains_use_strict && !p.is_strict_mode() {
+                 p.strict_mode += 1;
+               }
+               // TypeScript: method overload signatures and abstract methods have no body
+               // Method overloads are indicated by a semicolon instead of a body
+               let res = (|| {
+                 p.validate_formal_parameters(None, &parameters, simple_params, true)?;
+                 let body =
+                   if p.peek().typ == TT::Semicolon || (abstract_ && p.peek().typ != TT::BraceOpen) {
+                     let _ = p.consume_if(TT::Semicolon);
+                     None
+                   } else {
+                     Some(p.parse_method_block_body(fn_ctx, false)?.into())
+                   };
+                 Ok(body)
+               })();
+               p.strict_mode = prev_strict_mode;
+               let body = res?;
+               Ok(Func {
+                 arrow: false,
+                 async_: is_async,
+                 generator: is_generator,
+                 type_parameters,
+                 parameters,
+                 return_type,
+                 body,
+               })
+             })
+           })?;
           Ok(ClassOrObjMethod { func })
         })?;
         (key, ClassOrObjVal::Method(method))

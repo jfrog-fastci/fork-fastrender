@@ -166,18 +166,17 @@ pub struct Parser<'a> {
   new_target_allowed: u32,
   super_prop_allowed: u32,
   super_call_allowed: u32,
-  /// Disallow `arguments` identifier references in class field initializers and static blocks.
-  ///
-  /// This implements the `ContainsArguments` early error from ECMA-262 for class initialization
-  /// code, preventing class initialization expressions from capturing an outer `arguments` binding
-  /// (including via arrow functions).
-  ///
-  /// Note: this is a counter so nested class init contexts compose naturally.
-  disallow_arguments_in_class_init: u32,
   class_is_derived: Vec<bool>,
   in_iteration: u32,
   in_switch: u32,
   labels: Vec<LabelInfo>,
+  /// Stack of active class-initialization contexts (class field initializers and static blocks)
+  /// that disallow identifier references to `arguments` (ECMA-262 `ContainsArguments` early error).
+  ///
+  /// Each entry stores the current *non-arrow function depth* for that class-init context. A value
+  /// of `0` means we are not currently inside a nested non-arrow function for that class-init
+  /// context, so `arguments` is disallowed.
+  arguments_disallowed_in_class_init: Vec<u32>,
   cancel: Option<Arc<AtomicBool>>,
   cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
 }
@@ -209,7 +208,6 @@ impl<'a> Parser<'a> {
       allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
-      disallow_arguments_in_class_init: 0,
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
@@ -217,6 +215,7 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
+      arguments_disallowed_in_class_init: Vec::new(),
       cancel,
       cancel_check: None,
     }
@@ -237,7 +236,6 @@ impl<'a> Parser<'a> {
       allow_top_level_yield: false,
       strict_mode: 0,
       in_function: 0,
-      disallow_arguments_in_class_init: 0,
       new_target_allowed: 0,
       super_prop_allowed: 0,
       super_call_allowed: 0,
@@ -245,6 +243,7 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
+      arguments_disallowed_in_class_init: Vec::new(),
       cancel: None,
       cancel_check: Some(cancel_check),
     }
@@ -361,44 +360,6 @@ impl<'a> Parser<'a> {
     Self::is_strict_mode_restricted_binding_identifier(name)
   }
 
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    let prev = self.disallow_arguments_in_class_init;
-    self.disallow_arguments_in_class_init = prev.saturating_add(1);
-    let res = f(self);
-    self.disallow_arguments_in_class_init = prev;
-    res
-  }
-
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-    let Some(string_value) = self.identifier_name_string_value(name) else {
-      // Identifier names should have already been validated by the lexer; treat this as a syntax
-      // error to avoid silently accepting malformed escape sequences.
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "'arguments' is not allowed in class field initializer or static initialization block",
-        ),
-        None,
-      ));
-    }
-    Ok(())
-  }
-
   pub(crate) fn validate_strict_binding_identifier_name(
     &self,
     loc: Loc,
@@ -422,16 +383,6 @@ impl<'a> Parser<'a> {
     Ok(())
   }
 
-  pub(crate) fn with_arguments_bound_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
-    self.disallow_arguments_in_class_init = 0;
-    let res = f(self);
-    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
-    res
-  }
   fn validate_strict_assignment_target_name(&self, loc: Loc, name: &str) -> SyntaxResult<()> {
     if !self.is_strict_ecmascript() || !self.is_strict_mode() {
       return Ok(());
@@ -491,6 +442,69 @@ impl<'a> Parser<'a> {
     }
   }
 
+  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
+    &self,
+    loc: Loc,
+    name: &str,
+  ) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() {
+      return Ok(());
+    }
+    if !self
+      .arguments_disallowed_in_class_init
+      .last()
+      .is_some_and(|function_depth| *function_depth == 0)
+    {
+      return Ok(());
+    }
+
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      // Identifier names should have already been validated by the lexer; treat this as a syntax
+      // error to avoid silently accepting malformed escape sequences.
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+
+    if string_value.as_ref() == "arguments" {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "`arguments` is not allowed in class field initializers or static initialization blocks",
+        ),
+        None,
+      ));
+    }
+    Ok(())
+  }
+
+  pub(crate) fn with_disallow_arguments_in_class_init<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
+  ) -> SyntaxResult<R> {
+    if !self.is_strict_ecmascript() {
+      return f(self);
+    }
+    self.arguments_disallowed_in_class_init.push(0);
+    let res = f(self);
+    self.arguments_disallowed_in_class_init.pop();
+    res
+  }
+
+  pub(crate) fn with_arguments_bound_in_class_init<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
+  ) -> SyntaxResult<R> {
+    if !self.is_strict_ecmascript() || self.arguments_disallowed_in_class_init.is_empty() {
+      return f(self);
+    }
+    for depth in self.arguments_disallowed_in_class_init.iter_mut() {
+      *depth += 1;
+    }
+    let res = f(self);
+    for depth in self.arguments_disallowed_in_class_init.iter_mut() {
+      debug_assert!(*depth > 0);
+      *depth -= 1;
+    }
+    res
+  }
   /// Validate an *assignable reference* (simple assignment target), as required by update
   /// expressions (`++x`, `x--`, etc.).
   ///
