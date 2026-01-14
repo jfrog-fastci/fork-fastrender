@@ -1036,13 +1036,21 @@ mod tests {
 
   #[test]
   fn rejects_oversized_webm_packet() {
-    let err =
-      check_webm_packet_size(7, MAX_WEBM_PACKET_BYTES + 1).expect_err("expected size cap error");
+    let len = MAX_WEBM_PACKET_BYTES + 1;
+    let err = check_webm_packet_size(7, len).expect_err("expected size cap error");
     let MediaError::Demux(msg) = err else {
       panic!("expected demux error, got {err:?}");
     };
     assert!(
-      msg.contains(&MAX_WEBM_PACKET_BYTES.to_string()),
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("size {len} bytes")),
+      "expected error mentioning size, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {MAX_WEBM_PACKET_BYTES} bytes")),
       "expected error mentioning cap, got {msg:?}"
     );
   }
