@@ -6949,8 +6949,9 @@ fn prepare_fragment_tree_paint_state(
                     }
                     text.len()
                   };
-                  let mut display_text_owned: Option<String> = None;
-                  let mut display_text: &str = "";
+                  use std::borrow::Cow;
+
+                  let mut display_text: Cow<'_, str> = Cow::Borrowed("");
                   let mut ime_caret_idx: Option<usize> = None;
 
                   match kind {
@@ -6968,8 +6969,7 @@ fn prepare_fragment_tree_paint_state(
                           .saturating_sub(replaced_len)
                           .saturating_add(preedit_len)
                           .clamp(3, 50);
-                        display_text_owned = Some("•".repeat(mask_len));
-                        display_text = display_text_owned.as_deref().unwrap_or("");
+                        display_text = Cow::Owned("•".repeat(mask_len));
 
                         if let Some(preedit) = preedit {
                           let preedit_len = preedit.text.chars().count();
@@ -6997,8 +6997,7 @@ fn prepare_fragment_tree_paint_state(
                         combined.push_str(&value[..start_byte]);
                         combined.push_str(&preedit.text);
                         combined.push_str(&value[end_byte..]);
-                        display_text_owned = Some(combined);
-                        display_text = display_text_owned.as_deref().unwrap_or("");
+                        display_text = Cow::Owned(combined);
 
                         let preedit_len = preedit.text.chars().count();
                         let cursor_end = preedit
@@ -7008,11 +7007,12 @@ fn prepare_fragment_tree_paint_state(
                           .min(preedit_len);
                         ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
                       } else {
-                        display_text = value.as_str();
+                        display_text = Cow::Borrowed(value.as_str());
                       }
                     }
                   }
 
+                  let display_text = display_text.as_ref();
                   let char_count = display_text.chars().count();
                   let font_size = if style.font_size.is_finite() {
                     style.font_size.max(0.0)
