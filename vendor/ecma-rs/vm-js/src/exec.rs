@@ -52351,6 +52351,50 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_getter_call_and_args_eval_order(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() { log.push('key'); return 'm'; }
+      function arg() { log.push('arg'); return 1; }
+
+      class B {
+        get m() {
+          log.push('get:' + (this instanceof D));
+          return function (v) {
+            log.push('call:' + v + ':' + (this instanceof D));
+            return v;
+          };
+        }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super[key()](arg());
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'key,get:true,arg,call:1:true'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_nested_arrow_created_before_super_observes_initialized_this(
   ) -> Result<(), VmError> {
     let source = r#"
