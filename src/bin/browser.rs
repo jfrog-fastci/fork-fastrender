@@ -4350,6 +4350,15 @@ enum UserEvent {
     kind: fastrender::ui::ToastKind,
     text: String,
   },
+  FilePickerNativeDialogFallback {
+    window_id: winit::window::WindowId,
+    tab_id: fastrender::ui::TabId,
+    input_node_id: usize,
+    multiple: bool,
+    accept: Option<String>,
+    anchor_css: fastrender::geometry::Rect,
+    anchor_points: egui::Pos2,
+  },
   PageExportNativeDialogFallback {
     window_id: winit::window::WindowId,
     tab_id: fastrender::ui::TabId,
@@ -8596,6 +8605,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.window.request_redraw();
         }
       }
+      Event::UserEvent(UserEvent::FilePickerNativeDialogFallback {
+        window_id,
+        tab_id,
+        input_node_id,
+        multiple,
+        accept,
+        anchor_css,
+        anchor_points,
+      }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          if win.app.browser_state.active_tab_id() == Some(tab_id) {
+            win.app.open_file_picker_in_app(
+              tab_id,
+              input_node_id,
+              multiple,
+              accept,
+              anchor_css,
+              anchor_points,
+            );
+            win.app.window.request_redraw();
+          } else {
+            // The tab may have been backgrounded/closed while the native dialog was opening.
+            let _ = win
+              .app
+              .send_worker_msg(fastrender::ui::UiToWorker::FilePickerCancel { tab_id });
+          }
+        }
+      }
       Event::UserEvent(UserEvent::PageExportNativeDialogFallback {
         window_id,
         tab_id,
@@ -11117,6 +11154,11 @@ struct OpenFilePicker {
   input_node_id: usize,
   multiple: bool,
   accept: Option<String>,
+  /// egui widget id that held focus before the dialog was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
   /// Bounding box of the `<input>` control in viewport CSS coordinates.
   anchor_css: fastrender::geometry::Rect,
   /// Fallback anchor position in egui points (cursor position).
@@ -16452,8 +16494,11 @@ impl App {
   }
 
   fn close_file_picker(&mut self) {
-    self.open_file_picker = None;
     self.open_file_picker_rect = None;
+    let Some(picker) = self.open_file_picker.take() else {
+      return;
+    };
+    restore_or_clear_egui_focus(&self.egui_ctx, picker.focus_before_open);
   }
 
   fn cancel_file_picker(&mut self) {
@@ -16463,6 +16508,34 @@ impl App {
       });
     }
     self.close_file_picker();
+  }
+
+  fn open_file_picker_in_app(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    input_node_id: usize,
+    multiple: bool,
+    accept: Option<String>,
+    anchor_css: fastrender::geometry::Rect,
+    anchor_points: egui::Pos2,
+  ) {
+    let focus_before_open = self
+      .open_file_picker
+      .as_ref()
+      .map(|existing| existing.focus_before_open)
+      .unwrap_or_else(|| egui_focused_widget_id(&self.egui_ctx));
+
+    self.open_file_picker = Some(OpenFilePicker {
+      tab_id,
+      input_node_id,
+      multiple,
+      accept,
+      focus_before_open,
+      anchor_css,
+      anchor_points,
+      draft: String::new(),
+    });
+    self.open_file_picker_rect = None;
   }
 
   fn close_page_export(&mut self) {
@@ -16838,11 +16911,14 @@ impl App {
     input_node_id: usize,
     multiple: bool,
     accept: Option<String>,
+    anchor_css: fastrender::geometry::Rect,
+    anchor_points: egui::Pos2,
   ) {
     let proxy = self.event_loop_proxy.clone();
     let window_id = self.window.id();
     let renderer_backend = self.renderer_backend.clone();
     let cancel: Option<fastrender::ui::cancel::CancelGens> = self.tab_cancel.get(&tab_id).cloned();
+    let accept_for_thread = accept.clone();
 
     let spawn_result = {
       let proxy = proxy.clone();
@@ -16851,6 +16927,7 @@ impl App {
       std::thread::Builder::new()
         .name(format!("fastr-file-picker-{}", tab_id.0))
         .spawn(move || {
+          let accept = accept_for_thread;
           let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let extensions = rfd_extensions_from_html_accept(accept.as_deref());
 
@@ -16891,7 +16968,16 @@ impl App {
                 kind: fastrender::ui::ToastKind::Error,
                 text: "Failed to open native file dialog".to_string(),
               });
-              fastrender::ui::UiToWorker::FilePickerCancel { tab_id }
+              let _ = proxy.send_event(UserEvent::FilePickerNativeDialogFallback {
+                window_id,
+                tab_id,
+                input_node_id,
+                multiple,
+                accept,
+                anchor_css,
+                anchor_points,
+              });
+              return;
             }
           };
 
@@ -16906,14 +16992,19 @@ impl App {
 
     if let Err(err) = spawn_result {
       eprintln!("failed to spawn native file picker dialog thread: {err}");
-      if let Some(cancel) = cancel {
-        cancel.bump_paint();
-      }
-      let _ = renderer_backend.send(fastrender::ui::UiToWorker::FilePickerCancel { tab_id });
       let _ = proxy.send_event(UserEvent::ShowChromeToast {
         window_id,
         kind: fastrender::ui::ToastKind::Error,
         text: "Failed to open native file dialog".to_string(),
+      });
+      let _ = proxy.send_event(UserEvent::FilePickerNativeDialogFallback {
+        window_id,
+        tab_id,
+        input_node_id,
+        multiple,
+        accept,
+        anchor_css,
+        anchor_points,
       });
     }
   }
@@ -18223,7 +18314,7 @@ impl App {
       input_node_id,
       multiple,
       accept,
-      anchor_css: _,
+      anchor_css,
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
@@ -18237,9 +18328,45 @@ impl App {
           })
           .filter(|s| !s.is_empty());
 
-        // `rfd` dialogs are blocking; launch them on a helper thread so the egui frame loop stays
-        // responsive.
-        self.launch_native_file_picker_dialog(*tab_id, *input_node_id, *multiple, accept);
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(*anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            }
+          }
+        }
+
+        let force_in_app = fastrender::ui::native_dialogs::force_in_app_dialogs_from_env(
+          std::env::var(fastrender::ui::native_dialogs::ENV_BROWSER_FORCE_IN_APP_DIALOGS)
+            .ok()
+            .as_deref(),
+        );
+
+        if force_in_app {
+          self.open_file_picker_in_app(
+            *tab_id,
+            *input_node_id,
+            *multiple,
+            accept,
+            *anchor_css,
+            anchor_points,
+          );
+        } else {
+          // `rfd` dialogs are blocking; launch them on a helper thread so the egui frame loop stays
+          // responsive.
+          self.launch_native_file_picker_dialog(
+            *tab_id,
+            *input_node_id,
+            *multiple,
+            accept,
+            *anchor_css,
+            anchor_points,
+          );
+        }
         request_redraw = true;
       }
     }

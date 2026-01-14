@@ -200,7 +200,9 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - Legacy alias (mainly for older harnesses/tests): `FASTR_DOWNLOAD_DIR=/path/to/dir`.
 - `FASTR_BROWSER_FORCE_IN_APP_DIALOGS=0|1` – force the windowed browser UI to skip native OS dialogs and fall back to in-app dialogs.
   - Intended for CI/headless/minimal environments where native dialog backends (notably `rfd` on Linux via xdg-desktop-portal) may be unavailable.
-  - Currently affects the native save dialog used by **Save Page** / **Print** (it falls back to the in-app save popup instead).
+  - Affects:
+    - **Save Page** / **Print**: native save dialog falls back to the in-app save popup.
+    - `<input type=file>`: native file picker dialog is skipped and the in-app file picker popup is used instead.
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
