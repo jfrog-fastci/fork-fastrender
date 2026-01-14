@@ -344,6 +344,10 @@ status = "pass"
 id = "language/expressions/in/private-field-rhs-non-object.js"
 status = "pass"
 
+[[expectations]]
+id = "language/expressions/member-expression/computed-reference-null-or-undefined.js"
+status = "pass"
+
 # --- Broad xfail fallback (keep below any `pass` globs) ---
 [[expectations]]
 glob = "language/expressions/**"
@@ -416,36 +420,6 @@ status = "xfail"
 reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
 
 [[expectations]]
-id = "language/statements/async-generator/yield-star-promise-not-unwrapped.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` promise unwrapping semantics differ from spec for manually-implemented async iterators."
-
-[[expectations]]
-id = "language/statements/async-generator/dflt-params-arg-val-not-undefined.js"
-status = "xfail"
-reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
-
-[[expectations]]
-id = "language/statements/async-generator/dflt-params-arg-val-undefined.js"
-status = "xfail"
-reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
-
-[[expectations]]
-id = "language/statements/async-generator/dflt-params-ref-prior.js"
-status = "xfail"
-reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
-
-[[expectations]]
-id = "language/statements/async-generator/dflt-params-trailing-comma.js"
-status = "xfail"
-reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
-
-[[expectations]]
-glob = "language/statements/async-generator/dstr/**"
-status = "xfail"
-reason = "vm-js: async generator destructuring parameter semantics (duplicate binding checks / iterator-close edge cases) are still incomplete."
-
-[[expectations]]
 glob = "language/statements/async-generator/**"
 status = "pass"
 
@@ -481,96 +455,6 @@ reason = "vm-js: for-of destructuring iterator-close semantics are still incorre
 id = "language/statements/for-of/dstr/array-rest-iter-rtrn-close-null.js"
 status = "xfail"
 reason = "vm-js: for-of destructuring iterator-close semantics are still incorrect for iterators with invalid `.next`."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/array-elem-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/array-elem-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/const-ary-ptrn-elem-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/const-ary-ptrn-elem-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/const-obj-ptrn-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/const-obj-ptrn-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/let-ary-ptrn-elem-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/let-ary-ptrn-elem-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/let-obj-ptrn-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/let-obj-ptrn-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/obj-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/obj-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/obj-prop-elem-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/obj-prop-elem-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/var-ary-ptrn-elem-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/var-ary-ptrn-elem-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/var-obj-ptrn-id-init-fn-name-class.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
-
-[[expectations]]
-id = "language/statements/for-of/dstr/var-obj-ptrn-id-init-fn-name-cover.js"
-status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
 
 [[expectations]]
 id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js"
@@ -620,80 +504,235 @@ status = "pass"
 glob = "language/statements/for/**"
 status = "pass"
 
+# --- if statement (mostly green) ---
 [[expectations]]
-id = "language/statements/for/S12.6.3_A2.1.js"
-status = "xfail"
-reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+glob = "language/statements/if/**"
+status = "pass"
 
 [[expectations]]
-id = "language/statements/for/S12.6.3_A2.2.js"
+id = "language/statements/if/cptn-else-false-abrupt-empty.js"
 status = "xfail"
-reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/S12.6.3_A3.js"
+id = "language/statements/if/cptn-else-false-nrml.js"
 status = "xfail"
-reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/const-ary-ptrn-elem-id-init-fn-name-class.js"
+id = "language/statements/if/cptn-else-true-abrupt-empty.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/const-ary-ptrn-elem-id-init-fn-name-cover.js"
+id = "language/statements/if/cptn-else-true-nrml.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/const-obj-ptrn-id-init-fn-name-class.js"
+id = "language/statements/if/cptn-no-else-false.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/const-obj-ptrn-id-init-fn-name-cover.js"
+id = "language/statements/if/cptn-no-else-true-abrupt-empty.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/let-ary-ptrn-elem-id-init-fn-name-class.js"
+id = "language/statements/if/cptn-no-else-true-nrml.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: statement completion value for `if` statements (especially under `eval`) is not fully spec-compliant."
 
 [[expectations]]
-id = "language/statements/for/dstr/let-ary-ptrn-elem-id-init-fn-name-cover.js"
+id = "language/statements/if/tco-else-body.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js does not yet implement proper tail calls (PTC)."
 
 [[expectations]]
-id = "language/statements/for/dstr/let-obj-ptrn-id-init-fn-name-class.js"
+id = "language/statements/if/tco-if-body.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+# --- `with` statement (partial) ---
+[[expectations]]
+glob = "language/statements/with/**"
+status = "pass"
 
 [[expectations]]
-id = "language/statements/for/dstr/let-obj-ptrn-id-init-fn-name-cover.js"
+id = "language/statements/with/12.10-0-8.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
 
 [[expectations]]
-id = "language/statements/for/dstr/var-ary-ptrn-elem-id-init-fn-name-class.js"
+id = "language/statements/with/S12.10_A1.10_T1.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
 
 [[expectations]]
-id = "language/statements/for/dstr/var-ary-ptrn-elem-id-init-fn-name-cover.js"
+id = "language/statements/with/S12.10_A1.10_T2.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
 
 [[expectations]]
-id = "language/statements/for/dstr/var-obj-ptrn-id-init-fn-name-class.js"
+id = "language/statements/with/S12.10_A1.10_T4.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
 
 [[expectations]]
-id = "language/statements/for/dstr/var-obj-ptrn-id-init-fn-name-cover.js"
+id = "language/statements/with/S12.10_A1.1_T1.js"
 status = "xfail"
-reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.1_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.2_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.2_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.2_T4.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.3_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.3_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.3_T4.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.4_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.4_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.4_T4.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.5_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.5_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.5_T4.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.6_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.6_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.9_T1.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A1.9_T2.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/S12.10_A3.3_T4.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/cptn-abrupt-empty.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/cptn-nrml.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/get-binding-value-call-with-proxy-env.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/get-binding-value-idref-with-proxy-env.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/get-mutable-binding-binding-deleted-in-get-unscopables-strict-mode.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/scope-var-close.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/scope-var-open.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/set-mutable-binding-binding-deleted-in-get-unscopables-strict-mode.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/set-mutable-binding-binding-deleted-with-typed-array-in-proto-chain-strict-mode.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/set-mutable-binding-idref-compound-assign-with-proxy-env.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/set-mutable-binding-idref-with-proxy-env.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
+
+[[expectations]]
+id = "language/statements/with/unscopables-inc-dec.js"
+status = "xfail"
+reason = "vm-js: `with` statement semantics (binding resolution + completion values) are still incomplete."
 
 [[expectations]]
 glob = "language/statements/function/**"
