@@ -1214,11 +1214,12 @@ fn run_scroll_fixture(
         status: ScenarioStatus::Error,
         message: format!("failed to send ScrollTo: {err}"),
       })?;
+
       let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
       frame = next;
       scroll_y = frame.scroll_css.1;
       bounds = frame.scroll_bounds_css;
-      break Ok::<f64, WaitError>(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+      return Ok::<f64, WaitError>(round_ms(start.elapsed().as_secs_f64() * 1000.0));
     }
   }) {
     Ok(measured) => measured,

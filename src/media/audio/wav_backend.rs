@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
+use super::limits::MAX_BUFFERED_DURATION;
 use super::ring_buffer::AudioRingBuffer;
 use super::{
   audio_engine_config, duration_to_frames_ceil, frames_to_duration, AudioBackend, AudioClock,
   AudioEngineConfig, AudioOutputInfo, AudioSink, AudioStreamConfig,
 };
-use super::limits::MAX_BUFFERED_DURATION;
 use crate::debug::trace::TraceHandle;
 use crate::media::audio_clock::InterpolatedAudioClock;
 
@@ -105,7 +105,10 @@ impl WavAudioBackend {
       max_buffered_duration,
       mixer,
       clock,
-      writer: Mutex::new(WavWriter { file, data_bytes: 0 }),
+      writer: Mutex::new(WavWriter {
+        file,
+        data_bytes: 0,
+      }),
       trace,
     })
   }
@@ -340,7 +343,11 @@ fn f32_to_i16(value: f32) -> i16 {
   (value * i16::MAX as f32) as i16
 }
 
-fn update_wav_header(file: &mut File, config: AudioStreamConfig, data_bytes: u64) -> io::Result<()> {
+fn update_wav_header(
+  file: &mut File,
+  config: AudioStreamConfig,
+  data_bytes: u64,
+) -> io::Result<()> {
   let data_bytes_u32 = u32::try_from(data_bytes).map_err(|_| {
     io::Error::new(
       io::ErrorKind::InvalidData,
@@ -387,7 +394,6 @@ fn write_wav_header(file: &mut File, config: AudioStreamConfig, data_bytes: u32)
 
 #[cfg(test)]
 mod tests {
-  use crate::media::audio::AudioBackend;
   use std::convert::TryInto;
   use std::time::Duration;
 
@@ -518,9 +524,7 @@ mod tests {
 
     let json = std::fs::read_to_string(&trace_path).expect("read trace");
     let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace");
-    let trace_events = value["traceEvents"]
-      .as_array()
-      .expect("traceEvents array");
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
     let names: Vec<&str> = trace_events
       .iter()
       .filter_map(|event| event["name"].as_str())

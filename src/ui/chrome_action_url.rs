@@ -620,10 +620,6 @@ impl ChromeActionUrl {
   }
 }
 
-// Back-compat: older call sites (and some UI glue) expect a top-level scheme constant.
-// Prefer `ChromeActionUrl::SCHEME` for new code.
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
-
 impl std::fmt::Display for ChromeActionUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str(&self.format())

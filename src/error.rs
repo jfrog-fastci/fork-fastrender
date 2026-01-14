@@ -10,8 +10,8 @@
 //! All errors use the `thiserror` crate for minimal boilerplate and
 //! proper error trait implementations.
 
-use crate::render_control::StageHeartbeat;
 use crate::media::MediaError;
+use crate::render_control::StageHeartbeat;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::Arc;
