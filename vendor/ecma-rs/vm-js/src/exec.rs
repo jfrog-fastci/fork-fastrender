@@ -39450,6 +39450,19 @@ fn gen_resume_from_frames(
                   receiver,
                 }
               }
+              (Some(base), Some(key_value), Some(receiver)) => {
+                assign_scope.push_roots(&[base, receiver, key_value])?;
+                let key = match key_value {
+                  Value::String(s) => PropertyKey::from_string(s),
+                  Value::Symbol(s) => PropertyKey::from_symbol(s),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "assignment key should be a string or symbol",
+                    ))
+                  }
+                };
+                Reference::SuperProperty { base, key, receiver }
+              }
               _ => {
                 return Err(VmError::InvariantViolation(
                   "AssignAfterRhs has mismatched stored reference components",

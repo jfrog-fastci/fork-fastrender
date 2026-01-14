@@ -10499,14 +10499,27 @@ enum HirAsyncBodyKind {
 #[derive(Debug)]
 enum HirAsyncActive {
   ForAwaitOf(ForAwaitOfState),
+  /// Suspended at a direct `await <expr>;` expression statement.
   AwaitExprStmt { next_stmt_index: usize },
+  /// Suspended at a `return await <expr>;`.
+  AwaitReturn,
+  /// Suspended at a `throw await <expr>;`.
+  AwaitThrow,
+  /// Suspended at a `var`/`let`/`const` declarator initializer of the form `await <expr>`.
+  AwaitVarDecl {
+    stmt_index: usize,
+    declarator_index: usize,
+  },
 }
 
 impl HirAsyncActive {
   fn teardown(&mut self, heap: &mut crate::Heap) {
     match self {
       HirAsyncActive::ForAwaitOf(state) => state.teardown(heap),
-      HirAsyncActive::AwaitExprStmt { .. } => {}
+      HirAsyncActive::AwaitExprStmt { .. }
+      | HirAsyncActive::AwaitReturn
+      | HirAsyncActive::AwaitThrow
+      | HirAsyncActive::AwaitVarDecl { .. } => {}
     }
   }
 }
@@ -10664,16 +10677,17 @@ impl HirAsyncState {
               }
             }
           }
+
           HirAsyncActive::AwaitExprStmt { next_stmt_index } => {
             let next_stmt_index = *next_stmt_index;
-            let Some(resume_res) = resume_value.take() else {
+            let Some(resume) = resume_value.take() else {
               return Err(VmError::InvariantViolation(
-                "async compiled function resumed without a value",
+                "hir async await expr statement missing resume value",
               ));
             };
             self.active = None;
-            match resume_res {
-              Ok(_v) => {
+            match resume {
+              Ok(_) => {
                 self.next_stmt_index = next_stmt_index;
                 continue;
               }
@@ -10688,7 +10702,188 @@ impl HirAsyncState {
               }
             }
           }
-        };
+
+          HirAsyncActive::AwaitReturn => {
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "hir async await return missing resume value",
+              ));
+            };
+            self.active = None;
+            match resume {
+              Ok(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+              Err(err) => {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::AwaitThrow => {
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "hir async await throw missing resume value",
+              ));
+            };
+            self.active = None;
+            match resume {
+              Ok(v) => return Ok(HirAsyncResult::CompleteThrow(v)),
+              Err(err) => {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::AwaitVarDecl {
+            stmt_index,
+            declarator_index,
+          } => {
+            let stmt_index = *stmt_index;
+            let declarator_index = *declarator_index;
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "hir async await var decl missing resume value",
+              ));
+            };
+
+            self.active = None;
+
+            // Rejection from the awaited promise becomes a throw at the await site.
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            };
+
+            // This resume point can only exist for block-bodied async functions.
+            let HirAsyncBodyKind::Block { stmts } = &self.body_kind else {
+              return Err(VmError::InvariantViolation(
+                "hir async var decl resume used for non-block body",
+              ));
+            };
+            let stmt_id = *stmts.get(stmt_index).ok_or(VmError::InvariantViolation(
+              "hir async var decl resume stmt index out of bounds",
+            ))?;
+            let stmt = evaluator.get_stmt(body, stmt_id)?;
+            let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
+              return Err(VmError::InvariantViolation(
+                "hir async var decl resume target is not a var declaration",
+              ));
+            };
+            let declarator = var_decl.declarators.get(declarator_index).ok_or(
+              VmError::InvariantViolation("hir async var decl resume declarator index out of bounds"),
+            )?;
+
+            // Initialize the awaited declarator binding with the resumed value.
+            if let Err(err) = evaluator.bind_var_decl_pat(
+              scope,
+              body,
+              declarator.pat,
+              var_decl.kind,
+              /* init_missing */ false,
+              resumed_value,
+            ) {
+              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  return Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => return Err(other),
+              }
+            }
+
+            // Continue evaluating subsequent declarators in the same declaration.
+            for (j, declarator) in var_decl
+              .declarators
+              .iter()
+              .enumerate()
+              .skip(declarator_index.saturating_add(1))
+            {
+              evaluator.vm.tick()?;
+              let init_missing = declarator.init.is_none();
+              if let Some(init) = declarator.init {
+                let init_expr = evaluator.get_expr(body, init)?;
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                  // Budget once for the await expression itself, matching synchronous evaluation.
+                  evaluator.vm.tick()?;
+                  let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+                    Ok(v) => v,
+                    Err(err) => {
+                      let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                      match err {
+                        VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                          return Ok(HirAsyncResult::CompleteThrow(value))
+                        }
+                        other => return Err(other),
+                      }
+                    }
+                  };
+                  self.active = Some(HirAsyncActive::AwaitVarDecl {
+                    stmt_index,
+                    declarator_index: j,
+                  });
+                  self.next_stmt_index = stmt_index;
+                  return Ok(HirAsyncResult::Await { await_value });
+                }
+              }
+
+              let value = match declarator.init {
+                Some(init) => match evaluator.eval_expr(scope, body, init) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                    match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        return Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => return Err(other),
+                    }
+                  }
+                },
+                None => Value::Undefined,
+              };
+
+              if let Err(err) = evaluator.bind_var_decl_pat(
+                scope,
+                body,
+                declarator.pat,
+                var_decl.kind,
+                init_missing,
+                value,
+              ) {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+
+            // Variable statement completes; continue with the next statement.
+            self.next_stmt_index = stmt_index.saturating_add(1);
+            continue;
+          }
+        }
       }
 
       let HirAsyncBodyKind::Block { stmts } = &self.body_kind else {
@@ -10723,21 +10918,6 @@ impl HirAsyncState {
       }
       let stmt_id = stmts[self.next_stmt_index];
       let stmt = evaluator.get_stmt(body, stmt_id)?;
-      // Fast-path `await` expression statements. The synchronous compiled evaluator does not yet
-      // support `ExprKind::Await`, so async function execution must suspend explicitly.
-      if let hir_js::StmtKind::Expr(expr_id) = stmt.kind {
-        let expr = evaluator.get_expr(body, expr_id)?;
-        if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
-          // Budget once for the statement and once for the await expression itself.
-          evaluator.vm.tick()?;
-          evaluator.vm.tick()?;
-          let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
-          self.active = Some(HirAsyncActive::AwaitExprStmt {
-            next_stmt_index: self.next_stmt_index.saturating_add(1),
-          });
-          return Ok(HirAsyncResult::Await { await_value });
-        }
-      }
       if let hir_js::StmtKind::ForIn {
         left,
         right,
@@ -10752,6 +10932,162 @@ impl HirAsyncState {
           *inner,
           &[],
         )?));
+        continue;
+      }
+
+      // Fast-path direct `await` statement forms without touching the synchronous evaluator (which
+      // does not support `ExprKind::Await`).
+      //
+      // Note: this only supports *direct* awaits at the statement level (not nested `await` in
+      // arbitrary expressions). This is sufficient to cover common patterns like:
+      // - `await expr;`
+      // - `return await expr;`
+      // - `throw await expr;`
+      // - `const/let/var x = await expr;`
+
+      // `await <expr>;`
+      if let hir_js::StmtKind::Expr(expr_id) = &stmt.kind {
+        let expr = evaluator.get_expr(body, *expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          // Budget once for the statement and once for the await expression itself.
+          evaluator.vm.tick()?;
+          evaluator.vm.tick()?;
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              return match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => Err(other),
+              };
+            }
+          };
+          self.active = Some(HirAsyncActive::AwaitExprStmt {
+            next_stmt_index: self.next_stmt_index.saturating_add(1),
+          });
+          return Ok(HirAsyncResult::Await { await_value });
+        }
+      }
+
+      // `return await <expr>;`
+      if let hir_js::StmtKind::Return(Some(expr_id)) = &stmt.kind {
+        let expr = evaluator.get_expr(body, *expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          evaluator.vm.tick()?;
+          evaluator.vm.tick()?;
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              return match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => Err(other),
+              };
+            }
+          };
+          self.active = Some(HirAsyncActive::AwaitReturn);
+          return Ok(HirAsyncResult::Await { await_value });
+        }
+      }
+
+      // `throw await <expr>;`
+      if let hir_js::StmtKind::Throw(expr_id) = &stmt.kind {
+        let expr = evaluator.get_expr(body, *expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          evaluator.vm.tick()?;
+          evaluator.vm.tick()?;
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+              return match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => Err(other),
+              };
+            }
+          };
+          self.active = Some(HirAsyncActive::AwaitThrow);
+          return Ok(HirAsyncResult::Await { await_value });
+        }
+      }
+
+      // `var`/`let`/`const` declarations with direct `await` initializers.
+      //
+      // We handle this statement kind manually so we can suspend after evaluating the awaited
+      // subexpression and resume by initializing the declarator binding.
+      if let hir_js::StmtKind::Var(var_decl) = &stmt.kind {
+        // Budget once for the statement itself, matching `eval_stmt_labelled`.
+        evaluator.vm.tick()?;
+        for (j, declarator) in var_decl.declarators.iter().enumerate() {
+          // Match `eval_var_decl`'s per-declarator tick.
+          evaluator.vm.tick()?;
+          let init_missing = declarator.init.is_none();
+          if let Some(init) = declarator.init {
+            let init_expr = evaluator.get_expr(body, init)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &init_expr.kind {
+              // Budget once for the await expression itself.
+              evaluator.vm.tick()?;
+              let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+                Ok(v) => v,
+                Err(err) => {
+                  let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                  return match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => Err(other),
+                  };
+                }
+              };
+              self.active = Some(HirAsyncActive::AwaitVarDecl {
+                stmt_index: self.next_stmt_index,
+                declarator_index: j,
+              });
+              return Ok(HirAsyncResult::Await { await_value });
+            }
+          }
+
+          let value = match declarator.init {
+            Some(init) => match evaluator.eval_expr(scope, body, init) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                return match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => Err(other),
+                };
+              }
+            },
+            None => Value::Undefined,
+          };
+          if let Err(err) = evaluator.bind_var_decl_pat(
+            scope,
+            body,
+            declarator.pat,
+            var_decl.kind,
+            init_missing,
+            value,
+          ) {
+            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+            return match err {
+              VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                Ok(HirAsyncResult::CompleteThrow(value))
+              }
+              other => Err(other),
+            };
+          }
+        }
+
+        // The var statement completes; continue with the next statement.
+        self.next_stmt_index = self.next_stmt_index.saturating_add(1);
         continue;
       }
 
