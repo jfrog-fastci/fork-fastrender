@@ -530,7 +530,6 @@ const TEST_PAGE_URLS: &[&str] = &[
   ABOUT_TEST_LAYOUT_STRESS,
   ABOUT_TEST_FORM,
 ];
-
 fn test_pages_list_items_html() -> String {
   use std::fmt::Write;
 
@@ -539,7 +538,7 @@ fn test_pages_list_items_html() -> String {
     let safe_url = escape_html(url);
     let _ = write!(
       out,
-      r#"<li><a href="{safe_url}">{safe_url}</a></li>"#
+      r#"<li><a href="{safe_url}"><code>{safe_url}</code></a></li>"#
     );
   }
   out
