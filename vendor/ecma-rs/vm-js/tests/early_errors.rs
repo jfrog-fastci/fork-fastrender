@@ -360,6 +360,13 @@ fn optional_chaining_is_invalid_destructuring_assignment_target() {
 }
 
 #[test]
+fn invalid_shorthand_property_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("({ a = 1 });").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn optional_chaining_is_invalid_update_target_prefix() {
   let mut rt = new_runtime();
   let err = rt.exec_script("var o = null; ++o?.x;").unwrap_err();
