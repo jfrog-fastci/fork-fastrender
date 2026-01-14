@@ -17,7 +17,7 @@ use fs2::FileExt;
 use serde::de::{Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
@@ -562,6 +562,11 @@ impl BrowserWindowState {
 pub struct BrowserSessionWindow {
   #[serde(default, deserialize_with = "deserialize_window_tabs")]
   pub tabs: Vec<BrowserSessionTab>,
+  /// Download history.
+  ///
+  /// Downloads are profile-global (shared across all browser windows). To avoid duplicating the same
+  /// list in every window entry, [`BrowserSession::sanitized`] merges downloads across windows and
+  /// keeps this populated only for the active window (other windows persist `[]`).
   #[serde(
     default,
     deserialize_with = "deserialize_window_downloads",
@@ -983,6 +988,53 @@ impl BrowserSession {
     self.active_window_index = self
       .active_window_index
       .min(self.windows.len().saturating_sub(1));
+
+    // Downloads are profile-global (shared across all windows). Older session files stored downloads
+    // per-window; newer ones may also include duplicates if they were produced by a build that
+    // synced downloads globally but still serialized them for every window. To keep session files
+    // bounded and avoid N× duplication on restore, merge downloads across windows here and keep
+    // them only in the active window.
+    if !self.windows.is_empty() {
+      let keep_idx = self.active_window_index;
+      debug_assert!(keep_idx < self.windows.len());
+      let mut merged: Vec<BrowserSessionDownload> = Vec::new();
+      let mut seen: HashSet<(PathBuf, String, String)> = HashSet::new();
+
+      let mut drain_window =
+        |idx: usize,
+         windows: &mut [BrowserSessionWindow],
+         merged: &mut Vec<BrowserSessionDownload>,
+         seen: &mut HashSet<(PathBuf, String, String)>| {
+          let downloads = std::mem::take(&mut windows[idx].downloads);
+          for download in downloads {
+            let key = (
+              download.path.clone(),
+              download.url.clone(),
+              download.file_name.clone(),
+            );
+            if seen.insert(key) {
+              merged.push(download);
+            }
+          }
+        };
+
+      // Preserve the active window's ordering as the primary sequence, then append any additional
+      // entries from other windows (deterministic by window order).
+      drain_window(keep_idx, &mut self.windows, &mut merged, &mut seen);
+      for idx in 0..self.windows.len() {
+        if idx == keep_idx {
+          continue;
+        }
+        drain_window(idx, &mut self.windows, &mut merged, &mut seen);
+      }
+
+      // Bound persisted downloads across the whole session.
+      if merged.len() > MAX_PERSISTED_DOWNLOADS {
+        let overflow = merged.len() - MAX_PERSISTED_DOWNLOADS;
+        merged.drain(0..overflow);
+      }
+      self.windows[keep_idx].downloads = merged;
+    }
 
     self.ui_scale = self
       .ui_scale
@@ -1754,6 +1806,138 @@ mod tests {
     let json = serde_json::to_string(&session).expect("serialize session");
     let parsed = parse_session_json(&json).expect("parse session JSON");
     assert_eq!(parsed, session);
+  }
+
+  #[test]
+  fn session_consolidates_downloads_across_windows_into_active_window() {
+    let a = BrowserSessionDownload {
+      url: "https://example.com/a.bin".to_string(),
+      file_name: "a.bin".to_string(),
+      path: PathBuf::from("/tmp/a.bin"),
+      status: BrowserSessionDownloadStatus::Completed,
+      error: None,
+    };
+    let b = BrowserSessionDownload {
+      url: "https://example.com/b.bin".to_string(),
+      file_name: "b.bin".to_string(),
+      path: PathBuf::from("/tmp/b.bin"),
+      status: BrowserSessionDownloadStatus::Cancelled,
+      error: None,
+    };
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![
+        BrowserSessionWindow {
+          tabs: vec![BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: false,
+            group: None,
+          }],
+          downloads: vec![a.clone()],
+          tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
+          active_tab_index: 0,
+          bookmarks_bar_visible: false,
+          show_menu_bar: default_show_menu_bar(),
+          window_state: None,
+        },
+        BrowserSessionWindow {
+          tabs: vec![BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: false,
+            group: None,
+          }],
+          downloads: vec![b.clone()],
+          tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
+          active_tab_index: 0,
+          bookmarks_bar_visible: false,
+          show_menu_bar: default_show_menu_bar(),
+          window_state: None,
+        },
+      ],
+      active_window_index: 1,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      unclean_exit_streak: 0,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    assert!(session.windows[0].downloads.is_empty());
+    assert_eq!(session.windows[1].downloads.len(), 2);
+    let file_names = session.windows[1]
+      .downloads
+      .iter()
+      .map(|d| d.file_name.as_str())
+      .collect::<Vec<_>>();
+    assert!(file_names.contains(&a.file_name.as_str()));
+    assert!(file_names.contains(&b.file_name.as_str()));
+  }
+
+  #[test]
+  fn session_dedupes_downloads_across_windows() {
+    let download = BrowserSessionDownload {
+      url: "https://example.com/a.bin".to_string(),
+      file_name: "a.bin".to_string(),
+      path: PathBuf::from("/tmp/a.bin"),
+      status: BrowserSessionDownloadStatus::Completed,
+      error: None,
+    };
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![
+        BrowserSessionWindow {
+          tabs: vec![BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: false,
+            group: None,
+          }],
+          downloads: vec![download.clone()],
+          tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
+          active_tab_index: 0,
+          bookmarks_bar_visible: false,
+          show_menu_bar: default_show_menu_bar(),
+          window_state: None,
+        },
+        BrowserSessionWindow {
+          tabs: vec![BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: false,
+            group: None,
+          }],
+          downloads: vec![download.clone()],
+          tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
+          active_tab_index: 0,
+          bookmarks_bar_visible: false,
+          show_menu_bar: default_show_menu_bar(),
+          window_state: None,
+        },
+      ],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      unclean_exit_streak: 0,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    assert_eq!(session.windows[0].downloads.len(), 1);
+    assert!(session.windows[1].downloads.is_empty());
   }
 
   #[test]
