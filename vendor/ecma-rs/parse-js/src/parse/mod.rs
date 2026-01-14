@@ -501,6 +501,29 @@ impl<'a> Parser<'a> {
     }
   }
 
+  /// Enter a class "initialization" parsing context where identifier references to `arguments` are
+  /// a syntax error.
+  ///
+  /// This applies to:
+  /// - class field initializers
+  /// - class static initialization blocks (`static {}`)
+  ///
+  /// `arguments` may still be used inside nested *non-arrow* function scopes within these contexts
+  /// (handled by [`Parser::with_arguments_bound_in_class_init`]).
+  pub(crate) fn with_disallow_arguments_in_class_init<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
+  ) -> SyntaxResult<R> {
+    if !self.is_strict_ecmascript() {
+      return f(self);
+    }
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    self.disallow_arguments_in_class_init += 1;
+    let res = f(self);
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    res
+  }
+
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,
     f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
@@ -513,6 +536,33 @@ impl<'a> Parser<'a> {
     let res = f(self);
     self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
+  }
+
+  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
+    &self,
+    loc: Loc,
+    name: &str,
+  ) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
+      return Ok(());
+    }
+
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      // Identifier names should have already been validated by the lexer; treat this as a syntax
+      // error to avoid silently accepting malformed escape sequences.
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+
+    if string_value.as_ref() == "arguments" {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "'arguments' is not allowed in class field initializers or class static initialization blocks",
+        ),
+        None,
+      ));
+    }
+
+    Ok(())
   }
   /// Validate an *assignable reference* (simple assignment target), as required by update
   /// expressions (`++x`, `x--`, etc.).
