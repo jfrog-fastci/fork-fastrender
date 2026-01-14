@@ -1152,7 +1152,7 @@ fn help_html() -> String {
 
       <h2>Bookmarks and history</h2>
       <ul>
-        <li>Use the star button in the toolbar (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>) to toggle a bookmark for the current page.</li>
+        <li>Use the star button in the toolbar (or <kbd>Ctrl</kbd>+<kbd>D</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>D</kbd> (macOS)) to toggle a bookmark for the current page.</li>
         <li>Bookmarks show up in the bookmarks bar for quick access.</li>
         <li>The history panel supports search and clear.</li>
         <li>Bookmarks and history are persisted as JSON files under FastRender’s per-user config directory (for example <code>~/.config/fastrender/</code> on Linux). You can override the file paths with <code>FASTR_BROWSER_BOOKMARKS_PATH</code> / <code>FASTR_BROWSER_HISTORY_PATH</code>.</li>
@@ -1169,16 +1169,16 @@ fn help_html() -> String {
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
           <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
-          <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Toggle downloads panel</li>
+          <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> — Zoom in</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> — Zoom out</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Reset zoom</li>
           <li><kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
-         <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd> — Toggle bookmark</li>
+         <li><kbd>Ctrl</kbd>+<kbd>D</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>D</kbd> (macOS) — Toggle bookmark</li>
          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar</li>
          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager</li>
-          <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
+           <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
       </ul>
 
       <h2>Built-in pages</h2>
@@ -2979,7 +2979,9 @@ mod tests {
 
     for needle in [
       r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> — Find in page"#,
-      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Zoom in/out/reset"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> — Zoom in"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> — Zoom out"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Reset zoom"#,
       r#"<kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen"#,
       r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar"#,
       r#"<kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)"#,
@@ -2998,6 +3000,9 @@ mod tests {
       map_shortcut_with_platform, Key, KeyEvent, Modifiers, Platform, ShortcutAction,
     };
 
+    // Ensure help content stays in sync with the shortcut mapping.
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+
     // Find in page: Ctrl/Cmd+F.
     assert_eq!(
       map_shortcut_with_platform(
@@ -3013,6 +3018,7 @@ mod tests {
       ),
       Some(ShortcutAction::FindInPage)
     );
+    assert!(html.contains(r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> — Find in page"#));
 
     // Downloads panel: Ctrl+J (Win/Linux), Cmd+Shift+J (macOS).
     assert_eq!(
@@ -3029,6 +3035,9 @@ mod tests {
       ),
       Some(ShortcutAction::ToggleDownloadsPanel)
     );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)"#
+    ));
 
     // Zoom in/out/reset: Ctrl/Cmd +/-/0.
     for (key, action) in [
@@ -3055,6 +3064,13 @@ mod tests {
         "expected {key:?} with Cmd on Platform::Mac to map to {action:?}"
       );
     }
+    for needle in [
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> — Zoom in"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> — Zoom out"#,
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Reset zoom"#,
+    ] {
+      assert!(html.contains(needle));
+    }
 
     // Fullscreen: F11 (Win/Linux); Ctrl+Cmd+F (macOS).
     assert_eq!(
@@ -3071,6 +3087,9 @@ mod tests {
       ),
       Some(ShortcutAction::ToggleFullScreen)
     );
+    assert!(html.contains(
+      r#"<kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen"#
+    ));
 
     // Bookmarks bar toggle: Ctrl/Cmd+Shift+B.
     assert_eq!(
@@ -3087,6 +3106,28 @@ mod tests {
       ),
       Some(ShortcutAction::ToggleBookmarksBar)
     );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar"#
+    ));
+
+    // Bookmark toggle: Ctrl+D (Win/Linux); Cmd+D (macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleBookmark)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmark)
+    );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>+<kbd>D</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>D</kbd> (macOS) — Toggle bookmark"#
+    ));
   }
 
   #[cfg(feature = "browser_ui")]
