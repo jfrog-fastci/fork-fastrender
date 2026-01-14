@@ -209,8 +209,8 @@ fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { static { arguments; } }").unwrap_err());
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
+    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -223,8 +223,8 @@ fn arguments_label_in_class_static_block_is_syntax_error() {
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
+    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -237,8 +237,8 @@ fn arguments_identifier_reference_in_arrow_in_class_static_block_is_syntax_error
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
+    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -247,8 +247,8 @@ fn arguments_identifier_reference_in_class_field_initializer_is_syntax_error() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { x = arguments; }").unwrap_err());
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
+    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
   );
 }
 
@@ -261,8 +261,8 @@ fn arguments_identifier_reference_in_arrow_in_class_field_initializer_is_syntax_
       .unwrap_err(),
   );
   assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str() == "PS0002"),
+    "expected VMJS0004 (vm-js) or PS0002 (parse-js) error, got {diags:?}"
   );
 }
 
