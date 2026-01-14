@@ -898,7 +898,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
   a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
 - `SelectDropdownCancel { tab_id }` — user dismissed a dropdown popup (Escape/click-away)
-- `ContextMenuRequest { tab_id, pos_css }` — request hit-test/context for a page context menu
+- `ContextMenuRequest { tab_id, pos_css, modifiers }` — request hit-test/context for a page context menu
   invocation; the worker responds with `WorkerToUi::ContextMenu`.
 - `DateTimePickerChoose { tab_id, input_node_id, value }` / `DateTimePickerCancel { tab_id }` —
   user interaction with a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
