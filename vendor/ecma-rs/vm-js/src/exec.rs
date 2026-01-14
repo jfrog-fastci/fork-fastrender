@@ -19086,14 +19086,12 @@ fn async_generator_handle_execution_result(
       } => {
         state.frames = frames;
 
-        // The awaited value is already the Promise produced by `PromiseResolve(%Promise%, value)`.
-        // Do not `PromiseResolve` it again: that would observe `promise.constructor` twice.
+        // `AwaitResolved` means the internal `PromiseResolve` step of `Await` has already happened
+        // (e.g. `AsyncIteratorClose` during `for await..of`), so we must not call `PromiseResolve`
+        // again or we'd observe `promise.constructor` twice.
         let is_promise =
           matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj));
-        debug_assert!(
-          is_promise,
-          "AwaitResolved suspension must carry a Promise object"
-        );
+        debug_assert!(is_promise, "AwaitResolved suspension must carry a Promise object");
         if !is_promise {
           return Err(VmError::InvariantViolation(
             "AwaitResolved suspension must carry a Promise object",
@@ -19119,39 +19117,6 @@ fn async_generator_handle_execution_result(
         )?;
         return Ok(false);
       }
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::AwaitResolved,
-        await_value: awaited_promise,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `AwaitResolved` means the internal `PromiseResolve` step has already been performed. Do not
-        // call `PromiseResolve` again or we'd observe `promise.constructor` twice.
-        debug_assert!(
-          matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj)),
-          "AwaitResolved suspension must carry a Promise object"
-        );
-
-        // Suspend: store frames in the VM and wire a Promise job to resume.
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-
       AsyncBodyResult::Await {
         kind: AsyncSuspendKind::Yield,
         await_value,
@@ -49968,50 +49933,16 @@ fn gen_resume_from_frames(
 
       GenFrame::BindAssignMemberAfterBase { member, value } => match state {
         Completion::Normal(v) => {
-          let base = v.unwrap_or(Value::Undefined);
-          let member = unsafe { &*member };
-          let target = GenAssignTarget::Member {
-            base,
-            key: &member.right as *const String,
-          };
-          match gen_assign_target_put_value(evaluator, scope, target, value) {
-            Ok(()) => state = Completion::empty(),
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::BindAssignComputedMemberAfterBase { member, value } => match state {
-        Completion::Normal(v) => {
-          let base = v.unwrap_or(Value::Undefined);
           let member_ref = unsafe { &*member };
-          let member_eval = {
-            let mut member_scope = scope.reborrow();
-            member_scope.push_roots(&[base, value])?;
-            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
-          };
-          match member_eval {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(v) => {
-                let key_value = v.unwrap_or(Value::Undefined);
-                let target = GenAssignTarget::ComputedMember { base, key_value };
-                match gen_assign_target_put_value(evaluator, scope, target, value) {
-                  Ok(()) => state = Completion::empty(),
-                  Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-                }
-              }
-              abrupt => state = abrupt,
-            },
+          match gen_bind_assignment_target_to_member_after_base(
+            evaluator,
+            scope,
+            member_ref,
+            v.unwrap_or(Value::Undefined),
+            value,
+          )? {
+            GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindAssignComputedMemberAfterMember {
-                  member,
-                  base,
-                  value,
-                },
-              )?;
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
@@ -50020,14 +49951,41 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => match state {
+      GenFrame::BindAssignComputedMemberAfterBase { member, value } => match state {
         Completion::Normal(v) => {
-          let key_value = v.unwrap_or(Value::Undefined);
-          let target = GenAssignTarget::ComputedMember { base, key_value };
-          match gen_assign_target_put_value(evaluator, scope, target, value) {
-            Ok(()) => state = Completion::empty(),
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          let member_ref = unsafe { &*member };
+          match gen_bind_assignment_target_to_computed_member_after_base(
+            evaluator,
+            scope,
+            member_ref,
+            v.unwrap_or(Value::Undefined),
+            value,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
           }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindAssignComputedMemberAfterMember {
+        member,
+        base,
+        value,
+      } => match state {
+        Completion::Normal(v) => {
+          let member_ref = unsafe { &*member };
+          state = gen_bind_assignment_target_to_computed_member_after_member(
+            evaluator,
+            scope,
+            member_ref,
+            base,
+            v.unwrap_or(Value::Undefined),
+            value,
+          )?;
         }
         abrupt => state = abrupt,
       },
