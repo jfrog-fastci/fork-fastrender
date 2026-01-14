@@ -130,13 +130,13 @@ fn module_record_top_level_await_scan_skips_class_field_initializers() {
 }
 
 #[test]
-fn module_record_top_level_await_scan_budgets_class_static_blocks() {
+fn module_record_top_level_await_scan_skips_class_static_blocks() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
-    // Class static blocks are not function boundaries, so `[[HasTLA]]` detection must traverse their
-    // statement lists. Ensure the scan respects the VM budget while walking large expressions
-    // nested inside static blocks.
+    // Class static blocks are `~Await` in modules and cannot contribute to `[[HasTLA]]`. Ensure the
+    // scan does not descend into their statement lists (which could contain arbitrarily-large
+    // expressions) and therefore does not burn the VM fuel budget.
     fuel: Some(50),
     deadline: None,
     check_time_every: 1,
@@ -148,30 +148,31 @@ fn module_record_top_level_await_scan_budgets_class_static_blocks() {
   }
   src.push_str("]; } } export {};");
 
-  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
-  assert_termination_reason(err, TerminationReason::OutOfFuel);
+  let record = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src)
+    .expect("module record parse should not traverse class static block bodies");
+  assert!(!record.has_tla);
 }
 
 #[test]
-fn module_record_top_level_await_scan_short_circuits_after_class_static_block_await() {
+fn module_record_top_level_await_scan_short_circuits_after_top_level_await() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
-    // Ensure the `[[HasTLA]]` scan short-circuits after finding an `await` early in the static
-    // block so it doesn't need to traverse unrelated large expressions later in the block.
+    // Ensure the `[[HasTLA]]` scan short-circuits after finding an `await` early in the module so
+    // it doesn't need to traverse unrelated large expressions later in the statement list.
     fuel: Some(50),
     deadline: None,
     check_time_every: 1,
   });
 
-  let mut src = String::from("class C { static { await 0; [");
+  let mut src = String::from("await 0; [");
   for _ in 0..20_000 {
     src.push(',');
   }
-  src.push_str("]; } } export {};");
+  src.push_str("]; export {};");
 
   let record = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src)
-    .expect("module record parse should short-circuit after finding await in static block");
+    .expect("module record parse should short-circuit after finding top-level await");
   assert!(record.has_tla);
 }
 

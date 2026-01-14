@@ -277,14 +277,10 @@ impl<'a> Parser<'a> {
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
               // Static blocks have their own `Await` / `Yield` context:
+              // - `return` statements are never permitted (handled above via `in_function = 0`),
               // - `await` is reserved as an identifier (even in scripts),
-              // - `await` / `for await` are **never** permitted within static blocks, even in
-              //   modules or "async classic scripts" where top-level await is allowed,
-              // - static blocks do **not** inherit async-function `await` parsing contexts, so
-              //   nested static blocks inside functions (including async functions) are still
-              //   `~Await`,
-              // - `yield` expressions are never permitted (ClassStaticBlockStatementList is `~Yield`),
-              // - `return` statements are never permitted (handled above via `in_function = 0`).
+              // - `await` / `for await` are never permitted (ClassStaticBlockStatementList is `~Await`),
+              // - `yield` expressions are never permitted (ClassStaticBlockStatementList is `~Yield`).
               let is_module = p.is_module();
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,

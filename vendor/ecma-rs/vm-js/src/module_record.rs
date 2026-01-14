@@ -2511,10 +2511,12 @@ fn class_or_obj_val_contains_top_level_await(
       None => Ok(false),
     },
     ClassOrObjVal::IndexSignature(_) => Ok(false),
-    // Static blocks execute during class/module evaluation, and can contain `await` (directly, or
-    // via `for await..of`). Descend into the statement list so module `[[HasTLA]]` detection is
-    // correct and budgeted.
-    ClassOrObjVal::StaticBlock(block) => stmt_list_contains_top_level_await(&block.stx.body, ctx),
+    // Class static blocks are `~Await` in modules, so they cannot contribute to `[[HasTLA]]`.
+    //
+    // Avoid descending into the statement list to keep `[[HasTLA]]` scanning linear in the size of
+    // syntactically-relevant (await-bearing) subtrees (see also the skip logic for field
+    // initializers above).
+    ClassOrObjVal::StaticBlock(_) => Ok(false),
   }
 }
 

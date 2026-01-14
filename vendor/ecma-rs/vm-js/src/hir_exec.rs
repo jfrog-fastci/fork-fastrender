@@ -3680,7 +3680,7 @@ impl<'vm> HirEvaluator<'vm> {
         CompiledFunctionRef {
           script: script.clone(),
           body: body_id,
-          ast_fallback: None,
+          ast_fallback: async_ast_fallback_code_id,
         },
         is_constructable,
         name_s,

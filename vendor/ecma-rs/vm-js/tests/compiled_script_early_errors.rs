@@ -169,8 +169,8 @@ fn compiled_script_rejects_await_in_class_static_block_even_with_async_classic_s
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
   // `vm-js` retries classic scripts with top-level await enabled ("async classic scripts"), but
-  // `parse-js` intentionally does **not** allow class static blocks to inherit that async context.
-  // `await` in class static blocks is therefore still a syntax error in scripts.
+  // class static blocks do not inherit that async context. `await` in class static blocks is
+  // therefore still a syntax error in scripts.
   let err = CompiledScript::compile_script(
     &mut heap,
     "test.js",
@@ -190,7 +190,8 @@ fn compiled_script_rejects_await_in_class_static_block_even_with_async_classic_s
 }
 
 #[test]
-fn compiled_script_with_budget_rejects_await_in_class_static_block_even_with_async_classic_script_retry() {
+fn compiled_script_with_budget_rejects_await_in_class_static_block_even_with_async_classic_script_retry(
+) {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
