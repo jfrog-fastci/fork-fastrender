@@ -99,6 +99,10 @@ impl AudioStreamHandle {
 
     let clock = AudioStreamClock::new(device_clock, start_media_time);
 
+    // Treat stream creation as a discontinuity boundary (start from silence) so the backend can
+    // apply a short fade-in when playback begins.
+    sink.notify_discontinuity();
+
     Ok(Self {
       inner: Arc::new(AudioStreamInner {
         decoded_config,
@@ -140,6 +144,7 @@ impl AudioStreamHandle {
   /// Note: this handle is stateless (per-call resampling), so there is no interpolation state to
   /// flush beyond updating the clock.
   pub fn seek(&self, new_media_time: Duration) {
+    self.inner.sink.notify_discontinuity();
     self.inner.clock.seek(new_media_time);
   }
 
@@ -231,6 +236,7 @@ mod tests {
     config: AudioStreamConfig,
     samples: Mutex<Vec<f32>>,
     frames_played: Arc<AtomicU64>,
+    discontinuities: Arc<AtomicU64>,
   }
 
   impl FakeSink {
@@ -253,6 +259,10 @@ mod tests {
     }
 
     fn set_volume(&self, _volume: f32) {}
+
+    fn notify_discontinuity(&self) {
+      self.discontinuities.fetch_add(1, Ordering::Relaxed);
+    }
   }
 
   #[derive(Debug)]
@@ -278,10 +288,12 @@ mod tests {
   #[test]
   fn playback_rate_gt_1_shrinks_output_and_advances_clock_faster() {
     let frames_played = Arc::new(AtomicU64::new(0));
+    let discontinuities = Arc::new(AtomicU64::new(0));
     let sink = Arc::new(FakeSink {
       config: AudioStreamConfig::new(48_000, 1),
       samples: Mutex::new(Vec::new()),
       frames_played: frames_played.clone(),
+      discontinuities: discontinuities.clone(),
     });
     let sink_dyn: Arc<dyn AudioSink> = sink.clone();
 
@@ -293,6 +305,7 @@ mod tests {
     let decoded_cfg = AudioStreamConfig::new(48_000, 1);
     let stream =
       AudioStreamHandle::new(decoded_cfg, sink_dyn, device_clock, Duration::ZERO).unwrap();
+    assert_eq!(discontinuities.load(Ordering::Relaxed), 1);
     stream.set_playback_rate(2.0);
 
     // 2 seconds of decoded audio at 48 kHz.
@@ -316,10 +329,12 @@ mod tests {
     let trace = TraceHandle::enabled_with_max_events(16);
 
     let frames_played = Arc::new(AtomicU64::new(0));
+    let discontinuities = Arc::new(AtomicU64::new(0));
     let sink = Arc::new(FakeSink {
       config: AudioStreamConfig::new(48_000, 1),
       samples: Mutex::new(Vec::new()),
       frames_played: frames_played.clone(),
+      discontinuities: discontinuities.clone(),
     });
     let sink_dyn: Arc<dyn AudioSink> = sink.clone();
 
@@ -359,5 +374,31 @@ mod tests {
       names.iter().any(|name| *name == "audio.resample"),
       "expected audio.resample span in trace"
     );
+  }
+
+  #[test]
+  fn audio_stream_seek_notifies_discontinuity() {
+    let frames_played = Arc::new(AtomicU64::new(0));
+    let discontinuities = Arc::new(AtomicU64::new(0));
+    let sink = Arc::new(FakeSink {
+      config: AudioStreamConfig::new(48_000, 1),
+      samples: Mutex::new(Vec::new()),
+      frames_played: frames_played.clone(),
+      discontinuities: discontinuities.clone(),
+    });
+    let sink_dyn: Arc<dyn AudioSink> = sink.clone();
+
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(FramesDeviceClock {
+      frames_played: frames_played.clone(),
+      sample_rate_hz: 48_000,
+    });
+
+    let decoded_cfg = AudioStreamConfig::new(48_000, 1);
+    let stream =
+      AudioStreamHandle::new(decoded_cfg, sink_dyn, device_clock, Duration::ZERO).unwrap();
+    assert_eq!(discontinuities.load(Ordering::Relaxed), 1);
+
+    stream.seek(Duration::from_secs(1));
+    assert_eq!(discontinuities.load(Ordering::Relaxed), 2);
   }
 }
