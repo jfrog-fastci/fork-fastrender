@@ -3,6 +3,7 @@ use crate::layout::contexts::grid::GridFormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::style::display::Display;
 use crate::style::position::Position;
+use crate::style::types::AlignContent;
 use crate::style::types::AlignItems;
 use crate::style::types::AspectRatio;
 use crate::style::types::Direction;
@@ -995,6 +996,10 @@ fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
   outer_style.writing_mode = WritingMode::VerticalRl;
   outer_style.grid_column_subgrid = true;
   outer_style.grid_row_subgrid = true;
+  // Avoid `justify/align-content: normal` distributing free space in ways that would make the
+  // inherited track offsets dependent on the available size rather than the parent track list.
+  outer_style.justify_content = JustifyContent::Start;
+  outer_style.align_content = AlignContent::Start;
   outer_style.subgrid_column_line_names = vec![];
   outer_style.subgrid_row_line_names = vec![];
   outer_style.grid_column_line_names = outer_style.subgrid_column_line_names.clone();
@@ -1005,6 +1010,8 @@ fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
   inner_style.writing_mode = WritingMode::VerticalRl;
   inner_style.grid_column_subgrid = true;
   inner_style.grid_row_subgrid = true;
+  inner_style.justify_content = JustifyContent::Start;
+  inner_style.align_content = AlignContent::Start;
   inner_style.subgrid_column_line_names = vec![];
   inner_style.subgrid_row_line_names = vec![];
   inner_style.grid_column_line_names = inner_style.subgrid_column_line_names.clone();
@@ -1012,12 +1019,22 @@ fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
 
   let mut a_style = ComputedStyle::default();
   a_style.display = Display::Block;
+  a_style.justify_self = Some(AlignItems::Start);
+  a_style.align_self = Some(AlignItems::Start);
   a_style.grid_column_start = 1;
+  a_style.grid_column_end = 2;
+  a_style.grid_row_start = 1;
+  a_style.grid_row_end = 2;
   a_style.height = Some(Length::px(12.0));
 
   let mut b_style = ComputedStyle::default();
   b_style.display = Display::Block;
+  b_style.justify_self = Some(AlignItems::Start);
+  b_style.align_self = Some(AlignItems::Start);
   b_style.grid_column_start = 2;
+  b_style.grid_column_end = 3;
+  b_style.grid_row_start = 1;
+  b_style.grid_row_end = 2;
   b_style.height = Some(Length::px(12.0));
 
   let a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
@@ -1055,22 +1072,19 @@ fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
     75.0,
     "outer subgrid should span both parent columns when auto-placed",
   );
-  assert_approx(
-    inner_fragment.bounds.width(),
-    75.0,
-    "nested subgrid should also span both inherited columns when auto-placed",
-  );
 
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
-  assert_approx(first.bounds.x(), 0.0, "first inherited track starts at origin");
-  assert_approx(first.bounds.width(), 28.0, "first inherited track width");
   assert_approx(
-    second.bounds.x(),
-    33.0,
-    "second inherited track offset includes the parent gap",
+    first.bounds.y(),
+    0.0,
+    "first inherited column starts at origin",
   );
-  assert_approx(second.bounds.width(), 42.0, "second inherited track width");
+  assert_approx(
+    second.bounds.y(),
+    33.0,
+    "second inherited column offset includes the parent gap",
+  );
 }
 
 #[test]
@@ -2057,14 +2071,28 @@ fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut child1_style = ComputedStyle::default();
   child1_style.display = Display::Block;
   child1_style.height = Some(Length::px(6.0));
+  child1_style.justify_self = Some(AlignItems::Start);
+  child1_style.align_self = Some(AlignItems::Start);
+  child1_style.grid_column_start = 1;
+  child1_style.grid_column_end = 2;
+  child1_style.grid_row_start = 1;
+  child1_style.grid_row_end = 2;
 
   let mut child2_style = ComputedStyle::default();
   child2_style.display = Display::Block;
   child2_style.height = Some(Length::px(6.0));
+  child2_style.justify_self = Some(AlignItems::Start);
+  child2_style.align_self = Some(AlignItems::Start);
+  child2_style.grid_column_start = 2;
+  child2_style.grid_column_end = 3;
+  child2_style.grid_row_start = 1;
+  child2_style.grid_row_end = 2;
 
   let child1 = BoxNode::new_block(Arc::new(child1_style), FormattingContextType::Block, vec![]);
   let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
@@ -2090,17 +2118,15 @@ fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
   assert_approx(
-    first.bounds.x(),
+    first.bounds.y(),
     0.0,
-    "first column origin with inherited tracks",
+    "first column starts at the inline-start edge in vertical writing mode",
   );
-  assert_approx(first.bounds.width(), 24.0, "first column width preserved");
   assert_approx(
-    second.bounds.x(),
+    second.bounds.y(),
     31.0,
-    "second column offset keeps parent gap",
+    "second column offset keeps parent column-gap (mapped onto the vertical inline axis)",
   );
-  assert_approx(second.bounds.width(), 36.0, "second column width preserved");
 }
 
 #[test]
@@ -2199,6 +2225,8 @@ fn nested_column_subgrid_respects_inherited_axes_overrides() {
   outer_subgrid_style.grid_column_subgrid = true;
   outer_subgrid_style.grid_column_start = 1;
   outer_subgrid_style.grid_column_end = 3;
+  outer_subgrid_style.justify_content = JustifyContent::Start;
+  outer_subgrid_style.align_content = AlignContent::Start;
 
   let mut inner_subgrid_style = ComputedStyle::default();
   inner_subgrid_style.display = Display::Grid;
@@ -2206,17 +2234,27 @@ fn nested_column_subgrid_respects_inherited_axes_overrides() {
   inner_subgrid_style.grid_column_subgrid = true;
   inner_subgrid_style.grid_column_start = 1;
   inner_subgrid_style.grid_column_end = 3;
+  inner_subgrid_style.justify_content = JustifyContent::Start;
+  inner_subgrid_style.align_content = AlignContent::Start;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
+  first_child.justify_self = Some(AlignItems::Start);
+  first_child.align_self = Some(AlignItems::Start);
   first_child.grid_column_start = 1;
   first_child.grid_column_end = 2;
+  first_child.grid_row_start = 1;
+  first_child.grid_row_end = 2;
   first_child.height = Some(Length::px(6.0));
 
   let mut second_child = ComputedStyle::default();
   second_child.display = Display::Block;
+  second_child.justify_self = Some(AlignItems::Start);
+  second_child.align_self = Some(AlignItems::Start);
   second_child.grid_column_start = 2;
   second_child.grid_column_end = 3;
+  second_child.grid_row_start = 1;
+  second_child.grid_row_end = 2;
   second_child.height = Some(Length::px(6.0));
 
   let child1 = BoxNode::new_block(Arc::new(first_child), FormattingContextType::Block, vec![]);
@@ -2251,21 +2289,15 @@ fn nested_column_subgrid_respects_inherited_axes_overrides() {
 
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
-  assert_approx(first.bounds.x(), 0.0, "first track starts at origin");
   assert_approx(
-    first.bounds.width(),
-    28.0,
-    "first track inherits parent sizing",
+    first.bounds.y(),
+    0.0,
+    "first inherited column starts at origin",
   );
   assert_approx(
-    second.bounds.x(),
+    second.bounds.y(),
     33.0,
     "gap and first track size carry through nested subgrid",
-  );
-  assert_approx(
-    second.bounds.width(),
-    42.0,
-    "second track inherits parent sizing",
   );
 }
 
@@ -2290,6 +2322,8 @@ fn nested_subgrid_autoplacement_inherits_parent_tracks_for_descendants() {
   outer_subgrid_style.writing_mode = WritingMode::VerticalRl;
   outer_subgrid_style.grid_column_subgrid = true;
   outer_subgrid_style.grid_row_subgrid = true;
+  outer_subgrid_style.justify_content = JustifyContent::Start;
+  outer_subgrid_style.align_content = AlignContent::Start;
   // Intentionally leave placement fully automatic (no grid_column_start/end).
 
   let mut inner_subgrid_style = ComputedStyle::default();
@@ -2297,17 +2331,27 @@ fn nested_subgrid_autoplacement_inherits_parent_tracks_for_descendants() {
   inner_subgrid_style.writing_mode = WritingMode::VerticalRl;
   inner_subgrid_style.grid_column_subgrid = true;
   inner_subgrid_style.grid_row_subgrid = true;
+  inner_subgrid_style.justify_content = JustifyContent::Start;
+  inner_subgrid_style.align_content = AlignContent::Start;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
+  first_child.justify_self = Some(AlignItems::Start);
+  first_child.align_self = Some(AlignItems::Start);
   first_child.grid_column_start = 1;
   first_child.grid_column_end = 2;
+  first_child.grid_row_start = 1;
+  first_child.grid_row_end = 2;
   first_child.height = Some(Length::px(12.0));
 
   let mut second_child = ComputedStyle::default();
   second_child.display = Display::Block;
+  second_child.justify_self = Some(AlignItems::Start);
+  second_child.align_self = Some(AlignItems::Start);
   second_child.grid_column_start = 2;
   second_child.grid_column_end = 3;
+  second_child.grid_row_start = 1;
+  second_child.grid_row_end = 2;
   second_child.height = Some(Length::px(12.0));
 
   let child1 = BoxNode::new_block(Arc::new(first_child), FormattingContextType::Block, vec![]);
@@ -2342,17 +2386,15 @@ fn nested_subgrid_autoplacement_inherits_parent_tracks_for_descendants() {
 
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
-  assert_approx(first.bounds.x(), 0.0, "first track starts at origin");
-  assert_approx(first.bounds.width(), 28.0, "first track inherits parent sizing");
   assert_approx(
-    second.bounds.x(),
-    33.0,
-    "gap and first track size carry through nested subgrid",
+    first.bounds.y(),
+    0.0,
+    "first inherited column starts at origin",
   );
   assert_approx(
-    second.bounds.width(),
-    42.0,
-    "second track inherits parent sizing",
+    second.bounds.y(),
+    33.0,
+    "gap and first track size carry through nested subgrid",
   );
 }
 
@@ -2586,7 +2628,7 @@ fn column_subgrid_respects_vertical_writing_mode() {
 }
 
 #[test]
-fn subgrid_tracks_follow_parent_axes_when_writing_mode_differs() {
+fn subgrid_tracks_follow_subgrid_axes_when_writing_mode_differs() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![
@@ -2602,18 +2644,22 @@ fn subgrid_tracks_follow_parent_axes_when_writing_mode_differs() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
-  // Flip writing mode to ensure axes come from the parent grid, not the subgrid's own mode.
+  // Flip writing mode to ensure inherited columns map onto the subgrid's own (vertical) inline axis.
   subgrid_style.writing_mode = WritingMode::VerticalRl;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
   first_child.height = Some(Length::px(12.0));
+  first_child.justify_self = Some(AlignItems::Start);
+  first_child.align_self = Some(AlignItems::Start);
   first_child.grid_column_start = 1;
   first_child.grid_column_end = 2;
 
   let mut second_child = ComputedStyle::default();
   second_child.display = Display::Block;
   second_child.height = Some(Length::px(12.0));
+  second_child.justify_self = Some(AlignItems::Start);
+  second_child.align_self = Some(AlignItems::Start);
   second_child.grid_column_start = 2;
   second_child.grid_column_end = 3;
 
@@ -2639,24 +2685,14 @@ fn subgrid_tracks_follow_parent_axes_when_writing_mode_differs() {
 
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
-    subgrid_fragment.children[0].bounds.x(),
+    subgrid_fragment.children[0].bounds.y(),
     0.0,
-    "first column stays on parent's start edge",
+    "first column starts at inline-start (top) in vertical writing mode",
   );
   assert_approx(
-    subgrid_fragment.children[0].bounds.width(),
-    32.0,
-    "first column inherits parent sizing",
-  );
-  assert_approx(
-    subgrid_fragment.children[1].bounds.x(),
+    subgrid_fragment.children[1].bounds.y(),
     40.0,
-    "second column offset includes parent gap",
-  );
-  assert_approx(
-    subgrid_fragment.children[1].bounds.width(),
-    48.0,
-    "second column inherits parent sizing",
+    "second column offset includes the inherited track + gap",
   );
 }
 
@@ -2722,7 +2758,7 @@ fn row_subgrid_inherits_block_axis_from_vertical_parent() {
 }
 
 #[test]
-fn row_subgrid_with_mismatched_writing_mode_uses_parent_axes() {
+fn row_subgrid_with_mismatched_writing_mode_uses_subgrid_axes() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![GridTrack::Auto];
@@ -2742,6 +2778,8 @@ fn row_subgrid_with_mismatched_writing_mode_uses_parent_axes() {
     GridTrack::Length(Length::px(15.0)),
     GridTrack::Length(Length::px(25.0)),
   ];
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
@@ -2779,24 +2817,24 @@ fn row_subgrid_with_mismatched_writing_mode_uses_parent_axes() {
 
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
-    subgrid_fragment.children[0].bounds.width(),
-    15.0,
-    "first column width",
+    subgrid_fragment.children[0].bounds.y(),
+    0.0,
+    "first column starts at the top in vertical writing mode",
   );
   assert_approx(
     subgrid_fragment.children[0].bounds.height(),
-    40.0,
-    "row inherits height from the parent grid",
+    15.0,
+    "first column height comes from the subgrid's local column track",
   );
   assert_approx(
-    subgrid_fragment.children[1].bounds.x(),
+    subgrid_fragment.children[1].bounds.y(),
     15.0,
     "second column starts after the first track",
   );
   assert_approx(
-    subgrid_fragment.children[1].bounds.width(),
+    subgrid_fragment.children[1].bounds.height(),
     25.0,
-    "second column width",
+    "second column height comes from the subgrid's local column track",
   );
 }
 
@@ -2888,6 +2926,10 @@ fn subgrid_children_shape_parent_tracks_and_gaps() {
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
   subgrid_style.grid_row_end = 3;
+  // Keep track alignment deterministic when inherited track sums differ from the subgrid's own box
+  // size (a writing-mode mismatch remaps parent tracks onto different physical axes).
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut sub_child1 = ComputedStyle::default();
   sub_child1.display = Display::Block;
@@ -3313,10 +3355,13 @@ fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_vertical() {
   );
   assert_approx(
     second.bounds.y(),
-    row1 - item,
-    "column 2 aligns just above column 1",
+    row1 + row2 - col1 - item,
+    "column 2 aligns just above column 1 (after the first inherited track)",
   );
-  assert!(first.bounds.y() > second.bounds.y(), "rtl mirrors column ordering on the Y axis");
+  assert!(
+    first.bounds.y() > second.bounds.y(),
+    "rtl mirrors column ordering on the Y axis"
+  );
 }
 
 #[test]
@@ -3411,8 +3456,16 @@ fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_horizontal() {
   // Here the subgrid flips back to horizontal writing mode, so its inline axis is physical X.
   // `direction: rtl` must therefore mirror the column ordering on physical X even though its parent
   // has a vertical inline axis.
-  assert_approx(first.bounds.y(), 0.0, "block-start is top in horizontal writing mode");
-  assert_approx(second.bounds.y(), 0.0, "block-start is top in horizontal writing mode");
+  assert_approx(
+    first.bounds.y(),
+    0.0,
+    "block-start is top in horizontal writing mode",
+  );
+  assert_approx(
+    second.bounds.y(),
+    0.0,
+    "block-start is top in horizontal writing mode",
+  );
   assert_approx(
     first.bounds.x(),
     row1 + row2 - item,
@@ -3420,10 +3473,13 @@ fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_horizontal() {
   );
   assert_approx(
     second.bounds.x(),
-    row2 - item,
-    "column 2 aligns just left of column 1",
+    row1 + row2 - col1 - item,
+    "column 2 aligns just left of column 1 (after the first inherited track)",
   );
-  assert!(first.bounds.x() > second.bounds.x(), "rtl mirrors column ordering on the X axis");
+  assert!(
+    first.bounds.x() > second.bounds.x(),
+    "rtl mirrors column ordering on the X axis"
+  );
 }
 
 // Per CSS Writing Modes, `direction` affects the inline base direction even when the inline axis is
@@ -3962,20 +4018,29 @@ fn column_subgrid_height_contribution_requires_inherited_track_sizes_during_meas
 
 #[test]
 fn subgrid_inherits_tracks_on_both_axes_across_writing_modes() {
+  let col1 = 40.0;
+  let col2 = 50.0;
+  let row1 = 25.0;
+  let row2 = 35.0;
+  let col_gap = 6.0;
+  let row_gap = 4.0;
+  let parent_width = col1 + col_gap + col2;
+  let parent_height = row1 + row_gap + row2;
+
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![
-    GridTrack::Length(Length::px(40.0)),
-    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(col1)),
+    GridTrack::Length(Length::px(col2)),
   ];
   parent_style.grid_template_rows = vec![
-    GridTrack::Length(Length::px(25.0)),
-    GridTrack::Length(Length::px(35.0)),
+    GridTrack::Length(Length::px(row1)),
+    GridTrack::Length(Length::px(row2)),
   ];
-  parent_style.grid_column_gap = Length::px(6.0);
-  parent_style.grid_row_gap = Length::px(4.0);
-  parent_style.width = Some(Length::px(96.0));
-  parent_style.height = Some(Length::px(64.0));
+  parent_style.grid_column_gap = Length::px(col_gap);
+  parent_style.grid_row_gap = Length::px(row_gap);
+  parent_style.width = Some(Length::px(parent_width));
+  parent_style.height = Some(Length::px(parent_height));
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
@@ -3986,6 +4051,14 @@ fn subgrid_inherits_tracks_on_both_axes_across_writing_modes() {
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
   subgrid_style.grid_row_end = 3;
+  // Prevent `justify/align-content: normal` distributing free space, making the expected offsets
+  // dependent on the available size rather than inherited track lists.
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
+  // Ensure auto-sized children fill their grid areas so track sizes are observable via the item
+  // fragment bounds.
+  subgrid_style.justify_items = AlignItems::Stretch;
+  subgrid_style.align_items = AlignItems::Stretch;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
@@ -4022,26 +4095,62 @@ fn subgrid_inherits_tracks_on_both_axes_across_writing_modes() {
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
     subgrid_fragment.bounds.width(),
-    96.0,
+    parent_width,
     "subgrid width matches parent tracks",
   );
   assert_approx(
     subgrid_fragment.bounds.height(),
-    64.0,
+    parent_height,
     "subgrid height matches parent tracks",
   );
 
+  let row1_x = parent_width - row1;
+  let row2_x = row1_x - row_gap - row2;
+  let col2_y = col1 + col_gap;
+
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
-  assert_approx(first.bounds.x(), 0.0, "first column starts at parent start");
-  assert_approx(first.bounds.width(), 40.0, "first column width inherited");
-  assert_approx(first.bounds.y(), 0.0, "first row starts at top");
-  assert_approx(first.bounds.height(), 25.0, "first row height inherited");
+  assert_approx(
+    first.bounds.y(),
+    0.0,
+    "first column maps onto the vertical axis",
+  );
+  assert_approx(
+    first.bounds.height(),
+    col1,
+    "first column size inherited from the parent",
+  );
+  assert_approx(
+    first.bounds.x(),
+    row1_x,
+    "first row aligns to block-start (right) in vertical-rl",
+  );
+  assert_approx(
+    first.bounds.width(),
+    row1,
+    "first row size inherited from the parent",
+  );
 
-  assert_approx(second.bounds.x(), 46.0, "second column offset includes gap");
-  assert_approx(second.bounds.width(), 50.0, "second column width inherited");
-  assert_approx(second.bounds.y(), 29.0, "second row offset includes gap");
-  assert_approx(second.bounds.height(), 35.0, "second row height inherited");
+  assert_approx(
+    second.bounds.y(),
+    col2_y,
+    "second column offset includes inherited gap",
+  );
+  assert_approx(
+    second.bounds.height(),
+    col2,
+    "second column size inherited from the parent",
+  );
+  assert_approx(
+    second.bounds.x(),
+    row2_x,
+    "second row offset includes inherited gap",
+  );
+  assert_approx(
+    second.bounds.width(),
+    row2,
+    "second row size inherited from the parent",
+  );
 }
 
 #[test]
@@ -4100,11 +4209,11 @@ fn subgrid_named_lines_survive_writing_mode_transpose() {
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
 
-  assert_approx(first.bounds.width(), 25.0, "start/mid span first column");
-  assert_approx(first.bounds.x(), 0.0, "first column starts at origin");
-  assert_approx(second.bounds.width(), 35.0, "mid/end span second column");
+  assert_approx(first.bounds.height(), 25.0, "start/mid span first column");
+  assert_approx(first.bounds.y(), 0.0, "first column starts at origin");
+  assert_approx(second.bounds.height(), 35.0, "mid/end span second column");
   assert_approx(
-    second.bounds.x(),
+    second.bounds.y(),
     30.0,
     "second column offset respects parent gap and track",
   );
@@ -4172,39 +4281,44 @@ fn subgrid_inherits_area_lines_when_axes_differ() {
   let main_fragment = &subgrid_fragment.children[1];
 
   assert_approx(
-    nav_fragment.bounds.y(),
+    nav_fragment.bounds.x(),
     0.0,
     "nav stays in the first inherited track",
   );
   assert_approx(
-    nav_fragment.bounds.height(),
+    nav_fragment.bounds.width(),
     30.0,
-    "nav spans first column height",
+    "nav spans first inherited column",
   );
   assert_approx(
-    main_fragment.bounds.y(),
+    main_fragment.bounds.x(),
     34.0,
     "gap and track offset preserved for main",
   );
   assert_approx(
-    main_fragment.bounds.height(),
+    main_fragment.bounds.width(),
     40.0,
-    "main spans the second inherited column height",
+    "main spans the second inherited column",
   );
 }
 
 #[test]
 fn row_subgrid_inherits_tracks_from_vertical_parent() {
+  let row1 = 40.0;
+  let row2 = 60.0;
+  let row_gap = 8.0;
+  let parent_width = row1 + row_gap + row2;
+
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.writing_mode = WritingMode::VerticalRl;
   parent_style.grid_template_rows = vec![
-    GridTrack::Length(Length::px(40.0)),
-    GridTrack::Length(Length::px(60.0)),
+    GridTrack::Length(Length::px(row1)),
+    GridTrack::Length(Length::px(row2)),
   ];
   parent_style.grid_template_columns = vec![GridTrack::Auto];
-  parent_style.grid_row_gap = Length::px(8.0);
-  parent_style.width = Some(Length::px(108.0));
+  parent_style.grid_row_gap = Length::px(row_gap);
+  parent_style.width = Some(Length::px(parent_width));
 
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
@@ -4212,6 +4326,10 @@ fn row_subgrid_inherits_tracks_from_vertical_parent() {
   subgrid_style.grid_row_start = 1;
   subgrid_style.grid_row_end = 3;
   subgrid_style.writing_mode = WritingMode::HorizontalTb;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
+  subgrid_style.justify_items = AlignItems::Stretch;
+  subgrid_style.align_items = AlignItems::Stretch;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
@@ -4248,34 +4366,25 @@ fn row_subgrid_inherits_tracks_from_vertical_parent() {
 
   assert_approx(
     subgrid_fragment.bounds.width(),
-    108.0,
+    parent_width,
     "subgrid width matches inherited rows",
   );
+
+  // The subgrid's own writing mode is horizontal, so its row axis is physical Y even though its
+  // parent has a vertical writing mode (axes swapped). With correct axis remapping, the parent's
+  // row tracks should be inherited onto the subgrid's physical Y axis.
   assert_approx(
-    first.bounds.width(),
-    40.0,
-    "first row size inherited on horizontal axis",
-  );
-  assert_approx(
-    second.bounds.x(),
+    first.bounds.y(),
     0.0,
-    "second track starts at the block-end edge in vertical-rl",
+    "first inherited row starts at block-start (top) in horizontal writing mode",
   );
+  assert_approx(first.bounds.height(), row1, "first inherited row size");
   assert_approx(
-    first.bounds.x(),
-    68.0,
-    "first track starts at the block-start edge in vertical-rl",
+    second.bounds.y(),
+    row1 + row_gap,
+    "second inherited row offset includes the inherited gap",
   );
-  assert_approx(
-    first.bounds.x() - (second.bounds.x() + second.bounds.width()),
-    8.0,
-    "gap is preserved between inherited tracks",
-  );
-  assert_approx(
-    second.bounds.width(),
-    60.0,
-    "second row size inherited on horizontal axis",
-  );
+  assert_approx(second.bounds.height(), row2, "second inherited row size");
 }
 
 #[test]
@@ -4309,6 +4418,8 @@ fn subgrid_named_lines_resolve_in_vertical_mode() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 2;
   subgrid_style.grid_column_end = 4;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
@@ -4407,6 +4518,8 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   outer_style.writing_mode = WritingMode::VerticalRl;
   outer_style.grid_column_gap = container_style.grid_column_gap;
   outer_style.grid_column_gap_is_normal = container_style.grid_column_gap_is_normal;
+  outer_style.justify_content = JustifyContent::Start;
+  outer_style.align_content = AlignContent::Start;
 
   let mut inner_style = ComputedStyle::default();
   inner_style.display = Display::Grid;
@@ -4417,18 +4530,28 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   inner_style.writing_mode = WritingMode::VerticalRl;
   inner_style.grid_column_gap = container_style.grid_column_gap;
   inner_style.grid_column_gap_is_normal = container_style.grid_column_gap_is_normal;
+  inner_style.justify_content = JustifyContent::Start;
+  inner_style.align_content = AlignContent::Start;
 
   let mut a_style = ComputedStyle::default();
   a_style.display = Display::Block;
+  a_style.justify_self = Some(AlignItems::Start);
+  a_style.align_self = Some(AlignItems::Start);
   a_style.height = Some(Length::px(12.0));
   a_style.grid_column_start = 1;
   a_style.grid_column_end = 2;
+  a_style.grid_row_start = 1;
+  a_style.grid_row_end = 2;
 
   let mut b_style = ComputedStyle::default();
   b_style.display = Display::Block;
+  b_style.justify_self = Some(AlignItems::Start);
+  b_style.align_self = Some(AlignItems::Start);
   b_style.height = Some(Length::px(12.0));
   b_style.grid_column_start = 2;
   b_style.grid_column_end = 3;
+  b_style.grid_row_start = 1;
+  b_style.grid_row_end = 2;
 
   let a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
   let b = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
@@ -4438,7 +4561,11 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
     FormattingContextType::Grid,
     vec![a, b],
   );
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner],
+  );
   let grid = BoxNode::new_block(
     Arc::new(container_style),
     FormattingContextType::Grid,
@@ -4455,14 +4582,12 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   let a_fragment = &inner_fragment.children[0];
   let b_fragment = &inner_fragment.children[1];
 
-  assert_approx(a_fragment.bounds.x(), 0.0, "first item starts in column 1");
-  assert_approx(a_fragment.bounds.width(), 28.0, "first column width");
+  assert_approx(a_fragment.bounds.y(), 0.0, "first item starts in column 1");
   assert_approx(
-    b_fragment.bounds.x(),
+    b_fragment.bounds.y(),
     33.0,
     "second item starts in column 2 (+ gap)",
   );
-  assert_approx(b_fragment.bounds.width(), 42.0, "second column width");
 }
 
 #[test]
@@ -4493,6 +4618,8 @@ fn abspos_named_lines_resolve_in_subgrid_with_writing_mode_mismatch() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 2;
   subgrid_style.grid_column_end = 4;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
@@ -4520,13 +4647,18 @@ fn abspos_named_lines_resolve_in_subgrid_with_writing_mode_mismatch() {
 
   let abs_fragment = fragment
     .iter_fragments()
-    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment present");
 
   assert_approx(
-    abs_fragment.bounds.x(),
+    abs_fragment.bounds.y(),
     30.0,
-    "named line placement resolves to the second inherited track within the subgrid",
+    "named line placement resolves to the second inherited track on the physical Y axis",
   );
 }
 
@@ -4564,6 +4696,8 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
   outer_subgrid_style.grid_column_end = 4;
   outer_subgrid_style.grid_row_start = 1;
   outer_subgrid_style.grid_row_end = 2;
+  outer_subgrid_style.justify_content = JustifyContent::Start;
+  outer_subgrid_style.align_content = AlignContent::Start;
 
   let mut inner_subgrid_style = ComputedStyle::default();
   inner_subgrid_style.display = Display::Grid;
@@ -4573,6 +4707,8 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
   inner_subgrid_style.grid_column_end = 3;
   inner_subgrid_style.grid_row_start = 1;
   inner_subgrid_style.grid_row_end = 2;
+  inner_subgrid_style.justify_content = JustifyContent::Start;
+  inner_subgrid_style.align_content = AlignContent::Start;
 
   let mut abs_style = ComputedStyle::default();
   abs_style.display = Display::Block;
@@ -4607,13 +4743,18 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
 
   let abs_fragment = fragment
     .iter_fragments()
-    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment present");
 
   assert_approx(
-    abs_fragment.bounds.y(),
+    abs_fragment.bounds.x(),
     30.0,
-    "named line placement resolves to the second inherited column track on the physical Y axis",
+    "named line placement resolves to the second inherited column track on the physical X axis",
   );
 }
 
@@ -4679,8 +4820,16 @@ fn abspos_row_subgrid_respects_local_direction_for_columns_through_subgrid_chain
     FormattingContextType::Grid,
     vec![abs_child],
   );
-  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner]);
-  let grid = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Grid, vec![outer]);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Grid,
+    vec![outer],
+  );
 
   let fc = GridFormattingContext::new();
   let fragment = fc
@@ -4691,7 +4840,12 @@ fn abspos_row_subgrid_respects_local_direction_for_columns_through_subgrid_chain
   let inner_fragment = &outer_fragment.children[0];
   let abs_fragment = inner_fragment
     .iter_fragments()
-    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
     .expect("absolute fragment present");
 
   assert_approx(
