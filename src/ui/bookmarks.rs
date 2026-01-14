@@ -879,7 +879,7 @@ impl BookmarkStore {
         }
       }
       BookmarkNode::Folder(_) => unreachable!("validated above"),
-    }
+    };
     self.touch();
     Ok(())
   }

@@ -287,7 +287,7 @@ impl<Host: 'static> Task<Host> {
 
   fn new_with_seq<F>(source: TaskSource, seq: u64, runnable: F) -> Self
   where
-    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
   {
     Self {
       source,
