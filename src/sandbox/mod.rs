@@ -1060,7 +1060,6 @@ fn map_seccomp_action_err(action_name: &'static str, action: u32, err: io::Error
     },
   }
 }
-
 #[cfg(target_os = "linux")]
 fn guidance_for_prctl_get_seccomp(err: &io::Error) -> String {
   let errno = err.raw_os_error().unwrap_or_default();

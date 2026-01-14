@@ -5531,7 +5531,12 @@ pub(crate) fn apply_property_from_source(
     }
     "field-sizing" => styles.field_sizing = source.field_sizing,
     "resize" => styles.resize = source.resize,
-    "box-sizing" => styles.box_sizing = source.box_sizing,
+    "box-sizing" => {
+      if order >= styles.logical.box_sizing_order {
+        styles.box_sizing = source.box_sizing;
+        styles.logical.box_sizing_order = order;
+      }
+    }
     "box-decoration-break" => styles.box_decoration_break = source.box_decoration_break,
     "container-type" => styles.container_type = source.container_type,
     "container-name" => styles.container_name = source.container_name.clone(),
@@ -10786,10 +10791,19 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "box-sizing" => {
+      if order < styles.logical.box_sizing_order {
+        return;
+      }
       if let PropertyValue::Keyword(kw) = resolved_value {
         match kw.as_str() {
-          _ if kw.eq_ignore_ascii_case("content-box") => styles.box_sizing = BoxSizing::ContentBox,
-          _ if kw.eq_ignore_ascii_case("border-box") => styles.box_sizing = BoxSizing::BorderBox,
+          _ if kw.eq_ignore_ascii_case("content-box") => {
+            styles.box_sizing = BoxSizing::ContentBox;
+            styles.logical.box_sizing_order = order;
+          }
+          _ if kw.eq_ignore_ascii_case("border-box") => {
+            styles.box_sizing = BoxSizing::BorderBox;
+            styles.logical.box_sizing_order = order;
+          }
           _ => {}
         }
       }

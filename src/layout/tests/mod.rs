@@ -283,6 +283,7 @@ mod grid_spanning_percent_height_auto_track;
 mod grid_template_areas_explicit_grid_size;
 mod grid_template_areas_override_updates_line_names;
 mod grid_track_sizing_intrinsics;
+mod grid_text_input_width_100_percent_does_not_overflow;
 mod grid_width_calc_percent;
 mod grid_writing_mode_in_block;
 mod hanging_punctuation_test;

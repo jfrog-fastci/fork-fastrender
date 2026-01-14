@@ -1261,6 +1261,7 @@ impl WorkerToUi {
       #[cfg(feature = "browser_ui")]
       WorkerToUi::PageAccessKitSubtree { tab_id, .. } => *tab_id,
       WorkerToUi::Stage { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
       | WorkerToUi::FrameReady { tab_id, .. }
       | WorkerToUi::PageAccessibility { tab_id, .. }

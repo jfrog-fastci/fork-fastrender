@@ -4653,6 +4653,7 @@ fn generate_boxes_for_styled_into(
     use crate::style::CascadeOrderOrigin;
     use crate::style::types::Appearance;
     use crate::style::types::BorderStyle;
+    use crate::style::types::BoxSizing;
 
     if !matches!(style.appearance, Appearance::None) {
       return style;
@@ -4682,6 +4683,20 @@ fn generate_boxes_for_styled_into(
     // control as a normal element and do not apply UA default border/padding/background-color. We
     // mimic Chromium by stripping these values *only* when they are currently winning from the UA
     // origin (i.e. do not clobber author styles).
+
+    // Box sizing.
+    //
+    // Chromium's UA stylesheet sets `box-sizing: border-box` for native text controls, but when
+    // `appearance: none` is specified (so the element is treated as a normal box), `width`/`height`
+    // fall back to the standard `content-box` sizing model unless authors explicitly set
+    // `box-sizing`.
+    if cascade_order_origin(style.logical.box_sizing_order) == ua
+      && matches!(style.box_sizing, BoxSizing::BorderBox)
+    {
+      let s = Arc::make_mut(&mut style);
+      s.box_sizing = BoxSizing::ContentBox;
+      s.logical.box_sizing_order = -1;
+    }
 
     // Padding.
     if cascade_order_origin(style.logical.padding_orders.top) == ua {

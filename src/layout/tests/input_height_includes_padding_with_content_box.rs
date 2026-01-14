@@ -33,6 +33,7 @@ fn input_height_includes_padding_with_content_box_box_sizing() {
           input {
             -webkit-appearance: none;
             appearance: none;
+            width: 200px;
             height: 22px;
             padding: 14px 16px;
             border: 1px solid black;
@@ -53,6 +54,14 @@ fn input_height_includes_padding_with_content_box_box_sizing() {
 
   let input_fragment =
     find_fragment_by_background(&fragments.root, target_color).expect("input fragment");
+
+  // Content width (200px) + padding (16px * 2) + border (1px * 2) = 234px border box.
+  let width = input_fragment.bounds.width();
+  assert!(
+    (width - 234.0).abs() <= 0.5,
+    "expected input border box width to include padding/border; got {width:?} in fragment {:?}",
+    input_fragment.bounds,
+  );
 
   // Content height (22px) + padding (14px * 2) + border (1px * 2) = 52px border box.
   let height = input_fragment.bounds.height();
