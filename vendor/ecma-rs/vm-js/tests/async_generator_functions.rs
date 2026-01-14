@@ -35,7 +35,7 @@ fn async_generator_function_is_not_constructable() -> Result<(), VmError> {
 }
 
 #[test]
-fn async_generator_default_params_are_not_evaluated_until_first_next() -> Result<(), VmError> {
+fn async_generator_default_params_are_evaluated_on_call() -> Result<(), VmError> {
   let mut rt = new_runtime();
   if !_async_generator_support::supports_async_generators(&mut rt)? {
     return Ok(());
@@ -45,20 +45,13 @@ fn async_generator_default_params_are_not_evaluated_until_first_next() -> Result
     r#"
       var called = false;
       function f(){ called = true; return 1; }
-      async function* g(x = f()) { yield x; }
+      var body = false;
+      async function* g(x = f()) { body = true; yield x; }
       var it = g();
-      var before = called;
-      var out = '';
-      it.next().then(r => { out = String(before) + ':' + String(called) + ':' + String(r.value); });
-      String(before) + ':' + String(called) + ':' + out
+      called === true && body === false && typeof it.next === "function"
     "#,
   )?;
-  assert_value_is_utf8(&rt, value, "false:false:");
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let value = rt.exec_script("out")?;
-  assert_value_is_utf8(&rt, value, "false:true:1");
+  assert_eq!(value, Value::Bool(true));
   Ok(())
 }
 

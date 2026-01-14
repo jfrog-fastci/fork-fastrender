@@ -43588,18 +43588,7 @@ fn gen_start_body(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   func: &Arc<Node<Func>>,
-  args: &[Value],
 ) -> Result<GenEval<Completion>, VmError> {
-  if let Err(err) = evaluator.instantiate_function(scope, func.as_ref(), args) {
-    let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
-    return match err {
-      VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
-        Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
-      }
-      other => Err(other),
-    };
-  }
-
   let Some(body) = &func.stx.body else {
     return Err(VmError::Unimplemented("function without body"));
   };
@@ -47694,7 +47683,6 @@ pub(crate) fn generator_resume(
         let this = cont.this;
         let new_target = cont.new_target;
         let func = cont.func.clone();
-        let args: &[Value] = &cont.args;
 
         let result = {
           let mut evaluator = Evaluator {
@@ -47711,7 +47699,7 @@ pub(crate) fn generator_resume(
             this_initialized: true,
             this_root_idx: None,
           };
-          gen_start_body(&mut evaluator, &mut scope, &func, args)
+          gen_start_body(&mut evaluator, &mut scope, &func)
         };
 
         match result {
@@ -47914,6 +47902,27 @@ pub(crate) fn run_ecma_function(
         }
       }
     };
+
+    // Per ECMA-262, generator/async generator calls must perform parameter instantiation eagerly.
+    // Default parameter initializers can have side effects and can throw, and those effects happen
+    // (or errors surface) at call time, before the generator object is returned.
+    {
+      let mut evaluator = Evaluator {
+        vm,
+        host,
+        hooks,
+        env,
+        strict,
+        this,
+        new_target,
+        home_object,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+      evaluator.instantiate_function(&mut init_scope, func.as_ref(), args)?;
+    }
 
     let mut boxed_args: Vec<Value> = Vec::new();
     boxed_args

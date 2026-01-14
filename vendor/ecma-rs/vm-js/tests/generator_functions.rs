@@ -100,19 +100,20 @@ fn yield_without_operand_is_true_undefined_even_if_shadowed() {
 }
 
 #[test]
-fn generator_default_params_are_not_evaluated_until_first_next() {
+fn generator_default_params_are_evaluated_on_call() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
       r#"
         var called = false;
         function f(){ called = true; return 1; }
-        function* g(x = f()) { yield x; }
+        var body = false;
+        function* g(x = f()) { body = true; yield x; }
         var it = g();
-        var before = called;
+        var before = called === true && body === false;
         var v = it.next().value;
-        var after = called;
-        before === false && after === true && v === 1
+        var after = called === true && body === true;
+        before && after && v === 1
       "#,
     )
     .unwrap();
