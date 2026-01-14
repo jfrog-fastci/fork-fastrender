@@ -44823,6 +44823,8 @@ fn gen_eval_tagged_template_with_callee(
   callee_value: Value,
   this_value: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  let roots_len_at_entry = scope.heap().root_stack.len();
+  let env_roots_len_at_entry = scope.heap().env_root_stack.len();
   let mut call_scope = scope.reborrow();
   call_scope.push_roots(&[callee_value, this_value])?;
 
@@ -44856,7 +44858,7 @@ fn gen_eval_tagged_template_with_callee(
     .map_err(|_| VmError::OutOfMemory)?;
   args.push(Value::Object(template_obj));
 
-  gen_eval_tagged_template_from_parts(
+  match gen_eval_tagged_template_from_parts(
     evaluator,
     &mut call_scope,
     expr,
@@ -44864,7 +44866,53 @@ fn gen_eval_tagged_template_with_callee(
     this_value,
     args,
     0,
-  )
+  )? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+    GenEval::Suspend(suspend) => {
+      // `gen_eval_tagged_template_from_parts` ran under a child rooting scope so `callee`/`this` and
+      // the partially-evaluated substitution list could be kept alive across evaluation of later
+      // substitutions.
+      //
+      // If evaluation suspends via `yield`, we must promote those roots onto the parent scope
+      // (similar to `gen_call_continue_args`) so they survive until the yield boundary; dropping the
+      // child scope would otherwise pop them before the generator continuation is stored back into
+      // the heap.
+      //
+      // Preserve any roots pushed while evaluating the tagged template (including roots added by
+      // nested generator frames) by re-pushing the slice of the root stacks that were appended in
+      // `call_scope`.
+      let value_roots_src = &call_scope.heap().root_stack[roots_len_at_entry..];
+      let env_roots_src = &call_scope.heap().env_root_stack[env_roots_len_at_entry..];
+
+      let mut value_roots: Vec<Value> = Vec::new();
+      value_roots
+        .try_reserve_exact(value_roots_src.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      value_roots.extend_from_slice(value_roots_src);
+
+      let mut env_roots: Vec<GcEnv> = Vec::new();
+      env_roots
+        .try_reserve_exact(env_roots_src.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      env_roots.extend_from_slice(env_roots_src);
+
+      drop(call_scope);
+      if !value_roots.is_empty() {
+        // Ensure any env roots (from `call_scope`) are treated as roots if pushing value roots grows
+        // `root_stack` and triggers a GC.
+        if env_roots.is_empty() {
+          scope.push_roots(&value_roots)?;
+        } else {
+          scope.push_roots_with_extra_roots(&value_roots, &[], &env_roots)?;
+        }
+      }
+      if !env_roots.is_empty() {
+        scope.push_env_roots(&env_roots)?;
+      }
+
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_eval_tagged_template_from_parts(
