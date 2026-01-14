@@ -121,6 +121,10 @@ fn browser_help_exits_successfully_without_startup_logs() {
       "expected help to mention {flag}, got:\n{help}"
     );
   }
+  assert!(
+    help.contains("FASTR_TRACE_MAX_EVENTS"),
+    "expected --help to mention FASTR_TRACE_MAX_EVENTS for trace retention, got:\n{help}"
+  );
 
   // `--help` should exit early (clap prints help and terminates) before any runtime startup/logging.
   // Historically, this has regressed when new env vars / crash handling is wired up in `run()`.

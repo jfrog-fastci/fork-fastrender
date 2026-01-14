@@ -249,7 +249,8 @@ fn browser_help_mentions_instrumentation_flags() {
       && stdout.contains("--no-hud")
       && stdout.contains("--perf-log")
       && stdout.contains("--perf-log-out")
-      && stdout.contains("--trace-out"),
+      && stdout.contains("--trace-out")
+      && stdout.contains("FASTR_TRACE_MAX_EVENTS"),
     "browser help should mention instrumentation flags; got:\n{stdout}"
   );
 }
