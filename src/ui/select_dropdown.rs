@@ -150,77 +150,26 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
     return None;
   }
 
-  let options = control
-    .items
-    .iter()
-    .enumerate()
-    .filter_map(|(idx, item)| match item {
-      SelectItem::Option { disabled, .. } => Some((idx, *disabled)),
-      _ => None,
-    })
-    .collect::<Vec<_>>();
+  let (first_enabled, last_enabled) = first_last_enabled_option_item_index(control)?;
 
-  if options.is_empty() {
-    return None;
-  }
-
-  let selected_pos = control
+  // Anchor to the currently-selected option item index (even if disabled), falling back to the
+  // first enabled option. We intentionally ignore optgroup labels (they are not selectable).
+  let selected_option_idx = control
     .selected
     .last()
     .copied()
-    .and_then(|selected_item_idx| {
-      options
-        .iter()
-        .position(|(idx, _)| *idx == selected_item_idx)
-    });
-
-  let mut first_enabled: Option<usize> = None;
-  let mut last_enabled: Option<usize> = None;
-  for (pos, (_, disabled)) in options.iter().enumerate() {
-    if !*disabled {
-      if first_enabled.is_none() {
-        first_enabled = Some(pos);
-      }
-      last_enabled = Some(pos);
-    }
-  }
-
-  let first_enabled = first_enabled?;
-  let last_enabled = last_enabled.unwrap_or(first_enabled);
-  let anchor = selected_pos.unwrap_or(first_enabled);
+    .filter(|idx| control.items.get(*idx).is_some_and(|item| matches!(item, SelectItem::Option { .. })));
+  let anchor = selected_option_idx.unwrap_or(first_enabled);
 
   let next = match key {
-    ArrowDown => {
-      let mut found = None;
-      for pos in (anchor + 1)..options.len() {
-        if !options[pos].1 {
-          found = Some(pos);
-          break;
-        }
-      }
-      found.unwrap_or(last_enabled)
-    }
-    ArrowUp => {
-      let mut found = None;
-      for pos in (0..anchor).rev() {
-        if !options[pos].1 {
-          found = Some(pos);
-          break;
-        }
-      }
-      found.unwrap_or(first_enabled)
-    }
     Home => first_enabled,
     End => last_enabled,
+    ArrowDown => next_enabled_option_item_index_after(control, anchor).unwrap_or(last_enabled),
+    ArrowUp => prev_enabled_option_item_index_before(control, anchor).unwrap_or(first_enabled),
     _ => return None,
   };
 
-  // If we clamped and the anchor was already selected, treat as a no-op.
-  if next == anchor && selected_pos.is_some() {
-    return Some(options[anchor].0);
-  }
-
-  Some(options[next].0)
+  Some(next)
 }
 
 /// Move the currently-selected `<option>` by a delta measured in **enabled options**.
@@ -243,85 +192,88 @@ pub fn offset_enabled_option_item_index(control: &SelectControl, delta: isize) -
       .or_else(|| next_enabled_option_item_index(control, KeyAction::Home));
   }
 
-  let options = control
-    .items
-    .iter()
-    .enumerate()
-    .filter_map(|(idx, item)| match item {
-      SelectItem::Option { disabled, .. } => Some((idx, *disabled)),
-      _ => None,
-    })
-    .collect::<Vec<_>>();
+  let (first_enabled, last_enabled) = first_last_enabled_option_item_index(control)?;
 
-  if options.is_empty() {
-    return None;
-  }
-
-  let selected_pos = control
+  let selected_option_idx = control
     .selected
     .last()
     .copied()
-    .and_then(|selected_item_idx| {
-      options
-        .iter()
-        .position(|(idx, _)| *idx == selected_item_idx)
-    });
-
-  let mut first_enabled: Option<usize> = None;
-  let mut last_enabled: Option<usize> = None;
-  for (pos, (_, disabled)) in options.iter().enumerate() {
-    if !*disabled {
-      if first_enabled.is_none() {
-        first_enabled = Some(pos);
-      }
-      last_enabled = Some(pos);
-    }
-  }
-  let first_enabled = first_enabled?;
-  let last_enabled = last_enabled.unwrap_or(first_enabled);
-
-  let anchor = selected_pos.unwrap_or(first_enabled);
+    .filter(|idx| control.items.get(*idx).is_some_and(|item| matches!(item, SelectItem::Option { .. })));
+  let mut current = selected_option_idx.unwrap_or(first_enabled);
 
   let step_count = delta.unsigned_abs();
-  let mut pos = anchor;
-
   if delta > 0 {
     for _ in 0..step_count {
-      let mut found = None;
-      for next_pos in (pos + 1)..options.len() {
-        if !options[next_pos].1 {
-          found = Some(next_pos);
-          break;
-        }
-      }
-      match found {
-        Some(next_pos) => pos = next_pos,
+      match next_enabled_option_item_index_after(control, current) {
+        Some(next) => current = next,
         None => {
-          pos = last_enabled;
+          current = last_enabled;
           break;
         }
       }
     }
   } else {
     for _ in 0..step_count {
-      let mut found = None;
-      for next_pos in (0..pos).rev() {
-        if !options[next_pos].1 {
-          found = Some(next_pos);
-          break;
-        }
-      }
-      match found {
-        Some(next_pos) => pos = next_pos,
+      match prev_enabled_option_item_index_before(control, current) {
+        Some(prev) => current = prev,
         None => {
-          pos = first_enabled;
+          current = first_enabled;
           break;
         }
       }
     }
   }
 
-  Some(options[pos].0)
+  Some(current)
+}
+
+fn first_last_enabled_option_item_index(control: &SelectControl) -> Option<(usize, usize)> {
+  let mut first_enabled: Option<usize> = None;
+  let mut last_enabled: Option<usize> = None;
+  for (idx, item) in control.items.iter().enumerate() {
+    let SelectItem::Option { disabled, .. } = item else {
+      continue;
+    };
+    if *disabled {
+      continue;
+    }
+    if first_enabled.is_none() {
+      first_enabled = Some(idx);
+    }
+    last_enabled = Some(idx);
+  }
+
+  let first_enabled = first_enabled?;
+  let last_enabled = last_enabled.unwrap_or(first_enabled);
+  Some((first_enabled, last_enabled))
+}
+
+fn next_enabled_option_item_index_after(control: &SelectControl, anchor: usize) -> Option<usize> {
+  if anchor >= control.items.len() {
+    return None;
+  }
+  for (idx, item) in control.items.iter().enumerate().skip(anchor + 1) {
+    let SelectItem::Option { disabled, .. } = item else {
+      continue;
+    };
+    if !*disabled {
+      return Some(idx);
+    }
+  }
+  None
+}
+
+fn prev_enabled_option_item_index_before(control: &SelectControl, anchor: usize) -> Option<usize> {
+  let end = anchor.min(control.items.len());
+  for idx in (0..end).rev() {
+    let Some(SelectItem::Option { disabled, .. }) = control.items.get(idx) else {
+      continue;
+    };
+    if !*disabled {
+      return Some(idx);
+    }
+  }
+  None
 }
 
 /// Returns the currently-selected `<option>` as a [`SelectDropdownChoice`].
