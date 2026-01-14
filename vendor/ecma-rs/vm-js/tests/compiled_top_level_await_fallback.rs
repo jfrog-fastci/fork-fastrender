@@ -85,7 +85,9 @@ fn compiled_script_falls_back_for_top_level_for_await_of() -> Result<(), VmError
       iterable[Symbol.asyncIterator] = function () { return iter; };
 
       for await (var x of iterable) {
-        out = x;
+        // Nested awaits inside the loop body are not yet supported by the compiled (HIR) async
+        // classic-script executor.
+        out = await Promise.resolve(x);
       }
       out
     "#,
@@ -93,7 +95,7 @@ fn compiled_script_falls_back_for_top_level_for_await_of() -> Result<(), VmError
   assert!(script.contains_top_level_await);
   assert!(
     script.top_level_await_requires_ast_fallback,
-    "top-level for-await-of is not supported by the HIR async classic-script executor"
+    "top-level for-await-of loops with nested await are not supported by the HIR async classic-script executor"
   );
 
   let completion = rt.exec_compiled_script(script)?;
