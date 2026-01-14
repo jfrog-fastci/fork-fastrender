@@ -1736,7 +1736,8 @@ where
   let sample_rate_hz = mixer.config.sample_rate_hz;
   let trace_enabled = trace.is_enabled();
   let trace_sample_n = audio_trace_sample_n_from_env();
-  let mut trace_seq: u64 = 0;
+  // Avoid division/modulo in the RT callback by using a countdown for trace sampling.
+  let mut trace_sample_countdown: u64 = 0;
   let mut last_dropped_samples_total: u64 = 0;
 
   let err_cb = {
@@ -1797,8 +1798,17 @@ where
             return;
           }
 
-          let record_trace = trace_enabled && trace_seq % trace_sample_n == 0;
-          trace_seq = trace_seq.wrapping_add(1);
+          let record_trace = if trace_enabled {
+            if trace_sample_countdown == 0 {
+              trace_sample_countdown = trace_sample_n.saturating_sub(1);
+              true
+            } else {
+              trace_sample_countdown = trace_sample_countdown.saturating_sub(1);
+              false
+            }
+          } else {
+            false
+          };
 
           let mut callback_span = if record_trace {
             trace.try_span("audio.callback", "audio")
