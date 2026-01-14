@@ -95,7 +95,7 @@ pub struct AboutPageSnapshot {
   pub download_dir: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OpenTabSnapshot {
   /// Best-effort identifier for the window that owns this tab.
   ///
@@ -1235,20 +1235,38 @@ fn gpu_html() -> String {
 fn best_effort_site_for_url(url: &str) -> String {
   let trimmed = url.trim();
   if trimmed.is_empty() {
-    return "unknown".to_string();
+    return "(unknown)".to_string();
   }
+
+  // `about:` pages are non-hierarchical and do not have a host; for `about:error?url=...`, show
+  // just the page identifier rather than the query string.
+  let about_id = trimmed
+    .split(|c| matches!(c, '?' | '#'))
+    .next()
+    .unwrap_or(trimmed);
+  if about_id.to_ascii_lowercase().starts_with("about:") {
+    return about_id.to_string();
+  }
+
   let parsed = match url::Url::parse(trimmed) {
     Ok(url) => url,
-    Err(_) => return "unknown".to_string(),
+    Err(_) => return "(unknown)".to_string(),
   };
 
   match parsed.scheme() {
-    "http" | "https" => parsed
-      .host_str()
-      .map(str::to_string)
-      .unwrap_or_else(|| "unknown".to_string()),
-    "file" => "file".to_string(),
-    other => other.to_string(),
+    "http" | "https" => {
+      let Some(host) = parsed.host_str() else {
+        return "(unknown)".to_string();
+      };
+      if let Some(port) = parsed.port() {
+        format!("{host}:{port}")
+      } else {
+        host.to_string()
+      }
+    }
+    "file" => "file://".to_string(),
+    "about" => about_id.to_string(),
+    _ => "(unknown)".to_string(),
   }
 }
 
@@ -1372,8 +1390,8 @@ fn processes_html(full_url: &str) -> String {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| best_effort_site_key_for_url(&tab.url));
-      let site_cell = if site_display == "unknown" {
-        "<span class=\"muted\">unknown</span>".to_string()
+      let site_cell = if site_display == "(unknown)" {
+        "<span class=\"muted\">(unknown)</span>".to_string()
       } else {
         format!("<code>{}</code>", escape_html(&site_display))
       };
@@ -3318,6 +3336,60 @@ mod tests {
 
     let html = error_page_html("Navigation error", "details", None);
     assert!(html.contains(&format!("href=\"{ABOUT_SHARED_CSS_URL}\"")));
+  }
+
+  #[test]
+  fn processes_site_derivation_handles_common_schemes() {
+    assert_eq!(best_effort_site_for_url("https://example.com/x"), "example.com");
+    assert_eq!(best_effort_site_for_url("http://localhost:8080/"), "localhost:8080");
+    assert_eq!(best_effort_site_for_url("about:newtab"), "about:newtab");
+    assert_eq!(best_effort_site_for_url("file:///tmp/a.html"), "file://");
+    assert_eq!(best_effort_site_for_url("not a url"), "(unknown)");
+  }
+
+  #[cfg(feature = "browser_ui")]
+  #[test]
+  fn processes_html_renders_open_tab_snapshot_url_site_id_and_title() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot().as_ref().clone();
+
+    sync_about_page_snapshot_open_tabs(vec![OpenTabSnapshot {
+      window_id: Some("win".to_string()),
+      tab_id: 42,
+      url: "https://example.com/x".to_string(),
+      title: Some("My <Tab>".to_string()),
+      site_key: None,
+      renderer_process: None,
+      is_active: false,
+      loading: false,
+      crashed: false,
+      unresponsive: false,
+      renderer_crashed: false,
+      crash_reason: None,
+      renderer_protocol_violation: None,
+    }]);
+
+    let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
+    assert!(
+      html.contains("<code>42</code>"),
+      "expected about:processes to render tab id, got: {html}"
+    );
+    assert!(
+      html.contains("https://example.com/x"),
+      "expected about:processes to render tab URL, got: {html}"
+    );
+    assert!(
+      html.contains("<code>example.com</code>"),
+      "expected about:processes to render derived site, got: {html}"
+    );
+    assert!(
+      html.contains("My &lt;Tab&gt;"),
+      "expected about:processes to render escaped title when present, got: {html}"
+    );
+
+    set_about_page_snapshot(before);
   }
 
   #[cfg(feature = "browser_ui")]

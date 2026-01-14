@@ -8677,9 +8677,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
           for tab in &win.app.browser_state.tabs {
             let url = tab
-              .current_url
+              .committed_url
               .as_deref()
-              .or(tab.committed_url.as_deref())
+              .or(tab.current_url.as_deref())
               .unwrap_or("")
               .trim();
             if url.is_empty() {
