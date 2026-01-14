@@ -243,3 +243,87 @@ fn context_menu_entries_set_checked_state_for_panel_toggles() {
     );
   }
 }
+
+#[test]
+fn context_menu_entries_order_image_group_before_link_group_when_both_present() {
+  let _lock = super::stage_listener_test_lock();
+  let bookmarks = BookmarkStore::default();
+  let image_url = "https://example.com/img.png";
+  let link_url = "https://example.com/target";
+
+  let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+    link_url: Some(link_url),
+    image_url: Some(image_url),
+    page_url: Some("https://example.com/"),
+    bookmarks: &bookmarks,
+    history_panel_open: false,
+    bookmarks_panel_open: false,
+    can_copy: false,
+    can_cut: false,
+    can_paste: false,
+    can_select_all: false,
+  });
+
+  let find_action = |predicate: fn(&PageContextMenuAction) -> bool| {
+    entries.iter().position(|entry| match entry {
+      PageContextMenuEntry::Action(item) => predicate(&item.action),
+      PageContextMenuEntry::Separator => false,
+    })
+  };
+
+  let open_image_idx = find_action(|action| match action {
+    PageContextMenuAction::OpenImageInNewTab(url) => url == image_url,
+    _ => false,
+  })
+  .expect("expected OpenImageInNewTab for image_url to be present");
+  let download_image_idx = find_action(|action| match action {
+    PageContextMenuAction::DownloadImage(url) => url == image_url,
+    _ => false,
+  })
+  .expect("expected DownloadImage for image_url to be present");
+  let copy_image_idx = find_action(|action| match action {
+    PageContextMenuAction::CopyImageAddress(url) => url == image_url,
+    _ => false,
+  })
+  .expect("expected CopyImageAddress for image_url to be present");
+
+  let open_link_idx = find_action(|action| match action {
+    PageContextMenuAction::OpenLinkInNewTab(url) => url == link_url,
+    _ => false,
+  })
+  .expect("expected OpenLinkInNewTab for link_url to be present");
+
+  assert!(
+    open_image_idx < open_link_idx,
+    "expected image actions to appear before link actions (entries: {entries:?})"
+  );
+
+  // Image action group is expected to be contiguous and ordered before the link action group.
+  assert!(
+    open_image_idx < download_image_idx && download_image_idx < copy_image_idx,
+    "expected image actions to be ordered Open -> Download -> Copy (entries: {entries:?})"
+  );
+
+  // Ensure there is exactly one separator between the image group and the link group. This catches
+  // accidental double-separator insertion when both image+link URLs are present.
+  assert_eq!(
+    entries.get(copy_image_idx + 1),
+    Some(&PageContextMenuEntry::Separator),
+    "expected a separator after the last image action (entries: {entries:?})"
+  );
+  assert_eq!(
+    open_link_idx,
+    copy_image_idx + 2,
+    "expected exactly one separator between the image and link groups (entries: {entries:?})"
+  );
+
+  // Menu should always end with Reload (never a trailing separator).
+  assert!(
+    matches!(
+      entries.last(),
+      Some(PageContextMenuEntry::Action(item))
+        if matches!(&item.action, PageContextMenuAction::Reload)
+    ),
+    "expected context menu to end with Reload action (entries: {entries:?})"
+  );
+}
