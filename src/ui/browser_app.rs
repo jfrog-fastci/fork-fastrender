@@ -3923,6 +3923,33 @@ mod browser_app_tests {
   }
 
   #[test]
+  fn downloads_state_clear_completed_is_noop_when_no_completed_entries() {
+    let mut state = DownloadsState {
+      downloads: vec![
+        download_entry(
+          1,
+          DownloadStatus::InProgress {
+            received_bytes: 1,
+            total_bytes: Some(10),
+          },
+        ),
+        download_entry(2, DownloadStatus::Cancelled),
+        download_entry(
+          3,
+          DownloadStatus::Failed {
+            error: "network error".to_string(),
+          },
+        ),
+      ],
+    };
+
+    let before = state.downloads.clone();
+    let removed = state.clear_completed();
+    assert_eq!(removed, 0);
+    assert_eq!(state.downloads, before);
+  }
+
+  #[test]
   fn newly_created_tabs_have_no_renderer_process_until_assigned() {
     let tab = BrowserTabState::new(TabId(1_000_000), about_pages::ABOUT_NEWTAB.to_string());
     assert_eq!(tab.renderer_process, None);
