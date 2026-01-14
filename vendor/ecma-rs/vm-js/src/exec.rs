@@ -24659,9 +24659,8 @@ fn async_eval_expr_chain(
             "optional chaining super computed member access",
           ));
         }
-        // In derived constructors before `super()` returns, `this` is uninitialized. `super[expr]`
-        // must throw before evaluating the computed key expression (including any `await` within
-        // it).
+        // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key
+        // expression. In derived constructors, this must throw before any `await` in the key.
         let _ = async_get_super_receiver(evaluator, scope)?;
 
         // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
@@ -26180,9 +26179,8 @@ fn async_eval_assignment_to_computed_member(
   // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
   // reference.
   if matches!(&*member.object.stx, Expr::Super(_)) {
-    // `super[expr]` requires an initialized `this` binding. In derived constructors before
-    // `super()` returns, this must throw before evaluating the computed key expression (including
-    // any `await` within it).
+    // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key expression.
+    // In derived constructors, this must throw before any `await`/side effects in the key.
     let _ = async_get_super_receiver(evaluator, scope)?;
 
     let mut member_scope = scope.reborrow();
@@ -26964,9 +26962,8 @@ fn async_eval_update_expression(
 
       // `super[expr]++` / `++super[expr]` update targets.
       if matches!(&*member.object.stx, Expr::Super(_)) {
-        // `super[expr]` requires an initialized `this` binding. In derived constructors before
-        // `super()` returns, this must throw before evaluating the computed key expression (including
-        // any `await` within it).
+        // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key
+        // expression. In derived constructors, this must throw before any `await` in the key.
         let _ = async_get_super_receiver(evaluator, scope)?;
 
         let mut member_scope = scope.reborrow();
@@ -28796,12 +28793,10 @@ fn async_eval_call(
       if member.stx.optional_chaining {
         return Err(VmError::Unimplemented("optional chaining super member call"));
       }
-
       // `super[expr](...)` requires an initialized `this` binding. In derived constructors before
       // `super()` returns, this must throw before evaluating the computed key expression (and thus
       // before any `await`/thenable side effects in the key or argument list).
       let _ = async_get_super_receiver(evaluator, scope)?;
-
       async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, Value::Undefined)
     }
     // Optional member call (e.g. `obj?.method()`): only applies when the optional member expression

@@ -9178,9 +9178,9 @@ impl<'vm> HirEvaluator<'vm> {
       if let Some(home) = self.home_object {
         get_scope.push_root(Value::Object(home))?;
       }
-      // Resolve the `this` binding before evaluating the computed key expression. In derived
-      // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
-      // before any side effects from evaluating the key expression.
+      // Spec: `super[expr]` evaluates `GetThisBinding` before the computed key expression, so
+      // derived constructors throw before `super()` and do not observe key-expression side effects
+      // when `this` is uninitialized.
       let receiver = self.resolve_this_binding(&mut get_scope)?;
       get_scope.push_root(receiver)?;
       let key = self.eval_object_key(&mut get_scope, body, &member.property)?;
@@ -9272,9 +9272,9 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(Value::Object(home))?;
       }
 
-      // Resolve the `this` binding before evaluating the computed key expression. In derived
-      // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
-      // before any side effects from evaluating the key expression.
+      // Spec: `super[expr]` evaluates `GetThisBinding` before the computed key expression, so
+      // derived constructors throw before `super()` and do not observe key-expression side effects
+      // when `this` is uninitialized.
       let receiver = self.resolve_this_binding(&mut scope)?;
       scope.push_root(receiver)?;
       let key = self.eval_object_key(&mut scope, body, &member.property)?;
