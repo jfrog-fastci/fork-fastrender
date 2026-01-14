@@ -41,17 +41,28 @@ There are two wiring paths, depending on which chrome accessibility backend is a
 
 At a high level:
 
-1. `egui_winit::State` is created in `App::new` (see [`src/bin/browser.rs`](../src/bin/browser.rs)) and
-   owns the platform adapter glue (including AccessKit when egui-winit is built with its `accesskit`
-   feature).
-2. Each frame:
+1. `egui_winit::State` is created in `App::new` (see [`src/bin/browser.rs`](../src/bin/browser.rs))
+   for input translation + platform effects (clipboard/cursor/IME).
+2. The browser installs its own `accesskit_winit::Adapter` via
+   `ui::accesskit_winit_adapter::AccessKitWinitAdapter` so it can intercept egui’s
+   `PlatformOutput.accesskit_update` and optionally merge in the rendered page subtree before
+   publishing to the OS.
+3. Each frame:
    - The UI calls `egui_ctx.end_frame()` to get `FullOutput`.
-   - The UI forwards `platform_output` to winit via
-     `egui_state.handle_platform_output(&window, &egui_ctx, platform_output)`.
+   - The UI may merge a pending page subtree update into `platform_output.accesskit_update`.
+   - If `platform_output.accesskit_update` is present, it is forwarded to the platform adapter via
+     `AccessKitWinitAdapter::update(...)` (internally `Adapter::update_if_active`).
+   - The remaining `platform_output` is forwarded to winit via
+     `egui_state.handle_platform_output(&window, &egui_ctx, platform_output)` (clipboard/cursor/IME).
 
-That `handle_platform_output` call is the important “plumbing” point: it is responsible for applying
-platform-side effects (clipboard, cursor, IME, **and AccessKit updates**). If you refactor the event
-loop, ensure this still happens every frame.
+That `handle_platform_output` call is the important “plumbing” point for applying platform-side
+effects (clipboard, cursor, IME). If you refactor the event loop, ensure this still happens every
+frame.
+
+Note: AccessKit also requires **window event forwarding** (focus changes, resizes, scale-factor
+changes, etc). The browser forwards every `winit::event::WindowEvent` to the adapter via
+`AccessKitWinitAdapter::on_window_event(...)` and requests a redraw when the adapter returns `true`
+(the recommended `accesskit_winit` integration pattern).
 
 Note: the windowed browser enables AccessKit output by default (see `new_browser_egui_context` in
 [`src/bin/browser.rs`](../src/bin/browser.rs), which calls `egui::Context::enable_accesskit()`), and
