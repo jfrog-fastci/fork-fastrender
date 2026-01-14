@@ -284,7 +284,7 @@ impl<'a> Parser<'a> {
                 //
                 // This means:
                 // - `await` is treated as a keyword (it is not permitted as an identifier),
-                // - `await` expressions are only permitted when allowed by the surrounding context,
+                // - `await` expressions are never permitted,
                 // - `yield` expressions are never permitted, and
                 // - `return` statements are never permitted (handled above via `in_function = 0`).
                 await_allowed: false,
@@ -304,8 +304,7 @@ impl<'a> Parser<'a> {
               let body = match body {
                 Ok(body) => body,
                 Err(err)
-                  if !ctx.rules.await_expr_allowed
-                    && err.actual_token == Some(TT::KeywordAwait)
+                  if err.actual_token == Some(TT::KeywordAwait)
                     && matches!(err.typ, SyntaxErrorType::ExpectedSyntax("expression operand")) =>
                 {
                   return Err(err.loc.error(

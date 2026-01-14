@@ -191,6 +191,44 @@ fn await_expression_is_syntax_error_in_static_block_inside_function() {
 }
 
 #[test]
+fn await_expression_is_syntax_error_in_static_block_inside_async_function() {
+  let src = r#"
+    async function f() {
+      class C {
+        static {
+          await 0;
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn await_expression_is_syntax_error_in_static_block_in_module() {
+  let src = r#"
+    class C {
+      static {
+        await 0;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Module,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
 fn arguments_identifier_reference_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
