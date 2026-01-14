@@ -2056,7 +2056,7 @@ fn nested_subgrid_gap_difference_accumulates() {
 }
 
 #[test]
-fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
+fn column_subgrid_with_mismatched_writing_mode_transposes_tracks() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![
@@ -2120,15 +2120,19 @@ fn column_subgrid_with_mismatched_writing_mode_inherits_gaps() {
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
   assert_approx(
-    first.bounds.y(),
+    first.bounds.x(),
     0.0,
-    "first column starts at the inline-start edge in vertical writing mode",
+    "first row origin maps to the x-axis after transpose",
   );
+  assert_approx(first.bounds.width(), 6.0, "row height becomes item width");
+  assert_approx(first.bounds.y(), 0.0, "first column starts at origin");
+  assert_approx(first.bounds.height(), 24.0, "first column size becomes item height");
   assert_approx(
     second.bounds.y(),
-    31.0,
-    "second column offset keeps parent column-gap (mapped onto the vertical inline axis)",
+    24.0,
+    "second column offset does not include parent gap after transpose",
   );
+  assert_approx(second.bounds.height(), 36.0, "second column size becomes item height");
 }
 
 #[test]
@@ -2630,7 +2634,7 @@ fn column_subgrid_respects_vertical_writing_mode() {
 }
 
 #[test]
-fn subgrid_tracks_follow_subgrid_axes_when_writing_mode_differs() {
+fn subgrid_tracks_transpose_when_writing_mode_differs() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![
@@ -2646,7 +2650,7 @@ fn subgrid_tracks_follow_subgrid_axes_when_writing_mode_differs() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
-  // Flip writing mode to ensure inherited columns map onto the subgrid's own (vertical) inline axis.
+  // Flip writing mode to ensure axes come from the parent grid, not the subgrid's own mode.
   subgrid_style.writing_mode = WritingMode::VerticalRl;
 
   let mut first_child = ComputedStyle::default();
@@ -2687,14 +2691,34 @@ fn subgrid_tracks_follow_subgrid_axes_when_writing_mode_differs() {
 
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
+    subgrid_fragment.children[0].bounds.x(),
+    0.0,
+    "transposed row maps to x origin",
+  );
+  assert_approx(
+    subgrid_fragment.children[0].bounds.width(),
+    12.0,
+    "row height becomes item width",
+  );
+  assert_approx(
     subgrid_fragment.children[0].bounds.y(),
     0.0,
-    "first column starts at inline-start (top) in vertical writing mode",
+    "first column starts at origin after transpose",
+  );
+  assert_approx(
+    subgrid_fragment.children[0].bounds.height(),
+    32.0,
+    "first column size becomes item height",
   );
   assert_approx(
     subgrid_fragment.children[1].bounds.y(),
-    40.0,
-    "second column offset includes the inherited track + gap",
+    32.0,
+    "second column offset does not include parent gap after transpose",
+  );
+  assert_approx(
+    subgrid_fragment.children[1].bounds.height(),
+    48.0,
+    "second column size becomes item height",
   );
 }
 
@@ -2760,7 +2784,7 @@ fn row_subgrid_inherits_block_axis_from_vertical_parent() {
 }
 
 #[test]
-fn row_subgrid_with_mismatched_writing_mode_uses_subgrid_axes() {
+fn row_subgrid_with_mismatched_writing_mode_transposes_tracks() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![GridTrack::Auto];
@@ -2819,24 +2843,24 @@ fn row_subgrid_with_mismatched_writing_mode_uses_subgrid_axes() {
 
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
-    subgrid_fragment.children[0].bounds.y(),
-    0.0,
-    "first column starts at the top in vertical writing mode",
+    subgrid_fragment.children[0].bounds.width(),
+    40.0,
+    "first row height becomes item width after transpose",
   );
   assert_approx(
     subgrid_fragment.children[0].bounds.height(),
     15.0,
-    "first column height comes from the subgrid's local column track",
+    "first column width becomes item height after transpose",
   );
   assert_approx(
     subgrid_fragment.children[1].bounds.y(),
     15.0,
-    "second column starts after the first track",
+    "second column starts after the first track on the y-axis after transpose",
   );
   assert_approx(
     subgrid_fragment.children[1].bounds.height(),
     25.0,
-    "second column height comes from the subgrid's local column track",
+    "second column width becomes item height after transpose",
   );
 }
 

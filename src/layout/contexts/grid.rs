@@ -263,13 +263,26 @@ impl GridAxisStyle {
     }
   }
 
-  fn effective_for_grid_container(style: &ComputedStyle, _parent_axis: Option<Self>) -> Self {
-    // CSS Grid 2 specifies that subgrid line numbering and placement rules obey the subgrid's own
-    // writing mode (https://www.w3.org/TR/css-grid-2/#subgrid-indexing). Even though a subgrid can
-    // inherit track definitions from its parent, the mapping of CSS grid axes into Taffy's fixed
-    // physical axes should follow the subgrid's computed `writing-mode`/`direction` so placement is
-    // interpreted consistently with an independent nested grid.
-    Self::from_style(style)
+  fn effective_for_grid_container(style: &ComputedStyle, parent_axis: Option<Self>) -> Self {
+    // Taffy's subgrid support assumes that a subgrid's track inheritance is expressed in the same
+    // axis mapping as the containing grid (physical X/Y). In particular, the inherited track sizes
+    // and gutters are computed in the parent's coordinate system.
+    //
+    // CSS Grid 2 does say that a subgrid's line numbering and placement rules obey the subgrid's
+    // own writing-mode (https://www.w3.org/TR/css-grid-2/#subgrid-indexing). FastRender implements
+    // that by post-processing the final in-flow child fragments in
+    // `apply_subgrid_writing_mode_transpose` when the subgrid establishes an orthogonal writing
+    // mode.
+    //
+    // Therefore:
+    // - Independent grids use their own writing-mode for axis mapping.
+    // - Subgrids inherit the axis mapping of their containing grid for Taffy track inheritance.
+    let is_subgrid = (style.grid_row_subgrid || style.grid_column_subgrid) && !style.containment.layout;
+    if is_subgrid {
+      parent_axis.unwrap_or_else(|| Self::from_style(style))
+    } else {
+      Self::from_style(style)
+    }
   }
 
   fn inline_is_horizontal(self) -> bool {
@@ -3961,6 +3974,7 @@ impl GridFormattingContext {
       include_children,
       box_node.is_replaced(),
     );
+
     self.apply_grid_intrinsic_size_keywords(box_node, is_root, &mut taffy_style)?;
 
     let axis_style_for_children = if is_grid_container {
@@ -3978,6 +3992,41 @@ impl GridFormattingContext {
     } else {
       None
     };
+
+    // CSS Grid 2 §9.7 ("Subgrid") constrains the subgrid's explicit grid to the tracks it spans in
+    // the parent. If the author provides a `<line-name-list>` in a subgridded axis, the used value
+    // is truncated to match the used number of explicit tracks (#subgrid-span). Additionally, when
+    // the `<line-name-list>` is omitted, FastRender synthesizes a placeholder name list to convey
+    // the subgrid span to Taffy.
+    //
+    // `compute_grid_line_counts_for_container` yields the used line counts in Taffy's physical axes.
+    // Normalize the corresponding `subgrid_*_names` vectors so Taffy sees the correct explicit grid
+    // span even when placement is clamped.
+    if let Some(line_counts) = line_counts_for_children {
+      let normalize = |names: &mut Vec<Vec<String>>, required: usize| {
+        if required == 0 {
+          return;
+        }
+        if names.len() < required {
+          names.resize(required, Vec::new());
+        } else if names.len() > required {
+          names.truncate(required);
+        }
+      };
+
+      if taffy_style.subgrid_columns {
+        normalize(
+          &mut taffy_style.subgrid_column_names,
+          (line_counts.width.max(1)) as usize,
+        );
+      }
+      if taffy_style.subgrid_rows {
+        normalize(
+          &mut taffy_style.subgrid_row_names,
+          (line_counts.height.max(1)) as usize,
+        );
+      }
+    }
 
     // Subgrid containers with an omitted `<line-name-list>` implicitly span all parent tracks. That
     // span is encoded for Taffy via a synthetic line-name vector whose length equals the parent
@@ -7798,6 +7847,22 @@ impl GridFormattingContext {
           bounds = Rect::from_xywh(bounds.x(), bounds.y(), bounds.width(), height.max(0.0));
         }
       }
+
+      if is_grid_style {
+        if let Some(axis_style) = node_axis_style {
+          self.maybe_shrink_auto_span_subgrid_bounds(
+            taffy,
+            node_id,
+            box_node,
+            axis_style,
+            positioned_children
+              .get(&node_id)
+              .is_some_and(|positioned| !positioned.is_empty()),
+            &mut bounds,
+            deadline_counter,
+          )?;
+        }
+      }
       let fc_type = box_node
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
@@ -7830,6 +7895,14 @@ impl GridFormattingContext {
               deadline_counter,
             )?;
           }
+          self.apply_subgrid_writing_mode_transpose(
+            taffy,
+            node_id,
+            layout,
+            box_node,
+            &mut fragment,
+            deadline_counter,
+          )?;
           if let (Some(container_style), Some(axis_style)) = (node_taffy_style, node_axis_style) {
             fragment.grid_tracks = grid_track_ranges_for_container(
               taffy,
@@ -10501,6 +10574,328 @@ impl GridFormattingContext {
     Ok(())
   }
 
+  fn maybe_shrink_auto_span_subgrid_bounds(
+    &self,
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    box_node: &BoxNode,
+    effective_axis_style: GridAxisStyle,
+    has_positioned_children: bool,
+    bounds: &mut Rect,
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    // Workaround for Taffy's subgrid modeling: Taffy ties the subgrid item's span in the parent
+    // grid to the number of inherited explicit tracks, and derives automatic spans from the length
+    // of `subgrid_*_names`. For `grid-template-*: subgrid` without an explicit `<line-name-list>`,
+    // FastRender expands the synthesized name list to the parent's track count so grandchildren can
+    // be placed on inherited lines.
+    //
+    // In `subgrid-nested-writing-mode-001`, browsers expect the subgrid element itself to paint
+    // only in its auto-placed single-track area (letting grandchildren overflow across inherited
+    // tracks). Without this adjustment, the subgrid's semi-transparent background covers the gap
+    // between inherited tracks and fails the reftest.
+    if has_positioned_children {
+      return Ok(());
+    }
+    if !(box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid) {
+      return Ok(());
+    }
+
+    // Only apply this workaround when the subgrid establishes an orthogonal writing-mode relative
+    // to the axis mapping used for track inheritance. This keeps normal subgrids (same writing-mode
+    // as the containing grid) using Taffy's border-box sizing.
+    let this_inline_is_horizontal =
+      GridAxisStyle::from_style(&box_node.style).inline_is_horizontal();
+    if this_inline_is_horizontal == effective_axis_style.inline_is_horizontal() {
+      return Ok(());
+    }
+
+    let line_names_is_default = |names: &[Vec<String>]| -> bool {
+      names.is_empty() || (names.len() == 1 && names[0].is_empty())
+    };
+
+    let auto_columns = box_node.style.grid_column_start == 0
+      && box_node.style.grid_column_end == 0
+      && box_node.style.grid_column_raw.is_none();
+    let auto_rows =
+      box_node.style.grid_row_start == 0 && box_node.style.grid_row_end == 0 && box_node.style.grid_row_raw.is_none();
+
+    let wants_columns = box_node.style.grid_column_subgrid
+      && auto_columns
+      && line_names_is_default(&box_node.style.subgrid_column_line_names);
+    let wants_rows = box_node.style.grid_row_subgrid
+      && auto_rows
+      && line_names_is_default(&box_node.style.subgrid_row_line_names);
+
+    if !wants_columns && !wants_rows {
+      return Ok(());
+    }
+
+    let Some(parent_id) = taffy.parent(node_id) else {
+      return Ok(());
+    };
+    let parent_style = match taffy.style(parent_id) {
+      Ok(style) => style,
+      Err(_) => return Ok(()),
+    };
+    if parent_style.display != Display::Grid {
+      return Ok(());
+    }
+    let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
+      return Ok(());
+    };
+    let parent_child_count = taffy.child_count(parent_id);
+    if info.items.len() != parent_child_count {
+      return Ok(());
+    }
+    let idx = (0..parent_child_count).find(|&idx| taffy.get_child_id(parent_id, idx) == node_id);
+    let Some(idx) = idx else {
+      return Ok(());
+    };
+    let Some(placement) = info.items.get(idx) else {
+      return Ok(());
+    };
+
+    let parent_layout = match taffy.layout(parent_id) {
+      Ok(layout) => layout,
+      Err(_) => return Ok(()),
+    };
+    let row_offsets = compute_track_offsets(
+      &info.rows,
+      parent_layout.size.height,
+      parent_layout.padding.top,
+      parent_layout.padding.bottom,
+      parent_layout.border.top,
+      parent_layout.border.bottom,
+      parent_style
+        .align_content
+        .unwrap_or(TaffyAlignContent::Stretch),
+    );
+    let col_offsets = compute_track_offsets(
+      &info.columns,
+      parent_layout.size.width,
+      parent_layout.padding.left,
+      parent_layout.padding.right,
+      parent_layout.border.left,
+      parent_layout.border.right,
+      parent_style
+        .justify_content
+        .unwrap_or(TaffyAlignContent::Stretch),
+    );
+
+    let cols_axis = if effective_axis_style.inline_is_horizontal() {
+      PhysicalAxis::X
+    } else {
+      PhysicalAxis::Y
+    };
+    let rows_axis = if effective_axis_style.inline_is_horizontal() {
+      PhysicalAxis::Y
+    } else {
+      PhysicalAxis::X
+    };
+
+    let mut shrink_axis = |axis: PhysicalAxis,
+                           start_line: u16,
+                           end_line: u16,
+                           offsets: &[f32],
+                           bounds: &mut Rect| {
+      if end_line.saturating_sub(start_line) <= 1 {
+        return;
+      }
+      let end_line = start_line.saturating_add(1);
+      let Some((start, end)) = grid_area_for_item(offsets, start_line, end_line) else {
+        return;
+      };
+      let size = (end - start).max(0.0);
+      if !size.is_finite() || size <= 0.0 {
+        return;
+      }
+      match axis {
+        PhysicalAxis::X => {
+          if size + 0.1 < bounds.width() {
+            bounds.size.width = size;
+          }
+        }
+        PhysicalAxis::Y => {
+          if size + 0.1 < bounds.height() {
+            bounds.size.height = size;
+          }
+        }
+      }
+    };
+
+    check_layout_deadline(deadline_counter)?;
+    if wants_columns {
+      match cols_axis {
+        PhysicalAxis::X => shrink_axis(
+          PhysicalAxis::X,
+          placement.column_start,
+          placement.column_end,
+          &col_offsets,
+          bounds,
+        ),
+        PhysicalAxis::Y => shrink_axis(
+          PhysicalAxis::Y,
+          placement.row_start,
+          placement.row_end,
+          &row_offsets,
+          bounds,
+        ),
+      }
+    }
+    if wants_rows {
+      match rows_axis {
+        PhysicalAxis::Y => shrink_axis(
+          PhysicalAxis::Y,
+          placement.row_start,
+          placement.row_end,
+          &row_offsets,
+          bounds,
+        ),
+        PhysicalAxis::X => shrink_axis(
+          PhysicalAxis::X,
+          placement.column_start,
+          placement.column_end,
+          &col_offsets,
+          bounds,
+        ),
+      }
+    }
+
+    Ok(())
+  }
+
+  fn apply_subgrid_writing_mode_transpose(
+    &self,
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    layout: &TaffyLayout,
+    box_node: &BoxNode,
+    fragment: &mut FragmentNode,
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    // CSS Grid 2 says subgrid line numbering and placement follow the subgrid's own writing-mode
+    // (#subgrid-indexing). Taffy currently models subgrid axes using the parent grid's writing-mode
+    // so track inheritance works. When the subgrid establishes an orthogonal writing-mode, WPT
+    // expects the subgrid's in-flow children to be placed against transposed axes.
+    //
+    // We keep Taffy's axis mapping (so inherited track sizing remains stable) and then transpose
+    // the final fragments for non-grid children. Nested subgrids are intentionally excluded so they
+    // continue to inherit their parent's track orientation.
+    if fragment.children.is_empty()
+      || !(box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid)
+    {
+      return Ok(());
+    }
+
+    let Some(parent_id) = taffy.parent(node_id) else {
+      return Ok(());
+    };
+    let Some(&parent_ptr) = taffy.get_node_context(parent_id) else {
+      return Ok(());
+    };
+    let parent_node = unsafe { &*parent_ptr };
+
+    let this_inline_is_horizontal = GridAxisStyle::from_style(&box_node.style).inline_is_horizontal();
+    let parent_inline_is_horizontal =
+      GridAxisStyle::from_style(&parent_node.style).inline_is_horizontal();
+    if this_inline_is_horizontal == parent_inline_is_horizontal {
+      return Ok(());
+    }
+
+    let container_style = match taffy.style(node_id) {
+      Ok(style) => style,
+      Err(_) => return Ok(()),
+    };
+    let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) else {
+      return Ok(());
+    };
+    let child_count = taffy.child_count(node_id);
+    if info.items.len() != child_count {
+      return Ok(());
+    }
+
+    let row_offsets = compute_track_offsets(
+      &info.rows,
+      layout.size.height,
+      layout.padding.top,
+      layout.padding.bottom,
+      layout.border.top,
+      layout.border.bottom,
+      container_style
+        .align_content
+        .unwrap_or(TaffyAlignContent::Stretch),
+    );
+
+    let mut columns_no_gutters = info.columns.clone();
+    columns_no_gutters.gutters.clear();
+    columns_no_gutters
+      .gutters
+      .resize(columns_no_gutters.sizes.len() + 1, 0.0);
+    let col_offsets_no_gutters = compute_track_offsets(
+      &columns_no_gutters,
+      layout.size.width,
+      layout.padding.left,
+      layout.padding.right,
+      layout.border.left,
+      layout.border.right,
+      container_style
+        .justify_content
+        .unwrap_or(TaffyAlignContent::Stretch),
+    );
+
+    let children = fragment.children_mut();
+    let child_len = children.len().min(child_count);
+    for idx in 0..child_len {
+      check_layout_deadline(deadline_counter)?;
+      let child_id = taffy.get_child_id(node_id, idx);
+      let Some(&child_ptr) = taffy.get_node_context(child_id) else {
+        continue;
+      };
+      let child_node = unsafe { &*child_ptr };
+      if matches!(
+        child_node.formatting_context(),
+        Some(FormattingContextType::Grid)
+      ) {
+        continue;
+      }
+
+      let placement = &info.items[idx];
+      let Some((x_start, x_end)) =
+        grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)
+      else {
+        continue;
+      };
+      let Some((y_start, y_end)) = grid_area_for_item(
+        &col_offsets_no_gutters,
+        placement.column_start,
+        placement.column_end,
+      ) else {
+        continue;
+      };
+
+      let new_bounds = Rect::from_xywh(
+        x_start,
+        y_start,
+        (x_end - x_start).max(0.0),
+        (y_end - y_start).max(0.0),
+      );
+
+      let child_fragment = &mut children[idx];
+      let old_bounds = child_fragment.bounds;
+      let delta = Point::new(new_bounds.x() - old_bounds.x(), new_bounds.y() - old_bounds.y());
+      if delta.x != 0.0 || delta.y != 0.0 {
+        child_fragment.translate_root_in_place(delta);
+      }
+      child_fragment.bounds.size = new_bounds.size;
+      if let Some(logical) = child_fragment.logical_override.as_mut() {
+        logical.size = new_bounds.size;
+      }
+    }
+
+    Ok(())
+  }
+
   fn taffy_layout_subtree_size(
     taffy: &TaffyTree<*const BoxNode>,
     root_id: TaffyNodeId,
@@ -10975,6 +11370,43 @@ impl GridFormattingContext {
               _ => None,
             };
           }
+
+          // CSS Grid auto minimum size (min-width/min-height:auto) clamps grid items so they do not
+          // shrink below their content-based minimum size when overflow is visible. Taffy currently
+          // passes stretched track sizes as `known_dimensions` to the measure callback and does not
+          // apply this clamp itself. When we have a definite `known_dimensions` in an axis and the
+          // CSS min-size is `auto`, compute the min-content size and treat it as a floor.
+          //
+          // This is particularly important for nested grid containers: their min-content size is
+          // often defined by their explicit track sizes, and the WPT reference cases rely on the
+          // background painting area including those tracks even when the parent track is smaller.
+          let min_width_is_auto = style.min_width.is_none() && style.min_width_keyword.is_none();
+          let min_height_is_auto = style.min_height.is_none() && style.min_height_keyword.is_none();
+
+          let overflow_x_allows_auto_min = matches!(style.overflow_x, CssOverflow::Visible);
+          let overflow_y_allows_auto_min = matches!(style.overflow_y, CssOverflow::Visible);
+
+          let needs_auto_min_width = known_dimensions.width.is_some() && min_width_is_auto && overflow_x_allows_auto_min;
+          let needs_auto_min_height =
+            known_dimensions.height.is_some() && min_height_is_auto && overflow_y_allows_auto_min;
+
+          let mut auto_min_border_width: Option<f32> = None;
+          if needs_auto_min_width {
+            auto_min_border_width = Some(match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
+              Ok(size) => size,
+              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+              Err(_) => 0.0,
+            });
+          }
+          let mut auto_min_border_height: Option<f32> = None;
+          if needs_auto_min_height {
+            auto_min_border_height =
+              Some(match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              });
+          }
           if trace_measure_id.is_some_and(|id| id == box_node.id) {
             eprintln!(
               "[grid-measure] box_id={} intrinsic_w={intrinsic_width:?} intrinsic_h={intrinsic_height:?}",
@@ -10993,13 +11425,13 @@ impl GridFormattingContext {
               taffy_style,
               percentage_base,
             );
-            let width = intrinsic_width
+            let mut width = intrinsic_width
               .map(|border_width| (border_width - inset_w).max(0.0))
               .unwrap_or_else(|| {
                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
               });
 
-            let height = if let Some(border_height) = intrinsic_height {
+            let mut height = if let Some(border_height) = intrinsic_height {
               (border_height - inset_h).max(0.0)
             } else {
               // When Taffy probes intrinsic inline sizes (min-/max-content width), it can still
@@ -11023,6 +11455,12 @@ impl GridFormattingContext {
               };
               (border_block_size - inset_h).max(0.0)
             };
+            if let Some(border_width) = auto_min_border_width {
+              width = width.max((border_width - inset_w).max(0.0));
+            }
+            if let Some(border_height) = auto_min_border_height {
+              height = height.max((border_height - inset_h).max(0.0));
+            }
             let size = taffy::geometry::Size { width, height };
             let output = taffy::tree::MeasureOutput::from_size(size);
             cache.insert(key, output);
@@ -11060,10 +11498,20 @@ impl GridFormattingContext {
             taffy_style,
             percentage_base,
           );
-          let size = taffy::geometry::Size {
+          let (inset_w, inset_h) = GridFormattingContext::taffy_measure_insets_px(
+            taffy_style,
+            percentage_base,
+          );
+          let mut size = taffy::geometry::Size {
             width: content_size.width.max(0.0),
             height: content_size.height.max(0.0),
           };
+          if let Some(border_width) = auto_min_border_width {
+            size.width = size.width.max((border_width - inset_w).max(0.0));
+          }
+          if let Some(border_height) = auto_min_border_height {
+            size.height = size.height.max((border_height - inset_h).max(0.0));
+          }
           let mut baseline_deadline_counter = 0usize;
           let baseline_y = if wants_baseline_y {
             match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
@@ -21994,7 +22442,7 @@ mod tests {
   }
 
   #[test]
-  fn convert_style_subgrids_use_their_own_writing_mode_for_axis_mapping() {
+  fn convert_style_subgrids_inherit_axis_mapping_from_parent_grid() {
     let gc = GridFormattingContext::new();
 
     let mut parent_style = ComputedStyle::default();
@@ -22017,8 +22465,8 @@ mod tests {
       false,
     );
     assert!(
-      taffy_style.axes_swapped,
-      "CSS Grid 2 §#subgrid-indexing: subgrid placement obeys the subgrid's writing-mode"
+      !taffy_style.axes_swapped,
+      "subgrid track inheritance is expressed in the containing grid's axis mapping"
     );
 
     parent_style.writing_mode = WritingMode::VerticalRl;
@@ -22034,8 +22482,8 @@ mod tests {
       false,
     );
     assert!(
-      !taffy_style.axes_swapped,
-      "subgrid axis mapping should not be forced to match the parent grid's writing-mode"
+      taffy_style.axes_swapped,
+      "subgrid axis mapping should follow the containing grid when subgrid is enabled"
     );
   }
 
