@@ -155,6 +155,21 @@ bash scripts/cargo_agent.sh run -p test262-semantic -- \
 By default, this runner uses a `vm-js`-backed executor (a small interpreter used
 as early scaffolding for the eventual ecma-rs VM).
 
+### Stack overflow handling
+
+Some test262 tests intentionally recurse very deeply (for example, proper tail-call (PTC/TCO)
+feature tests). The current `vm-js` interpreter still uses host recursion heavily enough that
+running those cases on a default OS thread stack can abort the entire process with:
+
+```text
+fatal runtime error: stack overflow
+```
+
+To keep the harness robust (and ensure we can always write a full JSON report), the `vm-js`
+executor runs each test case on a fresh OS thread with an explicit large stack and maps
+`TerminationReason::StackOverflow` to a JS-visible `RangeError` (instead of reporting it as a
+timeout/cancellation).
+
 For wiring/CI experiments where you want the harness to run but always report
 success, enable the `stub_executor` feature:
 
