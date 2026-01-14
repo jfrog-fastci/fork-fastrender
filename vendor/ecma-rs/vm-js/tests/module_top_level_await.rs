@@ -856,6 +856,80 @@ fn class_static_block_runs_during_async_module_evaluation() -> Result<(), VmErro
   Ok(())
 }
 
+#[test]
+fn await_in_class_static_block_suspends_module_evaluation() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        class C {
+          static {
+            globalThis.__ran = 1;
+            await Promise.resolve();
+            globalThis.__ran = 2;
+          }
+        }
+        export default globalThis.__ran;
+      "#,
+    )?,
+  )?;
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  // `await` inside the class static block should suspend module evaluation.
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(
+    heap.promise_state(eval_promise_obj)?,
+    PromiseState::Pending,
+    "await in class static block should produce a pending evaluation promise"
+  );
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "default")?,
+    Value::Number(2.0)
+  );
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
 // Exercises `IncrementModuleAsyncEvaluationCount` + `[[AsyncEvaluationOrder]]` assignment using the
 // spec's "asynchronous cyclic module graph" example.
 //
