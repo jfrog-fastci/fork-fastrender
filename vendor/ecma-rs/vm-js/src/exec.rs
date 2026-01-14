@@ -39694,7 +39694,40 @@ fn gen_eval_var_decl(
       }
     };
 
-    match gen_eval_expr(evaluator, scope, init)? {
+    // Generator-mode `NamedEvaluation` for anonymous class initializers that can `yield`.
+    //
+    // When the initializer is an anonymous `class` expression and can suspend (e.g. `extends (yield
+    // ...)` or computed member keys containing `yield`), the inferred name must be applied *during*
+    // class construction so that:
+    // - `static { ...this.name... }` sees the inferred name, and
+    // - `static name() {}` can override the constructor's initial `"name"` property.
+    //
+    // For expressions that do not contain `yield`, the generator evaluator can use the synchronous
+    // `eval_expr_named` helper, so this special-casing is only needed for yield-capable class
+    // initializers.
+    let init_eval = if expr_contains_yield(init) {
+      match &*declarator.pattern.stx.pat.stx {
+        Pat::Id(id) => match init.stx.as_ref() {
+          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+            // Root the inferred binding-name key *before* class evaluation so it survives any
+            // allocations (and potential GC) performed while unwinding generator suspension.
+            let name_s = scope.alloc_string(id.stx.name.as_str())?;
+            scope.push_root(Value::String(name_s))?;
+
+            // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
+            // behaviour when we bypass it for class `NamedEvaluation`.
+            evaluator.tick()?;
+            gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s))?
+          }
+          _ => gen_eval_expr(evaluator, scope, init)?,
+        },
+        _ => gen_eval_expr(evaluator, scope, init)?,
+      }
+    } else {
+      gen_eval_expr(evaluator, scope, init)?
+    };
+
+    match init_eval {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
           let value = v.unwrap_or(Value::Undefined);
@@ -46049,7 +46082,30 @@ fn gen_eval_assignment_to_binding(
     return Err(VmError::Unimplemented("yield in assignment target"));
   }
 
-  match gen_eval_expr(evaluator, scope, &expr.right)? {
+  // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
+  //
+  // See the comment in `gen_eval_var_decl` for why anonymous class expressions require special
+  // handling (static blocks and `static name() {}` override behaviour).
+  let rhs_eval = if expr_contains_yield(&expr.right) {
+    match expr.right.stx.as_ref() {
+      Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+        // Root the inferred binding-name key *before* class evaluation so it survives any
+        // allocations (and potential GC) performed while unwinding generator suspension.
+        let name_s = scope.alloc_string(name.as_str())?;
+        scope.push_root(Value::String(name_s))?;
+
+        // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
+        // behaviour when we bypass it for class `NamedEvaluation`.
+        evaluator.tick()?;
+        gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s))?
+      }
+      _ => gen_eval_expr(evaluator, scope, &expr.right)?,
+    }
+  } else {
+    gen_eval_expr(evaluator, scope, &expr.right)?
+  };
+
+  match rhs_eval {
     GenEval::Complete(c) => Ok(GenEval::Complete(match c {
       Completion::Normal(v) => {
         let value = v.unwrap_or(Value::Undefined);
@@ -46453,10 +46509,56 @@ fn gen_eval_assignment_apply_reference(
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
     OperatorName::Assignment => {
+      // Pre-root the inferred assignment name for anonymous class evaluation.
+      //
+      // This is intentionally done on `scope` (not a nested `rhs_scope`) so it survives `rhs_scope`
+      // being dropped during suspension unwinding.
+      let mut inferred_key: Option<PropertyKey> = None;
+      if expr_contains_yield(&expr.right) {
+        if let Expr::Class(class_expr) = expr.right.stx.as_ref() {
+          if class_expr.stx.name.is_none() {
+            inferred_key = match reference {
+              Reference::Binding(name) => {
+                let name_s = scope.alloc_string(name)?;
+                scope.push_root(Value::String(name_s))?;
+                Some(PropertyKey::String(name_s))
+              }
+              Reference::Property { key, .. } => Some(key),
+              Reference::SuperProperty { key, .. } => Some(key),
+              Reference::Private { .. } => None,
+            };
+          }
+        }
+      }
+
       let mut rhs_scope = scope.reborrow();
       evaluator.root_reference(&mut rhs_scope, &reference)?;
 
-      match gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
+      // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
+      //
+      // In assignment expressions, the inferred name comes from the assignment target reference
+      // (binding name or property key). For anonymous classes, the inferred name must be applied
+      // during class construction, so if the RHS can suspend we must bypass `gen_eval_expr` and
+      // evaluate the class with the inferred name.
+      let rhs_eval = if expr_contains_yield(&expr.right) {
+        match expr.right.stx.as_ref() {
+          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+            if let Some(name_key) = inferred_key {
+              // `gen_eval_expr` would have charged one tick at expression entry; preserve that
+              // budget behaviour when we bypass it for class `NamedEvaluation`.
+              evaluator.tick()?;
+              gen_eval_class_expr_named(evaluator, &mut rhs_scope, class_expr, name_key)?
+            } else {
+              gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
+            }
+          }
+          _ => gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?,
+        }
+      } else {
+        gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
+      };
+ 
+      match rhs_eval {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
@@ -46554,7 +46656,7 @@ fn gen_eval_assignment_apply_reference(
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
-          match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let right = v.unwrap_or(Value::Undefined);
@@ -46642,26 +46744,77 @@ fn gen_eval_assignment_apply_reference(
     OperatorName::AssignmentLogicalAnd
     | OperatorName::AssignmentLogicalOr
     | OperatorName::AssignmentNullishCoalescing => {
-      let mut op_scope = scope.reborrow();
-      evaluator.root_reference(&mut op_scope, &reference)?;
+      // `x &&= rhs` / `x ||= rhs` / `x ??= rhs` in generator mode.
+      //
+      // This is structured so that inferred-name allocation for binding references can occur on
+      // `scope` (not a nested `op_scope`) without triggering borrow conflicts.
+      let (left, should_assign) = {
+        let mut test_scope = scope.reborrow();
+        evaluator.root_reference(&mut test_scope, &reference)?;
 
-      let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-      let should_assign = match expr.operator {
-        OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
-        OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
-        OperatorName::AssignmentNullishCoalescing => is_nullish(left),
-        _ => unreachable!(),
+        let left = evaluator
+          .get_value_from_reference(&mut test_scope, &reference)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut test_scope, err))?;
+        let should_assign = match expr.operator {
+          OperatorName::AssignmentLogicalAnd => to_boolean(test_scope.heap(), left)?,
+          OperatorName::AssignmentLogicalOr => !to_boolean(test_scope.heap(), left)?,
+          OperatorName::AssignmentNullishCoalescing => is_nullish(left),
+          _ => unreachable!(),
+        };
+        (left, should_assign)
       };
+
       if !should_assign {
         return Ok(GenEval::Complete(Completion::normal(left)));
       }
 
-      // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
-      op_scope.push_root(left)?;
+      // `left` is not needed beyond the short-circuit test in the assignment-branch. Avoid holding
+      // an unrooted GC handle across any subsequent allocations.
+      let _ = left;
 
-      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+      // Pre-root the inferred assignment name for anonymous class evaluation.
+      //
+      // For binding references, we allocate the inferred-name key on `scope` so it survives any
+      // nested rooting scopes being dropped during suspension unwinding.
+      let mut inferred_key: Option<PropertyKey> = None;
+      if expr_contains_yield(&expr.right) {
+        if let Expr::Class(class_expr) = expr.right.stx.as_ref() {
+          if class_expr.stx.name.is_none() {
+            inferred_key = match reference {
+              Reference::Binding(name) => {
+                let name_s = scope.alloc_string(name)?;
+                scope.push_root(Value::String(name_s))?;
+                Some(PropertyKey::String(name_s))
+              }
+              Reference::Property { key, .. } => Some(key),
+              Reference::SuperProperty { key, .. } => Some(key),
+              Reference::Private { .. } => None,
+            };
+          }
+        }
+      }
+
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
+      let rhs_eval = if expr_contains_yield(&expr.right) {
+        match expr.right.stx.as_ref() {
+          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+            if let Some(name_key) = inferred_key {
+              evaluator.tick()?;
+              gen_eval_class_expr_named(evaluator, &mut op_scope, class_expr, name_key)?
+            } else {
+              gen_eval_expr(evaluator, &mut op_scope, &expr.right)?
+            }
+          }
+          _ => gen_eval_expr(evaluator, &mut op_scope, &expr.right)?,
+        }
+      } else {
+        gen_eval_expr(evaluator, &mut op_scope, &expr.right)?
+      };
+
+      match rhs_eval {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
@@ -46725,7 +46878,7 @@ fn gen_eval_assignment_apply_reference(
           if !roots.is_empty() {
             scope.push_roots(&roots)?;
           }
- 
+  
           gen_frames_push(
             &mut suspend.frames,
             GenFrame::AssignAfterRhs {

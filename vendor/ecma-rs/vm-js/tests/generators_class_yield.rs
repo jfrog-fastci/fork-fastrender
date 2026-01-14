@@ -156,6 +156,92 @@ fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_comput
 }
 
 #[test]
+fn generator_var_decl_anonymous_class_inferred_name_across_yield_in_extends() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        var C = class extends (yield 1) { static { globalThis.saw = this.name; } };
+        return C;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "C" &&
+      C.name === "C" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_assignment_anonymous_class_inferred_name_across_yield_in_extends() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        var C;
+        C = class extends (yield 1) { static { globalThis.saw = this.name; } };
+        return C;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "C" &&
+      C.name === "C" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_property_assignment_anonymous_class_inferred_name_across_yield_in_extends() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        globalThis.saw = null;
+        var obj = {};
+        obj.a = class extends (yield 1) { static { globalThis.saw = this.name; } };
+        return obj.a;
+      }
+      class Base {}
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(Base);
+      var C = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      globalThis.saw === "a" &&
+      C.name === "a" &&
+      Object.getPrototypeOf(C) === Base &&
+      Object.getPrototypeOf(C.prototype) === Base.prototype
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn yield_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
