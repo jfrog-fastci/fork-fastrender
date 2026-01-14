@@ -160,6 +160,108 @@ fn generator_nullish_coalescing_assignment_captures_binding_and_decision_across_
 }
 
 #[test]
+fn generator_logical_or_assignment_captures_base_and_decision_across_yield_for_member_expr() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0 };
+        var o2 = { a: 100 };
+        var o = o1;
+
+        function* g() {
+          const r = (o.a ||= (yield 0));
+          return r === 5 && o1.a === 5 && o2.a === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate the LHS value and rebind the base after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original base.
+        o1.a = 1; // truthy now, but should not cancel the pending assignment
+        o = o2;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_captures_base_and_decision_across_yield_for_member_expr() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 1 };
+        var o2 = { a: 100 };
+        var o = o1;
+
+        function* g() {
+          const r = (o.a &&= (yield 0));
+          return r === 5 && o1.a === 5 && o2.a === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate the LHS value and rebind the base after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original base.
+        o1.a = 0; // falsy now, but should not cancel the pending assignment
+        o = o2;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_captures_base_and_decision_across_yield_for_member_expr() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: null };
+        var o2 = { a: 100 };
+        var o = o1;
+
+        function* g() {
+          const r = (o.a ??= (yield 0));
+          return r === 5 && o1.a === 5 && o2.a === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate the LHS value and rebind the base after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original base.
+        o1.a = 0; // non-nullish now, but should not cancel the pending assignment
+        o = o2;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_and_assignment_captures_base_key_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt
@@ -452,6 +554,54 @@ fn generator_logical_and_assignment_with_yield_in_computed_key_and_rhs_captures_
         r1.value === "key" && r1.done === false &&
         r2.value === 0 && r2.done === false &&
         r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_or_assignment_with_yield_in_base_and_computed_key_and_rhs_captures_base_key_and_decision_across_yield(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0, b: 0 };
+        var o2 = { a: 0, b: 0 };
+        var o = o1;
+        var k = "a";
+
+        function* g() {
+          const r = ((yield "base", o)[(yield "key", k)] ||= (yield 0));
+          return r === 5 && o1.a === 0 && o1.b === 0 && o2.a === 0 && o2.b === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Base is evaluated *after* resuming from the base-yield.
+        o = o2;
+        const r2 = it.next();
+
+        // Key is evaluated *after* resuming from the key-yield.
+        k = "b";
+        // Mutating the base binding here must not affect the already-chosen base object.
+        o = o1;
+        const r3 = it.next();
+
+        // Mutate after the RHS yield but before resuming. The decision to assign was made before
+        // yielding, so the assignment must still happen to the original base + key.
+        o2.b = 1;
+        k = "a";
+        o = o1;
+
+        const r4 = it.next(5);
+
+        r1.value === "base" && r1.done === false &&
+        r2.value === "key" && r2.done === false &&
+        r3.value === 0 && r3.done === false &&
+        r4.value === true && r4.done === true
       "#,
     )
     .unwrap();
