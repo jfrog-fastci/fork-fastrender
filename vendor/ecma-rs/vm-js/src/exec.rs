@@ -30966,7 +30966,7 @@ fn async_resume_from_frames(
               match assign_res {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
                   return Ok(AsyncBodyResult::Await {
                     kind: suspend.kind,
                     await_value: suspend.await_value,
