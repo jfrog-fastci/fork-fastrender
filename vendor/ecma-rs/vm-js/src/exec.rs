@@ -19091,6 +19091,58 @@ fn async_eval_class(
       }
     }
 
+    // Create the class's private-name environment.
+    //
+    // `parse-js` represents private names as strings like `"#x"`. To enforce per-class privacy, we
+    // allocate a fresh internal symbol for each declared private name and store the mapping on the
+    // class's lexical environment record. All class element bodies capture that environment, so
+    // private member expressions can resolve the correct symbol even if the class binding is passed
+    // around.
+    //
+    // This must happen before any possible `await` suspension so the mapping persists across async
+    // continuations.
+    let mut private_names: Vec<String> = Vec::new();
+    let mut private_name_set: HashSet<&str> = HashSet::new();
+    for member in members {
+      if let ClassOrObjKey::Direct(key) = &member.stx.key {
+        if key.stx.tt == TT::PrivateMember {
+          let name = key.stx.key.as_str();
+          if private_name_set.contains(name) {
+            continue;
+          }
+          private_name_set
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_name_set.insert(name);
+          private_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_names.push(try_clone_string(name)?);
+        }
+      }
+    }
+    if !private_names.is_empty() {
+      let mut entries: Vec<crate::env::PrivateNameEntry> = Vec::new();
+      entries
+        .try_reserve_exact(private_names.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      // Keep all allocated symbols rooted until the mapping is installed into the class environment
+      // record, so intermediate allocations cannot collect them.
+      let mut priv_scope = scope.reborrow();
+      for name in private_names {
+        let desc = priv_scope.alloc_string(&name)?;
+        let sym = priv_scope.new_internal_symbol(Some(desc))?;
+        priv_scope.push_root(Value::Symbol(sym))?;
+        entries.push(crate::env::PrivateNameEntry {
+          name: name.into_boxed_str(),
+          sym,
+        });
+      }
+      priv_scope
+        .heap_mut()
+        .env_set_private_names(class_env, entries.into_boxed_slice())?;
+    }
+
     // Evaluate `extends` (class heritage), if present.
     let super_value = match extends {
       None => Value::Undefined,
@@ -19507,6 +19559,7 @@ fn async_eval_class_members_from(
   func_root: RootId,
 ) -> Result<AsyncEval<Value>, VmError> {
   let res: Result<AsyncEval<Value>, VmError> = (|| {
+    let class_env = evaluator.env.lexical_env;
     let func_value = scope
       .heap()
       .get_root(func_root)
@@ -19591,21 +19644,29 @@ fn async_eval_class_members_from(
 
       let key = match &member.stx.key {
         ClassOrObjKey::Direct(direct) => {
-          let mut key_scope = scope.reborrow();
-          key_scope.push_root(Value::Object(target_obj))?;
-          let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
-            key_scope.alloc_string_from_code_units(units)?
-          } else if direct.stx.tt == TT::LiteralNumber {
-            let n = direct
-              .stx
-              .key
-              .parse::<f64>()
-              .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
-            key_scope.heap_mut().to_string(Value::Number(n))?
+          if direct.stx.tt == TT::PrivateMember {
+            let sym = scope
+              .heap()
+              .resolve_private_name_symbol(class_env, &direct.stx.key)?
+              .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+            PropertyKey::from_symbol(sym)
           } else {
-            key_scope.alloc_string(&direct.stx.key)?
-          };
-          PropertyKey::from_string(key_s)
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(Value::Object(target_obj))?;
+            let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+              key_scope.alloc_string_from_code_units(units)?
+            } else if direct.stx.tt == TT::LiteralNumber {
+              let n = direct
+                .stx
+                .key
+                .parse::<f64>()
+                .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+              key_scope.heap_mut().to_string(Value::Number(n))?
+            } else {
+              key_scope.alloc_string(&direct.stx.key)?
+            };
+            PropertyKey::from_string(key_s)
+          }
         }
         ClassOrObjKey::Computed(expr) => match async_eval_expr(evaluator, scope, expr)? {
           AsyncEval::Complete(value) => {
@@ -19844,6 +19905,9 @@ fn async_define_class_member(
   target_obj: GcObject,
   key: PropertyKey,
 ) -> Result<(), VmError> {
+  let is_private_key =
+    matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember);
+
   let mut member_scope = scope.reborrow();
   member_scope.push_root(Value::Object(target_obj))?;
   match key {
@@ -19944,9 +20008,9 @@ fn async_define_class_member(
           key,
           PropertyDescriptorPatch {
             value: Some(Value::Object(func_obj)),
-            writable: Some(true),
+            writable: Some(!is_private_key),
             enumerable: Some(false),
-            configurable: Some(true),
+            configurable: Some(!is_private_key),
             ..Default::default()
           },
         )
