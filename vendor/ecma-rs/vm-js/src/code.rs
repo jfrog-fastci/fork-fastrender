@@ -2551,8 +2551,9 @@ fn hir_async_root_stmt_is_supported(
       catch,
       finally_block,
     } => {
-      // Async-aware `try` support is currently limited to suspensions caused by `for await..of`
-      // loops directly in the try-block statement list.
+      // Async-aware `try` support is currently limited to suspensions caused by:
+      // - `for await..of` loops directly in the try-block statement list, and
+      // - direct statement-level `return await <expr>;` / `throw await <expr>;` forms.
       //
       // Conservatively require all other statements within try/catch/finally to be await-free.
       let Some(try_block_stmt) = hir_get_stmt(body, *block) else {
@@ -2575,6 +2576,34 @@ fn hir_async_root_stmt_is_supported(
             await_: true,
           } => {
             if !hir_for_await_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies) {
+              return false;
+            }
+          }
+          hir_js::StmtKind::Return(Some(expr_id)) => {
+            let Some(expr) = hir_get_expr(body, *expr_id) else {
+              return false;
+            };
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+              if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                return false;
+              }
+              continue;
+            }
+            if hir_stmt_contains_await(hir, body, *inner_stmt_id, visited_bodies) {
+              return false;
+            }
+          }
+          hir_js::StmtKind::Throw(expr_id) => {
+            let Some(expr) = hir_get_expr(body, *expr_id) else {
+              return false;
+            };
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+              if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                return false;
+              }
+              continue;
+            }
+            if hir_stmt_contains_await(hir, body, *inner_stmt_id, visited_bodies) {
               return false;
             }
           }
