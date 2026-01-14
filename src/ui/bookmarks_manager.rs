@@ -1396,8 +1396,7 @@ fn render_bookmark_row(
     .as_deref()
     .map(str::trim)
     .filter(|t| !t.is_empty())
-    .unwrap_or(entry.url.as_str())
-    .to_string();
+    .unwrap_or(entry.url.as_str());
 
   let url_display = crate::ui::url_display::truncate_url_middle(&entry.url, 80);
   let folder_display = truncate_middle(parent_label, 48);
@@ -1406,7 +1405,7 @@ fn render_bookmark_row(
   let mut edit_clicked = false;
   let mut delete_clicked = false;
 
-  let row_resp = list_row(ui, ("bookmark_row", entry.id.0), editing_this, |ui| {
+  let row_resp = list_row(ui, ("bookmark_row", entry.id.0), editing_this, move |ui| {
     let indent = depth as f32 * ui.spacing().indent;
     ui.horizontal(|ui| {
       ui.add_space(indent);
@@ -1415,7 +1414,7 @@ fn render_bookmark_row(
         del.widget_info({
           let label =
             a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if del.clicked() {
           delete_clicked = true;
@@ -1424,7 +1423,7 @@ fn render_bookmark_row(
         let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
         edit_btn.widget_info({
           let label = a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if edit_btn.clicked() {
           edit_clicked = true;
@@ -1434,7 +1433,7 @@ fn render_bookmark_row(
         new_tab.widget_info({
           let label =
             a11y_labels::bookmark_open_in_new_tab_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if new_tab.clicked() {
           open_new_tab_clicked = true;
@@ -1445,18 +1444,18 @@ fn render_bookmark_row(
         ui.vertical(|ui| {
           ui.set_width(ui.available_width());
 
-          let mut title_text = egui::RichText::new(title.clone()).strong();
+          let mut title_text = egui::RichText::new(title).strong();
           if editing_this {
             title_text = title_text.color(ui.visuals().selection.stroke.color);
           }
           ui.label(title_text);
           ui.label(
-            egui::RichText::new(url_display.clone())
+            egui::RichText::new(url_display)
               .small()
               .color(ui.visuals().weak_text_color()),
           );
           ui.label(
-            egui::RichText::new(folder_display.clone())
+            egui::RichText::new(folder_display)
               .small()
               .color(ui.visuals().weak_text_color()),
           );
