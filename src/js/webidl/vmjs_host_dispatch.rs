@@ -10817,8 +10817,28 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           let platform = require_dom_platform_mut(vm)?;
           platform.require_node_handle(scope.heap(), node_val)?
         };
+        // Cross-document insertion adopts the inserted node into the range's document (see
+        // `maybe_register_document_alias_wrapper` tests in this module). We only support adoption
+        // between wrappers that share the same underlying host `dom2::Document` allocation: if
+        // either document id corresponds to an owned `dom2::Document`, require them to match to
+        // avoid mixing distinct arenas.
         if node_handle.document_id != state.document_id {
-          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+          let (range_is_owned, node_is_owned) = {
+            let mut range_is_owned = false;
+            let mut node_is_owned = false;
+            if let Some(data) = vm.user_data::<WindowRealmUserData>() {
+              range_is_owned = data
+                .with_owned_dom2_document(state.document_id, |_| ())
+                .is_some();
+              node_is_owned = data
+                .with_owned_dom2_document(node_handle.document_id, |_| ())
+                .is_some();
+            }
+            (range_is_owned, node_is_owned)
+          };
+          if range_is_owned || node_is_owned {
+            return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+          }
         }
 
         // Range endpoint ancestors likely to have their cached NodeLists invalidated.
@@ -10831,6 +10851,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               let common = dom.range_common_ancestor_container(state.range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
+              // Range.insertNode() can split Text nodes, which mutates the parent even when the
+              // common ancestor is the Text node itself. Include the tree parents to keep cached
+              // NodeLists live.
+              if let Some(parent) = dom.tree_parent_node(start) {
+                out.insert(parent);
+              }
+              if let Some(parent) = dom.tree_parent_node(end) {
+                out.insert(parent);
+              }
               let mut n = start;
               let mut remaining = dom.nodes_len() + 1;
               loop {
@@ -10871,6 +10900,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               let common = dom.range_common_ancestor_container(state.range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
+              if let Some(parent) = dom.tree_parent_node(start) {
+                out.insert(parent);
+              }
+              if let Some(parent) = dom.tree_parent_node(end) {
+                out.insert(parent);
+              }
               let mut n = start;
               let mut remaining = dom.nodes_len() + 1;
               loop {
@@ -10907,8 +10942,71 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
         };
 
+        // Snapshot adoption mappings for inserted nodes created by an alias Document wrapper.
+        let mut adopt_mappings: Vec<(DocumentId, HashMap<NodeId, NodeId>)> = Vec::new();
+        if node_handle.document_id != state.document_id {
+          let adopt_roots: Vec<DomNodeKey> = self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              if node_handle.node_id.index() >= dom.nodes_len() {
+                return Vec::new();
+              }
+              let kind = &dom.node(node_handle.node_id).kind;
+              match kind {
+                NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => dom
+                  .node(node_handle.node_id)
+                  .children
+                  .iter()
+                  .copied()
+                  .filter(|&child| {
+                    child.index() < dom.nodes_len() && dom.node(child).parent == Some(node_handle.node_id)
+                  })
+                  .map(|child| DomNodeKey::new(node_handle.document_id, child))
+                  .collect(),
+                NodeKind::Document { .. } => Vec::new(),
+                _ => vec![node_handle],
+              }
+            }))
+          })?;
+          if !adopt_roots.is_empty() {
+            adopt_mappings.reserve(adopt_roots.len());
+            for handle in adopt_roots.iter().copied() {
+              let root_id = handle.node_id;
+              let mapping: HashMap<NodeId, NodeId> = self.with_dom_host(vm, |host| {
+                Ok(host.with_dom(|dom| {
+                  let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+                  let mut stack: Vec<NodeId> = vec![root_id];
+                  let mut remaining = dom.nodes_len() + 1;
+                  while let Some(id) = stack.pop() {
+                    if remaining == 0 {
+                      break;
+                    }
+                    remaining -= 1;
+ 
+                    if id.index() >= dom.nodes_len() {
+                      continue;
+                    }
+                    mapping.insert(id, id);
+                    let n = dom.node(id);
+                    for &child in n.children.iter().rev() {
+                      if child.index() >= dom.nodes_len() {
+                        continue;
+                      }
+                      if dom.node(child).parent != Some(id) {
+                        continue;
+                      }
+                      stack.push(child);
+                    }
+                  }
+                  mapping
+                }))
+              })?;
+              adopt_mappings.push((handle.document_id, mapping));
+            }
+          }
+        }
+ 
         // Track old parent + fragment-like insertion semantics so we can keep cached NodeLists live.
-        let owned_parent_info: Option<Result<(Option<NodeId>, bool), DomError>> = vm
+        let owned_parent_info: Option<Result<(Option<DomNodeKey>, bool), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
             data.with_owned_dom2_document(state.document_id, |dom| {
@@ -10918,11 +11016,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   dom.node(node_handle.node_id).kind,
                   NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
                 );
+              let old_parent = old_parent.map(|id| DomNodeKey::new(node_handle.document_id, id));
               Ok((old_parent, node_is_fragment_like))
             })
           });
 
-        let parent_info: Result<(Option<NodeId>, bool), DomError> = if let Some(result) = owned_parent_info {
+        let parent_info: Result<(Option<DomNodeKey>, bool), DomError> = if let Some(result) = owned_parent_info {
           result
         } else {
           self.with_dom_host(vm, |host| {
@@ -10933,6 +11032,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   dom.node(node_handle.node_id).kind,
                   NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
                 );
+              let old_parent = old_parent.map(|id| DomNodeKey::new(node_handle.document_id, id));
               Ok((old_parent, node_is_fragment_like))
             }))
           })?
@@ -10964,6 +11064,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(()) => {
+            // Remap wrapper identity + ownerDocument for adopted subtrees.
+            for (old_document_id, mapping) in adopt_mappings {
+              require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
+                scope.heap_mut(),
+                old_document_id,
+                state.document_id,
+                &mapping,
+              )?;
+            }
+ 
             let owned_new_parent: Option<Result<Option<NodeId>, DomError>> = vm
               .user_data_mut::<WindowRealmUserData>()
               .and_then(|data| {
@@ -10991,28 +11101,42 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
             }
             if let Some(old_parent_id) = old_parent {
-              if Some(old_parent_id) != new_parent {
+              if !(old_parent_id.document_id == state.document_id && Some(old_parent_id.node_id) == new_parent) {
                 let wrapper = {
                   let platform = require_dom_platform_mut(vm)?;
-                  platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, old_parent_id)
+                  platform.get_existing_wrapper_for_document_id(
+                    scope.heap(),
+                    old_parent_id.document_id,
+                    old_parent_id.node_id,
+                  )
                 };
                 if let Some(wrapper) = wrapper {
-                  self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, old_parent_id, state.document_id)?;
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    wrapper,
+                    old_parent_id.node_id,
+                    old_parent_id.document_id,
+                  )?;
                 }
               }
             }
             if node_is_fragment_like {
-              let wrapper = {
-                let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_handle.node_id)
+              let wrapper_obj = match node_val {
+                Value::Object(obj) => Some(obj),
+                _ => None,
               };
+              let wrapper = wrapper_obj.or_else(|| {
+                let platform = require_dom_platform_mut(vm).ok()?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), node_handle.document_id, node_handle.node_id)
+              });
               if let Some(wrapper) = wrapper {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
                   wrapper,
                   node_handle.node_id,
-                  state.document_id,
+                  node_handle.document_id,
                 )?;
               }
             }
@@ -11041,7 +11165,22 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           platform.require_node_handle(scope.heap(), new_parent_val)?
         };
         if new_parent_handle.document_id != state.document_id {
-          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+          let (range_is_owned, node_is_owned) = {
+            let mut range_is_owned = false;
+            let mut node_is_owned = false;
+            if let Some(data) = vm.user_data::<WindowRealmUserData>() {
+              range_is_owned = data
+                .with_owned_dom2_document(state.document_id, |_| ())
+                .is_some();
+              node_is_owned = data
+                .with_owned_dom2_document(new_parent_handle.document_id, |_| ())
+                .is_some();
+            }
+            (range_is_owned, node_is_owned)
+          };
+          if range_is_owned || node_is_owned {
+            return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+          }
         }
 
         let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
@@ -11129,22 +11268,39 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
         };
 
-        let owned_old_parent: Option<Result<Option<NodeId>, DomError>> = vm
+        // Snapshot the wrapper's old parent (before insertion) so we can keep its `childNodes` live
+        // NodeList in sync even when the wrapper is adopted into a different document id.
+        let owned_old_parent: Option<Result<Option<DomNodeKey>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| dom.parent(new_parent_handle.node_id))
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let old_parent = dom.parent(new_parent_handle.node_id)?;
+              Ok(old_parent.map(|id| DomNodeKey::new(new_parent_handle.document_id, id)))
+            })
           });
-        let old_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_old_parent {
+        let old_parent: Result<Option<DomNodeKey>, DomError> = if let Some(result) = owned_old_parent {
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.with_dom(|dom| dom.parent(new_parent_handle.node_id)))
+            Ok(host.with_dom(|dom| {
+              let old_parent = dom.parent(new_parent_handle.node_id)?;
+              Ok(old_parent.map(|id| DomNodeKey::new(new_parent_handle.document_id, id)))
+            }))
           })?
         };
         let old_parent = match old_parent {
           Ok(v) => v,
           Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
         };
+
+        let adopt_mapping: Option<(DocumentId, HashMap<NodeId, NodeId>)> =
+          if new_parent_handle.document_id == state.document_id {
+            None
+          } else {
+            let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+            mapping.insert(new_parent_handle.node_id, new_parent_handle.node_id);
+            Some((new_parent_handle.document_id, mapping))
+          };
 
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
@@ -11167,6 +11323,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(()) => {
+            if let Some((old_document_id, mapping)) = adopt_mapping {
+              require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
+                scope.heap_mut(),
+                old_document_id,
+                state.document_id,
+                &mapping,
+              )?;
+            }
+
             // Sync the wrapper's own cached childNodes (its children were replaced by the extracted fragment).
             let wrapper_obj = match new_parent_val {
               Value::Object(obj) => Some(obj),
@@ -11210,13 +11375,23 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
 
             if let Some(old_parent_id) = old_parent {
-              if Some(old_parent_id) != new_parent_parent {
+              if !(old_parent_id.document_id == state.document_id && Some(old_parent_id.node_id) == new_parent_parent) {
                 let wrapper = {
                   let platform = require_dom_platform_mut(vm)?;
-                  platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, old_parent_id)
+                  platform.get_existing_wrapper_for_document_id(
+                    scope.heap(),
+                    old_parent_id.document_id,
+                    old_parent_id.node_id,
+                  )
                 };
                 if let Some(wrapper) = wrapper {
-                  self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, old_parent_id, state.document_id)?;
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    wrapper,
+                    old_parent_id.node_id,
+                    old_parent_id.document_id,
+                  )?;
                 }
               }
             }

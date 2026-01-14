@@ -37496,6 +37496,26 @@ fn range_end_offset_get_native(
   Ok(Value::Number(offset as f64))
 }
 
+fn range_common_ancestor_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_common_ancestor_container(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
 fn range_collapsed_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -38241,49 +38261,133 @@ fn range_insert_node_native(
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  // Adopt the inserted node into the range's document if needed.
-  let adopted = maybe_adopt_node_into_document(
-    vm,
-    &mut scope,
-    host,
-    node_document_obj,
-    handle.document_obj,
-    dom_ptr,
-    DomNodeKey::new(node_handle.document_id, node_handle.node_id),
-  )
-  .map_err(|err| match err {
-    VmError::TypeError(_) => VmError::TypeError("Range.insertNode requires a node argument"),
-    err => err,
-  })?;
-
   // Script insertion steps operate on the inserted roots. Capture fragment children before
-  // insertion (Range insertion empties the fragment).
-  let inserted_roots: Vec<NodeId> = {
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    match &dom.node(adopted.node_id).kind {
-      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => dom
-        .node(adopted.node_id)
+  // insertion (insertion empties the fragment).
+  //
+  // Also, if inserting a cross-document DocumentFragment, do *not* adopt the fragment itself —
+  // only its children are adopted and inserted (matching Node.appendChild behaviour).
+  let (node_is_fragment, fragment_children): (bool, Vec<NodeId>) = {
+    // SAFETY: `node_dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { node_dom_ptr.as_ref() };
+    let kind = &dom.node(node_handle.node_id).kind;
+    let is_fragment = matches!(kind, NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. });
+    let children = if is_fragment {
+      dom
+        .node(node_handle.node_id)
         .children
         .iter()
         .copied()
-        .filter(|&child| child.index() < dom.nodes_len() && dom.node(child).parent == Some(adopted.node_id))
-        .collect(),
-      _ => vec![adopted.node_id],
-    }
+        .filter(|&child| {
+          child.index() < dom.nodes_len() && dom.node(child).parent == Some(node_handle.node_id)
+        })
+        .collect()
+    } else {
+      Vec::new()
+    };
+    (is_fragment, children)
   };
+
+  let mut node_id_for_insert: NodeId = node_handle.node_id;
+  let mut inserted_roots: Vec<NodeId> = Vec::new();
+  let mut adopt_children_after_insert: Option<Vec<NodeId>> = None;
+
+  if node_is_fragment {
+    inserted_roots = fragment_children.clone();
+
+    if node_handle.document_id != handle.document_id {
+      if node_dom_ptr == dom_ptr {
+        // Same underlying `dom2::Document` (alias document wrappers): insert the fragment as-is,
+        // then rebind wrappers for its inserted children so `ownerDocument` updates to the range's
+        // document without adopting the fragment node itself.
+        adopt_children_after_insert = Some(fragment_children.clone());
+      } else {
+        // Cross-document insertion between distinct `dom2::Document` arenas: adopt and move
+        // fragment children into a fresh destination fragment, then insert that fragment.
+        let temp_fragment = {
+          // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have
+          // exclusive access for the duration of this native call.
+          let dom = unsafe { dom_ptr.as_mut() };
+          dom.create_document_fragment()
+        };
+        node_id_for_insert = temp_fragment;
+
+        inserted_roots.clear();
+        for child_id in fragment_children.iter().copied() {
+          let adopted = maybe_adopt_node_into_document(
+            vm,
+            &mut scope,
+            host,
+            node_document_obj,
+            handle.document_obj,
+            dom_ptr,
+            DomNodeKey::new(node_handle.document_id, child_id),
+          )
+          .map_err(|err| match err {
+            VmError::TypeError(_) => VmError::TypeError("Range.insertNode requires a node argument"),
+            err => err,
+          })?;
+
+          {
+            // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have
+            // exclusive access for the duration of this native call.
+            let dom = unsafe { dom_ptr.as_mut() };
+            if let Err(err) = dom.append_child(temp_fragment, adopted.node_id) {
+              return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
+            }
+          }
+
+          inserted_roots.push(adopted.node_id);
+        }
+      }
+    }
+  } else {
+    // Non-fragment insertion: adopt the inserted node into the range's document if needed.
+    let adopted = maybe_adopt_node_into_document(
+      vm,
+      &mut scope,
+      host,
+      node_document_obj,
+      handle.document_obj,
+      dom_ptr,
+      DomNodeKey::new(node_handle.document_id, node_handle.node_id),
+    )
+    .map_err(|err| match err {
+      VmError::TypeError(_) => VmError::TypeError("Range.insertNode requires a node argument"),
+      err => err,
+    })?;
+    node_id_for_insert = adopted.node_id;
+    inserted_roots = vec![adopted.node_id];
+  }
 
   let (child_list_changed, needs_microtask) = {
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
     // access for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    if let Err(err) = dom.range_insert_node(handle.range_id, adopted.node_id) {
+    if let Err(err) = dom.range_insert_node(handle.range_id, node_id_for_insert) {
       return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
     }
     let mutations = dom.take_mutations();
     let needs_microtask = dom.take_mutation_observer_microtask_needed();
     (mutations.child_list_changed, needs_microtask)
   };
+
+  if let Some(children) = adopt_children_after_insert {
+    for child_id in children {
+      let _ = maybe_adopt_node_into_document(
+        vm,
+        &mut scope,
+        host,
+        node_document_obj,
+        handle.document_obj,
+        dom_ptr,
+        DomNodeKey::new(node_handle.document_id, child_id),
+      )
+      .map_err(|err| match err {
+        VmError::TypeError(_) => VmError::TypeError("Range.insertNode requires a node argument"),
+        err => err,
+      })?;
+    }
+  }
 
   if !child_list_changed.is_empty() {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
@@ -38293,6 +38397,39 @@ fn range_insert_node_native(
       sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, *parent)?;
       sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, *parent)?;
     }
+  }
+
+  // Keep cached `childNodes` / `children` in sync for inserted fragments, including alias-document
+  // wrappers where the fragment itself should not be adopted.
+  if node_is_fragment {
+    // SAFETY: `dom_ptr` / `node_dom_ptr` are valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    let fragment_dom = if node_dom_ptr == dom_ptr {
+      dom
+    } else {
+      unsafe { node_dom_ptr.as_ref() }
+    };
+    let fragment_document_obj = if node_handle.document_id == handle.document_id {
+      handle.document_obj
+    } else {
+      node_document_obj
+    };
+    sync_cached_child_nodes_for_wrapper(
+      vm,
+      &mut scope,
+      fragment_document_obj,
+      fragment_dom,
+      node_obj,
+      node_handle.node_id,
+    )?;
+    sync_cached_children_for_wrapper(
+      vm,
+      &mut scope,
+      fragment_document_obj,
+      fragment_dom,
+      node_obj,
+      node_handle.node_id,
+    )?;
   }
 
   // Owned documents do not currently participate in dynamic script insertion; only run these steps
@@ -50253,21 +50390,27 @@ fn init_window_globals(
   )?;
 
   // document.createRange
-  let create_range_key = alloc_key(&mut scope, "createRange")?;
-  let create_range_call_id = vm.register_native_call(document_create_range_native)?;
-  let create_range_name = scope.alloc_string("createRange")?;
-  scope.push_root(Value::String(create_range_name))?;
-  let create_range_func = scope.alloc_native_function(create_range_call_id, None, create_range_name, 0)?;
-  scope.heap_mut().object_set_prototype(
-    create_range_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(create_range_func))?;
-  scope.define_property(
-    document_obj,
-    create_range_key,
-    data_desc(Value::Object(create_range_func)),
-  )?;
+  //
+  // WebIDL bindings define this on `Document.prototype`. Avoid clobbering it: WebIDL `Range` objects
+  // are tracked in the bindings host dispatch, while handwritten ranges use host slots.
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let create_range_key = alloc_key(&mut scope, "createRange")?;
+    let create_range_call_id = vm.register_native_call(document_create_range_native)?;
+    let create_range_name = scope.alloc_string("createRange")?;
+    scope.push_root(Value::String(create_range_name))?;
+    let create_range_func =
+      scope.alloc_native_function(create_range_call_id, None, create_range_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      create_range_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(create_range_func))?;
+    scope.define_property(
+      document_obj,
+      create_range_key,
+      data_desc(Value::Object(create_range_func)),
+    )?;
+  }
 
   // document.createElement
   let create_element_key = alloc_key(&mut scope, "createElement")?;

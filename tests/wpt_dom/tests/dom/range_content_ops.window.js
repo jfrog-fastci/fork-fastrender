@@ -148,6 +148,54 @@ test(() => {
   clear_children(document.body);
 
   const host = document.createElement("div");
+  const text = document.createTextNode("ab");
+  host.appendChild(text);
+  document.body.appendChild(host);
+
+  const r = document.createRange();
+  r.setStart(text, 1);
+  r.setEnd(text, 1);
+
+  const doc2 = Object.create(document);
+  const inserted = doc2.createElement("span");
+  assert_equals(inserted.ownerDocument, doc2, "sanity: inserted node is initially owned by the alias document");
+
+  r.insertNode(inserted);
+
+  assert_equals(inserted.ownerDocument, document, "insertNode should adopt the inserted node into the range's document");
+}, "Range.insertNode() adopts a node created from an alias Document wrapper");
+
+test(() => {
+  clear_children(document.body);
+
+  const host = document.createElement("div");
+  const text = document.createTextNode("ab");
+  host.appendChild(text);
+  document.body.appendChild(host);
+
+  const r = document.createRange();
+  r.setStart(text, 1);
+  r.setEnd(text, 1);
+
+  const doc2 = Object.create(document);
+  const frag = doc2.createDocumentFragment();
+  const child = doc2.createElement("i");
+  frag.appendChild(child);
+
+  assert_equals(frag.ownerDocument, doc2, "sanity: fragment is initially owned by the alias document");
+  assert_equals(child.ownerDocument, doc2, "sanity: fragment child is initially owned by the alias document");
+
+  r.insertNode(frag);
+
+  assert_equals(frag.childNodes.length, 0, "insertNode should empty the inserted DocumentFragment");
+  assert_equals(frag.ownerDocument, doc2, "insertNode must not adopt the DocumentFragment itself");
+  assert_equals(child.ownerDocument, document, "insertNode should adopt fragment children into the range's document");
+}, "Range.insertNode() adopts DocumentFragment children but not the fragment itself");
+
+test(() => {
+  clear_children(document.body);
+
+  const host = document.createElement("div");
   document.body.appendChild(host);
 
   const startText = document.createTextNode("ab");
@@ -177,3 +225,24 @@ test(() => {
   assert_equals(r.endOffset, 2);
 }, "Range.surroundContents() wraps selection in a new parent and selects it");
 
+test(() => {
+  clear_children(document.body);
+
+  const host = document.createElement("div");
+  const t = document.createTextNode("abcd");
+  host.appendChild(t);
+  document.body.appendChild(host);
+
+  const r = document.createRange();
+  r.setStart(t, 1);
+  r.setEnd(t, 3); // "bc"
+
+  const doc2 = Object.create(document);
+  const wrapper = doc2.createElement("u");
+  assert_equals(wrapper.ownerDocument, doc2, "sanity: wrapper is initially owned by the alias document");
+
+  r.surroundContents(wrapper);
+
+  assert_equals(wrapper.ownerDocument, document, "surroundContents should adopt newParent into the range's document");
+  assert_equals(wrapper.textContent, "bc");
+}, "Range.surroundContents() adopts newParent created from an alias Document wrapper");
