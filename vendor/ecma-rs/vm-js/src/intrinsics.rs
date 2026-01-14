@@ -1193,12 +1193,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::number_prototype_to_precision)?;
     let number_prototype_to_locale_string =
       vm.register_native_call(builtins::number_prototype_to_locale_string)?;
-    let number_prototype_to_primitive =
-      vm.register_native_call(builtins::number_prototype_to_primitive)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
-    let boolean_prototype_to_primitive =
-      vm.register_native_call(builtins::boolean_prototype_to_primitive)?;
     let number_is_nan = vm.register_native_call(builtins::number_is_nan)?;
     let number_is_finite = vm.register_native_call(builtins::number_is_finite)?;
     let number_is_integer = vm.register_native_call(builtins::number_is_integer)?;
@@ -4436,24 +4432,6 @@ impl Intrinsics {
       )?;
     }
 
-    // Number.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(number_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        number_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `Number.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
-      )?;
-    }
-
     // Number static properties.
     {
       let cases: [(&str, Value); 8] = [
@@ -4564,24 +4542,6 @@ impl Intrinsics {
       data_desc(Value::Object(func), true, false, true),
     )?;
   }
-
-    // Boolean.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(boolean_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        boolean_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `Boolean.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
-      )?;
-    }
 
     // `%BigInt%` (callable, not constructable).
     let bigint_name = scope.alloc_string("BigInt")?;
@@ -9176,6 +9136,74 @@ mod async_generator_intrinsics_tests {
       "#,
     )?;
 
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod json_stringify_number_object_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn number_and_boolean_prototypes_do_not_define_symbol_to_primitive() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        Number.prototype[Symbol.toPrimitive] === undefined &&
+        Boolean.prototype[Symbol.toPrimitive] === undefined
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn json_stringify_number_objects_use_ordinary_toprimitive() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          // Replacer array items: wrapper objects with [[NumberData]] are converted with ToString,
+          // which should consult the overridable `toString`/`valueOf` methods.
+          var num = new Number(10);
+          num.toString = function () { return "toString"; };
+          num.valueOf = function () { throw new Error("valueOf should not be called"); };
+
+          var value = { 10: 1, toString: 2, valueOf: 3 };
+          if (JSON.stringify(value, [num]) !== '{"toString":2}') return false;
+
+          // `space`: wrapper objects with [[NumberData]] are coerced with ToNumber, which should
+          // consult `valueOf` before `toString`.
+          var obj = { a: [1, 2], b: { c: 3 } };
+          var space = new Number(1);
+          space.toString = function () { throw new Error("toString should not be called"); };
+          space.valueOf = function () { return 3; };
+          if (JSON.stringify(obj, null, space) !== JSON.stringify(obj, null, 3)) return false;
+
+          // Values returned by replacer functions: wrapper objects with [[NumberData]] are coerced
+          // with ToNumber, which should consult `valueOf`.
+          function replacer(_k, v) {
+            if (v === "str") {
+              var n = new Number(42);
+              n.toString = function () { throw new Error("toString should not be called"); };
+              n.valueOf = function () { return 2; };
+              return n;
+            }
+            return v;
+          }
+          if (JSON.stringify(["str"], replacer) !== "[2]") return false;
+
+          return true;
+        })()
+      "#,
+    )?;
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }
