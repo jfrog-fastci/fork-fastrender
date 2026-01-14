@@ -327,3 +327,89 @@ fn generator_labelled_continue_targets_outer_loop() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_triple_yield_in_init() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        for (var i = yield 1; i < 1; i++) { }
+        return i;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(0);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 1 && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_triple_yield_in_condition() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        for (var i = 0; yield 1; i++) { }
+        return i;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(false);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 0 && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_triple_yield_in_update() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        for (var i = 0; i < 1; i = yield 1) { }
+        return i;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(2);
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_yield_in_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        for (let k in (yield 1)) {
+          return k;
+        }
+        return "none";
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next({a: 0});
+      r1.value === 1 && r1.done === false &&
+      r2.value === "a" && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

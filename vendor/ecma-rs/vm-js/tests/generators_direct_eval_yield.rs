@@ -851,3 +851,61 @@ fn generator_direct_eval_with_yield_argument_inside_lexical_for_triple_sees_for_
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inside_for_in_binding_pattern_default_is_direct() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding visible to indirect eval.
+          var y = 2;
+          function* g() {
+            let y = 1;
+            for (let {a: x = eval(yield 0)} in {abc: 0}) {
+              return x;
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("y");
+          ok = r.done === true && r.value === 1 && y === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_argument_inside_for_in_binding_pattern_computed_key_is_direct() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding visible to indirect eval.
+          var y = 2;
+          function* g() {
+            let y = 1;
+            for (let {[(eval(yield 0))]: x} in {abc: 0}) {
+              return x;
+            }
+            return -1;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("y === 1 ? 'length' : 'nope'");
+          ok = r.done === true && r.value === 3 && y === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
