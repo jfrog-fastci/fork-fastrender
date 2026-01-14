@@ -479,6 +479,23 @@ impl ModuleGraph {
         "realm_loaded_modules missing key after insertion",
       ))
   }
+
+  /// Clears the spec `[[LoadedModules]]` memoization cache for a Script Record.
+  ///
+  /// Embeddings can call this after a classic script has finished executing if they know the
+  /// [`ScriptId`] will never be used again.
+  pub fn clear_loaded_modules_for_script(&mut self, script: ScriptId) {
+    self.script_loaded_modules.remove(&script);
+  }
+
+  /// Clears the spec `[[LoadedModules]]` memoization cache for a Realm Record.
+  ///
+  /// Embeddings can call this when a Realm is torn down to proactively release cached module
+  /// requests associated with that realm.
+  pub fn clear_loaded_modules_for_realm(&mut self, realm: RealmId) {
+    self.realm_loaded_modules.remove(&realm);
+  }
+
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);
   }
@@ -691,6 +708,13 @@ impl ModuleGraph {
   ///
   /// This method is **idempotent**.
   pub fn teardown(&mut self, vm: &mut Vm, heap: &mut Heap) {
+    // `FinishLoadingImportedModule` memoizes successful `(referrer, request)` resolutions for
+    // Script/Realm referrers in these graph-owned maps. Clear them on teardown so a graph reused
+    // across multiple loads does not retain attacker-controlled request data or stale `ModuleId`
+    // values.
+    self.script_loaded_modules.clear();
+    self.realm_loaded_modules.clear();
+
     if self.torn_down {
       // Even if there are no roots to remove, ensure the VM does not retain a raw pointer to this
       // graph before the embedding drops it.
@@ -4148,7 +4172,7 @@ mod tests {
   use super::*;
   use crate::microtasks::MicrotaskQueue;
   use crate::test_alloc::FailAllocsGuard;
-  use crate::{HeapLimits, Realm, VmOptions};
+  use crate::{HeapLimits, Realm, VmJobContext, VmOptions};
 
   #[test]
   fn tla_fallback_ast_is_charged_against_heap_limits() -> Result<(), VmError> {
@@ -4447,6 +4471,187 @@ mod tests {
     let _guard = FailAllocsGuard::new();
     let err = try_vec_into_boxed_slice(v).expect_err("expected OOM");
     assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
+
+  #[test]
+  fn teardown_clears_script_and_realm_loaded_modules_caches() -> Result<(), VmError> {
+    struct Host {
+      microtasks: MicrotaskQueue,
+      pending_loads: Vec<(crate::ModuleReferrer, ModuleRequest, crate::ModuleLoadPayload)>,
+    }
+
+    impl Host {
+      fn take_load(&mut self) -> (crate::ModuleReferrer, ModuleRequest, crate::ModuleLoadPayload) {
+        self
+          .pending_loads
+          .pop()
+          .expect("expected host_load_imported_module to be called")
+      }
+    }
+
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, job: crate::Job, realm: Option<RealmId>) {
+        self.microtasks.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        referrer: crate::ModuleReferrer,
+        module_request: ModuleRequest,
+        _host_defined: crate::HostDefined,
+        payload: crate::ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        self
+          .pending_loads
+          .push((referrer, module_request, payload));
+        Ok(())
+      }
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let realm_id = realm.id();
+    let global_object = realm.global_object();
+
+    let mut graph = ModuleGraph::new();
+    let record = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, "export const x = 1;")?;
+    let module = graph.add_module(record)?;
+
+    let mut host = Host {
+      microtasks: MicrotaskQueue::new(),
+      pending_loads: Vec::new(),
+    };
+
+    // Populate `script_loaded_modules` through `FinishLoadingImportedModule` via dynamic import.
+    let script_id = ScriptId::from_raw(1);
+    {
+      let ctx = ExecutionContext {
+        realm: realm_id,
+        script_or_module: Some(crate::ScriptOrModule::Script(script_id)),
+      };
+      let mut vm_ctx = vm.execution_context_guard(ctx)?;
+
+      let mut scope = heap.scope();
+      let spec = scope.alloc_string("m")?;
+      let _promise = crate::start_dynamic_import(
+        &mut *vm_ctx,
+        &mut scope,
+        &mut graph,
+        &mut host,
+        global_object,
+        Value::String(spec),
+        Value::Undefined,
+      )?;
+      let (referrer, request, payload) = host.take_load();
+      assert_eq!(referrer, crate::ModuleReferrer::Script(script_id));
+      vm_ctx.finish_loading_imported_module(
+        &mut scope,
+        &mut graph,
+        &mut host,
+        referrer,
+        request,
+        payload,
+        Ok(module),
+      )?;
+    }
+
+    // Populate `realm_loaded_modules` through the same path, but with no active Script/Module.
+    {
+      let ctx = ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      };
+      let mut vm_ctx = vm.execution_context_guard(ctx)?;
+
+      let mut scope = heap.scope();
+      let spec = scope.alloc_string("n")?;
+      let _promise = crate::start_dynamic_import(
+        &mut *vm_ctx,
+        &mut scope,
+        &mut graph,
+        &mut host,
+        global_object,
+        Value::String(spec),
+        Value::Undefined,
+      )?;
+      let (referrer, request, payload) = host.take_load();
+      assert_eq!(referrer, crate::ModuleReferrer::Realm(realm_id));
+      vm_ctx.finish_loading_imported_module(
+        &mut scope,
+        &mut graph,
+        &mut host,
+        referrer,
+        request,
+        payload,
+        Ok(module),
+      )?;
+    }
+
+    assert!(!graph.script_loaded_modules.is_empty());
+    assert!(!graph.realm_loaded_modules.is_empty());
+
+    graph.teardown(&mut vm, &mut heap);
+
+    assert!(
+      graph.script_loaded_modules.is_empty(),
+      "teardown should clear script-loaded-modules cache"
+    );
+    assert!(
+      graph.realm_loaded_modules.is_empty(),
+      "teardown should clear realm-loaded-modules cache"
+    );
+
+    // Discard queued Promise jobs so `Job` drop assertions don't trigger in debug builds.
+    {
+      struct TeardownCtx<'a> {
+        heap: &'a mut Heap,
+      }
+
+      impl VmJobContext for TeardownCtx<'_> {
+        fn call(
+          &mut self,
+          _host: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented(
+            "test teardown job context does not support calls",
+          ))
+        }
+
+        fn construct(
+          &mut self,
+          _host: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented(
+            "test teardown job context does not support construction",
+          ))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut ctx = TeardownCtx { heap: &mut heap };
+      host.microtasks.teardown(&mut ctx);
+    }
+
+    vm.teardown_microtasks(&mut heap);
+    realm.teardown(&mut heap);
     Ok(())
   }
 }
