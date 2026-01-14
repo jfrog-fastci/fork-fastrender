@@ -120,9 +120,10 @@ impl OpusDecoder {
     let channels = self.channels as usize;
     let mut pcm = vec![0.0f32; MAX_FRAME_SIZE_SAMPLES_PER_CHANNEL * channels];
 
+    let bytes = packet.data.as_slice();
     let decoded = self
       .decoder
-      .decode_float(packet.as_slice(), &mut pcm, false)
+      .decode_float(bytes, &mut pcm, false)
       .map_err(|e| MediaError::Decode(format!("Opus decode failed: {e}")))?;
     let decoded_samples_per_channel: usize = decoded
       .try_into()
