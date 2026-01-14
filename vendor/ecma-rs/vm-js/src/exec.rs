@@ -48447,6 +48447,74 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_arrow_using_super_property_set_created_before_super_observes_this_initialization(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      class B {
+        set x(v) { log.push('set:' + v + ':' + (this instanceof D)); this._x = v; }
+        get x() { log.push('get'); return this._x; }
+      }
+      class D extends B {
+        constructor() {
+          let f = (v) => { super.x = v; return super.x; };
+
+          let errName;
+          let errMsg;
+          try { f(1); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f(2);
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      d.v === 2 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'set:2:true,get'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_super_returns_object_arrow_observes_that_object() -> Result<(), VmError> {
+    let source = r#"
+      let returned;
+      class B {
+        constructor() {
+          returned = { marker: 1 };
+          return returned;
+        }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          return { v: f(), returned, errName, errMsg };
+        }
+      }
+      let o = new D();
+      o.v === o.returned &&
+        o.v.marker === 1 &&
+        o.errName === 'ReferenceError' &&
+        o.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_if_super_throws_this_remains_uninitialized_for_escaped_arrows(
   ) -> Result<(), VmError> {
     let source = r#"
