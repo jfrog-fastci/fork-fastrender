@@ -54370,6 +54370,76 @@ mod tests {
   }
 
   #[test]
+  fn generators_super_computed_member_to_property_key_after_yield() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        const log = [];
+        class A {}
+        A.prototype.x = 123;
+        class B extends A {
+          *g() {
+            return super[(yield { toString(){ log.push("toString"); return "x"; } })];
+          }
+        }
+
+        const it = new B().g();
+        const r1 = it.next();
+        const yielded = r1.value;
+        const r2 = it.next(yielded);
+        return (
+          r1.done === false &&
+          r2.done === true &&
+          r2.value === 123 &&
+          log.join(",") === "toString"
+        );
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn generators_super_member_call_uses_this_binding_after_yield_in_args() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        class A {
+          m(x) { return this.value + x; }
+        }
+        class B extends A {
+          constructor() {
+            super();
+            this.value = 10;
+          }
+          *g() {
+            return super.m(yield 0);
+          }
+        }
+
+        const it = new B().g();
+        const r1 = it.next();
+        const r2 = it.next(5);
+        return r1.value === 0 && r1.done === false && r2.value === 15 && r2.done === true;
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn unimplemented_errors_are_coerced_to_throw_with_stack() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
