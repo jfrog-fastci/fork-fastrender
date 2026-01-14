@@ -8591,6 +8591,49 @@ impl GridFormattingContext {
       }
     }
 
+    // For orthogonal writing-mode mismatches, use local axis mapping + mirroring even when we
+    // can't access per-node track info (fallback subgrid-offset path).
+    let mut mismatch_align_x: Option<TaffyAlignContent> = None;
+    let mut mismatch_align_y: Option<TaffyAlignContent> = None;
+    if subgrid_writing_mode_mismatch {
+      let local_axis_style = GridAxisStyle::from_style(&box_node.style);
+      let inline_positive = local_axis_style.inline_positive();
+      let block_positive = local_axis_style.block_positive();
+      let inline_is_horizontal = local_axis_style.inline_is_horizontal();
+
+      let (align_x, align_y) = if inline_is_horizontal {
+        (
+          self.convert_justify_content(&box_node.style.justify_content, inline_positive),
+          self.convert_align_content(&box_node.style.align_content, block_positive),
+        )
+      } else {
+        (
+          self.convert_align_content(&box_node.style.align_content, block_positive),
+          self.convert_justify_content(&box_node.style.justify_content, inline_positive),
+        )
+      };
+      mismatch_align_x = Some(align_x);
+      mismatch_align_y = Some(align_y);
+
+      axes_swapped = !inline_is_horizontal;
+      mirror_x = false;
+      mirror_y = false;
+      if !inline_positive {
+        if inline_is_horizontal {
+          mirror_x = true;
+        } else {
+          mirror_y = true;
+        }
+      }
+      if !block_positive {
+        if inline_is_horizontal {
+          mirror_y = true;
+        } else {
+          mirror_x = true;
+        }
+      }
+    }
+
     let mut row_offsets: Option<Vec<f32>> = None;
     let mut col_offsets: Option<Vec<f32>> = None;
     let mut row_alignment: Option<TaffyAlignContent> = None;
@@ -8602,22 +8645,8 @@ impl GridFormattingContext {
 
     if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
       if subgrid_writing_mode_mismatch {
-        let local_axis_style = GridAxisStyle::from_style(&box_node.style);
-        let inline_positive = local_axis_style.inline_positive();
-        let block_positive = local_axis_style.block_positive();
-        let inline_is_horizontal = local_axis_style.inline_is_horizontal();
-
-        let (align_x, align_y) = if inline_is_horizontal {
-          (
-            self.convert_justify_content(&box_node.style.justify_content, inline_positive),
-            self.convert_align_content(&box_node.style.align_content, block_positive),
-          )
-        } else {
-          (
-            self.convert_align_content(&box_node.style.align_content, block_positive),
-            self.convert_justify_content(&box_node.style.justify_content, inline_positive),
-          )
-        };
+        let align_x = mismatch_align_x.unwrap_or(TaffyAlignContent::Stretch);
+        let align_y = mismatch_align_y.unwrap_or(TaffyAlignContent::Stretch);
 
         // Build the column track list without gutters so that a containing grid's physical-X gaps do
         // not incorrectly transpose onto the physical-Y axis. This matches WPT
@@ -8652,24 +8681,6 @@ impl GridFormattingContext {
           border_bottom,
           align_y,
         ));
-
-        axes_swapped = !inline_is_horizontal;
-        mirror_x = false;
-        mirror_y = false;
-        if !inline_positive {
-          if inline_is_horizontal {
-            mirror_x = true;
-          } else {
-            mirror_y = true;
-          }
-        }
-        if !block_positive {
-          if inline_is_horizontal {
-            mirror_y = true;
-          } else {
-            mirror_x = true;
-          }
-        }
       } else {
         let row_align = container_style
           .align_content
