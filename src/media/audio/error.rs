@@ -122,7 +122,7 @@ pub enum AudioError {
   #[error("no default output audio device is available")]
   NoOutputDevice,
 
-  #[error("output audio device not found for selector '{selector}'")]
+  #[error("output audio device not found for selector {selector:?}")]
   OutputDeviceNotFound { selector: DeviceSelector },
 
   #[error("failed to enumerate output audio configs for device '{device_name}': {source}")]
@@ -305,5 +305,25 @@ mod tests {
   fn audio_error_kind_is_stable() {
     let err = AudioError::NoOutputDevice;
     assert_eq!(err.kind(), AudioErrorKind::DeviceUnavailable);
+  }
+
+  #[test]
+  fn audio_error_display_includes_device_name_for_output_device_not_found() {
+    let err = AudioError::OutputDeviceNotFound {
+      selector: DeviceSelector::Device(super::super::AudioDeviceId {
+        name: "Headphones".to_string(),
+        ordinal: 0,
+      }),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("Headphones"));
+  }
+
+  #[test]
+  fn audio_error_converts_to_crate_error_with_kind() {
+    let err: crate::error::Error = AudioError::NoOutputDevice.into();
+    let msg = err.to_string();
+    assert!(msg.contains("device_unavailable"));
+    assert!(msg.contains("no default output audio device"));
   }
 }
