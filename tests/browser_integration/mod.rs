@@ -172,6 +172,7 @@ mod ui_worker_link_drag_suppresses_navigation;
 mod ui_worker_js_pump_after_event;
 mod ui_worker_dpr;
 mod ui_worker_favicon;
+mod ui_worker_find_in_page;
 mod ui_worker_focus_scroll;
 mod ui_worker_accesskit_scroll;
 mod ui_worker_image_map_area_click;
