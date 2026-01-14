@@ -712,7 +712,8 @@ fn bind_object_pattern(
                       "super property assignment missing [[HomeObject]]",
                     ));
                   };
-                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  let super_base =
+                    prop_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                   if let Some(base_obj) = super_base {
                     prop_scope.push_root(Value::Object(base_obj))?;
                   }
@@ -793,7 +794,8 @@ fn bind_object_pattern(
                   // - `GetSuperBase` is observed before the deferred `ToPropertyKey` conversion so
                   //   prototype mutation during key coercion does not affect the resolved super
                   //   base.
-                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  let super_base =
+                    prop_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                   if let Some(base_obj) = super_base {
                     prop_scope.push_root(Value::Object(base_obj))?;
                   }
@@ -1085,7 +1087,7 @@ fn bind_object_pattern(
                     "super property assignment missing [[HomeObject]]",
                   ));
                 };
-                let super_base = scope.heap().object_prototype(home)?;
+                let super_base = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                 if let Some(base_obj) = super_base {
                   scope.push_root(Value::Object(base_obj))?;
                 }
@@ -1155,7 +1157,7 @@ fn bind_object_pattern(
                 let key_value = scope.push_root(key_value)?;
                 // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
                 // deferred `ToPropertyKey` conversion.
-                let super_base = scope.heap().object_prototype(home)?;
+                let super_base = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                 if let Some(base_obj) = super_base {
                   scope.push_root(Value::Object(base_obj))?;
                 }
@@ -1443,7 +1445,8 @@ fn bind_array_pattern(
                       "super property assignment missing [[HomeObject]]",
                     ));
                   };
-                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  let super_base =
+                    elem_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                   if let Some(base_obj) = super_base {
                     elem_scope.push_root(Value::Object(base_obj))?;
                   }
@@ -1521,7 +1524,8 @@ fn bind_array_pattern(
                   let key_value = elem_scope.push_root(key_value)?;
                   // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
                   // deferred `ToPropertyKey` conversion.
-                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  let super_base =
+                    elem_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                   if let Some(base_obj) = super_base {
                     elem_scope.push_root(Value::Object(base_obj))?;
                   }
@@ -1910,7 +1914,7 @@ fn bind_array_pattern(
                     "super property assignment missing [[HomeObject]]",
                   ));
                 };
-                let super_base = scope.heap().object_prototype(home)?;
+                let super_base = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                 if let Some(base_obj) = super_base {
                   scope.push_root(Value::Object(base_obj))?;
                 }
@@ -1982,7 +1986,7 @@ fn bind_array_pattern(
                 let key_value = scope.push_root(key_value)?;
                 // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before the
                 // deferred `ToPropertyKey` conversion.
-                let super_base = scope.heap().object_prototype(home)?;
+                let super_base = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
                 if let Some(base_obj) = super_base {
                   scope.push_root(Value::Object(base_obj))?;
                 }
@@ -2433,7 +2437,7 @@ fn assign_to_member(
         "super property assignment missing [[HomeObject]]",
       ));
     };
-    let super_base = scope.heap().object_prototype(home)?;
+    let super_base = scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
     if let Some(base_obj) = super_base {
       scope.push_root(Value::Object(base_obj))?;
     }
@@ -2539,7 +2543,7 @@ fn assign_to_computed_member(
     )?;
     let key_value = key_scope.push_root(key_value)?;
     // Spec: key expression value before `GetSuperBase`, and `GetSuperBase` before `ToPropertyKey`.
-    let super_base = key_scope.heap().object_prototype(home)?;
+    let super_base = key_scope.get_prototype_of_with_host_and_hooks(vm, host, hooks, home)?;
     if let Some(base_obj) = super_base {
       key_scope.push_root(Value::Object(base_obj))?;
     }
