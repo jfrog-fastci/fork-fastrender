@@ -141,9 +141,17 @@ pub enum KeyAction {
   ArrowRight,
   WordLeft,
   WordRight,
-  /// Move caret left by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowLeft).
+  /// Move caret left by one word boundary, extending selection.
+  ///
+  /// Triggered by the platform "move by word" modifier + Shift:
+  /// - Windows/Linux: Ctrl+Shift+ArrowLeft
+  /// - macOS: Option/Alt+Shift+ArrowLeft
   ShiftWordLeft,
-  /// Move caret right by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowRight).
+  /// Move caret right by one word boundary, extending selection.
+  ///
+  /// Triggered by the platform "move by word" modifier + Shift:
+  /// - Windows/Linux: Ctrl+Shift+ArrowRight
+  /// - macOS: Option/Alt+Shift+ArrowRight
   ShiftWordRight,
   ShiftArrowLeft,
   ShiftArrowRight,
