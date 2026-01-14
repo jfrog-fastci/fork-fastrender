@@ -265,6 +265,8 @@ in [Perfetto UI](https://ui.perfetto.dev):
 - Renderer pipeline trace (parse/style/layout/paint): `FASTR_TRACE_OUT=/tmp/trace.json` (captures the
   most recent render).
 - Browser UI trace: `browser --trace-out /tmp/ui_trace.json` (or `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json`; legacy alias: `FASTR_PERF_TRACE_OUT`).
+  - The trace file is written when the browser process exits.
+  - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap retained trace events (default 200000).
 
 ## Other useful profiling flags
 
