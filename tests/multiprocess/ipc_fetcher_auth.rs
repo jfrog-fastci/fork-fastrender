@@ -53,11 +53,11 @@ fn ipc_fetcher_rejects_wrong_auth_token() {
     write_frame(&mut stream, &ack);
   });
 
-  let err = match IpcResourceFetcher::new_with_auth_token(addr.to_string(), "wrong-token") {
-    Ok(_) => panic!("expected wrong auth token to be rejected"),
-    Err(err) => err,
-  };
-  let _ = err; // error message is not stable; assert by server observation instead.
+  let result = IpcResourceFetcher::new_with_auth_token(addr.to_string(), "wrong-token");
+  assert!(
+    result.is_err(),
+    "expected wrong auth token to be rejected"
+  );
 
   let observed = rx
     .recv_timeout(Duration::from_secs(1))
