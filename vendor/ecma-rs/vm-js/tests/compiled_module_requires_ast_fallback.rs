@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use vm_js::{
   Heap, HeapLimits, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm, Scope, SourceText,
   SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
@@ -103,13 +101,20 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
 
   let result = (|| -> Result<(), VmError> {
     // Build a compiled module record via `SourceTextModuleRecord::compile_source` (module record +
-    // compiled HIR). This compilation path marks modules that contain async functions as requiring
-    // AST fallback (CompiledScript::requires_ast_fallback).
+    // compiled HIR).
+    //
+    // We deliberately include private names so the compiled-module execution path must fall back
+    // to the AST interpreter (`CompiledScript::requires_ast_fallback`). This exercises the
+    // ModuleGraph logic that parses/retains an AST on demand when only compiled HIR was retained.
     let src_a = SourceText::new_charged_arc(
       &mut heap,
       "a.js",
       r#"
-        export async function f() { return 1; }
+        class C {
+          #x = 1;
+          getX() { return this.#x; }
+        }
+        export async function f() { return (new C()).getX(); }
       "#,
     )?;
     let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
@@ -118,7 +123,7 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
         .compiled
         .as_ref()
         .is_some_and(|c| c.requires_ast_fallback),
-      "expected async-function module to require AST fallback"
+      "expected private-name module to require AST fallback"
     );
     // Drop both the retained AST and `record.source` so ModuleGraph must parse the AST on demand
     // from `compiled.source`.
@@ -198,4 +203,3 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
 
   result
 }
-
