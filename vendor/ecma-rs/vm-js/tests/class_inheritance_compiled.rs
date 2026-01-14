@@ -203,3 +203,48 @@ fn derived_ctor_arrow_this_created_in_eval_observes_initialized_this_after_eval_
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_super_method_call_uses_initialized_this_after_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { __m() { return this.__x; } }
+      class D extends B {
+        constructor() {
+          let f = () => super.__m();
+          super();
+          this.__x = 123;
+          return { v: f() };
+        }
+      }
+      new D().v === 123
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_method_call_before_super_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B { __m() { return 0; } }
+      class D extends B {
+        constructor() {
+          let f = () => super.__m();
+          try { f(); } catch (e) { ok = e instanceof ReferenceError; }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
