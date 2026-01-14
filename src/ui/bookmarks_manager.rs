@@ -6,9 +6,9 @@
 //! (which keeps page hit-testing/pointer forwarding simple).
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::time::Duration;
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
@@ -196,13 +196,13 @@ struct BookmarksListCache {
 struct BookmarksFolderCache {
   folder_revision: u64,
   folder_options: Vec<(Option<BookmarkId>, String)>,
-  folder_label_indices: HashMap<Option<BookmarkId>, usize>,
+  folder_label_indices: FxHashMap<Option<BookmarkId>, usize>,
 }
 
 impl BookmarksFolderCache {
   fn new(store: &BookmarkStore) -> Self {
     let folder_options = folder_options(store);
-    let mut folder_label_indices = HashMap::with_capacity(folder_options.len());
+    let mut folder_label_indices = FxHashMap::with_capacity(folder_options.len());
     for (idx, (id, _)) in folder_options.iter().enumerate() {
       folder_label_indices.insert(*id, idx);
     }
@@ -220,7 +220,7 @@ impl BookmarksFolderCache {
     }
     self.folder_revision = revision;
     self.folder_options = folder_options(store);
-    let mut indices = HashMap::with_capacity(self.folder_options.len());
+    let mut indices = FxHashMap::with_capacity(self.folder_options.len());
     for (idx, (id, _)) in self.folder_options.iter().enumerate() {
       indices.insert(*id, idx);
     }
