@@ -10592,8 +10592,10 @@ impl BrowserRuntime {
                   | crate::interaction::KeyAction::ShiftSpace => Some(MediaCommand::TogglePlayPause),
                   crate::interaction::KeyAction::ArrowLeft => Some(MediaCommand::SeekBySeconds(-5.0)),
                   crate::interaction::KeyAction::ArrowRight => Some(MediaCommand::SeekBySeconds(5.0)),
-                  crate::interaction::KeyAction::PageUp => Some(MediaCommand::SeekBySeconds(-10.0)),
-                  crate::interaction::KeyAction::PageDown => Some(MediaCommand::SeekBySeconds(10.0)),
+                  crate::interaction::KeyAction::PageUp
+                  | crate::interaction::KeyAction::ShiftPageUp => Some(MediaCommand::SeekBySeconds(-10.0)),
+                  crate::interaction::KeyAction::PageDown
+                  | crate::interaction::KeyAction::ShiftPageDown => Some(MediaCommand::SeekBySeconds(10.0)),
                   crate::interaction::KeyAction::Home
                   | crate::interaction::KeyAction::ShiftHome => Some(MediaCommand::SeekToSeconds(0.0)),
                   _ => None,
@@ -10780,7 +10782,9 @@ impl BrowserRuntime {
                                   crate::interaction::KeyAction::Space
                                   | crate::interaction::KeyAction::ShiftSpace
                                   | crate::interaction::KeyAction::PageDown
-                                  | crate::interaction::KeyAction::PageUp => {
+                                  | crate::interaction::KeyAction::ShiftPageDown
+                                  | crate::interaction::KeyAction::PageUp
+                                  | crate::interaction::KeyAction::ShiftPageUp => {
                                     let scrollport =
                                       scrollport_size_for_state(&chain[0], chain_len == 1);
                                     let mut dy = (scrollport.height * 0.9).max(1.0);
@@ -10788,6 +10792,7 @@ impl BrowserRuntime {
                                       key,
                                       crate::interaction::KeyAction::ShiftSpace
                                         | crate::interaction::KeyAction::PageUp
+                                        | crate::interaction::KeyAction::ShiftPageUp
                                     ) {
                                       dy = -dy;
                                     }
@@ -10912,7 +10917,9 @@ impl BrowserRuntime {
                                   crate::interaction::KeyAction::Space
                                   | crate::interaction::KeyAction::ShiftSpace
                                   | crate::interaction::KeyAction::PageDown
-                                  | crate::interaction::KeyAction::PageUp => {
+                                  | crate::interaction::KeyAction::ShiftPageDown
+                                  | crate::interaction::KeyAction::PageUp
+                                  | crate::interaction::KeyAction::ShiftPageUp => {
                                     let scrollport = chain
                                       .first()
                                       .map(|state| scrollport_size_for_state(state, false))
@@ -10922,6 +10929,7 @@ impl BrowserRuntime {
                                       key,
                                       crate::interaction::KeyAction::ShiftSpace
                                         | crate::interaction::KeyAction::PageUp
+                                        | crate::interaction::KeyAction::ShiftPageUp
                                     ) {
                                       dy = -dy;
                                     }
