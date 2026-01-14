@@ -13725,20 +13725,38 @@ impl DisplayListBuilder {
       };
 
       let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
-      let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
-      if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
-        breakdown.record_text_shape(start.elapsed());
-      }
-      let mut runs = match shaped {
-        Ok(r) => r,
-        Err(_) => return builder.emit_naive_text(text, rect, Some(style)),
+      let mut runs_storage: Option<Vec<ShapedRun>> = None;
+      let mut runs_storage_arc: Option<Arc<Vec<ShapedRun>>> = None;
+      let runs: &[ShapedRun] = if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+        let shaped = builder.shaper.shape_arc(text, style, &builder.font_ctx);
+        if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+          breakdown.record_text_shape(start.elapsed());
+        }
+        match shaped {
+          Ok(runs) => {
+            runs_storage_arc = Some(runs);
+            runs_storage_arc.as_deref().unwrap()
+          }
+          Err(_) => return builder.emit_naive_text(text, rect, Some(style)),
+        }
+      } else {
+        let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
+        if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+          breakdown.record_text_shape(start.elapsed());
+        }
+        let mut runs = match shaped {
+          Ok(r) => r,
+          Err(_) => return builder.emit_naive_text(text, rect, Some(style)),
+        };
+        InlineTextItem::apply_spacing_to_runs(
+          &mut runs,
+          text,
+          style.letter_spacing,
+          style.word_spacing,
+        );
+        runs_storage = Some(runs);
+        runs_storage.as_deref().unwrap()
       };
-      InlineTextItem::apply_spacing_to_runs(
-        &mut runs,
-        text,
-        style.letter_spacing,
-        style.word_spacing,
-      );
 
       let metrics_scaled = Self::resolve_scaled_metrics(style, &builder.font_ctx);
       let line_height = compute_line_height_with_metrics_viewport(
@@ -13750,7 +13768,7 @@ impl DisplayListBuilder {
       let metrics = match &style.line_height {
         crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
           &builder.font_ctx,
-          &runs,
+          runs,
           line_height,
           style.font_size,
         ),
@@ -13776,7 +13794,7 @@ impl DisplayListBuilder {
 
       let shadows = Self::text_shadows_from_style(Some(style), builder.viewport);
       builder.emit_shaped_runs(
-        &runs,
+        runs,
         style.color,
         baseline,
         start_x,
