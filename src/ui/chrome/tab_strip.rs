@@ -1826,20 +1826,18 @@ fn tab_ui(
     //
     // Keep the interaction rect stable; only the icon painting is animated.
     let close_reveal_target = is_active || hovered || response.has_focus() || close_has_focus;
-    let close_resp = ui
-      .interact(
-        close_rect,
-        close_id,
-        if close_reveal_target {
-          Sense::click()
-        } else {
-          // When the close icon is hidden (non-active tab, not hovered), avoid stealing pointer
-          // clicks from the tab itself, but keep the widget focusable so keyboard traversal remains
-          // stable (Tab/Shift+Tab).
-          Sense::focusable_noninteractive()
-        },
-      )
-      .on_hover_text("Close tab (Ctrl/Cmd+W)");
+    let close_resp = ui.interact(
+      close_rect,
+      close_id,
+      if close_reveal_target {
+        Sense::click()
+      } else {
+        // When the close icon is hidden (non-active tab, not hovered), avoid stealing pointer
+        // clicks from the tab itself, but keep the widget focusable so keyboard traversal remains
+        // stable (Tab/Shift+Tab).
+        Sense::focusable_noninteractive()
+      },
+    );
     // Accessibility: focus may land directly on the close button during Tab/Shift+Tab traversal.
     // Ensure the focused control is visible within the scroll viewport.
     if close_resp.has_focus() && !ui.is_rect_visible(close_rect) {
@@ -1855,7 +1853,7 @@ fn tab_ui(
       let close_a11y_label = close_a11y_label;
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, close_a11y_label.as_ref())
     });
-    super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
+    super::show_tooltip_on_hover_or_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
     close_clicked =
       close_reveal_target && (close_resp.clicked() || super::keyboard_activate(ui, &close_resp));
 
