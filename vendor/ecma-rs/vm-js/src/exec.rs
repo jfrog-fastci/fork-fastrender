@@ -48567,6 +48567,38 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_direct_eval_super_initializes_this_for_pre_super_arrows(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          // Calling `super()` via direct eval must initialize the derived `this` binding in a way
+          // observable by arrows created before the `super()` call.
+          eval("super()");
+
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      (d.v instanceof D) &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_nested_arrow_created_before_super_observes_initialized_this(
   ) -> Result<(), VmError> {
     let source = r#"
