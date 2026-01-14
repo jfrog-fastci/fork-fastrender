@@ -2665,6 +2665,7 @@ fn make_idle_deadline_object(
   // `deadline instanceof IdleDeadline` works for libraries that inspect it.
   //
   // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies).
+  // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies).
   let own_data_value =
     |heap: &vm_js::Heap, obj: vm_js::GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
       match heap.object_get_own_data_property_value(obj, key) {
@@ -2674,6 +2675,7 @@ fn make_idle_deadline_object(
         Err(err) => Err(err),
       }
     };
+
   let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
   let idle_deadline_ctor = own_data_value(scope.heap(), global_obj, &idle_deadline_ctor_key)?
     .and_then(|v| match v {
@@ -2683,9 +2685,7 @@ fn make_idle_deadline_object(
   if let Some(idle_deadline_ctor) = idle_deadline_ctor {
     scope.push_root(Value::Object(idle_deadline_ctor))?;
     let prototype_key = alloc_key(&mut scope, "prototype")?;
-    if let Some(Value::Object(proto)) =
-      own_data_value(scope.heap(), idle_deadline_ctor, &prototype_key)?
-    {
+    if let Some(Value::Object(proto)) = own_data_value(scope.heap(), idle_deadline_ctor, &prototype_key)? {
       if let Err(err) = scope.heap_mut().object_set_prototype(obj, Some(proto)) {
         // Best-effort: ignore hostile prototype chains.
         if matches!(err, VmError::OutOfMemory) {

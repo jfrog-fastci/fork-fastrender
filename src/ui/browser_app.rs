@@ -30,6 +30,7 @@ use crate::ui::{
   protocol_limits, resolve_omnibox_input, validate_user_navigation_url_scheme,
   GlobalHistorySearcher, GlobalHistoryStore, HistoryVisitDelta, OmniboxSuggestion, VisitedUrlStore,
 };
+use crate::site_isolation::site_key_for_navigation;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

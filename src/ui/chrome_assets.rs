@@ -2,9 +2,12 @@ use crate::error::{Error, ResourceError, Result};
 use crate::resource::{FetchedResource, ResourceFetcher};
 use percent_encoding::percent_decode_str;
 
-const CHROME_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.css"));
-const CHROME_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.js"));
-const ABOUT_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/about.css"));
+const CHROME_CSS: &str =
+  include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.css"));
+const ABOUT_CSS: &str =
+  include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/about.css"));
+const CHROME_JS: &str =
+  include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.js"));
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChromeAssetsFetcher;
@@ -121,13 +124,13 @@ impl ResourceFetcher for ChromeAssetsFetcher {
     let host = parsed.host.to_ascii_lowercase();
 
     match (host.as_str(), parsed.path) {
-      ("styles", "/about.css") => Ok(FetchedResource::with_final_url(
-        ABOUT_CSS.as_bytes().to_vec(),
+      ("styles", "/chrome.css") => Ok(FetchedResource::with_final_url(
+        CHROME_CSS.as_bytes().to_vec(),
         Some("text/css".to_string()),
         Some(url.to_string()),
       )),
-      ("styles", "/chrome.css") => Ok(FetchedResource::with_final_url(
-        CHROME_CSS.as_bytes().to_vec(),
+      ("styles", "/about.css") => Ok(FetchedResource::with_final_url(
+        ABOUT_CSS.as_bytes().to_vec(),
         Some("text/css".to_string()),
         Some(url.to_string()),
       )),
@@ -138,7 +141,7 @@ impl ResourceFetcher for ChromeAssetsFetcher {
       )),
       _ => Err(Error::Resource(ResourceError::new(
         url,
-        "unknown chrome:// asset (allowed: chrome://styles/about.css, chrome://styles/chrome.css, chrome://scripts/chrome.js)",
+        "unknown chrome:// asset (allowed: chrome://styles/chrome.css, chrome://styles/about.css, chrome://scripts/chrome.js)",
       ))),
     }
   }
@@ -172,6 +175,19 @@ mod tests {
       "chrome.js should not be empty (embedded test asset)"
     );
     assert_eq!(res.content_type.as_deref(), Some("text/javascript"));
+    assert_eq!(res.final_url.as_deref(), Some(url));
+  }
+
+  #[test]
+  fn fetch_allowlisted_about_css() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let url = "chrome://styles/about.css";
+    let res = fetcher.fetch(url).expect("fetch about.css");
+    assert!(
+      !res.bytes.is_empty(),
+      "about.css should not be empty (embedded test asset)"
+    );
+    assert_eq!(res.content_type.as_deref(), Some("text/css"));
     assert_eq!(res.final_url.as_deref(), Some(url));
   }
 

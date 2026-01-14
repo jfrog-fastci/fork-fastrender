@@ -246,4 +246,3 @@ mod tests {
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 }
-

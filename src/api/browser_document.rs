@@ -239,6 +239,12 @@ fn apply_paint_interaction_state_to_fragment_tree(
   fragment_tree: &mut FragmentTree,
   interaction_state: Option<&InteractionState>,
 ) {
+  // Avoid borrowing `prepared` immutably (via `PreparedDocument::box_tree()`) while mutating
+  // `prepared.fragment_tree`: borrow the fields independently so the borrow checker can see they do
+  // not alias.
+  let box_tree = &prepared.box_tree;
+  let fragment_tree = &mut prepared.fragment_tree;
+
   // Apply document selection onto the fragment tree for paint-time highlighting.
   crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
     box_tree,
