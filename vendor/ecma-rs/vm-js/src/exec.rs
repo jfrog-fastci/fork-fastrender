@@ -46459,6 +46459,77 @@ mod tests {
   }
 
   #[test]
+  fn super_property_reference_roots_home_object_across_gc() -> Result<(), VmError> {
+    use parse_js::ast::expr::SuperExpr;
+    use parse_js::loc::Loc;
+
+    let vm = Vm::new(VmOptions::default());
+    // Force a GC before every allocation to deterministically catch missing-root bugs.
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 0));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global_object = realm.global_object();
+
+    let mut scope = heap.scope();
+    let lexical_env = scope.env_create(None)?;
+    let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, lexical_env)?;
+
+    #[derive(Default)]
+    struct NoopHooks;
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: crate::Job, _realm: Option<RealmId>) {}
+    }
+    let mut host = ();
+    let mut hooks = NoopHooks::default();
+
+    let loc = Loc(0, 0);
+    let super_expr = Node::new(loc, Expr::Super(Node::new(loc, SuperExpr {})));
+    let expr = Node::new(
+      loc,
+      Expr::Member(Node::new(
+        loc,
+        MemberExpr {
+          optional_chaining: false,
+          left: super_expr,
+          right: String::from("x"),
+        },
+      )),
+    );
+
+    // Allocate a home object that is only referenced from `Evaluator::home_object` on the Rust
+    // stack. If `super.x` does not root it before allocating the property key string / calling
+    // `GetSuperBase`, a forced GC can collect it and make the handle invalid.
+    let home_object = scope.alloc_object()?;
+
+    {
+      let mut evaluator = Evaluator {
+        vm,
+        host: &mut host,
+        hooks: &mut hooks,
+        env: &mut env,
+        strict: false,
+        this: Value::Object(global_object),
+        new_target: Value::Undefined,
+        allow_new_target_in_eval: false,
+        home_object: Some(home_object),
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+
+      let reference = evaluator.eval_reference(&mut scope, &expr)?;
+      assert!(
+        matches!(reference, Reference::SuperProperty { .. }),
+        "expected super property reference, got {reference:?}"
+      );
+    }
+
+    env.teardown(scope.heap_mut());
+    Ok(())
+  }
+
+  #[test]
   fn class_static_block_contains_super_call_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
