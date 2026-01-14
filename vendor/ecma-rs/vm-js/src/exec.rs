@@ -18760,6 +18760,33 @@ fn async_generator_handle_execution_result(
         )?;
         return Ok(false);
       }
+      AsyncBodyResult::Await {
+        kind: AsyncSuspendKind::AwaitResolved,
+        await_value: awaited_promise,
+        frames,
+      } => {
+        state.frames = frames;
+
+        // `AwaitResolved` means the inner `PromiseResolve` step has already been performed by an
+        // internal algorithm. Do not call `PromiseResolve` again or we'd observe `promise.constructor`
+        // twice.
+        cont.env.teardown(scope.heap_mut());
+        scope
+          .heap_mut()
+          .async_generator_set_continuation(gen_obj, Some(cont))?;
+
+        async_generator_schedule_await(
+          vm,
+          scope,
+          host,
+          hooks,
+          gen_obj,
+          awaited_promise,
+          AsyncGeneratorResumeKind::Await,
+          state,
+        )?;
+        return Ok(false);
+      }
 
       AsyncBodyResult::Await {
         kind: AsyncSuspendKind::AwaitResolved,
