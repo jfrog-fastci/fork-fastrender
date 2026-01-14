@@ -1146,6 +1146,112 @@ fn array_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
 }
 
 #[test]
+fn array_join_roots_separator_across_gc_in_length_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const obj = {
+        get length() {
+          // Force GC during `ToLength(length)` before `separator` is coerced.
+          return { valueOf() { ({}); return 2; } };
+        },
+        0: "a",
+        1: "b",
+      };
+      const sep = { toString() { return "-"; } };
+      return [obj, sep, undefined];
+    })()"#,
+  )?;
+
+  let [obj_val, sep_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [sep_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_join(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    obj_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array.prototype.join to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "Array.prototype.join returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "a-b");
+
+  Ok(())
+}
+
+#[test]
+fn array_index_of_roots_search_across_gc_in_from_index_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      // Create two distinct string values with the same contents so the search value can be
+      // collected without affecting the array element.
+      const a = "xy".slice(0, 1);
+      const b = "xy".slice(0, 1);
+      const arr = [a];
+      const fromIndex = { valueOf() { ({}); return 0; } };
+      return [arr, b, fromIndex];
+    })()"#,
+  )?;
+
+  let [arr_val, search_val, from_index_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [search_val, from_index_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_index_of(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    arr_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array.prototype.indexOf to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
 fn array_push_roots_later_args_across_gc_in_set() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 

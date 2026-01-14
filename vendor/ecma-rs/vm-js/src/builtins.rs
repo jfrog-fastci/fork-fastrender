@@ -12413,13 +12413,16 @@ pub fn array_prototype_at(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.at
   let mut scope = scope.reborrow();
+  // Root `this` + arguments before any allocations / coercions. Host callers may invoke this
+  // builtin directly without `Vm::call_impl` argument rooting.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   // `Array.prototype.at` is generic and must work on String values via `ToObject` + indexed
   // property access. `vm-js` does not currently model String exotic objects, so handle String
   // primitives (and boxed String objects created by `ToObject`) explicitly.
   //
   // Note: string indexing uses UTF-16 code unit indices (i.e. it does not decode surrogate pairs).
-  scope.push_root(this)?;
   let string_data = match this {
     Value::String(s) => Some(s),
     Value::Object(obj) => {
@@ -12500,6 +12503,9 @@ pub fn array_prototype_flat(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.flat
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`ToIntegerOrInfinity`, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12543,6 +12549,9 @@ pub fn array_prototype_flat_map(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.flatmap
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12589,6 +12598,9 @@ pub fn array_prototype_find_last(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.findlast
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`LengthOfArrayLike` and predicate checks.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12647,6 +12659,9 @@ pub fn array_prototype_find_last_index(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.findlastindex
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / `LengthOfArrayLike` and predicate checks.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12755,6 +12770,9 @@ pub fn array_prototype_to_sorted(
   const TICK_EVERY: usize = 1024;
 
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / `IsCallable(compareFn)` checks.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -12913,6 +12931,9 @@ pub fn array_prototype_to_spliced(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.tospliced
   let mut scope = scope.reborrow();
+  // Root `this` + args before argument coercions and element copying, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13036,6 +13057,9 @@ pub fn array_prototype_with(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-array.prototype.with
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / `ToIntegerOrInfinity` and array allocation.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13101,6 +13125,9 @@ pub fn array_prototype_map(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13158,6 +13185,9 @@ pub fn array_prototype_for_each(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13205,6 +13235,9 @@ pub fn array_prototype_index_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / index coercion, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13270,6 +13303,9 @@ pub fn array_prototype_last_index_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / `ToIntegerOrInfinity` coercions, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   // `ToObject` performs `RequireObjectCoercible` for `null`/`undefined`.
   let obj = scope.to_object(vm, host, hooks, this)?;
@@ -13363,6 +13399,9 @@ pub fn array_prototype_includes(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` / index coercion, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13425,6 +13464,9 @@ pub fn array_prototype_filter(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13489,6 +13531,9 @@ pub fn array_prototype_reduce(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` and accumulator initialization.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13602,6 +13647,9 @@ pub fn array_prototype_reduce_right(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` and accumulator initialization.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13737,6 +13785,9 @@ pub fn array_prototype_some(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13787,6 +13838,9 @@ pub fn array_prototype_every(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13837,6 +13891,9 @@ pub fn array_prototype_find(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -13887,6 +13944,9 @@ pub fn array_prototype_find_index(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(callback)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -14414,6 +14474,9 @@ pub fn array_prototype_sort(
   const TICK_EVERY: usize = 1024;
 
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`IsCallable(compareFn)` checks, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -14621,6 +14684,9 @@ pub fn array_prototype_join(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject`/`ToString(separator)`, which can allocate and GC.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -14693,6 +14759,10 @@ pub fn array_prototype_to_locale_string(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root `this` + args before `ToObject` and before passing `args` through to element
+  // `toLocaleString` calls. Host callers may invoke this builtin without pre-rooting.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
