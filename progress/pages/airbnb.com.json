@@ -16,7 +16,7 @@
     "layout": 16.0192802147651,
     "paint": 19.022895255033557
   },
-  "notes": "",
+  "notes": "Fixture is a JavaScript-dependent shell (includes the <noscript> \"some parts … don’t work properly without JavaScript enabled\" warning and empty \"Homes on Airbnb\" sections), not the real populated homepage.\nDiff metrics here are therefore not representative of real Airbnb rendering/content.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 129096,
