@@ -35,6 +35,13 @@ fn continue_to_non_iteration_label_is_syntax_error() {
 }
 
 #[test]
+fn duplicate_label_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("lbl: lbl: ;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn return_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("class C { static { return; } }").unwrap_err();
@@ -69,6 +76,15 @@ fn break_label_in_class_static_block_does_not_target_enclosing_label_is_syntax_e
 }
 
 #[test]
+fn continue_label_in_class_static_block_does_not_target_enclosing_label_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("outer: for(;;) { class C { static { continue outer; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("class C { static { arguments; } }").unwrap_err();
@@ -98,6 +114,15 @@ fn yield_expression_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("function* g(){ class C { static { yield 0; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn var_and_lexical_decl_conflict_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { static { var x; let x; } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
@@ -197,6 +222,13 @@ fn super_call_in_arrow_function_outside_derived_constructor_is_syntax_error() {
   let err = rt
     .exec_script("class B {} class A extends B { m() { () => super(); } }")
     .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn with_statement_in_strict_mode_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; with ({}) {}"#).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
