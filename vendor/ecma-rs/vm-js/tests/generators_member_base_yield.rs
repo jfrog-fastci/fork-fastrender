@@ -81,3 +81,31 @@ fn generator_update_member_base_yield_constructs_reference_on_resume() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_update_computed_member_base_yield_evaluates_key_after_resume() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var yielded = { a: 100, b: 10 };
+      var resumed = { a: 1, b: 10 };
+      var k = "a";
+      function* g() {
+        var r = (yield yielded)[k]++;
+        return r;
+      }
+      var it = g();
+      var r1 = it.next();
+      // The computed key expression should not run until after the `yield` expression resumes, so
+      // updating `k` here must affect which property is incremented.
+      k = "b";
+      var r2 = it.next(resumed);
+      r1.value === yielded && r1.done === false &&
+      r2.value === 10 && r2.done === true &&
+      resumed.b === 11 && resumed.a === 1 &&
+      yielded.b === 10 && yielded.a === 100
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
