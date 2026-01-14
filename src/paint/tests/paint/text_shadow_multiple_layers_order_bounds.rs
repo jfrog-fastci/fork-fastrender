@@ -44,6 +44,18 @@ fn pixmap_has_strong_red_pixels(pixmap: &tiny_skia::Pixmap) -> bool {
   })
 }
 
+fn pixmap_has_opaque_near_black_pixels(pixmap: &tiny_skia::Pixmap) -> bool {
+  pixmap.pixels().iter().any(|px| {
+    if px.alpha() != 255 {
+      return false;
+    }
+    let r = px.red();
+    let g = px.green();
+    let b = px.blue();
+    r < 16 && g < 16 && b < 16
+  })
+}
+
 #[test]
 fn text_shadow_multiple_layers_preserves_css_order_in_display_list() {
   let html = r#"
@@ -94,6 +106,105 @@ fn text_shadow_multiple_layers_preserves_css_order_in_display_list() {
     text.shadows[1].offset,
     Point::new(4.0, 0.0),
     "expected second shadow offset to match CSS order"
+  );
+}
+
+#[test]
+fn text_shadow_is_painted_behind_opaque_text_fill() {
+  // Regression coverage: even when a blurred shadow overlaps the glyph interior, the opaque text
+  // fill must be painted on top (CSS text-shadow semantics).
+  //
+  // This test compares a baseline render (no shadow) to a shadowed render and asserts that at least
+  // one fully opaque "near black" pixel is unchanged, while the shadowed render still contains
+  // visible red pixels.
+  let html_base = r#"
+    <!doctype html>
+    <style>
+      html, body { margin: 0; background: white; }
+      #t {
+        position: absolute;
+        left: 40px;
+        top: 10px;
+        font-family: "DejaVu Sans";
+        font-size: 120px;
+        font-weight: 900;
+        line-height: 1;
+        -webkit-font-smoothing: antialiased;
+        color: rgb(0, 0, 0);
+      }
+    </style>
+    <div id="t">MMM</div>
+  "#;
+
+  let html_shadow = r#"
+    <!doctype html>
+    <style>
+      html, body { margin: 0; background: white; }
+      #t {
+        position: absolute;
+        left: 40px;
+        top: 10px;
+        font-family: "DejaVu Sans";
+        font-size: 120px;
+        font-weight: 900;
+        line-height: 1;
+        -webkit-font-smoothing: antialiased;
+        color: rgb(0, 0, 0);
+        text-shadow: rgb(255, 0, 0) 0 0 12px;
+      }
+    </style>
+    <div id="t">MMM</div>
+  "#;
+
+  let width = 500;
+  let height = 220;
+
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let base = renderer
+    .render_html(html_base, width, height)
+    .expect("render baseline html");
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let shadowed = renderer
+    .render_html(html_shadow, width, height)
+    .expect("render shadow html");
+
+  assert!(
+    pixmap_has_opaque_near_black_pixels(&base),
+    "expected baseline render to contain opaque black glyph pixels"
+  );
+  assert!(
+    !pixmap_has_strong_red_pixels(&base),
+    "baseline render should not contain strong red pixels (no text-shadow)"
+  );
+  assert!(
+    pixmap_has_strong_red_pixels(&shadowed),
+    "shadowed render should contain strong red pixels from the text-shadow"
+  );
+
+  let mut candidates = 0usize;
+  let mut unchanged = 0usize;
+  for (a, b) in base.pixels().iter().zip(shadowed.pixels().iter()) {
+    if a.alpha() != 255 {
+      continue;
+    }
+    if a.red() >= 16 || a.green() >= 16 || a.blue() >= 16 {
+      continue;
+    }
+    candidates += 1;
+    if a.red() == b.red() && a.green() == b.green() && a.blue() == b.blue() && a.alpha() == b.alpha()
+    {
+      unchanged += 1;
+      break;
+    }
+  }
+
+  assert!(
+    candidates > 0,
+    "expected to find at least one opaque near-black baseline pixel to compare"
+  );
+  assert!(
+    unchanged > 0,
+    "expected at least one opaque near-black pixel to remain unchanged with text-shadow; this implies the fill is painted over the shadow (not vice versa). candidates={candidates}"
   );
 }
 
