@@ -1715,7 +1715,6 @@ impl TextItem {
           *last_offset = Some(offset);
         }
       }
-
       false
     };
 
@@ -1763,7 +1762,6 @@ impl TextItem {
         is_space: bool,
       }
 
-      let run_count = runs.len();
       let mut prev_cluster: Option<ClusterLite> = None;
       let mut apply_run = |run_idx: usize| {
         let run_len = runs[run_idx].glyphs.len();
