@@ -11488,7 +11488,11 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            if tab.next_paint_is_scroll {
+              tab.needs_repaint = true;
+            } else {
+              tab.request_non_scroll_repaint();
+            }
           }
         }
       }
