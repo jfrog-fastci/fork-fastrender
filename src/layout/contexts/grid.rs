@@ -10999,11 +10999,30 @@ impl GridFormattingContext {
                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
               });
 
-            let height = intrinsic_height
-              .map(|border_height| (border_height - inset_h).max(0.0))
-              .unwrap_or_else(|| {
-                fallback_size(known_dimensions.height, available_space.height).max(0.0)
-              });
+            let height = if let Some(border_height) = intrinsic_height {
+              (border_height - inset_h).max(0.0)
+            } else {
+              // When Taffy probes intrinsic inline sizes (min-/max-content width), it can still
+              // provide a "known" or definite block size. That value is not the box's intrinsic
+              // height; it's a sizing artifact of the grid algorithm and must not leak back into
+              // track sizing / alignment.
+              //
+              // Always answer width probes with a content-based intrinsic block size. This also
+              // keeps Taffy-internal measurement caches safe to reuse across subsequent layout
+              // passes that swap in a different measure closure (e.g. grid containers that were
+              // first queried for intrinsic sizes and later laid out normally).
+              let mode = match available_space.width {
+                taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+                taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
+                _ => IntrinsicSizingMode::MaxContent,
+              };
+              let border_block_size = match intrinsic_physical_height(mode) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              };
+              (border_block_size - inset_h).max(0.0)
+            };
             let size = taffy::geometry::Size { width, height };
             let output = taffy::tree::MeasureOutput::from_size(size);
             cache.insert(key, output);
@@ -16726,11 +16745,24 @@ impl FormattingContext for GridFormattingContext {
                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
               });
 
-            let height = intrinsic_height
-              .map(|border_height| (border_height - inset_h).max(0.0))
-              .unwrap_or_else(|| {
-                fallback_size(known_dimensions.height, available_space.height).max(0.0)
-              });
+            let height = if let Some(border_height) = intrinsic_height {
+              (border_height - inset_h).max(0.0)
+            } else {
+              // See `compute_intrinsic_size`'s measure closure for rationale: width probes must
+              // return a content-based intrinsic block size rather than leaking Taffy-internal
+              // definite-height guesses (or our 0px sentinel for "indefinite").
+              let mode = match available_space.width {
+                taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+                taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
+                _ => IntrinsicSizingMode::MaxContent,
+              };
+              let border_block_size = match intrinsic_physical_height(mode) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              };
+              (border_block_size - inset_h).max(0.0)
+            };
             let size = taffy::geometry::Size { width, height };
             let output = taffy::tree::MeasureOutput::from_size(size);
             cache.insert(key, output);

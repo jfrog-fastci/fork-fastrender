@@ -188,6 +188,7 @@ mod float_blockification;
 mod float_context_current_y_non_finite;
 mod float_context_non_finite_float_coords;
 mod float_context_non_finite_y;
+mod grid_align_items_center_flex_item_auto_height;
 mod float_context_stress_timeout;
 mod float_context_naive_equivalence;
 mod float_pending_events_cursor;

@@ -38,6 +38,37 @@ pub enum IpcError {
     source: serde_json::Error,
   },
 
+  #[error("IPC protocol error: frame length {len} exceeds maximum {max}")]
+  FrameTooLarge { len: usize, max: usize },
+
+  // ==========================================================================
+  // Protocol validation errors (renderer → browser)
+  // ==========================================================================
+
+  #[error("frame buffer list too large: {len} (max {max})")]
+  TooManyFrameBuffers { len: usize, max: usize },
+
+  #[error("shared memory id is empty")]
+  EmptyId,
+
+  #[error("shared memory id too long: {len} (max {max})")]
+  IdTooLong { len: usize, max: usize },
+
+  #[error("frame buffer byte_len must be non-zero")]
+  FrameBufferByteLenZero,
+
+  #[error("frame buffer stride_bytes must be non-zero")]
+  FrameBufferStrideZero,
+
+  #[error("frame buffer max_width_px/max_height_px must be non-zero")]
+  FrameBufferMaxDimensionsZero,
+
+  #[error("frame buffer stride_bytes={stride_bytes} is smaller than min_row_bytes={min_row_bytes}")]
+  FrameBufferStrideTooSmall {
+    stride_bytes: usize,
+    min_row_bytes: usize,
+  },
+
   /// Trusted-code bug: failed to serialize an outbound message.
   #[error("IPC serialize error: {source}")]
   Serialize {

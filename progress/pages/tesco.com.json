@@ -14,31 +14,32 @@
     "layout": 72.98103405800465,
     "paint": 44.98830866589328
   },
-  "notes": "",
+  "notes": "Fixed Tesco header search box vertical alignment: grid container intrinsic sizing probes could cache a 0px block size for auto-height flex grid items when the available height was dropped to the Definite(0) \"indefinite\" sentinel. Ensure width probes always return a content-based intrinsic block size so cached measurements don’t collapse item height and mis-center align-items:center rows.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 18459,
-    "diff_percent": 1.9228,
-    "perceptual": 0.4843,
+    "diff_pixels": 251694,
+    "diff_percent": 26.2181,
+    "perceptual": 0.0853,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 417,
-      "y": 23,
+      "x": 12,
+      "y": 24,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        97,
+        97,
+        97,
         255
       ],
       "rendered_rgba": [
-        254,
-        254,
-        254,
+        246,
+        246,
+        246,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
