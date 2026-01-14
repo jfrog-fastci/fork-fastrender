@@ -347,5 +347,46 @@ mod tests {
       assert_eq!(block.explicit, explicit_row_count);
       assert_eq!(block.positive_implicit, 0);
     }
+
+    #[test]
+    fn overlarge_grid_clamps_total_tracks_to_i16_max() {
+      // Regression: the overlarge-grid clamp must ensure the total number of tracks in an axis fits
+      // within Taffy's `u16` GridTrackVec index space (2 * tracks + 1).
+      //
+      // In tests, the implicit-track limit is 32. If the explicit grid is close enough to `i16::MAX`,
+      // the naive limited grid range would span both negative and positive coordinates and exceed
+      // `i16::MAX` tracks (e.g. min=-32, max=32767 => 32799 tracks), which would later wrap `u16`
+      // item indexes.
+      let explicit_col_count: u16 = i16::MAX as u16 - 32;
+      let explicit_row_count: u16 = 1;
+      let child_styles = vec![
+        // Forces a negative origin-zero line (maps to -32 for this explicit track count).
+        (line(i16::MIN), auto(), auto(), auto()).into_grid_child(),
+        // Forces the max line to clamp to i16::MAX (span extends past representable end line).
+        (line(i16::MAX), span(2), auto(), auto()).into_grid_child(),
+      ];
+      let child_styles = child_styles
+        .iter()
+        .enumerate()
+        .map(|(idx, style)| (NodeId::from(idx), style));
+      let (inline, block) = compute_grid_size_estimate(
+        explicit_col_count,
+        explicit_row_count,
+        child_styles,
+        |_| InBothAbsAxis {
+          horizontal: None,
+          vertical: None,
+        },
+      );
+
+      assert_eq!(inline.explicit, explicit_col_count);
+      assert_eq!(inline.negative_implicit, 0);
+      assert_eq!(inline.positive_implicit, 32);
+      assert_eq!(inline.len(), i16::MAX as usize);
+
+      assert_eq!(block.negative_implicit, 0);
+      assert_eq!(block.explicit, explicit_row_count);
+      assert_eq!(block.positive_implicit, 0);
+    }
   }
 }

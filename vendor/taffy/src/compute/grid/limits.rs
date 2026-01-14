@@ -84,10 +84,26 @@ pub(super) fn clamp_grid_area_to_implicit_grid_limit(
   explicit_track_count: u16,
 ) -> Line<OriginZeroLine> {
   let limit = max_implicit_tracks_per_side().min(i16::MAX as u16) as i32;
-  let min_line = OriginZeroLine(-(limit as i16));
+  let mut min_line = OriginZeroLine(-(limit as i16));
   let max_line = OriginZeroLine(
     (explicit_track_count as i32 + limit).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
   );
+
+  // Taffy's internal GridTrackVec indices are stored in `u16` (see `GridItem::{row_indexes,column_indexes}`),
+  // which means we can only represent at most `i16::MAX` (32767) total tracks in a single axis because
+  // `GridTrackVec` includes both tracks and gutters/lines (2 * tracks + 1).
+  //
+  // When the limited grid range spans both negative and positive origin-zero coordinates, the number of
+  // tracks between `min_line` and `max_line` can exceed `i16::MAX` even though each individual line
+  // coordinate is representable in `i16` (e.g. `min_line=-32`, `max_line=32767` => 32799 tracks).
+  //
+  // Clamp the minimum line so that `max_line - min_line <= i16::MAX`, ensuring the resulting grid can
+  // be indexed without `u16` wrapping.
+  let span_len = (max_line.0 as i32) - (min_line.0 as i32);
+  if span_len > i16::MAX as i32 {
+    let new_min = (max_line.0 as i32) - (i16::MAX as i32);
+    min_line = OriginZeroLine(new_min as i16);
+  }
 
   // Normalize span (ensure start <= end and span >= 1 track).
   let mut start = span.start;
