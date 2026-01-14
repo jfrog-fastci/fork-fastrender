@@ -165,10 +165,13 @@ fn compiled_module_with_budget_rejects_duplicate_exported_name_default_vs_named(
 }
 
 #[test]
-fn compiled_script_allows_await_in_class_static_block_via_async_classic_script_retry() {
+fn compiled_script_rejects_await_in_class_static_block_even_with_async_classic_script_retry() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-  let script = CompiledScript::compile_script(
+  // `vm-js` retries classic scripts with top-level await enabled ("async classic scripts"), but
+  // `parse-js` intentionally does **not** allow class static blocks to inherit that async context.
+  // `await` in class static blocks is therefore still a syntax error in scripts.
+  let err = CompiledScript::compile_script(
     &mut heap,
     "test.js",
     r#"
@@ -179,24 +182,21 @@ fn compiled_script_allows_await_in_class_static_block_via_async_classic_script_r
       }
     "#,
   )
-  .unwrap();
+  .unwrap_err();
 
-  assert!(
-    script.contains_top_level_await,
-    "await in class static blocks should be treated as top-level await for async classic scripts"
-  );
-  assert!(
-    script.top_level_await_requires_ast_fallback,
-    "await in class static blocks is not supported by the HIR async script executor; compilation should request AST fallback"
-  );
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
 }
 
 #[test]
-fn compiled_script_with_budget_allows_await_in_class_static_block_via_async_classic_script_retry() {
+fn compiled_script_with_budget_rejects_await_in_class_static_block_even_with_async_classic_script_retry(
+) {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
-  let script = CompiledScript::compile_script_with_budget(
+  let err = CompiledScript::compile_script_with_budget(
     &mut heap,
     &mut vm,
     "test.js",
@@ -208,9 +208,11 @@ fn compiled_script_with_budget_allows_await_in_class_static_block_via_async_clas
       }
     "#,
   )
-  .unwrap();
-  assert!(script.contains_top_level_await);
-  assert!(script.top_level_await_requires_ast_fallback);
+  .unwrap_err();
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
 }
 
 #[test]
