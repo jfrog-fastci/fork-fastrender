@@ -917,6 +917,30 @@ fn quarantine_corrupt_session_file(path: &Path) -> Result<Option<PathBuf>, Strin
     ));
   };
 
+  match std::fs::symlink_metadata(path) {
+    Ok(meta) => {
+      if meta.is_dir() {
+        return Err(format!(
+          "refusing to quarantine session file {}: path is a directory",
+          path.display()
+        ));
+      }
+      if !meta.is_file() {
+        return Err(format!(
+          "refusing to quarantine session file {}: path is not a regular file",
+          path.display()
+        ));
+      }
+    }
+    Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+    Err(err) => {
+      return Err(format!(
+        "failed to stat session file {} for quarantine: {err}",
+        path.display()
+      ))
+    }
+  }
+
   // Use a high-resolution timestamp to minimize collisions across rapid restart loops. We still
   // perform an existence check to avoid clobbering older quarantines on platforms where
   // `std::fs::rename` overwrites existing destinations (Unix).
@@ -1848,10 +1872,15 @@ mod tests {
     // file path, so `persist()` fails.
     let path = dir.path().join("session_dir");
     std::fs::create_dir(&path).unwrap();
+    assert!(path.is_dir());
 
     let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
     autosave.request_save(BrowserSession::single("about:blank".to_string()));
     let _ = autosave.flush(Duration::from_secs(2));
+    assert!(
+      path.is_dir(),
+      "expected autosave to leave the directory path unchanged (not rename it aside)"
+    );
     assert!(
       autosave.last_error().is_some(),
       "expected autosave to record a write error for directory path {}",
