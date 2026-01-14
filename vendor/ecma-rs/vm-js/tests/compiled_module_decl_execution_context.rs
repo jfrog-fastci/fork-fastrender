@@ -253,7 +253,7 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
     "m.js",
     r#"
       export function f() { return import.meta.url; }
-      export function g() { return import('dep.js'); }
+      export function g() { return import('dep2.js'); }
       export { h } from 'dep.js';
     "#,
   )?;
@@ -273,13 +273,20 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
   record_dep.compiled = Some(compiled_dep);
   record_dep.ast = None;
 
+  let compiled_dep2 = CompiledScript::compile_module(heap, "dep2.js", "export const y = 2;")?;
+  let mut record_dep2 = SourceTextModuleRecord::parse_source(compiled_dep2.source.clone())?;
+  record_dep2.compiled = Some(compiled_dep2);
+  record_dep2.ast = None;
+
   let m = modules.add_module_with_specifier("m.js", record_m)?;
   let dep = modules.add_module_with_specifier("dep.js", record_dep)?;
+  let dep2 = modules.add_module_with_specifier("dep2.js", record_dep2)?;
 
   modules.link_all_by_specifier();
 
   let mut hooks = TestHostHooks::new();
   hooks.register_module("dep.js", dep);
+  hooks.register_module("dep2.js", dep2);
   hooks.register_import_meta_url(m, META_URL_M);
   hooks.register_import_meta_url(dep, META_URL_DEP);
 
@@ -409,7 +416,7 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
 
   // Read `g` and call it from host code; it should be able to start a dynamic import even with no
   // active execution context.
-  {
+  let import_promise_root = {
     let mut scope = heap.scope();
     let ns = modules.get_module_namespace(m, vm, &mut scope)?;
     scope.push_root(Value::Object(ns))?;
@@ -419,7 +426,7 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
       scope.get_with_host_and_hooks(vm, &mut host, &mut hooks, ns, g_key, Value::Object(ns))?;
     scope.push_root(g_value)?;
 
-    let _p = vm.call_with_host_and_hooks(
+    let p = vm.call_with_host_and_hooks(
       &mut host,
       &mut scope,
       &mut hooks,
@@ -427,13 +434,58 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
       Value::Undefined,
       &[],
     )?;
-  }
+    scope.push_root(p)?;
 
-  hooks.perform_microtask_checkpoint(vm, heap)?;
+    // Keep the returned Promise alive across microtasks so we can inspect it afterwards.
+    scope.heap_mut().add_root(p)?
+  };
+
+  // Dynamic `import()` should use `m.js` as its referrer module.
   assert_eq!(
-    hooks.import_referrers.get("dep.js").copied(),
-    Some(ModuleReferrer::Module(m))
+    hooks.import_referrers.get("dep2.js").copied(),
+    Some(ModuleReferrer::Module(m)),
   );
+
+  // Continue the dynamic import promise to completion.
+  hooks.perform_microtask_checkpoint(vm, heap)?;
+
+  // Verify the import() promise fulfills to the imported module namespace.
+  {
+    let mut scope = heap.scope();
+    let p = scope
+      .heap()
+      .get_root(import_promise_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    scope.push_root(p)?;
+    let Value::Object(promise_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "expected import() to return a Promise object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let ns_value = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise should have a result");
+    let Value::Object(ns_obj) = ns_value else {
+      return Err(VmError::InvariantViolation(
+        "import() promise should fulfill to a module namespace object",
+      ));
+    };
+
+    let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+    let y_value = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      ns_obj,
+      y_key,
+      Value::Object(ns_obj),
+    )?;
+    assert!(matches!(y_value, Value::Number(n) if n == 2.0));
+
+    scope.heap_mut().remove_root(import_promise_root);
+  }
 
   hooks.teardown_jobs(vm, heap);
   Ok(())
