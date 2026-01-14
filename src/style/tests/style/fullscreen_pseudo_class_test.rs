@@ -76,3 +76,26 @@ fn fullscreen_pseudo_class_matches_active_fullscreen_element_and_applies_ua_defa
   assert_ne!(nonfs.styles.z_index, Some(2147483647));
 }
 
+#[test]
+fn fullscreen_pseudo_class_does_not_match_when_no_fullscreen_element_is_set() {
+  let html = r#"
+    <video id="video"></video>
+  "#;
+  let css = r#"
+    video { color: rgb(0 0 0); }
+    video:fullscreen { color: rgb(1 2 3); }
+    video:not(:fullscreen) { color: rgb(4 5 6); }
+  "#;
+
+  let dom = dom::parse_html(html).expect("parse html");
+  let interaction_state = InteractionState::default();
+
+  let stylesheet = parse_stylesheet(css).expect("stylesheet");
+  let styled = apply_styles_with_interaction_state(&dom, &stylesheet, Some(&interaction_state));
+
+  let video = find_by_id(&styled, "video").expect("video element");
+
+  assert_eq!(video.styles.color, Rgba::rgb(4, 5, 6));
+  assert_eq!(video.styles.position, Position::Static);
+  assert_ne!(video.styles.z_index, Some(2147483647));
+}
