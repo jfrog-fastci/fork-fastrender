@@ -12574,7 +12574,79 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Number(1.0),
     )
   }
- 
+
+  #[test]
+  fn compiled_async_await_in_destructuring_assignment_default() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let x;
+          ({x = await Promise.resolve(1)} = {});
+          return x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(1.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_destructuring_assignment_computed_key() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let x;
+          ({[await Promise.resolve('k')]: x} = {k: 2});
+          return x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_of_head_destructuring_default_can_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let out = '';
+          for (const {x = await Promise.resolve(1)} of [{}, {}]) {
+            out += x;
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("11"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_await_of_head_destructuring_default_can_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let out = '';
+          for await (const {x = await Promise.resolve(1)} of [Promise.resolve({}), Promise.resolve({})]) {
+            out += x;
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("11"),
+    )
+  }
+  
   #[test]
   fn compiled_async_await_in_while_condition() -> Result<(), VmError> {
     run_compiled_async_fn_case(
