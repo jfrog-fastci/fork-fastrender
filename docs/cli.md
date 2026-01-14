@@ -223,7 +223,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 - Browser UI (windowed):
   - HUD + perf log to stdout (JSONL): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress`
   - Capture perf log to a file (JSONL): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --perf-log-out target/browser_perf.jsonl about:test-layout-stress`
-  - Capture a browser UI trace (Perfetto/Chrome trace; written on exit): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --trace-out target/browser_trace.json about:test-layout-stress`
+  - Capture a browser UI trace (Perfetto/Chrome trace; written on exit; cap retention with `FASTR_TRACE_MAX_EVENTS=<N>`): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --trace-out target/browser_trace.json about:test-layout-stress`
   - Summarize a captured log: `timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input target/browser_perf.jsonl`
 - Offline fixture “page loop” (FastRender render + optional overlay + optional inspect dumps + optional Chrome diff): `bash scripts/cargo_agent.sh xtask page-loop --fixture <stem> [--debug] [--overlay --inspect-dump-json --write-snapshot --chrome]`
   - Tip: pass `--debug` to skip `--release` for the FastRender/diff steps when you want faster rebuilds (slower runtime).
