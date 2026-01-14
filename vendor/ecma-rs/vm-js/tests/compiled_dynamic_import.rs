@@ -942,10 +942,10 @@ fn compiled_dynamic_import_allows_supported_import_attributes() -> Result<(), Vm
   assert_eq!(hooks.pending_count(), 1, "host loader should be invoked");
   let attrs = &hooks.pending[0].request.attributes;
   assert_eq!(attrs.len(), 2, "expected two import attributes");
-  assert_eq!(attrs[0].key, "foo");
-  assert_eq!(attrs[0].value, "bar");
-  assert_eq!(attrs[1].key, "type");
-  assert_eq!(attrs[1].value, "json");
+  assert_eq!(attrs[0].key, JsString::from_str("foo")?);
+  assert_eq!(attrs[0].value, JsString::from_str("bar")?);
+  assert_eq!(attrs[1].key, JsString::from_str("type")?);
+  assert_eq!(attrs[1].value, JsString::from_str("json")?);
 
   hooks.complete_load_for(&mut rt, "./m.js");
   assert_eq!(hooks.pending_count(), 0);
