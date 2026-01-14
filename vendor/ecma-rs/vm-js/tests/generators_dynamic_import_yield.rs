@@ -240,3 +240,31 @@ fn generator_dynamic_import_options_frame_specifier_is_rooted_across_resume_gc()
   assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
   Ok(())
 }
+
+#[test]
+fn generator_dynamic_import_allows_trailing_comma_after_specifier() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        return import(yield 0,);
+      }
+
+      var it = g();
+      var first = it.next();
+      var second = it.next("./m.js");
+
+      first.value === 0 &&
+        first.done === false &&
+        second.done === true &&
+        second.value &&
+        typeof second.value.then === "function"
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
+  Ok(())
+}
