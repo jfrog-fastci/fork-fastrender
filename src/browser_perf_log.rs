@@ -104,6 +104,18 @@ pub enum BrowserPerfLogEventV2 {
     #[serde(default)]
     ts_ms: Option<u64>,
     #[serde(default)]
+    from_tab_id: Option<u64>,
+    #[serde(default)]
+    to_tab_id: Option<u64>,
+    #[serde(default)]
+    t_ms_start: Option<u64>,
+    #[serde(default)]
+    had_cached_texture: Option<bool>,
+    #[serde(default)]
+    switch_to_present_ms: Option<f64>,
+    #[serde(default)]
+    cached: Option<bool>,
+    #[serde(default)]
     latency_ms: Option<u64>,
   },
   Resize {
@@ -290,16 +302,34 @@ mod tests {
       "event":"tab_switch",
       "schema_version":2,
       "t_ms":300,
+      "t_ms_start":250,
       "window_id":"WindowId(1)",
       "from_tab_id":1,
       "to_tab_id":2,
+      "had_cached_texture":true,
+      "switch_to_present_ms":42.5,
       "cached":true,
       "latency_ms":42
     }"#;
 
     let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
     match event {
-      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::TabSwitch { latency_ms, .. }) => {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::TabSwitch {
+        from_tab_id,
+        to_tab_id,
+        t_ms_start,
+        had_cached_texture,
+        switch_to_present_ms,
+        cached,
+        latency_ms,
+        ..
+      }) => {
+        assert_eq!(from_tab_id, Some(1));
+        assert_eq!(to_tab_id, Some(2));
+        assert_eq!(t_ms_start, Some(250));
+        assert_eq!(had_cached_texture, Some(true));
+        assert_eq!(switch_to_present_ms, Some(42.5));
+        assert_eq!(cached, Some(true));
         assert_eq!(latency_ms, Some(42));
       }
       other => panic!("unexpected event parsed: {other:?}"),

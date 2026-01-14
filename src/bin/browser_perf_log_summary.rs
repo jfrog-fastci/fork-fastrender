@@ -172,6 +172,8 @@ struct Samples {
   resize_latency_ms: Vec<f64>,
   input_latency_ms: Vec<f64>,
   tab_switch_latency_ms: Vec<f64>,
+  tab_switch_cached_latency_ms: Vec<f64>,
+  tab_switch_uncached_latency_ms: Vec<f64>,
   upload_total_ms: Vec<f64>,
   upload_last_ms: Vec<f64>,
   coalesced_frames: Vec<f64>,
@@ -191,6 +193,8 @@ struct Summary {
   resize_latency_ms: TimeStats,
   input_latency_ms: TimeStats,
   tab_switch_latency_ms: TimeStats,
+  tab_switch_cached_latency_ms: TimeStats,
+  tab_switch_uncached_latency_ms: TimeStats,
   upload_total_ms: TimeStats,
   upload_last_ms: TimeStats,
   coalesced_frames: ScalarStats,
@@ -323,13 +327,21 @@ fn print_table(summary: &Summary) {
     "metric", "count", "mean", "p50", "p95", "max"
   );
 
-  let rows: [(&str, &TimeStats); 8] = [
+  let rows: [(&str, &TimeStats); 10] = [
     ("ui_frame_time_ms", &summary.ui_frame_time_ms),
     ("ttfp_ms", &summary.ttfp_ms),
     ("scroll_latency_ms", &summary.scroll_latency_ms),
     ("resize_latency_ms", &summary.resize_latency_ms),
     ("input_latency_ms", &summary.input_latency_ms),
     ("tab_switch_latency_ms", &summary.tab_switch_latency_ms),
+    (
+      "tab_switch_cached_latency_ms",
+      &summary.tab_switch_cached_latency_ms,
+    ),
+    (
+      "tab_switch_uncached_latency_ms",
+      &summary.tab_switch_uncached_latency_ms,
+    ),
     ("upload_total_ms", &summary.upload_total_ms),
     ("upload_last_ms", &summary.upload_last_ms),
   ];
@@ -501,9 +513,26 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.ui_frame_time_ms.push(ms);
               }
             }
-            BrowserPerfLogEventV2::TabSwitch { latency_ms, .. } => {
-              if let Some(ms) = latency_ms {
-                samples.tab_switch_latency_ms.push(ms as f64);
+            BrowserPerfLogEventV2::TabSwitch {
+              latency_ms,
+              switch_to_present_ms,
+              had_cached_texture,
+              cached,
+              ..
+            } => {
+              let ms = switch_to_present_ms
+                .filter(f64::is_finite)
+                .or_else(|| latency_ms.map(|ms| ms as f64));
+              let Some(ms) = ms else {
+                continue;
+              };
+              samples.tab_switch_latency_ms.push(ms);
+
+              let cached_switch = had_cached_texture.or(cached).unwrap_or(false);
+              if cached_switch {
+                samples.tab_switch_cached_latency_ms.push(ms);
+              } else {
+                samples.tab_switch_uncached_latency_ms.push(ms);
               }
             }
             BrowserPerfLogEventV2::Ttfp { ttfp_ms, .. } => {
@@ -669,6 +698,8 @@ fn run(cli: Cli) -> Result<(), String> {
     resize_latency_ms: time_stats(&mut samples.resize_latency_ms),
     input_latency_ms: time_stats(&mut samples.input_latency_ms),
     tab_switch_latency_ms: time_stats(&mut samples.tab_switch_latency_ms),
+    tab_switch_cached_latency_ms: time_stats(&mut samples.tab_switch_cached_latency_ms),
+    tab_switch_uncached_latency_ms: time_stats(&mut samples.tab_switch_uncached_latency_ms),
     upload_total_ms: time_stats(&mut samples.upload_total_ms),
     upload_last_ms: time_stats(&mut samples.upload_last_ms),
     coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
