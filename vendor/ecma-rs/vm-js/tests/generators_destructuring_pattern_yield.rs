@@ -206,3 +206,92 @@ fn generator_for_of_var_decl_object_destructuring_computed_key_from_yield_resump
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_let_decl_object_destructuring_computed_key_from_yield_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let {[yield 0]: x} = {m: 2};
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("m");
+        r1.done === false && r1.value === 0 &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_const_decl_object_destructuring_computed_key_from_yield_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const {[yield 0]: x} = {m: 5};
+          return x;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("m");
+        r1.done === false && r1.value === 0 &&
+        r2.done === true && r2.value === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_object_destructuring_assignment_computed_key_from_yield_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var x;
+          for ({[yield 0]: x} in {m: 1}) {
+            return x;
+          }
+        }
+        var it = g();
+        var r1 = it.next();
+        // Resume yield with 0 so the computed key is `ToPropertyKey(0)` => "0".
+        var r2 = it.next(0);
+        r1.done === false && r1.value === 0 &&
+        r2.done === true && r2.value === "m"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_var_decl_object_destructuring_computed_key_from_yield_resumption() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          for (var {[yield 0]: x} in {m: 1}) {
+            return x;
+          }
+        }
+        var it = g();
+        var r1 = it.next();
+        // Resume yield with 0 so the computed key is `ToPropertyKey(0)` => "0".
+        var r2 = it.next(0);
+        r1.done === false && r1.value === 0 &&
+        r2.done === true && r2.value === "m"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
