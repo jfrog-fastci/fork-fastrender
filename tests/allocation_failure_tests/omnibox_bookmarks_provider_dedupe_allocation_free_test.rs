@@ -40,16 +40,20 @@ fn bookmarks_provider_url_dedupe_does_not_allocate_per_candidate_lowercase() {
   let provider = BookmarksProvider;
 
   start_counting(url_len, 1);
-  let suggestions = provider.suggestions(&ctx, "example");
+  let runs = 5usize;
+  let mut suggestions = Vec::new();
+  for _ in 0..runs {
+    suggestions = provider.suggestions(&ctx, "example");
+    assert_eq!(
+      suggestions.len(),
+      1,
+      "expected provider-level URL dedupe to suppress duplicates, got {suggestions:?}"
+    );
+  }
   let matches = stop_counting();
 
   assert_eq!(
-    suggestions.len(),
-    1,
-    "expected provider-level URL dedupe to suppress duplicates, got {suggestions:?}"
-  );
-  assert_eq!(
-    matches, 1,
-    "expected exactly one allocation of {url_len} bytes (owned URL) in provider output; extra matches likely indicate per-candidate lowercasing allocations"
+    matches, runs,
+    "expected exactly one allocation of {url_len} bytes per provider run (owned URL); extra matches likely indicate per-candidate lowercasing allocations"
   );
 }
