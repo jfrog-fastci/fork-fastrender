@@ -16685,7 +16685,7 @@ impl App {
 
     let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
     if clipboard_update.truncated {
-      use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+      use fastrender::ui::ToastKind;
 
       // Only show a toast when the originating tab is active to avoid surprising the user when a
       // background tab triggers copy/cut.
@@ -16694,12 +16694,7 @@ impl App {
           "Clipboard text too large; ignoring (max {} KiB)",
           (limit / 1024).max(1)
         );
-        self.chrome_toast.show(
-          ToastKind::Warning,
-          toast_text,
-          std::time::Instant::now(),
-          TOAST_DEFAULT_TTL,
-        );
+        self.show_chrome_toast_kind(ToastKind::Warning, toast_text);
       }
 
       let debug_line = format!(
@@ -17865,17 +17860,14 @@ impl App {
   }
 
   fn toast_new_window_error(&mut self, err: impl std::fmt::Display) {
-    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
-    let now = std::time::Instant::now();
+    use fastrender::ui::ToastKind;
     let detail = format_new_window_error_detail(&err.to_string());
     let text = if detail.is_empty() {
       "Failed to open new window".to_string()
     } else {
       format!("Failed to open new window\n{detail}")
     };
-    self
-      .chrome_toast
-      .show(ToastKind::Error, text, now, TOAST_DEFAULT_TTL);
+    self.show_chrome_toast_kind(ToastKind::Error, text);
 
     // Keep stderr logging opt-in (debug builds / explicit env) via the debug log overlay toggle so
     // normal browsing sessions don't get noisy, while still preserving details for debugging.
