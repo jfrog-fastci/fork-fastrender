@@ -27,8 +27,7 @@ fn js_opts_for_test() -> JsExecutionOptions {
   opts
 }
 
-#[test]
-fn range_detach_is_noop() -> Result<()> {
+fn assert_range_detach_is_noop(backend: DomBindingsBackend) -> Result<()> {
   let dom = Document::new(QuirksMode::NoQuirks);
   let clock: Arc<dyn Clock> = Arc::new(fastrender::js::VirtualClock::new());
   let mut host = WindowHost::new_with_fetcher_and_clock_and_options_and_dom_backend(
@@ -37,11 +36,11 @@ fn range_detach_is_noop() -> Result<()> {
     Arc::new(NoFetchResourceFetcher),
     clock,
     js_opts_for_test(),
-    DomBindingsBackend::Handwritten,
+    backend,
   )?;
 
-  let out = host.exec_script(
-    r#"
+  let script = match backend {
+    DomBindingsBackend::Handwritten => r#"
       (() => {
         const r = document.createRange();
         const beforeStartContainer = r.startContainer;
@@ -59,8 +58,34 @@ fn range_detach_is_noop() -> Result<()> {
           && r.collapsed === true;
       })()
     "#,
-  )?;
+    // WebIDL bindings for Range are still under development; keep this test focused on the legacy
+    // requirement (Range.prototype.detach exists and is a no-op that does not throw).
+    DomBindingsBackend::WebIdl => r#"
+      (() => {
+        const r = document.createRange();
+        if (typeof r.detach !== 'function') return false;
+        try {
+          const ret = r.detach();
+          return ret === undefined;
+        } catch (_e) {
+          return false;
+        }
+      })()
+    "#,
+  };
+
+  let out = host.exec_script(script)?;
 
   assert_eq!(out, Value::Bool(true));
   Ok(())
+}
+
+#[test]
+fn range_detach_is_noop_handwritten() -> Result<()> {
+  assert_range_detach_is_noop(DomBindingsBackend::Handwritten)
+}
+
+#[test]
+fn range_detach_is_noop_webidl() -> Result<()> {
+  assert_range_detach_is_noop(DomBindingsBackend::WebIdl)
 }
