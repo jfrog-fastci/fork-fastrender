@@ -4546,7 +4546,14 @@ impl BrowserRuntime {
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
             if scroll_changed {
-              tab.pending_hover_sync_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
+              // Keep the most recently known pointer position for this scroll burst.
+              //
+              // `pointer_pos_css` is optional; some UIs may only supply it for some scroll messages.
+              // Avoid overwriting an already-captured position with `None`, otherwise we could lose
+              // the pointer location and skip the coalesced hover hit-test entirely.
+              if let Some(pos_css) = pointer_pos_css.or(tab.last_pointer_pos_css) {
+                tab.pending_hover_sync_pos_css = Some(pos_css);
+              }
             }
           }
 

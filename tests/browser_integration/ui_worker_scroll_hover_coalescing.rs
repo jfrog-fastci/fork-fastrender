@@ -142,6 +142,28 @@ fn ui_worker_coalesces_scroll_induced_hover_syncs() {
     "expected scroll burst to coalesce hover hit-testing; sent {SCROLL_BURST} scroll messages, got {hover_syncs} hover syncs"
   );
 
+  // Regression test: even if the UI only includes `pointer_css` on some scroll messages, the worker
+  // should retain the last known pointer position for the burst and still run one coalesced hover
+  // sync (instead of dropping to 0 due to the final scroll message having `pointer_css: None`).
+  reset_scroll_hover_sync_count_for_test();
+  for i in 0..SCROLL_BURST {
+    ui_tx
+      .send(support::scroll_msg(
+        tab_id,
+        (0.0, 10.0),
+        if i == 0 { Some((10.0, 10.0)) } else { None },
+      ))
+      .expect("Scroll");
+  }
+
+  next_frame_ready(&ui_rx, tab_id);
+
+  let hover_syncs = scroll_hover_sync_count_for_test();
+  assert!(
+    (1..=2).contains(&hover_syncs),
+    "expected scroll burst with intermittent pointer_css to still run a coalesced hover sync; sent {SCROLL_BURST} scroll messages, got {hover_syncs} hover syncs"
+  );
+
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
