@@ -2941,6 +2941,103 @@ mod tests {
     }
   }
 
+  #[test]
+  fn help_page_shortcuts_match_shortcut_mapping() {
+    use crate::ui::shortcuts::{
+      map_shortcut_with_platform, Key, KeyEvent, Modifiers, Platform, ShortcutAction,
+    };
+
+    // Find in page: Ctrl/Cmd+F.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::FindInPage)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::FindInPage)
+    );
+
+    // Downloads panel: Ctrl+J (Win/Linux), Cmd+Shift+J (macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::J, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleDownloadsPanel)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::J, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleDownloadsPanel)
+    );
+
+    // Zoom in/out/reset: Ctrl/Cmd +/-/0.
+    for (key, action) in [
+      (Key::Plus, ShortcutAction::ZoomIn),
+      // Some keyboard layouts report the plus key as `=`.
+      (Key::Equals, ShortcutAction::ZoomIn),
+      (Key::Minus, ShortcutAction::ZoomOut),
+      (Key::Num0, ShortcutAction::ZoomReset),
+    ] {
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(true, false, false, false)),
+          Platform::Other
+        ),
+        Some(action),
+        "expected {key:?} with Ctrl on Platform::Other to map to {action:?}"
+      );
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(false, false, false, true)),
+          Platform::Mac
+        ),
+        Some(action),
+        "expected {key:?} with Cmd on Platform::Mac to map to {action:?}"
+      );
+    }
+
+    // Fullscreen: F11 (Win/Linux); Ctrl+Cmd+F (macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F11, Modifiers::new(false, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleFullScreen)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F, Modifiers::new(true, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleFullScreen)
+    );
+
+    // Bookmarks bar toggle: Ctrl/Cmd+Shift+B.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::B, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleBookmarksBar)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::B, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleBookmarksBar)
+    );
+  }
+
   #[cfg(feature = "browser_ui")]
   #[test]
   fn newtab_renders_snapshot_bookmarks_and_history() {
