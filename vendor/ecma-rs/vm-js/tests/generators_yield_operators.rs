@@ -287,6 +287,114 @@ fn generators_yield_in_new_arg() {
 }
 
 #[test]
+fn generators_yield_in_new_callee_and_arg_with_gc() {
+  let mut rt = new_runtime_with_frequent_gc();
+  rt
+    .exec_script(
+      r#"
+        function churn() {
+          // Allocate enough to force GC under the small `gc_threshold`.
+          let junk = [];
+          for (let i = 0; i < 200; i++) {
+            junk.push(new Uint8Array(1024));
+          }
+          return junk.length;
+        }
+
+        function C(x) { this.x = x; }
+
+        function* g() {
+          const o = new (yield 1)(yield 2);
+          return o.x;
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  rt.exec_script(r#"var r2 = it.next(C);"#).unwrap();
+  let gc_before = rt.heap.gc_runs();
+  rt.exec_script(r#"churn();"#).unwrap();
+  let gc_after = rt.heap.gc_runs();
+  assert!(
+    gc_after > gc_before,
+    "expected at least one GC cycle while generator is suspended in `new`"
+  );
+
+  let value = rt
+    .exec_script(
+      r#"
+        var r3 = it.next(42);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 2 && r2.done === false &&
+        r3.value === 42 && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_new_non_constructor_still_evaluates_args() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var side = 0;
+          function arg() { side++; return 123; }
+          try {
+            // Spec: argument expressions are evaluated before `IsConstructor` is checked.
+            new (yield 1)(arg());
+            return "no";
+          } catch (e) {
+            return side === 1 && (e instanceof TypeError);
+          }
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(0); // not a constructor
+        r1.value === 1 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_yield_in_new_spread_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function C(a, b, c, d) {
+          this.a = a;
+          this.b = b;
+          this.c = c;
+          this.d = d;
+        }
+        function* g() {
+          // Spread is evaluated/expanded left-to-right, and the spread results must survive across
+          // later yields.
+          const obj = new C(0, ...(yield 1), (yield 2));
+          return obj.a === 0 && obj.b === 1 && obj.c === 2 && obj.d === 3;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next([1, 2]);
+        const r3 = it.next(3);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 2 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generators_yield_in_delete_computed_key() {
   let mut rt = new_runtime();
   let value = rt
