@@ -82,8 +82,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 17046 (98.43%) |
-| Mismatched upstream expected | 272 (1.57%) |
+| Matched upstream expected | 17040 (98.39%) |
+| Mismatched upstream expected | 278 (1.61%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 49 |
@@ -92,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17006 |
-| failed | 272 |
+| passed | 17000 |
+| failed | 278 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -112,16 +112,16 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8797 |
 | FAIL (unexpected) | 49 |
-| XFAIL | 223 |
-| XPASS | 8209 |
+| XFAIL | 229 |
+| XPASS | 8203 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7169 | 16 | 0.22% | 6383 | 6 | 10 | 746 | 40 |
-| language | 10128 | 9872 | 256 | 2.53% | 2409 | 43 | 213 | 7463 | 0 |
+| built-ins | 7185 | 7171 | 14 | 0.19% | 6383 | 6 | 8 | 748 | 40 |
+| language | 10128 | 9864 | 264 | 2.61% | 2409 | 43 | 221 | 7455 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
@@ -129,10 +129,10 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `language/statements` | 7161 | 245 | 3.42% | 1377 | 43 | 202 | 5539 | 0 |
-| `language/expressions` | 2337 | 11 | 0.47% | 1032 | 0 | 11 | 1294 | 0 |
+| `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 6 | 0 | 0 | 0 |
-| `built-ins/Object` | 1692 | 4 | 0.24% | 1332 | 0 | 4 | 356 | 0 |
+| `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
@@ -144,7 +144,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 272 (100.00%)
+- exception/other: 278 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -166,12 +166,12 @@ Mismatched cases by high-level bucket:
 | 12 | exception/other | 6 | `TypeError: Cannot convert undefined or null to object` |
 | 13 | exception/other | 4 | `#1: __evaluated === 4. Actual:  __evaluated ===4 Expected SameValue(«4», «undefined») to be true` |
 | 14 | exception/other | 4 | `Actual [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] and expected [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] should have the same contents. TestIterationAndResize: list of iterated values` |
-| 15 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
-| 16 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
-| 17 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
-| 18 | exception/other | 3 | `Expected SameValue(«6», «undefined») to be true` |
-| 19 | exception/other | 2 | `#1: callee === 0. Actual: callee ===1` |
-| 20 | exception/other | 2 | `#7.1: Exception.toString()==="URIError: message". Actual: Exception is TypeError: Error options must be an object` |
+| 15 | exception/other | 4 | `Expected SameValue(«"bad"», «"ok"») to be true` |
+| 16 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
+| 17 | exception/other | 4 | `Expected SameValue(«0», «2») to be true` |
+| 18 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
+| 19 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
+| 20 | exception/other | 3 | `Expected SameValue(«6», «undefined») to be true` |
 
 ## Timed-out tests
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (24 shown / 245 mismatches)
+### `language/statements` (26 shown / 245 mismatches)
 
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#non_strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
 - `language/statements/async-generator/dstr/ary-init-iter-close.js#strict`: `Test262Error: Expected SameValue(«2», «1») to be true`
@@ -210,8 +210,10 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/async-generator/generator-created-after-decl-inst.js#strict`: `Expected SameValue(«[object AsyncGenerator]», «[object AsyncGenerator]») to be false`
 - `language/statements/async-generator/return-undefined-implicit-and-explicit.js#non_strict`: `Test262Error: Actual [tick 1, tick 2, g1 ret, g2 ret, g3 ret, g4 ret] and expected [tick 1, g1 ret, g2 ret, tick 2, g3 ret, g4 ret] should have the same contents. Ticks for implicit and explicit return undefined`
 - `language/statements/async-generator/return-undefined-implicit-and-explicit.js#strict`: `Test262Error: Actual [tick 1, tick 2, g1 ret, g2 ret, g3 ret, g4 ret] and expected [tick 1, g1 ret, g2 ret, tick 2, g3 ret, g4 ret] should have the same contents. Ticks for implicit and explicit return undefined`
+- `language/statements/async-generator/yield-star-async-next.js#non_strict`: `TypeError: Cannot convert undefined or null to object`
+- `language/statements/async-generator/yield-star-async-next.js#strict`: `TypeError: Cannot convert undefined or null to object`
 
-### `language/expressions` (10 shown / 11 mismatches)
+### `language/expressions` (10 shown / 19 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -222,7 +224,7 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/expressions/new/non-ctor-err-realm.js#strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 - `language/expressions/super/call-proto-not-ctor.js#non_strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
 - `language/expressions/super/call-proto-not-ctor.js#strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
-- `language/expressions/tagged-template/tco-call.js#strict`: `Maximum call stack size exceeded`
+- `language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js#non_strict`: `Expected SameValue(«"bad"», «"ok"») to be true`
 
 ### `built-ins/Array` (6 shown / 6 mismatches)
 
@@ -242,9 +244,7 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `built-ins/JSON/stringify/value-number-object.js#non_strict`: `Expected SameValue(«"[42]"», «"[2]"») to be true`
 - `built-ins/JSON/stringify/value-number-object.js#strict`: `Expected SameValue(«"[42]"», «"[2]"») to be true`
 
-### `built-ins/Object` (4 shown / 4 mismatches)
+### `built-ins/Object` (2 shown / 2 mismatches)
 
-- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#non_strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
 - `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#non_strict`: `Expected SameValue(«"[object Error]"», «"[object test262]"») to be true`
 - `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#strict`: `Cannot assign to read-only property`
