@@ -11112,6 +11112,22 @@ struct BrowserRuntime {
           }
         }
       }
+      // Release the mutable borrow of the renderer document before pumping the JS event loop (which
+      // needs mutable access to `tab`).
+      let _ = doc;
+
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
+        }
+      }
+
       // Mark visited state only once we know the default action is allowed (i.e. the cancelable
       // click event was not prevented).
       let mut visited_changed = false;
@@ -11128,6 +11144,10 @@ struct BrowserRuntime {
           visited_changed = tab.interaction.mark_link_visited(node_id);
         }
       }
+
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
 
       let action_is_none = matches!(&action, InteractionAction::None);
       match action {

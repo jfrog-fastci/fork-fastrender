@@ -296,6 +296,10 @@ impl From<MediaError> for Error {
       MediaError::LoadFailed { url, reason } => Error::Resource(ResourceError::new(url, reason)),
       MediaError::Render(render_err) => Error::Render(render_err),
       MediaError::Io(io_err) => Error::Io(io_err),
+      MediaError::ResourceTooLarge(message) => Error::Resource(ResourceError::new(
+        "<media>",
+        format!("media resource too large: {message}"),
+      )),
       MediaError::Unsupported(message) => Error::Other(format!("[media] unsupported: {message}")),
       MediaError::Demux(message) => Error::Other(format!("[media] demux error: {message}")),
       MediaError::Decode(message) => Error::Other(format!("[media] decode error: {message}")),
