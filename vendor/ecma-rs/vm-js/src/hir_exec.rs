@@ -5278,10 +5278,14 @@ impl<'vm> HirEvaluator<'vm> {
           // Root `this` (possibly a derived-constructor state cell) + `[[HomeObject]]` across the
           // resolution/key evaluation steps.
           let raw_this = self.this;
-          scope.push_root(raw_this)?;
-          if let Some(home) = self.home_object {
-            scope.push_root(Value::Object(home))?;
-          }
+          let mut roots_buf = [raw_this, Value::Undefined];
+          let roots = if let Some(home) = self.home_object {
+            roots_buf[1] = Value::Object(home);
+            &roots_buf[..]
+          } else {
+            &roots_buf[..1]
+          };
+          scope.push_roots(roots)?;
  
           let receiver = self.resolve_this_binding(&mut scope)?;
           scope.push_root(receiver)?;
@@ -5833,10 +5837,14 @@ impl<'vm> HirEvaluator<'vm> {
           }
           let raw_this = self.this;
           let mut update_scope = scope.reborrow();
-          update_scope.push_root(raw_this)?;
-          if let Some(home) = self.home_object {
-            update_scope.push_root(Value::Object(home))?;
-          }
+          let mut roots_buf = [raw_this, Value::Undefined];
+          let roots = if let Some(home) = self.home_object {
+            roots_buf[1] = Value::Object(home);
+            &roots_buf[..]
+          } else {
+            &roots_buf[..1]
+          };
+          update_scope.push_roots(roots)?;
 
           let this_value = self.resolve_this_binding(&mut update_scope)?;
           update_scope.push_root(this_value)?;
@@ -6947,10 +6955,14 @@ impl<'vm> HirEvaluator<'vm> {
       // Root receiver + home object while evaluating the key.
       let raw_this = self.this;
       let mut scope = scope.reborrow();
-      scope.push_root(raw_this)?;
-      if let Some(home) = self.home_object {
-        scope.push_root(Value::Object(home))?;
-      }
+      let mut roots_buf = [raw_this, Value::Undefined];
+      let roots = if let Some(home) = self.home_object {
+        roots_buf[1] = Value::Object(home);
+        &roots_buf[..]
+      } else {
+        &roots_buf[..1]
+      };
+      scope.push_roots(roots)?;
 
       // Super property references require an initialized `this` binding.
       let receiver = self.resolve_this_binding(&mut scope)?;
@@ -7313,10 +7325,14 @@ impl<'vm> HirEvaluator<'vm> {
               let raw_this = self.this;
 
               let mut scope = scope.reborrow();
-              scope.push_root(raw_this)?;
-              if let Some(home) = self.home_object {
-                scope.push_root(Value::Object(home))?;
-              }
+              let mut roots_buf = [raw_this, Value::Undefined];
+              let roots = if let Some(home) = self.home_object {
+                roots_buf[1] = Value::Object(home);
+                &roots_buf[..]
+              } else {
+                &roots_buf[..1]
+              };
+              scope.push_roots(roots)?;
 
               let receiver = self.resolve_this_binding(&mut scope)?;
               scope.push_root(receiver)?;
@@ -7533,10 +7549,14 @@ impl<'vm> HirEvaluator<'vm> {
               let raw_this = self.this;
 
               let mut scope = scope.reborrow();
-              scope.push_root(raw_this)?;
-              if let Some(home) = self.home_object {
-                scope.push_root(Value::Object(home))?;
-              }
+              let mut roots_buf = [raw_this, Value::Undefined];
+              let roots = if let Some(home) = self.home_object {
+                roots_buf[1] = Value::Object(home);
+                &roots_buf[..]
+              } else {
+                &roots_buf[..1]
+              };
+              scope.push_roots(roots)?;
 
               let receiver = self.resolve_this_binding(&mut scope)?;
               scope.push_root(receiver)?;
@@ -9166,10 +9186,14 @@ impl<'vm> HirEvaluator<'vm> {
       // Root `this` + home object across receiver resolution, key evaluation, prototype lookup, and
       // property access.
       let mut get_scope = scope.reborrow();
-      get_scope.push_root(raw_this)?;
-      if let Some(home) = self.home_object {
-        get_scope.push_root(Value::Object(home))?;
-      }
+      let mut roots_buf = [raw_this, Value::Undefined];
+      let roots = if let Some(home) = self.home_object {
+        roots_buf[1] = Value::Object(home);
+        &roots_buf[..]
+      } else {
+        &roots_buf[..1]
+      };
+      get_scope.push_roots(roots)?;
       // Spec: `super[expr]` evaluates `GetThisBinding` before the computed key expression, so
       // derived constructors throw before `super()` and do not observe key-expression side effects
       // when `this` is uninitialized.
@@ -9259,10 +9283,14 @@ impl<'vm> HirEvaluator<'vm> {
       let mut scope = scope.reborrow();
       // Root receiver + RHS across receiver resolution, key evaluation, prototype lookup, and
       // `[[Set]]`.
-      scope.push_roots(&[raw_this, value])?;
-      if let Some(home) = self.home_object {
-        scope.push_root(Value::Object(home))?;
-      }
+      let mut roots_buf = [raw_this, value, Value::Undefined];
+      let roots = if let Some(home) = self.home_object {
+        roots_buf[2] = Value::Object(home);
+        &roots_buf[..]
+      } else {
+        &roots_buf[..2]
+      };
+      scope.push_roots(roots)?;
 
       // Spec: `super[expr]` evaluates `GetThisBinding` before the computed key expression, so
       // derived constructors throw before `super()` and do not observe key-expression side effects
@@ -9990,10 +10018,14 @@ impl<'vm> HirEvaluator<'vm> {
           let raw_this = self.this;
           // Root `this` + home object across receiver resolution, key evaluation, prototype lookup,
           // and `[[Get]]`.
-          scope.push_root(raw_this)?;
-          if let Some(home) = self.home_object {
-            scope.push_root(Value::Object(home))?;
-          }
+          let mut roots_buf = [raw_this, Value::Undefined];
+          let roots = if let Some(home) = self.home_object {
+            roots_buf[1] = Value::Object(home);
+            &roots_buf[..]
+          } else {
+            &roots_buf[..1]
+          };
+          scope.push_roots(roots)?;
           // Resolve the `this` binding before evaluating the computed key expression. In derived
           // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
           // before any side effects from evaluating the key expression.
@@ -14787,6 +14819,136 @@ mod async_function_ast_fallback_tests {
       Some(Value::Number(1.0))
     );
     rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod compiled_super_property_rooting_tests {
+  use super::*;
+  use crate::function::CallHandler;
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  #[derive(Default)]
+  struct NoopHooks;
+  impl VmHostHooks for NoopHooks {
+    fn host_enqueue_promise_job(&mut self, _job: crate::Job, _realm: Option<RealmId>) {}
+  }
+
+  #[test]
+  fn compiled_super_property_roots_home_object_across_gc() -> Result<(), VmError> {
+    // Compile and execute the script in a separate runtime so this test can force GC in the
+    // evaluator without depending on unrelated compilation-time rooting behavior.
+    let func = {
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+      let mut rt = JsRuntime::new(vm, heap)?;
+
+      let script = CompiledScript::compile_script(
+        &mut rt.heap,
+        "<compiled_super_prop>",
+        r#"
+          class A {}
+          class B extends A {
+            m() { return super.x; }
+          }
+          B.prototype.m
+        "#,
+      )?;
+      let result = rt.exec_compiled_script(script)?;
+      let Value::Object(func_obj) = result else {
+        panic!("expected method function object, got {result:?}");
+      };
+      let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+      let CallHandler::User(func) = call_handler else {
+        panic!("expected compiled user function call handler, got {call_handler:?}");
+      };
+      func
+    };
+
+    let vm = Vm::new(VmOptions::default());
+    // Force a GC before every allocation to deterministically catch missing-root bugs.
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 0));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global_object = realm.global_object();
+
+    let mut scope = heap.scope();
+    let lexical_env = scope.env_create(None)?;
+    let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, lexical_env)?;
+
+    // Create a home object that is only referenced by `HirEvaluator::home_object` on the Rust stack.
+    // If the `super.x` evaluation path does not root it *before* growing the root stack, a forced GC
+    // can collect it and make the handle stale.
+    let home_object = scope.alloc_object()?;
+    // Keep the home object alive across setup + function-body instantiation, which can allocate and
+    // trigger GC before the super-property access begins.
+    let home_root = scope.heap_mut().add_root(Value::Object(home_object))?;
+
+    scope
+      .heap_mut()
+      .object_set_prototype(home_object, Some(global_object))?;
+
+    // Define `globalObject.x = 123` so the `super.x` access succeeds (no null-prototype error) and
+    // returns a stable value.
+    {
+      let mut prop_scope = scope.reborrow();
+      let key_s = prop_scope.alloc_string("x")?;
+      prop_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      prop_scope.create_data_property_or_throw(global_object, key, Value::Number(123.0))?;
+    }
+
+    let mut host = ();
+    let mut hooks = NoopHooks::default();
+
+    env.set_source_info(func.script.source.clone(), 0, 0);
+    let body = func
+      .script
+      .hir
+      .body(func.body)
+      .ok_or(VmError::InvariantViolation("compiled function body not found"))?;
+    let Some(func_meta) = body.function.as_ref() else {
+      return Err(VmError::InvariantViolation("function body missing metadata"));
+    };
+
+    let mut evaluator = HirEvaluator {
+      vm,
+      host: &mut host,
+      hooks: &mut hooks,
+      env: &mut env,
+      strict: false,
+      this: Value::Object(global_object),
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target: Value::Undefined,
+      home_object: Some(home_object),
+      script: func.script.clone(),
+    };
+
+    evaluator.instantiate_function_body(&mut scope, body, &[])?;
+
+    // Drop the persistent root so the home object is only reachable from `evaluator.home_object`.
+    scope.heap_mut().remove_root(home_root);
+
+    // Ensure the next root push grows the stacks so it can trigger a GC.
+    scope.heap_mut().root_stack = Vec::new();
+    scope.heap_mut().env_root_stack = Vec::new();
+
+    let result = match &func_meta.body {
+      hir_js::FunctionBody::Expr(expr_id) => evaluator.eval_expr(&mut scope, body, *expr_id),
+      hir_js::FunctionBody::Block(stmts) => match evaluator.eval_root_stmt_list(&mut scope, body, stmts.as_slice())? {
+        Flow::Normal(_) => Ok(Value::Undefined),
+        Flow::Return(v) => Ok(v),
+        Flow::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
+        Flow::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+      },
+    }?;
+    assert_eq!(result, Value::Number(123.0));
+
+    env.teardown(scope.heap_mut());
     Ok(())
   }
 }

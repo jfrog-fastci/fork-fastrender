@@ -11059,10 +11059,17 @@ impl<'a> Evaluator<'a> {
 
       let mut super_scope = scope.reborrow();
       let actual_this = self.get_this_binding(&mut super_scope)?;
-      super_scope.push_root(actual_this)?;
-      if let Some(home) = self.home_object {
-        super_scope.push_root(Value::Object(home))?;
-      }
+      // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
+      // and `[[HomeObject]]` in a single operation so a GC triggered by root-stack growth cannot
+      // collect values that have not yet been pushed.
+      let mut roots_buf = [self.this, actual_this, Value::Undefined];
+      let roots = if let Some(home) = self.home_object {
+        roots_buf[2] = Value::Object(home);
+        &roots_buf[..]
+      } else {
+        &roots_buf[..2]
+      };
+      super_scope.push_roots(roots)?;
       let key_s = super_scope.alloc_string(&expr.right)?;
       super_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
@@ -11127,13 +11134,17 @@ impl<'a> Evaluator<'a> {
       // expression. In derived constructors before `super()`, `GetThisBinding` throws a
       // ReferenceError, and that error must happen before any side effects from evaluating `expr`.
       let mut super_scope = scope.reborrow();
-      // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
-      // across `GetThisBinding`, key evaluation, and prototype lookup, all of which can allocate
-      // and trigger GC.
-      super_scope.push_root(self.this)?;
-      if let Some(home) = self.home_object {
-        super_scope.push_root(Value::Object(home))?;
-      }
+      // Root the raw `this` binding (which may be a derived-constructor state cell) and
+      // `[[HomeObject]]` together so a GC triggered by root-stack growth cannot collect the
+      // not-yet-pushed entry.
+      let mut roots_buf = [self.this, Value::Undefined];
+      let roots = if let Some(home) = self.home_object {
+        roots_buf[1] = Value::Object(home);
+        &roots_buf[..]
+      } else {
+        &roots_buf[..1]
+      };
+      super_scope.push_roots(roots)?;
       let actual_this = self.get_this_binding(&mut super_scope)?;
       super_scope.push_root(actual_this)?;
       let member_value = self.eval_expr(&mut super_scope, &expr.member)?;
@@ -13987,10 +13998,17 @@ impl<'a> Evaluator<'a> {
         // Evaluate the property reference (including `this` binding errors) before arguments.
         let mut super_scope = scope.reborrow();
         let actual_this = self.get_this_binding(&mut super_scope)?;
-        super_scope.push_root(actual_this)?;
-        if let Some(home) = self.home_object {
-          super_scope.push_root(Value::Object(home))?;
-        }
+        // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
+        // and `[[HomeObject]]` in a single operation so a GC triggered by root-stack growth cannot
+        // collect values that have not yet been pushed.
+        let mut roots_buf = [self.this, actual_this, Value::Undefined];
+        let roots = if let Some(home) = self.home_object {
+          roots_buf[2] = Value::Object(home);
+          &roots_buf[..]
+        } else {
+          &roots_buf[..2]
+        };
+        super_scope.push_roots(roots)?;
         let key_s = super_scope.alloc_string(&member.stx.right)?;
         super_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
@@ -14015,12 +14033,17 @@ impl<'a> Evaluator<'a> {
         // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
         // before any side effects from evaluating the key expression.
         let mut super_scope = scope.reborrow();
-        // Root the raw `this` binding (which may be a derived-constructor state cell) and home
-        // object across `GetThisBinding`, key evaluation, and prototype lookup.
-        super_scope.push_root(self.this)?;
-        if let Some(home) = self.home_object {
-          super_scope.push_root(Value::Object(home))?;
-        }
+        // Root the raw `this` binding (which may be a derived-constructor state cell) and
+        // `[[HomeObject]]` together so a GC triggered by root-stack growth cannot collect the
+        // not-yet-pushed entry.
+        let mut roots_buf = [self.this, Value::Undefined];
+        let roots = if let Some(home) = self.home_object {
+          roots_buf[1] = Value::Object(home);
+          &roots_buf[..]
+        } else {
+          &roots_buf[..1]
+        };
+        super_scope.push_roots(roots)?;
         let actual_this = self.get_this_binding(&mut super_scope)?;
         super_scope.push_root(actual_this)?;
         let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
@@ -14192,11 +14215,17 @@ impl<'a> Evaluator<'a> {
           // - then evaluate the computed key and call with `this = receiver`.
           let mut key_scope = scope.reborrow();
           let receiver = self.get_this_binding(&mut key_scope)?;
-          key_scope.push_root(receiver)?;
-          if let Some(home) = self.home_object {
-            key_scope.push_root(Value::Object(home))?;
-          }
-
+          // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
+          // and `[[HomeObject]]` in a single operation so a GC triggered by root-stack growth cannot
+          // collect values that have not yet been pushed.
+          let mut roots_buf = [self.this, receiver, Value::Undefined];
+          let roots = if let Some(home) = self.home_object {
+            roots_buf[2] = Value::Object(home);
+            &roots_buf[..]
+          } else {
+            &roots_buf[..2]
+          };
+          key_scope.push_roots(roots)?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -48538,6 +48567,169 @@ mod tests {
         matches!(reference, Reference::SuperProperty { .. }),
         "expected super property reference, got {reference:?}"
       );
+    }
+
+    env.teardown(scope.heap_mut());
+    Ok(())
+  }
+
+  #[test]
+  fn super_property_value_roots_home_object_across_gc() -> Result<(), VmError> {
+    use parse_js::ast::expr::SuperExpr;
+    use parse_js::loc::Loc;
+
+    let vm = Vm::new(VmOptions::default());
+    // Force a GC before every allocation to deterministically catch missing-root bugs.
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 0));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global_object = realm.global_object();
+
+    let mut scope = heap.scope();
+    let lexical_env = scope.env_create(None)?;
+    let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, lexical_env)?;
+
+    #[derive(Default)]
+    struct NoopHooks;
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: crate::Job, _realm: Option<RealmId>) {}
+    }
+    let mut host = ();
+    let mut hooks = NoopHooks::default();
+
+    let loc = Loc(0, 0);
+    let super_expr = Node::new(loc, Expr::Super(Node::new(loc, SuperExpr {})));
+    let expr = Node::new(
+      loc,
+      Expr::Member(Node::new(
+        loc,
+        MemberExpr {
+          optional_chaining: false,
+          left: super_expr,
+          right: String::from("x"),
+        },
+      )),
+    );
+
+    // Allocate a home object that is only referenced from `Evaluator::home_object` on the Rust
+    // stack. If `super.x` does not root it before allocating the property key string / calling
+    // `GetSuperBase`, a forced GC can collect it and make the handle invalid.
+    let home_object = scope.alloc_object()?;
+    {
+      // Ensure `GetSuperBase()` sees a non-null prototype to avoid throwing in the test body.
+      let mut proto_scope = scope.reborrow();
+      proto_scope.push_root(Value::Object(home_object))?;
+      proto_scope
+        .heap_mut()
+        .object_set_prototype(home_object, Some(global_object))?;
+    }
+
+    // Ensure the next root push grows `root_stack` so it can trigger a GC.
+    scope.heap_mut().root_stack = Vec::new();
+
+    {
+      let mut evaluator = Evaluator {
+        vm,
+        host: &mut host,
+        hooks: &mut hooks,
+        env: &mut env,
+        strict: false,
+        this: Value::Object(global_object),
+        new_target: Value::Undefined,
+        home_object: Some(home_object),
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+
+      let value = evaluator.eval_expr(&mut scope, &expr)?;
+      assert_eq!(value, Value::Undefined);
+    }
+
+    env.teardown(scope.heap_mut());
+    Ok(())
+  }
+
+  #[test]
+  fn super_property_computed_value_roots_home_object_across_gc() -> Result<(), VmError> {
+    use parse_js::ast::expr::lit::LitStrExpr;
+    use parse_js::ast::expr::SuperExpr;
+    use parse_js::loc::Loc;
+
+    let vm = Vm::new(VmOptions::default());
+    // Force a GC before every allocation to deterministically catch missing-root bugs.
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 0));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global_object = realm.global_object();
+
+    let mut scope = heap.scope();
+    let lexical_env = scope.env_create(None)?;
+    let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, lexical_env)?;
+
+    #[derive(Default)]
+    struct NoopHooks;
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: crate::Job, _realm: Option<RealmId>) {}
+    }
+    let mut host = ();
+    let mut hooks = NoopHooks::default();
+
+    let loc = Loc(0, 0);
+    let super_expr = Node::new(loc, Expr::Super(Node::new(loc, SuperExpr {})));
+    let key_expr = Node::new(
+      loc,
+      Expr::LitStr(Node::new(loc, LitStrExpr {
+        value: String::from("x"),
+      })),
+    );
+    let expr = Node::new(
+      loc,
+      Expr::ComputedMember(Node::new(
+        loc,
+        ComputedMemberExpr {
+          optional_chaining: false,
+          object: super_expr,
+          member: key_expr,
+        },
+      )),
+    );
+
+    // Allocate a home object that is only referenced from `Evaluator::home_object` on the Rust
+    // stack. If `super["x"]` does not root it before allocating / converting the key and calling
+    // `GetSuperBase`, a forced GC can collect it and make the handle invalid.
+    let home_object = scope.alloc_object()?;
+    {
+      // Ensure `GetSuperBase()` sees a non-null prototype to avoid throwing in the test body.
+      let mut proto_scope = scope.reborrow();
+      proto_scope.push_root(Value::Object(home_object))?;
+      proto_scope
+        .heap_mut()
+        .object_set_prototype(home_object, Some(global_object))?;
+    }
+
+    // Ensure the next root push grows `root_stack` so it can trigger a GC.
+    scope.heap_mut().root_stack = Vec::new();
+
+    {
+      let mut evaluator = Evaluator {
+        vm,
+        host: &mut host,
+        hooks: &mut hooks,
+        env: &mut env,
+        strict: false,
+        this: Value::Object(global_object),
+        new_target: Value::Undefined,
+        home_object: Some(home_object),
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+
+      let value = evaluator.eval_expr(&mut scope, &expr)?;
+      assert_eq!(value, Value::Undefined);
     }
 
     env.teardown(scope.heap_mut());
