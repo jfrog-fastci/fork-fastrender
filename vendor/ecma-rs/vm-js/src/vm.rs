@@ -4571,7 +4571,87 @@ impl Vm {
       // Ensure the function has a realm/global object set (see `global_object` synthesis above).
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
+ 
+    // The compiled (HIR) executor does not yet support generator / async-generator bodies
+    // (`yield`, `yield*`). Generator functions are normally allocated as interpreter-backed
+    // ECMAScript functions, but low-level embeddings/tests can allocate them as compiled user
+    // functions (`CallHandler::User`). Detect this case and defer body execution to the AST
+    // evaluator at call-time.
+    let ast_fallback_span_kind = (|| -> Result<Option<(u32, u32, EcmaFunctionKind)>, VmError> {
+      let func_body = func
+        .script
+        .hir
+        .body(func.body)
+        .ok_or(VmError::InvariantViolation(
+          "compiled function body missing metadata",
+        ))?;
+      let Some(func_meta) = func_body.function.as_ref() else {
+        return Err(VmError::InvariantViolation(
+          "compiled function body missing metadata",
+        ));
+      };
 
+      // Only fall back for generator (including async generator) functions. Ordinary synchronous
+      // and async (non-generator) functions remain on the compiled executor path.
+      if !func_meta.generator {
+        return Ok(None);
+      }
+
+      // See `hir_exec::alloc_user_function_object` for rationale: use the owning `Def` span (not the
+      // body span) so the snippet includes the full syntactic form (`function* f(){}`, `*m(){}`, ...).
+      let def = func.script.hir.def(func_body.owner);
+      let def_span = def.map(|d| d.span).unwrap_or(func_body.span);
+
+      // Infer the `EcmaFunctionKind` wrapper needed to reparse the snippet.
+      let kind = if func_meta.is_arrow {
+        EcmaFunctionKind::Expr
+      } else if let Some(def) = def {
+        use hir_js::DefKind;
+
+        match def.path.kind {
+          DefKind::Method | DefKind::Getter | DefKind::Setter | DefKind::Constructor => {
+            let is_class_member = def
+              .parent
+              .and_then(|parent| func.script.hir.def(parent))
+              .is_some_and(|parent_def| parent_def.path.kind == DefKind::Class);
+            if is_class_member {
+              EcmaFunctionKind::ClassMember
+            } else {
+              EcmaFunctionKind::ObjectMember
+            }
+          }
+          DefKind::Field => EcmaFunctionKind::ClassFieldInitializer,
+          _ => {
+            // Anonymous default-exported function declarations are still parsed as declarations.
+            if def.is_default_export {
+              EcmaFunctionKind::Decl
+            } else {
+              let name = func
+                .script
+                .hir
+                .names
+                .resolve(def.name)
+                .unwrap_or("<missing>");
+              if name == "<anonymous>" {
+                EcmaFunctionKind::Expr
+              } else {
+                EcmaFunctionKind::Decl
+              }
+            }
+          }
+        }
+      } else {
+        EcmaFunctionKind::Decl
+      };
+
+      Ok(Some((def_span.start, def_span.end, kind)))
+    })()?;
+
+    if let Some((span_start, span_end, kind)) = ast_fallback_span_kind {
+      let code_id =
+        self.register_ecma_function(func.script.source.clone(), span_start, span_end, kind)?;
+      return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
+    }
     let this = match this_mode {
       ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
         "arrow function missing captured lexical this",
@@ -4630,7 +4710,6 @@ impl Vm {
       /* derived_constructor */ false,
       /* this_root_idx */ None,
     );
-
     if !is_async {
       env.teardown(scope.heap_mut());
     }
@@ -4651,6 +4730,24 @@ impl Vm {
       let f = scope.heap().get_function(callee)?;
       (f.is_strict, f.realm, f.closure_env, f.data, f.meta_property_context)
     };
+
+    // Async and generator functions are not constructable per ECMA-262.
+    //
+    // Compiled function objects should already have `[[Construct]] = undefined` in these cases, but
+    // low-level embeddings/tests can allocate `CallHandler::User` functions directly (e.g.
+    // `Scope::alloc_user_function`) without propagating constructability metadata. Enforce the spec
+    // constraint here so `new (async function(){})` / `new (function*(){})` never reaches the
+    // compiled executor.
+    if let Some(meta) = func
+      .script
+      .hir
+      .body(func.body)
+      .and_then(|b| b.function.as_ref())
+    {
+      if meta.async_ || meta.generator {
+        return Err(VmError::NotConstructable);
+      }
+    }
 
     // See `call_user_function`: user functions can exist without a realm in low-level embeddings /
     // unit tests. Synthesize one if needed so sloppy-mode semantics and global identifier fallback
