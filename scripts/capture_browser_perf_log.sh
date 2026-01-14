@@ -26,7 +26,7 @@ cd "${repo_root}"
 usage() {
   cat <<'EOF' >&2
  usage:
-  scripts/capture_browser_perf_log.sh [--summary] <out.jsonl> [url] [browser args...]
+  scripts/capture_browser_perf_log.sh [--summary] [--trace-out <trace.json>] <out.jsonl> [url] [browser args...]
   scripts/capture_browser_perf_log.sh --out <out.jsonl> [--url <url>] [--trace-out <trace.json>] [--summary] [-- <browser args...>]
 
 Capture the windowed `browser` perf JSONL log (`browser --perf-log`) to <out.jsonl>.
