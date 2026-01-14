@@ -13562,7 +13562,6 @@ impl PerfWindowLog {
         }
       }
     }
-}
   }
 }
 

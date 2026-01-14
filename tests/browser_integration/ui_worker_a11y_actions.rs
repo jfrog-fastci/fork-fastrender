@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 // on contended CI hosts.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn wait_for_navigation_committed(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
+fn wait_for_navigation_committed(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -84,6 +87,89 @@ fn preorder_id_for_html_id(dom: &fastrender::dom::DomNode, target_id: &str) -> u
     next_id = next_id.saturating_add(1);
   }
   panic!("missing element with id={target_id:?}");
+}
+
+#[test]
+fn ui_worker_a11y_set_text_value_clamps_maxlength() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #field { position: absolute; left: 0; top: 0; width: 240px; height: 40px; }
+      #go { position: absolute; left: 0; top: 60px; width: 120px; height: 40px; }
+    </style>
+  </head>
+  <body>
+    <form action="result.html" method="get">
+      <input id="field" name="q" maxlength="5" value="">
+      <button id="go" type="submit">Go</button>
+    </form>
+  </body>
+</html>
+"#;
+  let page_url = site.write("page.html", page_html);
+  let _result_url = site.write("result.html", "<!doctype html><html><body>ok</body></html>");
+
+  let mut parsed_dom = fastrender::dom::parse_html(page_html).expect("parse html");
+  let input_node_id = preorder_id_for_html_id(&parsed_dom, "field");
+  let button_node_id = preorder_id_for_html_id(&parsed_dom, "go");
+  drop(parsed_dom);
+
+  let handle = spawn_ui_worker("fastr-ui-worker-a11y-maxlength").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab(tab_id, None))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (320, 240), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: page_url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("navigate");
+  assert_eq!(wait_for_navigation_committed(&ui_rx, tab_id), page_url);
+  // Wait for a painted frame so the tab is ready for accessibility actions.
+  let _ = wait_for_frame(&ui_rx, tab_id);
+
+  ui_tx
+    .send(UiToWorker::A11ySetTextValue {
+      tab_id,
+      node_id: input_node_id,
+      value: "hello world".to_string(),
+    })
+    .expect("a11y set text value");
+
+  ui_tx
+    .send(UiToWorker::A11yActivate {
+      tab_id,
+      node_id: button_node_id,
+    })
+    .expect("a11y activate");
+  let committed = wait_for_navigation_committed(&ui_rx, tab_id);
+  let parsed = url::Url::parse(&committed).expect("committed URL should parse");
+  let q = parsed
+    .query_pairs()
+    .find_map(|(k, v)| (k == "q").then_some(v.to_string()))
+    .unwrap_or_default();
+  assert_eq!(q, "hello", "committed URL was {committed:?}");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
 }
 
 #[test]
@@ -257,13 +343,18 @@ fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_
 
   // Make paints slow so we can deterministically cancel the repaint triggered by A11yScrollIntoView.
   let cancel_gens = CancelGens::new();
-  let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-a11y-scroll-dedup", Some(50))
-    .expect("spawn ui worker")
-    .split();
+  let (ui_tx, ui_rx, join) =
+    spawn_ui_worker_for_test("fastr-ui-worker-a11y-scroll-dedup", Some(50))
+      .expect("spawn ui worker")
+      .split();
 
   let tab_id = TabId::new();
   ui_tx
-    .send(support::create_tab_with_cancel(tab_id, None, cancel_gens.clone()))
+    .send(support::create_tab_with_cancel(
+      tab_id,
+      None,
+      cancel_gens.clone(),
+    ))
     .expect("create tab");
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (320, 240), 1.0))
@@ -301,7 +392,10 @@ fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_
   while start.elapsed() < TIMEOUT {
     match ui_rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => match msg {
-        WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => {
+        WorkerToUi::ScrollStateUpdated {
+          tab_id: got,
+          scroll,
+        } if got == tab_id => {
           // Ignore any stray scroll updates from earlier stages (should be none after the drain
           // above) until we see the A11yScrollIntoView scroll down.
           if scroll.viewport.y <= 0.0 {
@@ -319,7 +413,10 @@ fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_
         }
         WorkerToUi::Stage { tab_id: got, stage } if got == tab_id => {
           if !canceled_paint
-            && matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+            && matches!(
+              stage,
+              StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+            )
           {
             cancel_gens.bump_paint();
             canceled_paint = true;
@@ -339,10 +436,7 @@ fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-        if canceled_paint
-          && cancel_instant
-            .is_some_and(|t| t.elapsed() > Duration::from_secs(2))
-        {
+        if canceled_paint && cancel_instant.is_some_and(|t| t.elapsed() > Duration::from_secs(2)) {
           break;
         }
       }
@@ -350,7 +444,10 @@ fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_
     }
   }
 
-  assert!(canceled_paint, "expected to observe paint stage heartbeats to cancel in-flight paint");
+  assert!(
+    canceled_paint,
+    "expected to observe paint stage heartbeats to cancel in-flight paint"
+  );
   let first_scroll = first_scroll.expect("expected A11yScrollIntoView to emit ScrollStateUpdated");
   assert!(
     first_scroll.viewport.y > 0.0,
