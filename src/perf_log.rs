@@ -245,6 +245,16 @@ pub enum PerfEvent<'a> {
     from_tab_id: u64,
     #[serde(default)]
     to_tab_id: u64,
+    /// Timestamp (ms since perf-log start) when the tab activation was initiated.
+    #[serde(default)]
+    t_ms_start: u64,
+    /// True when a GPU texture for the destination tab was already available at activation time.
+    #[serde(default)]
+    had_cached_texture: bool,
+    /// End-to-end "tab switch → present" latency computed at the first presented frame that
+    /// displays the destination tab.
+    #[serde(default)]
+    switch_to_present_ms: f64,
     #[serde(default)]
     cached: bool,
     #[serde(default)]

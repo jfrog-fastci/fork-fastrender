@@ -12950,17 +12950,24 @@ impl PerfWindowLog {
     &mut self,
     from_tab_id: fastrender::ui::TabId,
     to_tab_id: fastrender::ui::TabId,
-    cached: bool,
-    latency_ms: u64,
-    at: std::time::Instant,
+    had_cached_texture: bool,
+    start_at: std::time::Instant,
+    present_at: std::time::Instant,
   ) {
+    let duration = present_at.saturating_duration_since(start_at);
+    let latency_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+    let switch_to_present_ms = duration.as_secs_f64() * 1000.0;
     let event = perf_log::PerfEvent::TabSwitch {
       schema_version: perf_log::SCHEMA_VERSION,
-      t_ms: self.ts_ms(at),
+      t_ms: self.ts_ms(present_at),
       window_id: self.window_id.as_str().into(),
       from_tab_id: from_tab_id.0,
       to_tab_id: to_tab_id.0,
-      cached,
+      t_ms_start: self.ts_ms(start_at),
+      had_cached_texture,
+      switch_to_present_ms,
+      // Back-compat: keep the original cached/latency fields for older log parsers.
+      cached: had_cached_texture,
       latency_ms,
     };
     self.emit(&event);
@@ -26174,13 +26181,8 @@ impl App {
             session_dirty = true;
             open_tabs_snapshot_dirty = true;
             if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
-              let cached = self.tab_textures.contains_key(&tab_id)
-                || self
-                  .browser_state
-                  .tab(tab_id)
-                  .and_then(|tab| tab.latest_frame_meta.as_ref())
-                  .is_some();
-              tracker.start(prev, tab_id, cached);
+              let had_cached_texture = self.tab_textures.contains_key(&tab_id);
+              tracker.start(prev, tab_id, had_cached_texture);
             }
             self.viewport_cache_tab = None;
             self.last_page_upload_at = None;
@@ -27666,23 +27668,9 @@ impl App {
             t.unresponsive,
           )
         })
-        .unwrap_or((false, None, None, false));
+      .unwrap_or((false, None, None, false));
 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
-        if let Some(tracker) = self.tab_switch_latency.as_mut() {
-          if let Some(switch) = tracker.mark_tab_presented(active_tab) {
-            if let Some(perf_log) = self.perf_log.as_mut() {
-              perf_log.tab_switch(
-                switch.from_tab,
-                switch.to_tab,
-                switch.cached,
-                switch.latency_ms(),
-                std::time::Instant::now(),
-              );
-            }
-          }
-        }
-
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(true, tab_loading, tab_stage);
         self.page_loading_overlay_blocks_input =
@@ -28627,6 +28615,38 @@ impl App {
       }
     } else {
       self.last_frame_breakdown = None;
+    }
+
+    if let Some(tracker) = self.tab_switch_latency.as_mut() {
+      if let Some(active_tab_id) = self.browser_state.active_tab_id() {
+        // Only mark a switch as completed once we've actually presented a frame that includes the
+        // destination tab's rendered texture; chrome-only placeholder frames do not count as "tab
+        // content visible".
+        if self.tab_textures.contains_key(&active_tab_id) {
+          if let Some(switch) = tracker.mark_tab_presented_at(active_tab_id, present_at) {
+            let start_at = present_at
+              .checked_sub(switch.latency)
+              .unwrap_or(present_at);
+            if let Some(perf_log) = self.perf_log.as_mut() {
+              perf_log.tab_switch(
+                switch.from_tab,
+                switch.to_tab,
+                switch.cached,
+                start_at,
+                present_at,
+              );
+            }
+
+            // `mark_tab_presented_at` runs after egui has already built the UI for this frame, so
+            // the HUD will not reflect the completed switch until another redraw. Request one when
+            // the HUD is enabled so the metric is visible for cached switches that otherwise only
+            // present once.
+            if self.hud.is_some() {
+              self.window.request_redraw();
+            }
+          }
+        }
+      }
     }
 
     if let Some(perf_start) = perf_frame_start {

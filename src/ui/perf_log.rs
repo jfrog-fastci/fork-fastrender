@@ -137,13 +137,13 @@ impl TabSwitchLatencyTracker {
   ///
   /// When this matches the currently pending tab switch, the tracker computes latency, emits a
   /// `tab_switch` perf log event, stores the result, and returns it.
-  pub fn mark_tab_presented(&mut self, tab_id: TabId) -> Option<TabSwitchLatency> {
+  pub fn mark_tab_presented_at(&mut self, tab_id: TabId, at: Instant) -> Option<TabSwitchLatency> {
     let pending = self.pending?;
     if pending.to_tab != tab_id {
       return None;
     }
 
-    let latency = pending.start.elapsed();
+    let latency = at.saturating_duration_since(pending.start);
     let result = TabSwitchLatency {
       from_tab: pending.from_tab,
       to_tab: pending.to_tab,
@@ -161,5 +161,9 @@ impl TabSwitchLatencyTracker {
     });
 
     Some(result)
+  }
+
+  pub fn mark_tab_presented(&mut self, tab_id: TabId) -> Option<TabSwitchLatency> {
+    self.mark_tab_presented_at(tab_id, Instant::now())
   }
 }
