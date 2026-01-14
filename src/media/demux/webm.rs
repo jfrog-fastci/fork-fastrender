@@ -586,7 +586,15 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     let seek_start_ns = time_ns.saturating_sub(self.max_seek_pre_roll_ns);
 
     // Compensate for `codec_delay` in the Matroska timestamps (timestamps include codec delay).
-    let target_ns = seek_start_ns.saturating_add(self.max_codec_delay_ns);
+    //
+    // Important: if `seek_start_ns` saturates to 0 (seek near start-of-stream), seeking to
+    // `max_codec_delay_ns` can skip the initial video keyframe in some files (since not all
+    // tracks share the same codec delay). In that case, prefer seeking to timestamp 0.
+    let target_ns = if seek_start_ns == 0 {
+      0
+    } else {
+      seek_start_ns.saturating_add(self.max_codec_delay_ns)
+    };
 
     // Convert nanoseconds to Matroska timecode units (inverse of timestamp_scale).
     // `MatroskaFile::seek()` places the cursor on the first frame with timestamp >= seek_timestamp.
@@ -922,6 +930,46 @@ mod tests {
     }
     assert!(post_seek_video, "expected VP9 packet after seek");
     assert!(post_seek_audio, "expected Opus packet after seek");
+  }
+
+  #[test]
+  fn seek_to_zero_yields_initial_keyframe() {
+    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
+
+    let video_track = demuxer
+      .tracks()
+      .iter()
+      .find(|t| t.codec == MediaCodec::Vp9)
+      .map(|t| t.id)
+      .expect("VP9 track");
+
+    // Advance a bit so we test a non-trivial seek.
+    for _ in 0..32 {
+      if demuxer.next_packet().expect("read packet").is_none() {
+        break;
+      }
+    }
+
+    demuxer.seek(0).expect("seek");
+
+    // We expect to be able to decode from the initial VP9 keyframe after seeking back to 0. This
+    // is important because many VP9 streams are not independently decodable from arbitrary
+    // non-keyframes.
+    let mut pkt = None;
+    for _ in 0..100 {
+      let Some(next) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if next.track_id == video_track {
+        pkt = Some(next);
+        break;
+      }
+    }
+
+    let pkt = pkt.expect("VP9 packet after seek(0)");
+    assert_eq!(pkt.pts_ns, 0, "expected VP9 PTS to restart at 0");
+    assert!(pkt.is_keyframe, "expected VP9 packet at 0 to be a keyframe");
   }
 
   #[test]
