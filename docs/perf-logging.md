@@ -87,6 +87,9 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   --perf-log-out target/browser_perf.jsonl about:test-layout-stress
 ```
 
+To also capture a browser UI trace timeline (Perfetto/Chrome trace written on exit), add:
+`--trace-out target/browser_trace.json`.
+
 Legacy env-var equivalent:
 
 ```bash
