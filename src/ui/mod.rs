@@ -100,6 +100,7 @@ pub mod chrome_dynamic_asset_fetcher;
 pub mod multiprocess;
 pub mod shutdown_join_tracker;
 pub mod startup_notifications;
+pub mod startup_toasts;
 
 // Touch gesture recogniser (tap/scroll/long-press) used by the windowed browser UI.
 //

@@ -1361,6 +1361,7 @@ impl WorkerToUi {
       | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
       | WorkerToUi::RequestOpenInNewWindow { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }
       | WorkerToUi::LoadingState { tab_id, .. }
       | WorkerToUi::RequestWakeAfter { tab_id, .. }

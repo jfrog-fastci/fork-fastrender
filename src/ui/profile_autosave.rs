@@ -126,6 +126,13 @@ impl ProfileAutosaveHandle {
     downloads_debounce: Duration,
     error_tx: Option<mpsc::Sender<ProfileAutosaveError>>,
   ) -> Result<Self, String> {
+    #[cfg(any(test, debug_assertions))]
+    {
+      if should_force_spawn_error_for_test() {
+        return Err("forced profile autosave spawn failure (test hook)".to_string());
+      }
+    }
+
     let (tx, rx) = mpsc::channel::<AutosaveMsg>();
     let join = std::thread::Builder::new()
       .name("fastr_profile_autosave".to_string())
@@ -409,6 +416,58 @@ fn flush_pending(
         downloads_path.display()
       );
     }
+  }
+}
+
+#[cfg(any(test, debug_assertions))]
+fn should_force_spawn_error_for_test() -> bool {
+  // Deterministic test hook for forcing `ProfileAutosaveHandle::spawn*` to fail.
+  //
+  // This is used by unit/integration tests to exercise code paths that disable profile autosave
+  // (e.g., browser chrome startup toasts). It intentionally does *not* rely on a global env var in
+  // tests, since the test runner executes tests in parallel and env vars are process-global.
+  #[cfg(test)]
+  {
+    if FORCE_SPAWN_ERROR_FOR_TEST.with(|cell| cell.get()) {
+      return true;
+    }
+  }
+
+  // Optional process-wide override for debug builds (useful for manual testing).
+  std::env::var("FASTR_FORCE_PROFILE_AUTOSAVE_SPAWN_ERROR")
+    .ok()
+    .is_some_and(|v| {
+      let v = v.trim();
+      !v.is_empty() && v != "0"
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+  static FORCE_SPAWN_ERROR_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+struct ForceSpawnErrorForTestGuard {
+  prev: bool,
+}
+
+#[cfg(test)]
+impl ForceSpawnErrorForTestGuard {
+  fn new() -> Self {
+    let prev = FORCE_SPAWN_ERROR_FOR_TEST.with(|cell| {
+      let prev = cell.get();
+      cell.set(true);
+      prev
+    });
+    Self { prev }
+  }
+}
+
+#[cfg(test)]
+impl Drop for ForceSpawnErrorForTestGuard {
+  fn drop(&mut self) {
+    FORCE_SPAWN_ERROR_FOR_TEST.with(|cell| cell.set(self.prev));
   }
 }
 
@@ -711,5 +770,29 @@ mod tests {
     }
 
     autosave.shutdown_with_timeout(Duration::from_millis(500));
+  }
+
+  #[test]
+  fn spawn_can_be_forced_to_fail_in_tests() {
+    let _guard = ForceSpawnErrorForTestGuard::new();
+    let dir = tempfile::tempdir().unwrap();
+    let bookmarks_path = dir.path().join("bookmarks.json");
+    let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
+    let err = ProfileAutosaveHandle::spawn_with_debounce(
+      bookmarks_path,
+      history_path,
+      downloads_path,
+      Duration::ZERO,
+      Duration::ZERO,
+      Duration::ZERO,
+    )
+    .unwrap_err();
+    assert!(err.contains("forced profile autosave spawn failure"));
+
+    // Ensure callers can turn the failure into a user-facing startup toast.
+    let toast = crate::ui::startup_toasts::profile_autosave_start_failed_toast(&err);
+    assert_eq!(toast.kind, crate::ui::ToastKind::Warning);
+    assert!(toast.text.contains("Profile autosave disabled"));
   }
 }

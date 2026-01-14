@@ -27,6 +27,8 @@ fn is_spacer_char(ch: char) -> bool {
 fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical: bool) -> f32 {
   // Mirror `DisplayListBuilder::spacer_advance_in_runs` so expected ranges are derived from the same
   // glyph advances that the builder uses when computing skip-spaces clip ranges.
+  // Explicitly type the accumulator so early-return paths can call `f32::max` without hitting
+  // float-literal inference ambiguity.
   let mut advance: f32 = 0.0;
   match edge {
     SpacerEdge::Start => {
