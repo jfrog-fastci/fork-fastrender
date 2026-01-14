@@ -160,8 +160,11 @@ impl SessionAutosaveStatusHandle {
       last_attempt_at: inner.last_attempt_at,
       last_success_at: inner.last_success_at,
     };
-    drop(inner);
 
+    // Read the revision while holding the mutex so we never advance `last_seen_revision` past the
+    // snapshot we just produced. (The writer thread increments the revision after releasing the
+    // mutex, so reading it after unlocking can race and cause callers to miss the final update in a
+    // burst of writes.)
     *last_seen_revision = self.shared.revision();
     Some(snapshot)
   }
