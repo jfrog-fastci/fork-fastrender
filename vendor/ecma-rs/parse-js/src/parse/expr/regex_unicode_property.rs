@@ -14,10 +14,9 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
   // identifiers listed inside the `<pre>...</pre>` block, not any incidental backticks in comments
   // or surrounding prose.
   //
-  // (The caller includes files like `specs/tc39-ecma262/table-binary-unicode-properties.html`
-  // where the header comment mentions non-binary properties like `Script` — those must not end up
-  // being treated as supported binary property names.)
-  let table = if let Some(pre_start) = table.find("<pre") {
+  // If the snapshot format changes and omits the `<pre>` tags, we fall back to scanning the full
+  // file but still skip HTML comments to avoid extracting identifiers mentioned in documentation.
+  let slice = if let Some(pre_start) = table.find("<pre") {
     let after_pre = &table[pre_start..];
     if let Some(gt_rel) = after_pre.find('>') {
       let start = pre_start + gt_rel + 1;
@@ -32,15 +31,15 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
     table
   };
 
-  let bytes = table.as_bytes();
+  let bytes = slice.as_bytes();
   let mut out = Vec::new();
   let mut i = 0usize;
   while i < bytes.len() {
-    // These snapshot files include a small HTML comment header that may mention other
-    // identifiers in backticks (e.g. `Script`, `General_Category`) for documentation.
-    // Skip HTML comments so we only extract the actual table identifiers.
+    // These snapshot files include a small HTML comment header that may mention other identifiers
+    // in backticks (e.g. `Script`, `General_Category`) for documentation. Skip HTML comments so we
+    // only extract the actual table identifiers.
     if bytes[i..].starts_with(b"<!--") {
-      if let Some(end_rel) = table[i + 4..].find("-->") {
+      if let Some(end_rel) = slice[i + 4..].find("-->") {
         i += 4 + end_rel + 3;
         continue;
       }
@@ -53,7 +52,7 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
         break;
       };
       let end = after_start + end_rel;
-      if let Some(word) = table.get(after_start..end) {
+      if let Some(word) = slice.get(after_start..end) {
         if !word.is_empty() {
           out.push(word);
         }
@@ -84,6 +83,23 @@ static STRING_UNICODE_PROPERTIES: Lazy<Vec<&'static str>> = Lazy::new(|| {
     "/../../../specs/tc39-ecma262/table-binary-unicode-properties-of-strings.html"
   ));
   let mut words = parse_backtick_words(TABLE);
+  words.sort_unstable();
+  words.dedup();
+  words
+});
+
+// The non-binary property value lists below are generated snapshots that are *not* guaranteed to be
+// sorted. We use `binary_search` for fast membership checks, so normalise them into sorted,
+// de-duplicated vectors once.
+static GENERAL_CATEGORY_VALUES_SORTED: Lazy<Vec<&'static str>> = Lazy::new(|| {
+  let mut words = GENERAL_CATEGORY_VALUES.to_vec();
+  words.sort_unstable();
+  words.dedup();
+  words
+});
+
+static SCRIPT_VALUES_SORTED: Lazy<Vec<&'static str>> = Lazy::new(|| {
+  let mut words = SCRIPT_VALUES.to_vec();
   words.sort_unstable();
   words.dedup();
   words
@@ -147,9 +163,9 @@ pub(super) fn validate_unicode_property_value_expression(
     };
 
     match prop {
-      NonBinaryProperty::GeneralCategory => contains_sorted(GENERAL_CATEGORY_VALUES, value),
+      NonBinaryProperty::GeneralCategory => contains_sorted(&GENERAL_CATEGORY_VALUES_SORTED, value),
       NonBinaryProperty::Script | NonBinaryProperty::ScriptExtensions => {
-        contains_sorted(SCRIPT_VALUES, value)
+        contains_sorted(&SCRIPT_VALUES_SORTED, value)
       }
     }
   } else {
@@ -158,7 +174,7 @@ pub(super) fn validate_unicode_property_value_expression(
     if is_supported_binary_property(expr, unicode_sets_mode) {
       return true;
     }
-    contains_sorted(GENERAL_CATEGORY_VALUES, expr)
+    contains_sorted(&GENERAL_CATEGORY_VALUES_SORTED, expr)
   }
 }
 
