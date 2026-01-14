@@ -4764,13 +4764,14 @@ fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch
 fn abspos_row_subgrid_respects_local_direction_for_columns_through_subgrid_chain() {
   // Regression: when reconstructing grid-based static positions for out-of-flow items, subgrids
   // should use the same effective axis style as grid layout. In particular, `direction` should
-  // only be inherited when the inline axis (columns) is subgridded.
+  // come from the grid container's computed style for the axis being placed (mirroring should not
+  // leak in from ancestors when the axis is local).
   //
   // This case creates a subgrid chain:
   //   root grid (direction: rtl) -> column-subgrid -> row-subgrid (direction: ltr)
   //
   // The nested row-subgrid defines its own columns, so it must keep its local `direction:ltr`
-  // even though its parent is a column-subgrid (which inherits direction from the root).
+  // for column placement even though the ancestor grid is `direction: rtl`.
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Grid;
   root_style.position = Position::Relative;
@@ -4788,8 +4789,8 @@ fn abspos_row_subgrid_respects_local_direction_for_columns_through_subgrid_chain
   outer_style.grid_row_start = 1;
   outer_style.grid_row_end = 2;
   outer_style.grid_template_rows = vec![GridTrack::Length(Length::px(10.0))];
-  // Intentionally choose the opposite direction; because this is a column-subgrid, it should still
-  // inherit `direction: rtl` from the root grid.
+  // Intentionally choose the opposite direction to ensure the nested row-subgrid keeps its own
+  // column direction rather than inheriting RTL mirroring from the ancestor.
   outer_style.direction = Direction::Ltr;
 
   let mut inner_style = ComputedStyle::default();
