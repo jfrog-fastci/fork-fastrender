@@ -17,9 +17,10 @@
   "notes": "Fixed width-descriptor `srcset` selection to use evaluated `sizes`/100vw (Chrome-aligned) instead of post-layout width, restoring most imagery on bbc.com. Remaining diffs are mostly minor text AA/subpixel and small spacing/rounding differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 223137,
-    "diff_percent": 23.2434,
-    "perceptual": 0.0875,
+    "diff_pixels": 225139,
+    "diff_percent": 23.452,
+    "perceptual": 0.1301,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 22,
       "y": 23,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "layout",
   "failure_stage": null,

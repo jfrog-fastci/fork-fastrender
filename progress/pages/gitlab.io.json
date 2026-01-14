@@ -17,28 +17,29 @@
   "notes": "High diff% is dominated by subtle per-pixel differences in large blurred gradient backgrounds (filter: blur + gradients) vs Chrome/Skia; overall layout/structure matches.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 644486,
-    "diff_percent": 67.134,
-    "perceptual": 0.0934,
+    "diff_pixels": 631245,
+    "diff_percent": 65.7547,
+    "perceptual": 0.0918,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 0,
+      "x": 213,
       "y": 0,
       "baseline_rgba": [
-        73,
-        41,
-        55,
+        64,
+        40,
+        66,
         255
       ],
       "rendered_rgba": [
-        103,
-        68,
-        78,
+        64,
+        40,
+        67,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "paint",
   "failure_stage": null,

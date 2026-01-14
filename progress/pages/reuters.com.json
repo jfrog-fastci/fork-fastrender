@@ -17,28 +17,29 @@
   "notes": "Mismatch is limited to the single \"Please enable JS and disable any ad blocker\" text line in the Cloudflare/Datadome interstitial fixture. FastRender and Chrome lay out the text identically; the remaining ~0.1-0.2% pixel diffs come from tiny grayscale anti-aliasing/hinting differences around glyph edges (text rasterization), not a cascade/layout bug.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 2354,
-    "diff_percent": 0.2452,
-    "perceptual": 0.1217,
+    "diff_pixels": 1760,
+    "diff_percent": 0.1833,
+    "perceptual": 0.0001,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 0,
+      "x": 10,
       "y": 2,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        248,
+        248,
+        248,
         255
       ],
       "rendered_rgba": [
-        239,
-        239,
-        239,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "cascade",
   "failure_stage": null,

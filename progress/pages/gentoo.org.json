@@ -17,9 +17,10 @@
   "notes": "Remaining pixel diffs are primarily rasterization differences vs Chrome/Skia: JPEG decode + resampling of the hero `background-image` (via `background-size: cover`) produces widespread +/-1-3 channel diffs, and the header `box-shadow` blur falloff differs slightly. Minor text AA/hinting differences remain.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 213051,
-    "diff_percent": 22.1928,
-    "perceptual": 0.0637,
+    "diff_pixels": 214552,
+    "diff_percent": 22.3492,
+    "perceptual": 0.0654,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 255,
       "y": 1,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "paint",
   "failure_stage": null,

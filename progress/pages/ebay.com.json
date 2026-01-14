@@ -17,11 +17,12 @@
   "notes": "Layout is broadly similar to Chrome (header/nav + main blocks appear in the right places), but there are a couple of clear structural mismatches: a full-width promo/hero band renders dark/brown in FastRender where Chrome is white, and a lower promo/footer strip is partially blank/mismatched. Images/icons mostly load, but those large banner/background regions look wrong. The majority of remaining diffs are low-magnitude (text AA / image resampling), which inflates diff% despite a relatively low perceptual score.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 461606,
-    "diff_percent": 48.084,
-    "perceptual": 0.0729,
+    "diff_pixels": 413020,
+    "diff_percent": 43.0229,
+    "perceptual": 0.0686,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 49,
+      "x": 39,
       "y": 7,
       "baseline_rgba": [
         255,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        198,
-        198,
-        198,
+        226,
+        226,
+        226,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "layout",
   "failure_stage": null,

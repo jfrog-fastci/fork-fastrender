@@ -17,9 +17,10 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 102012,
-    "diff_percent": 10.6263,
-    "perceptual": 0.1234,
+    "diff_pixels": 96518,
+    "diff_percent": 10.054,
+    "perceptual": 0.0542,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 24,
       "y": 30,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "layout",
   "failure_stage": null,

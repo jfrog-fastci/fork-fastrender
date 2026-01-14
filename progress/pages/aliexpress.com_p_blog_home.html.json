@@ -17,34 +17,35 @@
     "css": 124.01683567604267,
     "cascade": 200.02715431619785,
     "box_tree": 128.01737876236663,
-    "layout": 391.05308668816684,
+    "layout": 391.0530866881669,
     "paint": 398.05403708923376
   },
   "notes": "Offline fixture: tests/pages/fixtures/aliexpress.com_p_blog_home.html/index.html\nRepro: timeout -k 10 600 bash scripts/cargo_agent.sh xtask page-loop --fixture aliexpress.com_p_blog_home.html --chrome --overlay --inspect-dump-json\nNote: fetch_pages currently captures AliExpress's generic 404 page (final URL https://www.aliexpress.com/p/error/404.html; status=200) instead of /p/blog/home.html (client redirect loop to login.aliexpress.com).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 40126,
-    "diff_percent": 4.1798,
-    "perceptual": 0.137,
+    "diff_pixels": 30132,
+    "diff_percent": 3.1388,
+    "perceptual": 0.0181,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 592,
+      "x": 594,
       "y": 217,
       "baseline_rgba": [
-        255,
-        255,
         254,
+        254,
+        252,
         255
       ],
       "rendered_rgba": [
         255,
-        255,
-        255,
+        254,
+        252,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "paint",
   "failure_stage": null,
@@ -60,7 +61,7 @@
         "dom_convert_ms": 15.216659,
         "dom_shadow_attach_ms": 0.041866,
         "dom_compat_ms": 0.0,
-        "dom_meta_viewport_ms": 0.010938999999999999,
+        "dom_meta_viewport_ms": 0.010939,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
         "css_inlining_ms": 112.454919,
@@ -77,11 +78,11 @@
         "css_parse_load_webfonts_ms": 59.999344,
         "css_parse_collect_keyframes_ms": 0.000081,
         "cascade_ms": 199.28755,
-        "box_tree_ms": 111.96534299999999,
+        "box_tree_ms": 111.965343,
         "layout_ms": 329.529263,
         "text_fallback_cpu_ms": 206.539995,
         "text_shape_cpu_ms": 5.7684979999999975,
-        "paint_build_ms": 209.64403000000001,
+        "paint_build_ms": 209.64403,
         "paint_optimize_ms": 0.125473,
         "paint_rasterize_ms": 142.421153,
         "text_rasterize_cpu_ms": 95.09354300000004,
@@ -266,7 +267,7 @@
         "raster_pixmap_cache_hits": 0,
         "raster_pixmap_cache_misses": 0,
         "raster_pixmap_cache_bytes": 0,
-        "image_decode_ms": 186.04268199999999
+        "image_decode_ms": 186.042682
       }
     }
   }

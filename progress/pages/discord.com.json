@@ -19,9 +19,10 @@
   "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/discord.com`) shows correct overall layout/structure; the ~92% pixel diff at tolerance=0 is dominated by tiny per-channel differences (≈95% of pixels differ by ≤10) from text rasterization/hinting and minor blur/shadow/gradient rounding. No missing layout or paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 869106,
-    "diff_percent": 90.5319,
-    "perceptual": 0.1255,
+    "diff_pixels": 866585,
+    "diff_percent": 90.2693,
+    "perceptual": 0.1,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 0,
       "y": 0,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "paint",
   "failure_stage": null,

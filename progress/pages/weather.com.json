@@ -19,9 +19,10 @@
   "notes": "Remaining pixel diffs are primarily from text rasterization (hinting/subpixel-AA differences vs Chrome) plus Chrome's UA-specific broken-image placeholder icons for intentionally empty `missing_*` image assets (0-byte jpg/webp) in the offline fixture.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 76235,
-    "diff_percent": 7.9411,
-    "perceptual": 0.0753,
+    "diff_pixels": 68288,
+    "diff_percent": 7.1133,
+    "perceptual": 0.0259,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 72,
       "y": 0,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "cascade",
   "failure_stage": null,

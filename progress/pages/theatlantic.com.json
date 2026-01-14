@@ -17,28 +17,29 @@
   "notes": "Homepage content (not a paywall/interstitial). Remaining diffs vs Chrome are dominated by typography: the fixture references many proprietary webfonts (AGaramondPro, Atlantic Serif, Logic Monospace, etc) via 0-byte `assets/missing_*.bin` placeholders, so font fallback/text metrics + rasterization differ.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 104879,
-    "diff_percent": 10.9249,
-    "perceptual": 0.0808,
+    "diff_pixels": 91288,
+    "diff_percent": 9.5092,
+    "perceptual": 0.042,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 605,
+      "x": 603,
       "y": 21,
       "baseline_rgba": [
-        235,
-        58,
-        64,
+        255,
+        255,
+        255,
         255
       ],
       "rendered_rgba": [
-        234,
-        49,
-        55,
+        249,
+        197,
+        198,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "layout",
   "failure_stage": null,

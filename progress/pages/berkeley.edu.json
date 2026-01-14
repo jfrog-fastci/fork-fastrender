@@ -17,28 +17,29 @@
   "notes": "Large diffs are dominated by the hero background video: the fixture has a 0-byte `<video>` source (assets/missing_6cc347e11cda55d8ded4a916f9817b6c.mp4) and a 0-byte hero background-image (assets/e3b0c44298fc1c149afbf4c8996fb924.jpg), so Chrome paints a dark native video surface while FastRender (no video decode; no poster) leaves the hero area blank/white. Remaining diffs are mostly text rasterization/hinting differences vs Chrome and minor per-pixel paint rounding; no additional major layout issues identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 17108,
-    "diff_percent": 1.7821,
-    "perceptual": 0.0716,
+    "diff_pixels": 90344,
+    "diff_percent": 9.4108,
+    "perceptual": 0.0367,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 975,
+      "x": 974,
       "y": 5,
       "baseline_rgba": [
-        39,
-        71,
-        139,
+        0,
+        38,
+        118,
         255
       ],
       "rendered_rgba": [
-        79,
-        105,
-        160,
+        16,
+        51,
+        126,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "paint",
   "failure_stage": null,

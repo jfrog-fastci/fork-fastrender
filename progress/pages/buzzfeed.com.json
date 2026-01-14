@@ -17,9 +17,10 @@
   "notes": "Remaining pixel diffs are dominated by (1) large downscaled photo thumbnails (resampling/mipmapping differences vs Chrome) and (2) <video> elements without poster/controls not painting any video surface yet (transparent/white).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 326456,
-    "diff_percent": 34.0058,
-    "perceptual": 0.0672,
+    "diff_pixels": 338210,
+    "diff_percent": 35.2302,
+    "perceptual": 0.083,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 685,
       "y": 13,
@@ -31,14 +32,14 @@
       ],
       "rendered_rgba": [
         254,
-        240,
-        238,
+        248,
+        247,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "layout",
   "failure_stage": null,

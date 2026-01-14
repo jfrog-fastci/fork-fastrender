@@ -17,9 +17,10 @@
   "notes": "Fixture is Bloomberg’s PerimeterX anti-bot CAPTCHA interstitial (“Are you a robot?” / unusual activity), not the real homepage.\nDiff is relatively low because the captured page is mostly static text/layout; remaining mismatches are minor raster/text AA differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 54806,
-    "diff_percent": 5.709,
-    "perceptual": 0.1114,
+    "diff_pixels": 38920,
+    "diff_percent": 4.0542,
+    "perceptual": 0.0236,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 20,
       "y": 17,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
   },
   "hotspot": "cascade",
   "failure_stage": null,
