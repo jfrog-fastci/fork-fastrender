@@ -126,8 +126,13 @@ pub struct HostDefined(Option<Arc<dyn Any + Send + Sync>>);
 
 impl HostDefined {
   /// Wrap host-defined data.
-  pub fn new<T: Any + Send + Sync>(data: T) -> Self {
-    Self(Some(Arc::new(data)))
+  ///
+  /// This is fallible so allocator OOM can surface as `VmError::OutOfMemory` instead of aborting the
+  /// process.
+  pub fn try_new<T: Any + Send + Sync>(data: T) -> Result<Self, VmError> {
+    // `Arc::new` aborts the process on allocator OOM; use a fallible allocator instead.
+    let arc: Arc<dyn Any + Send + Sync> = crate::fallible_alloc::arc_try_new_vm(data)?;
+    Ok(Self(Some(arc)))
   }
 
   /// Attempts to downcast the payload by reference.
@@ -2087,6 +2092,7 @@ mod tests {
   use crate::Job;
   use crate::Realm;
   use crate::RealmId;
+  use crate::test_alloc::FailAllocsGuard;
   use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::VmHostHooks;
   use crate::VmOptions;
@@ -2107,6 +2113,13 @@ mod tests {
         writable: true,
       },
     }
+  }
+
+  #[test]
+  fn host_defined_try_new_surfaces_out_of_memory_on_alloc_failure() {
+    let _guard = FailAllocsGuard::new();
+    let err = HostDefined::try_new(123u32).unwrap_err();
+    assert!(matches!(err, VmError::OutOfMemory));
   }
 
   #[test]
