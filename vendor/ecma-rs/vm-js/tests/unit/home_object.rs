@@ -373,36 +373,65 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 }
 
 #[test]
-fn await_in_class_static_block_is_syntax_error() -> Result<(), VmError> {
+fn await_in_class_static_block_preserves_home_object_ast() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  // `await` expressions are syntax errors inside class static blocks.
-  for err in [
-    rt.exec_script(
-      r#"
-        class A {
-          static {
-            await 0;
-          }
+  rt.exec_script(
+    r#"
+      class A {
+        static {
+          // Arrow functions created inside static blocks inherit `[[HomeObject]]` from the static
+          // block execution context (the class constructor object), even when the static block
+          // suspends/resumes via top-level `await`.
+          this.before = () => 1;
+          await Promise.resolve(0);
+          this.after = () => 2;
         }
-      "#,
-    )
-    .unwrap_err(),
-    rt.exec_module(
-      "main.js",
-      r#"
-        class A {
-          static {
-            await 0;
-          }
-        }
-      "#,
-    )
-    .unwrap_err(),
-  ] {
-    assert!(matches!(err, VmError::Syntax(_)));
-  }
+      };
+    "#,
+  )?;
 
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let ctor = assert_is_function(rt.exec_script("A")?);
+  let before = assert_is_function(rt.exec_script("A.before")?);
+  let after = assert_is_function(rt.exec_script("A.after")?);
+
+  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
+
+  Ok(())
+}
+
+#[test]
+fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let eval_promise = rt.exec_module(
+    "main.js",
+    r#"
+      class A {
+        static {
+          globalThis.before = () => 1;
+          await Promise.resolve(0);
+          globalThis.after = () => 2;
+        }
+      }
+      globalThis.ctor = A;
+    "#,
+  )?;
+  let eval_promise_root = rt.heap.add_root(eval_promise)?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let ctor = assert_is_function(rt.exec_script("ctor")?);
+  let before = assert_is_function(rt.exec_script("before")?);
+  let after = assert_is_function(rt.exec_script("after")?);
+
+  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
+
+  rt.heap.remove_root(eval_promise_root);
   Ok(())
 }
 
