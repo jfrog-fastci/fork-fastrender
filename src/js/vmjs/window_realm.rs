@@ -41591,38 +41591,6 @@ fn html_media_element_src_set_native(
   element_reflected_string_set_native(vm, scope, host, hooks, callee, this, args)
 }
 
-fn html_media_element_reflected_bool_get_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
-    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
-  }
-  element_reflected_bool_get_native(vm, scope, host, hooks, callee, this, args)
-}
-
-fn html_media_element_reflected_bool_set_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
-    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
-  }
-  element_reflected_bool_set_native(vm, scope, host, hooks, callee, this, args)
-}
-
 fn html_media_element_current_src_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
