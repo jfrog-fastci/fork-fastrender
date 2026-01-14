@@ -13285,7 +13285,10 @@ mod generator_object_tests {
         let used_before_cont_set = init_scope.heap().used_bytes();
         init_scope
           .heap_mut()
-          .generator_set_continuation(gen, Some(Box::new(cont)))?;
+          .generator_set_continuation(
+            gen,
+            Some(crate::fallible_alloc::box_try_new_vm(cont)?),
+          )?;
         let used_after_cont_set = init_scope.heap().used_bytes();
         assert_eq!(
           used_after_cont_set - used_before_cont_set,
@@ -14179,7 +14182,10 @@ mod generator_object_gc_tests {
       let used_before_cont_set = scope.heap().used_bytes();
       scope
         .heap_mut()
-        .generator_set_continuation(gen, Some(Box::new(cont)))?;
+        .generator_set_continuation(
+          gen,
+          Some(crate::fallible_alloc::box_try_new_vm(cont)?),
+        )?;
       let used_after_cont_set = scope.heap().used_bytes();
       assert_eq!(used_after_cont_set - used_before_cont_set, cont_bytes);
 
