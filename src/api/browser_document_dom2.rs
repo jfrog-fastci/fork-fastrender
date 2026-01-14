@@ -1350,26 +1350,7 @@ impl BrowserDocumentDom2 {
 
     let box_ids =
       crate::interaction::dom_geometry::collect_box_ids_for_styled_node(prepared.box_tree(), styled_id);
-    let principal_box_id = *box_ids.first()?;
-
-    let viewport_fixed = crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
-      prepared.fragment_tree(),
-      principal_box_id,
-    )
-    .and_then(|(root_kind, path)| {
-      crate::interaction::dom_geometry::resolve_fragment_path(
-        prepared.fragment_tree(),
-        root_kind,
-        &path,
-      )
-    })
-    .is_some_and(|(fragment, _origin, has_fixed_cb_ancestor)| {
-      fragment
-        .style
-        .as_deref()
-        .is_some_and(|style| matches!(style.position, crate::style::position::Position::Fixed))
-        && !has_fixed_cb_ancestor
-    });
+    let _principal_box_id = *box_ids.first()?;
 
     let rect_page = crate::interaction::dom_geometry::union_scrolled_absolute_bounds_for_box_ids(
       prepared.fragment_tree(),
@@ -1377,12 +1358,14 @@ impl BrowserDocumentDom2 {
       &box_ids,
     )?;
 
-    let offset = if viewport_fixed {
-      Point::ZERO
-    } else {
-      Point::new(-self.options.scroll_x, -self.options.scroll_y)
-    };
-    Some(rect_page.translate(offset))
+    // `union_scrolled_absolute_bounds_for_box_ids` translates viewport-fixed fragments into page
+    // coordinates by applying viewport-scroll cancel semantics. Subtract viewport scroll for all
+    // nodes (including viewport-fixed) to convert page → viewport coordinates.
+    let viewport_scroll = self.viewport_scroll_offset();
+    Some(rect_page.translate(Point::new(
+      -viewport_scroll.x,
+      -viewport_scroll.y,
+    )))
   }
 
   pub fn offset_rect(&mut self, node: crate::dom2::NodeId) -> Option<Rect> {
