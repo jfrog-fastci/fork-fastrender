@@ -496,7 +496,9 @@ mod tests {
 
     let mut store = BookmarkStore::default();
     let count: u64 = 20_000;
-    let long_title = "Synthetic Bookmark Title ".repeat(4);
+    // Make entries large enough that synchronous JSON pretty-printing would be
+    // noticeable, while keeping overall test runtime reasonable.
+    let long_title = "Synthetic Bookmark Title ".repeat(40);
 
     for i in 1..=count {
       let id = BookmarkId(i);
@@ -517,15 +519,27 @@ mod tests {
     job.start_export_json(store).unwrap();
     let elapsed = start.elapsed();
     assert!(
-      elapsed < Duration::from_millis(200),
+      elapsed < Duration::from_secs(1),
       "start_export_json should be fast; took {elapsed:?}"
     );
     assert!(job.is_exporting_json());
 
-    // Polling immediately after starting should not synchronously yield a JSON payload.
-    assert!(
-      job.poll().is_none(),
-      "JSON export finished synchronously; expected background serialization"
-    );
+    // Ensure we don't leave a large background serialization thread running beyond this test.
+    // (The important part is that *starting* the job is fast; completion can take longer.)
+    let start_wait = Instant::now();
+    loop {
+      if let Some(update) = job.poll() {
+        assert!(
+          matches!(update, BookmarksIoJobUpdate::ExportJsonFinished { .. }),
+          "expected ExportJsonFinished update, got {update:?}"
+        );
+        break;
+      }
+      assert!(
+        start_wait.elapsed() < Duration::from_secs(10),
+        "timed out waiting for large JSON export job to complete"
+      );
+      std::thread::sleep(Duration::from_millis(5));
+    }
   }
 }

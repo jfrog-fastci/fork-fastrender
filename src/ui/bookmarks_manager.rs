@@ -408,7 +408,11 @@ pub fn bookmarks_manager_side_panel(
               );
             }
             if let Some(json) = state.export_json.as_ref() {
-              if ui.button("Copy last export").clicked() {
+              let copy_last = ui.add_enabled(
+                !state.io_job.is_busy(),
+                egui::Button::new("Copy last export"),
+              );
+              if copy_last.clicked() {
                 ctx.output_mut(|o| o.copied_text = json.clone());
               }
             }
@@ -595,7 +599,8 @@ pub fn bookmarks_manager_side_panel(
                   .color(ui.visuals().weak_text_color()),
               );
             }
-            if ui.button("Clear").clicked() {
+            let clear_btn = ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Clear"));
+            if clear_btn.clicked() {
               state.import_json.clear();
             }
           });
@@ -1675,6 +1680,8 @@ mod tests {
     BookmarksManagerState, CreateFolderState, EditBookmarkState,
   };
   use crate::ui::{a11y_test_util, BookmarkDelta, BookmarkId, BookmarkStore};
+  use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
+  use std::sync::mpsc;
   use std::time::{Duration, Instant};
 
   fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
@@ -2013,6 +2020,26 @@ mod tests {
     assert!(!state.apply_export_dialog_selection(None));
     assert_eq!(state.import_path, before_import);
     assert_eq!(state.export_path, before_export);
+  }
+
+  #[test]
+  fn export_json_job_failure_sets_error_and_does_not_touch_clipboard() {
+    let ctx = egui::Context::default();
+    let mut store = BookmarkStore::default();
+    assert!(store.toggle("https://example.com/", Some("Example")));
+
+    let mut state = BookmarksManagerState::default();
+    state.export_json = Some("{\"old\":true}".to_string());
+    let mut out = BookmarksManagerOutput::default();
+
+    let (tx, rx) = mpsc::channel::<BookmarksIoJobUpdate>();
+    drop(tx);
+    state.io_job = BookmarksIoJob::ExportingJson { rx };
+
+    let output = poll_io_job_and_end_frame(&ctx, &mut state, &mut store, &mut out);
+    assert!(state.error.as_ref().is_some_and(|s| s.contains("disconnected")));
+    assert_eq!(state.export_json.as_deref(), Some("{\"old\":true}"));
+    assert_eq!(output.platform_output.copied_text, "");
   }
 
   #[test]
