@@ -369,3 +369,96 @@ fn exponentiation_assignment_on_private_field_captures_old_value_across_yield_st
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn exponentiation_assignment_on_binding_bigint_uses_pre_yield_old_value_across_yield_star(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var x = 2n;
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return 3n;
+      }
+      function* g(){ return x **= (yield* rhs()); }
+      var it = g();
+      var r1 = it.next();
+      x = 10n; // mutate after first delegated yield
+      var r2 = it.next();
+      x = 100n; // mutate after second delegated yield
+      var r3 = it.next();
+      r1.value === "rhs1" && r1.done === false &&
+      r2.value === "rhs2" && r2.done === false &&
+      r3.done === true && r3.value === 8n && x === 8n
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_bigint_negative_exponent_throws_range_error_across_yield_star(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var x = 2n;
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return -1n;
+      }
+      function* g(){
+        try {
+          x **= (yield* rhs());
+          return false;
+        } catch (e) {
+          return (e && e.name === "RangeError") && x === 2n;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.value === "rhs1" && r1.done === false &&
+      r2.value === "rhs2" && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn exponentiation_assignment_cannot_mix_bigint_and_number_across_yield_star() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let v = rt.exec_script(
+    r#"
+      var x = 2n;
+      function* rhs() {
+        yield "rhs1";
+        yield "rhs2";
+        return 2;
+      }
+      function* g(){
+        try {
+          x **= (yield* rhs());
+          return false;
+        } catch (e) {
+          return (e && e.name === "TypeError") && x === 2n;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next();
+      var r3 = it.next();
+      r1.value === "rhs1" && r1.done === false &&
+      r2.value === "rhs2" && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}

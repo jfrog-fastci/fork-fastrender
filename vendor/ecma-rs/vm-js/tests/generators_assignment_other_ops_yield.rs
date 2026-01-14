@@ -646,3 +646,153 @@ fn generator_yield_star_in_add_assignment_rhs_captures_private_field_old_value()
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_star_in_mul_assignment_rhs_uses_pre_yield_old_value_bigint() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 2n;
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 3n;
+        }
+
+        function* g() { return x *= (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+        x = 100n; // mutate after first delegated yield
+        var r2 = it.next();
+        x = 200n; // mutate after second delegated yield
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === 6n && r3.done === true &&
+        x === 6n
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_base_key_and_old_value_for_computed_member_bigint(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 5n, b: 10n };
+        var o2 = { a: 100n, b: 1000n };
+        var o = o1;
+        var k = "a";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7n;
+        }
+
+        function* g() { return o[k] += (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+
+        // Mutate and rebind after the first delegated yield.
+        o1.a = 50n;
+        o = o2;
+        k = "b";
+
+        var r2 = it.next();
+
+        // Mutate and rebind again after the second delegated yield.
+        o1.a = 500n;
+        o = o2;
+        k = "b";
+
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === 12n && r3.done === true &&
+        // Must still target the original base/key pair and use the pre-yield old value (5n).
+        o1.a === 12n && o1.b === 10n &&
+        o2.a === 100n && o2.b === 1000n
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_div_assignment_rhs_uses_pre_yield_old_value_bigint() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 5n;
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 2n;
+        }
+
+        function* g() { return x /= (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+        x = 100n; // mutate after first delegated yield
+        var r2 = it.next();
+        x = 200n; // mutate after second delegated yield
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === 2n && r3.done === true &&
+        // Must still use the pre-yield old value (5n).
+        x === 2n
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_mul_assignment_cannot_mix_bigint_and_number() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 5n;
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 2;
+        }
+
+        function* g() {
+          try {
+            x *= (yield* rhs());
+            return false;
+          } catch (e) {
+            return (e && e.name === "TypeError") && x === 5n;
+          }
+        }
+
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next();
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
