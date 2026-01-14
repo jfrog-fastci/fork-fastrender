@@ -2743,22 +2743,30 @@ mod tests {
     let path = dir.path().join("session.json");
     let backup_path = session_backup_path(&path);
 
-    let session_v1 = BrowserSession::single("about:blank".to_string());
-    save_session_atomic(&path, &session_v1).unwrap();
+    let mut prev_session: Option<BrowserSession> = None;
+    for idx in 0..10 {
+      let url = match idx {
+        0 => "about:blank".to_string(),
+        1 => "https://example.com/".to_string(),
+        2 => "about:newtab".to_string(),
+        _ => format!("https://example.com/{idx}"),
+      };
+      let session = BrowserSession::single(url);
+      save_session_atomic(&path, &session).unwrap();
 
-    let session_v2 = BrowserSession::single("https://example.com/".to_string());
-    save_session_atomic(&path, &session_v2).unwrap();
+      if let Some(expected_backup) = prev_session.as_ref() {
+        assert!(
+          backup_path.exists(),
+          "expected backup session file to exist at {}",
+          backup_path.display()
+        );
+        let backup_data = std::fs::read_to_string(&backup_path).expect("read backup session");
+        let backup_session = parse_session_json(&backup_data).expect("parse backup session");
+        assert_eq!(&backup_session, expected_backup);
+      }
 
-    let backup_data = std::fs::read_to_string(&backup_path).expect("read backup session");
-    let backup_session = parse_session_json(&backup_data).expect("parse backup session");
-    assert_eq!(backup_session, session_v1.sanitized());
-
-    let session_v3 = BrowserSession::single("about:newtab".to_string());
-    save_session_atomic(&path, &session_v3).unwrap();
-
-    let backup_data = std::fs::read_to_string(&backup_path).expect("read updated backup session");
-    let backup_session = parse_session_json(&backup_data).expect("parse updated backup session");
-    assert_eq!(backup_session, session_v2.sanitized());
+      prev_session = Some(session.sanitized());
+    }
   }
 
   #[test]
@@ -3132,7 +3140,42 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
   if let Ok(Some(existing)) = read_session_file_bounded(path) {
     if parse_session_json(&existing).is_ok() {
       let backup_path = session_backup_path(path);
-      let _ = std::fs::write(&backup_path, existing);
+      // The backup update should be as crash-safe as the primary write: write a temp file in the
+      // same directory, flush+sync it, then rename into place.
+      //
+      // This is intentionally best-effort: if we fail to update the backup for any reason, the
+      // primary session save still proceeds.
+      let backup_parent = backup_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+      let _ = tempfile::NamedTempFile::new_in(backup_parent).and_then(|mut tmp| {
+        use std::io::Write;
+        tmp.write_all(existing.as_bytes())?;
+        tmp.flush()?;
+        // Best-effort durability: don't fail the backup if syncing is unsupported.
+        let _ = tmp.as_file().sync_all();
+        match tmp.persist(&backup_path) {
+          Ok(_) => Ok(()),
+          Err(err) => {
+            // On Windows, rename fails if the destination exists. Fall back to removing the
+            // existing file and retrying (not strictly atomic, but best-effort cross-platform).
+            if matches!(
+              err.error.kind(),
+              std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+            ) {
+              let _ = std::fs::remove_file(&backup_path);
+              err
+                .file
+                .persist(&backup_path)
+                .map(|_| ())
+                .map_err(|err| err.error)
+            } else {
+              Err(err.error)
+            }
+          }
+        }
+      });
     }
   }
 
