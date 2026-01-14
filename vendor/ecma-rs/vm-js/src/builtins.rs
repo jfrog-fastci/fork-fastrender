@@ -17001,57 +17001,104 @@ fn require_async_generator_object(
 }
 
 pub fn async_generator_prototype_next(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  let _this_obj = require_async_generator_object(
+  let this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.next called on non-object",
     "AsyncGenerator.prototype.next called on incompatible receiver",
   )?;
-  Err(VmError::Unimplemented("async generator functions"))
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Async generator iteration methods use `NewPromiseCapability(%Promise%)` and must not consult the
+  // mutable global `Promise` binding.
+  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+
+  let req = crate::heap::AsyncGeneratorRequest {
+    kind: crate::heap::AsyncGeneratorRequestKind::Next(arg0),
+    capability: cap,
+  };
+  scope
+    .heap_mut()
+    .async_generator_request_queue_push(this_obj, req)?;
+
+  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+
+  Ok(cap.promise)
 }
 
 pub fn async_generator_prototype_return(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  let _this_obj = require_async_generator_object(
+  let this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.return called on non-object",
     "AsyncGenerator.prototype.return called on incompatible receiver",
   )?;
-  Err(VmError::Unimplemented("async generator functions"))
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+
+  let req = crate::heap::AsyncGeneratorRequest {
+    kind: crate::heap::AsyncGeneratorRequestKind::Return(arg0),
+    capability: cap,
+  };
+  scope
+    .heap_mut()
+    .async_generator_request_queue_push(this_obj, req)?;
+
+  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+
+  Ok(cap.promise)
 }
 
 pub fn async_generator_prototype_throw(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  let _this_obj = require_async_generator_object(
+  let this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.throw called on non-object",
     "AsyncGenerator.prototype.throw called on incompatible receiver",
   )?;
-  Err(VmError::Unimplemented("async generator functions"))
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+
+  let req = crate::heap::AsyncGeneratorRequest {
+    kind: crate::heap::AsyncGeneratorRequestKind::Throw(arg0),
+    capability: cap,
+  };
+  scope
+    .heap_mut()
+    .async_generator_request_queue_push(this_obj, req)?;
+
+  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+
+  Ok(cap.promise)
 }
 
 fn require_generator_object(

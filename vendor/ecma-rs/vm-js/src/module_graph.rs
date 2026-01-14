@@ -31,6 +31,9 @@ const TLA_ABORT_REASON: &str = "asynchronous module loading/evaluation is not su
 
 fn non_throw_vm_error_message(err: &VmError) -> &'static str {
   match err {
+    // `VmError::Return` is an internal control-flow signal; treat it as an invariant violation when
+    // it reaches module-loading plumbing.
+    VmError::Return(_) => "invariant violation: internal Return completion escaped",
     VmError::OutOfMemory => "out of memory",
     VmError::InvariantViolation(msg) => msg,
     VmError::LimitExceeded(msg) => msg,

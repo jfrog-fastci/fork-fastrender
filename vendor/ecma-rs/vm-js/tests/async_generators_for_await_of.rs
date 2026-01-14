@@ -531,7 +531,7 @@ fn for_await_of_break_propagates_async_iterator_return_error() -> Result<(), VmE
 }
 
 #[test]
-fn for_await_of_throw_close_error_overrides_body_throw() -> Result<(), VmError> {
+fn for_await_of_throw_suppresses_iterator_return_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   if !async_generators_supported(&mut rt)? {
@@ -586,7 +586,7 @@ fn for_await_of_throw_close_error_overrides_body_throw() -> Result<(), VmError> 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "close,true");
+    assert_eq!(value_to_string(&rt, out), "boom,true");
     Ok(())
   })();
 
@@ -662,7 +662,7 @@ fn for_await_of_async_generator_return_rejects_if_iterator_return_rejects() -> R
 }
 
 #[test]
-fn for_await_of_async_generator_throw_rejects_with_close_error_if_iterator_return_rejects(
+fn for_await_of_async_generator_throw_suppresses_close_error_if_iterator_return_rejects(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -721,7 +721,7 @@ fn for_await_of_async_generator_throw_rejects_with_close_error_if_iterator_retur
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let out = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, out), "1,close,true");
+    assert_eq!(value_to_string(&rt, out), "1,boom,true");
     Ok(())
   })();
 

@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime,
-  MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest,
-  PromiseState, PropertyKey, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks,
-  VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime, MicrotaskQueue,
+  ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey,
+  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions, JsString,
 };
 
 // NOTE: This test intentionally exercises the compiled-module pipeline (see Task 91).
@@ -14,9 +13,9 @@ use vm_js::{
 
 struct TestHostHooks {
   microtasks: MicrotaskQueue,
-  modules: HashMap<String, ModuleId>,
+  modules: HashMap<JsString, ModuleId>,
   import_meta_urls: HashMap<ModuleId, String>,
-  import_referrers: HashMap<String, ModuleReferrer>,
+  import_referrers: HashMap<JsString, ModuleReferrer>,
 }
 
 impl TestHostHooks {
@@ -30,7 +29,9 @@ impl TestHostHooks {
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
-    self.modules.insert(specifier.to_string(), module);
+    self
+      .modules
+      .insert(JsString::from_str(specifier).unwrap(), module);
   }
 
   fn register_import_meta_url(&mut self, module: ModuleId, url: &str) {
@@ -205,14 +206,13 @@ impl VmHostHooks for TestHostHooks {
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
-    // `ModuleRequest` stores specifiers as `JsString` (UTF-16 code units). This host hook integration
-    // uses UTF-8 `String` keys for lookup and bookkeeping; the test specifiers are ASCII so lossy
-    // conversion is fine.
-    let specifier = module_request.specifier_utf8_lossy();
+    // `ModuleRequest` stores specifiers as `JsString` (UTF-16 code units). This test uses those
+    // values directly as map keys.
+    let specifier = module_request.specifier.clone();
     self.import_referrers.insert(specifier.clone(), referrer);
     let module = *self
       .modules
-      .get(specifier.as_str())
+      .get(&specifier)
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
     vm.finish_loading_imported_module(
       scope,

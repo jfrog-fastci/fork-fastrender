@@ -132,6 +132,21 @@ fn get_method(
 }
 
 impl AsyncYieldStar {
+  #[inline]
+  pub(crate) fn iterator(&self) -> Value {
+    self.iterator_record.iterator
+  }
+
+  #[inline]
+  pub(crate) fn next_method(&self) -> Value {
+    self.iterator_record.next_method
+  }
+
+  #[inline]
+  pub(crate) fn is_waiting_for_request(&self) -> bool {
+    matches!(self.pending, YieldStarPending::WaitingForRequest)
+  }
+
   pub(crate) fn start(
     vm: &mut Vm,
     scope: &mut Scope<'_>,

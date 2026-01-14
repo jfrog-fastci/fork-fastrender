@@ -500,6 +500,12 @@ impl Agent {
   /// Formats a VM error into a host-visible string.
   pub fn format_vm_error(&mut self, err: &VmError) -> String {
     match err {
+      // `VmError::Return` is an internal control-flow signal used by async evaluation machinery and
+      // should never be observable at host boundaries. Treat it as an invariant violation in this
+      // host-facing formatting API.
+      VmError::Return(_) => {
+        string_from_str_best_effort("invariant violation: internal Return completion escaped")
+      }
       VmError::Throw(value) => self.format_thrown_value(*value),
       VmError::ThrowWithStack { value, stack } => {
         let msg = self.format_thrown_value(*value);
@@ -585,6 +591,14 @@ impl Agent {
   /// host OOM: it returns partial/empty fields rather than aborting.
   pub fn error_report(&mut self, err: &VmError) -> VmErrorReport {
     match err {
+      VmError::Return(_) => VmErrorReport {
+        kind: "invariant_violation",
+        message: string_from_str_best_effort("invariant violation: internal Return completion escaped"),
+        exception_name: None,
+        exception_message: None,
+        stack: Vec::new(),
+        termination_reason: None,
+      },
       VmError::Throw(value) => {
         let (exception_name, exception_message) = match value {
           Value::Object(obj) if self.heap().is_error_object(*obj) => {

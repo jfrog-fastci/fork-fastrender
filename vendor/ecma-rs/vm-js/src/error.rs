@@ -91,6 +91,16 @@ pub enum VmError {
   #[error("uncaught exception")]
   ThrowWithStack { value: Value, stack: Vec<StackFrame> },
 
+  /// Internal control-flow signal used by async generator resumption to inject a `return`
+  /// completion across `await`/`yield` suspension boundaries.
+  ///
+  /// This is **not** a JavaScript exception and must never be surfaced to user code directly.
+  ///
+  /// Note: synchronous generator resumption uses [`crate::exec::Completion`] directly; this variant
+  /// exists because the async evaluator threads resumption state through `Result<Value, VmError>`.
+  #[error("internal return completion")]
+  Return(Value),
+
   /// A non-catchable termination condition (fuel exhausted, deadline exceeded, host interrupt,
   /// etc).
   #[error("{0}")]
@@ -143,6 +153,7 @@ impl VmError {
       self,
       VmError::Throw(_)
         | VmError::ThrowWithStack { .. }
+        // `Return` is an internal control-flow signal, not a throw completion.
         | VmError::Unimplemented(_)
         | VmError::TypeError(_)
         | VmError::RangeError(_)

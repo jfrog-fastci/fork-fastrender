@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::RuntimeEnv;
+use crate::exec::{AsyncContinuation, AsyncGeneratorRuntimeState, RuntimeEnv};
 use crate::hir_exec::HirAsyncContinuation;
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
@@ -505,6 +505,7 @@ pub struct Vm {
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
+  async_generator_resume_call: Option<NativeFunctionId>,
   exec_module_load_on_fulfilled_call: Option<NativeFunctionId>,
   exec_module_load_on_rejected_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
@@ -524,6 +525,7 @@ pub struct Vm {
   disposable_stack_adopt_closure_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, VmAsyncContinuation>,
+  async_generator_continuations: HashMap<GcObject, AsyncGeneratorRuntimeState>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -793,6 +795,7 @@ impl Vm {
       ecma_function_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
+      async_generator_resume_call: None,
       exec_module_load_on_fulfilled_call: None,
       exec_module_load_on_rejected_call: None,
       module_tla_on_fulfilled_call: None,
@@ -812,6 +815,7 @@ impl Vm {
       disposable_stack_adopt_closure_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
+      async_generator_continuations: HashMap::new(),
       module_graph: None,
       realm_states: HashMap::new(),
       intrinsics: None,
@@ -1045,6 +1049,8 @@ impl Vm {
   ///
   /// In addition, this tears down any in-progress async continuations stored in the VM.
   ///
+  /// In addition, this tears down any in-progress async generator continuations stored in the VM.
+  ///
   /// Async continuations (from `async` functions and async module evaluation) are resumed exclusively
   /// via Promise jobs. If an embedding abandons/discards the microtask queue while intending to
   /// reuse the heap, leaving suspended continuations in the VM would leak their persistent roots.
@@ -1094,22 +1100,24 @@ impl Vm {
       self.microtasks.teardown(&mut ctx);
     }
 
-    if !self.async_continuations.is_empty() {
+    if !self.async_continuations.is_empty() || !self.async_generator_continuations.is_empty() {
       // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
       // execution and will not resume the event loop. This does *not* settle the associated
       // Promises; it only unregisters the continuation's persistent roots so the heap can be reused
       // safely.
       let continuations = mem::take(&mut self.async_continuations);
+      let generator_continuations = mem::take(&mut self.async_generator_continuations);
       let mut scope = heap.scope();
       for (_, cont) in continuations {
         match cont {
-          VmAsyncContinuation::Ast(cont) => {
-            crate::exec::async_teardown_continuation(&mut scope, cont)
-          }
+          VmAsyncContinuation::Ast(cont) => crate::exec::async_teardown_continuation(&mut scope, cont),
           VmAsyncContinuation::Hir(cont) => {
             crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont)
           }
         }
+      }
+      for (_, state) in generator_continuations {
+        crate::exec::async_generator_teardown_runtime_state(&mut scope, state);
       }
     }
 
@@ -1125,6 +1133,10 @@ impl Vm {
       debug_assert!(
         self.async_continuations.is_empty(),
         "expected async continuations to be empty after Vm::teardown_microtasks"
+      );
+      debug_assert!(
+        self.async_generator_continuations.is_empty(),
+        "expected async generator continuations to be empty after Vm::teardown_microtasks"
       );
       debug_assert_eq!(
         heap.root_stack.len(),
@@ -1186,12 +1198,31 @@ impl Vm {
       .map_err(|_| VmError::OutOfMemory)
   }
 
+  pub(crate) fn reserve_async_generator_continuations(
+    &mut self,
+    additional: usize,
+  ) -> Result<(), VmError> {
+    self
+      .async_generator_continuations
+      .try_reserve(additional)
+      .map_err(|_| VmError::OutOfMemory)
+  }
+
   pub(crate) fn async_resume_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
     if let Some(id) = self.async_resume_call {
       return Ok(id);
     }
     let id = self.register_native_call(crate::exec::async_resume_call)?;
     self.async_resume_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_generator_resume_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_generator_resume_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::async_generator_resume_call)?;
+    self.async_generator_resume_call = Some(id);
     Ok(id)
   }
 
@@ -1433,6 +1464,26 @@ impl Vm {
     cont: HirAsyncContinuation,
   ) -> Result<(), VmError> {
     self.replace_async_continuation(id, VmAsyncContinuation::Hir(cont))
+  }
+
+  pub(crate) fn take_async_generator_continuation(
+    &mut self,
+    gen: GcObject,
+  ) -> Option<AsyncGeneratorRuntimeState> {
+    self.async_generator_continuations.remove(&gen)
+  }
+
+  pub(crate) fn replace_async_generator_continuation(
+    &mut self,
+    gen: GcObject,
+    cont: AsyncGeneratorRuntimeState,
+  ) -> Result<(), VmError> {
+    self
+      .async_generator_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self.async_generator_continuations.insert(gen, cont);
+    Ok(())
   }
 
   /// Removes an async continuation from the VM and tears down all of its persistent roots.
