@@ -581,3 +581,28 @@ fn derived_ctor_param_super_call_then_body_super_throws_reference_error_compiled
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_delete_super_computed_before_super_does_not_evaluate_key_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => delete super[(side = 1, "__x")];
+          try { f(); } catch (e) { ok = e instanceof ReferenceError && side === 0; }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
