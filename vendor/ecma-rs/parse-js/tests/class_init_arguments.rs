@@ -83,7 +83,7 @@ fn arguments_identifier_reference_is_syntax_error_in_class_field_initializer_ecm
   assert_eq!(
     err.typ,
     SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or static initialization blocks"
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
     )
   );
   assert_eq!(err.actual_token, None);
@@ -107,7 +107,7 @@ fn arguments_identifier_reference_is_syntax_error_in_arrow_in_class_field_initia
   assert_eq!(
     err.typ,
     SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or static initialization blocks"
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
     )
   );
   assert_eq!(err.actual_token, None);
