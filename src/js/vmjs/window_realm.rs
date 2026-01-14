@@ -356,7 +356,7 @@ pub(crate) struct WindowRealmUserData {
   /// Cached native call handler id for `import.meta.resolve`.
   pub(crate) import_meta_resolve_call_id: Option<NativeFunctionId>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
-  media_master_clock: Arc<crate::media::MasterClock>,
+  media_master_clock: Arc<dyn crate::media::clock::MediaClock>,
   media_element_state_registry: MediaElementStateRegistry,
   dom_platform: Option<DomPlatform>,
   /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
@@ -530,7 +530,8 @@ impl WindowRealmUserData {
 
     let system_media_clock: Arc<dyn crate::media::clock::MediaClock> =
       Arc::new(crate::media::clock::ClockMediaClock::new(clock));
-    let media_master_clock = Arc::new(crate::media::MasterClock::new(system_media_clock));
+    let media_master_clock: Arc<dyn crate::media::clock::MediaClock> =
+      Arc::new(crate::media::MasterClock::new(system_media_clock));
     Self {
       window_id,
       local_storage_area,

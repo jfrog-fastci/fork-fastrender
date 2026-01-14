@@ -774,6 +774,7 @@ impl InteractionState {
   pub fn is_fullscreen(&self, node_id: usize) -> bool {
     self.fullscreen_element == Some(node_id)
   }
+
   pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
     if self.focus_chain == chain {
       return;
