@@ -46,6 +46,8 @@ use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
 use url::Url;
 
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
+
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
