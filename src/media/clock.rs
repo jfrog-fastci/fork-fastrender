@@ -344,12 +344,6 @@ pub enum PlaybackState {
 ///
 /// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
 /// `playing` remains `true`).
-/// Whether a [`PlaybackClock`] is currently advancing (`Playing`) or frozen (`Paused`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackState {
-  Playing,
-  Paused,
-}
 
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
