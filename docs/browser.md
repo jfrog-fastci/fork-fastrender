@@ -128,7 +128,9 @@ Startup note:
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
   (windows + tabs + per-tab zoom + best-effort scroll restoration).
 - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the UI shows
-  a crash-recovery infobar/toast on startup (including a **Start new session** option).
+  a crash-recovery infobar/toast on startup.
+  - It includes **Keep** (dismiss) and **Start new session** (discard restored tabs across all
+    windows).
   - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
     start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
@@ -137,6 +139,8 @@ Startup note:
     and window geometry) when available.
 - If the primary session file is corrupted/unparseable, the browser can fall back to a retained
   last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`).
+  - This backup is updated opportunistically on overwrite when the existing session parses
+    successfully (best-effort).
 - If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page
   (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable tab
   restore.
