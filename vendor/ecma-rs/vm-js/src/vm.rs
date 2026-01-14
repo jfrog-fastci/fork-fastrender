@@ -4743,16 +4743,16 @@ impl Vm {
     let (return_value, final_this) = result?;
 
     // Constructors have special return-value semantics:
-    // - If the constructor returns an Object, that becomes the result.
-    // - Otherwise the result is determined by the constructor kind:
-    //   - Base constructors: ignore the return value and yield `this`.
-    //   - Derived constructors: only `undefined` is ignored; any other non-object return value must
-    //     throw a TypeError. (`undefined` means "use `this`", which is only available after
-    //     `super()`.)
+    // - If the constructor returns an Object, that becomes the result of construction.
+    // - Otherwise the result is `this`.
+    //
+    // Derived constructors differ in that `this` may still be uninitialized if `super()` was never
+    // called; in that case, returning any non-object value (including `undefined` or primitives)
+    // must throw a ReferenceError.
     if is_derived_class_ctor_body {
       match return_value {
         Value::Object(o) => Ok(Value::Object(o)),
-        Value::Undefined => match final_this {
+        _ => match final_this {
           Value::Object(o) => Ok(Value::Object(o)),
           _ => {
             let intr = self
@@ -4766,11 +4766,6 @@ impl Vm {
             Err(VmError::Throw(err))
           }
         },
-        // ECMA-262: derived constructors that return a non-object *other than `undefined`* must
-        // throw a TypeError rather than falling back to `this`.
-        _ => Err(VmError::TypeError(
-          "Derived constructor returned non-object (only object or undefined is allowed)",
-        )),
       }
     } else {
       match return_value {

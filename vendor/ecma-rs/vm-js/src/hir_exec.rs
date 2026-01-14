@@ -190,10 +190,10 @@ fn compiled_constructor_body_construct(
       // construction (even if `super()` was never called).
       Value::Object(o) => Ok(Value::Object(o)),
 
-      // `return;` / no explicit return (or an explicit `return undefined`): yield `this`.
+      // Otherwise, derived constructors fall back to returning `this` (like base constructors).
       //
       // If `this` was never initialized via `super()`, this must throw a ReferenceError.
-      Value::Undefined => {
+      _ => {
         let state = scope.heap().get_derived_constructor_state(state_obj)?;
         match state.this_value {
           Some(this_obj) => Ok(Value::Object(this_obj)),
@@ -204,12 +204,6 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
-
-      // ECMA-262: derived constructors must not return non-object values other than `undefined`.
-      // Unlike base constructors, primitives/null cannot be ignored in favour of `this`.
-      _ => Err(VmError::TypeError(
-        "Derived constructor returned non-object (only object or undefined is allowed)",
-      )),
     }
   }
 }
