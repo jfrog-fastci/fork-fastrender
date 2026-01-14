@@ -27,6 +27,9 @@ pub enum InputKind {
   MouseWheel,
   PointerMove,
   Button,
+  /// Legacy value used by older schema versions/tests.
+  #[serde(rename = "mouse")]
+  Mouse,
   #[serde(other)]
   Unknown,
 }
@@ -52,10 +55,18 @@ pub enum BrowserPerfLogEventV2 {
     t_ms: Option<u64>,
     #[serde(default)]
     ts_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "kind")]
     input_kind: Option<InputKind>,
     #[serde(default)]
     input_to_present_ms: Option<f64>,
+  },
+  TabSwitch {
+    #[serde(default)]
+    t_ms: Option<u64>,
+    #[serde(default)]
+    ts_ms: Option<u64>,
+    #[serde(default)]
+    latency_ms: Option<u64>,
   },
   Resize {
     #[serde(default)]
@@ -81,12 +92,13 @@ pub enum BrowserPerfLogEventV2 {
     #[serde(default)]
     cpu_percent_recent: Option<f64>,
   },
+  #[serde(rename = "idle_summary", alias = "idle_sample")]
   IdleSample {
     #[serde(default)]
     t_ms: Option<u64>,
     #[serde(default)]
     ts_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, rename = "idle_frames_per_sec", alias = "idle_fps")]
     idle_fps: Option<f32>,
   },
   FrameUpload {

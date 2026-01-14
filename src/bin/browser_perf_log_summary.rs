@@ -103,6 +103,7 @@ fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
     BrowserPerfLogEvent::V2(event) => match event {
       BrowserPerfLogEventV2::Frame { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::Input { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::TabSwitch { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::Resize { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::Ttfp { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::CpuSummary { t_ms, ts_ms, .. }
@@ -131,6 +132,7 @@ fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> boo
         EventFilter::Scroll => input_kind.unwrap_or(InputKind::Unknown) == InputKind::MouseWheel,
         _ => false,
       },
+      BrowserPerfLogEventV2::TabSwitch { .. } => filter == EventFilter::TabSwitch,
       BrowserPerfLogEventV2::Resize { .. } => filter == EventFilter::Resize,
       BrowserPerfLogEventV2::Ttfp { .. } => filter == EventFilter::Ttfp,
       BrowserPerfLogEventV2::CpuSummary { .. } => filter == EventFilter::CpuSummary,
@@ -459,6 +461,11 @@ fn run(cli: Cli) -> Result<(), String> {
             BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
               if let Some(ms) = ui_frame_ms.filter(f64::is_finite) {
                 samples.ui_frame_time_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::TabSwitch { latency_ms, .. } => {
+              if let Some(ms) = latency_ms {
+                samples.tab_switch_latency_ms.push(ms as f64);
               }
             }
             BrowserPerfLogEventV2::Ttfp { ttfp_ms, .. } => {
