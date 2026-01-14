@@ -178,7 +178,7 @@ impl SyntaxErrorType {
         .unwrap_or_else(|| "unexpected end of input".into()),
       SyntaxErrorType::Cancelled => "parsing cancelled".into(),
       SyntaxErrorType::ArgumentsNotAllowedInClassInit => {
-        "`arguments` is not allowed in class field initializers or static initialization blocks"
+        "`arguments` is not allowed in class field initializers or class static initialization blocks"
           .into()
       }
     }
