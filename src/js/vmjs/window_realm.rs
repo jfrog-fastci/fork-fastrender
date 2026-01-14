@@ -41179,6 +41179,67 @@ fn element_reflected_bool_set_native(
   Ok(Value::Undefined)
 }
 
+fn html_media_element_src_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    platform.require_html_media_element_handle(scope.heap(), this)?
+  };
+
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let src_attr = dom
+    .get_attribute(handle.node_id, "src")
+    .ok()
+    .flatten()
+    .map(crate::js::trim_ascii_whitespace)
+    .unwrap_or("");
+  if src_attr.is_empty() {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let base_url = vm.user_data::<WindowRealmUserData>().map(|data| {
+    data
+      .base_url
+      .as_deref()
+      .unwrap_or_else(|| data.document_url.as_str())
+  });
+
+  let resolved = match crate::js::url_resolve::resolve_url(src_attr, base_url) {
+    Ok(url) => url,
+    Err(_) => String::new(),
+  };
+
+  Ok(Value::String(scope.alloc_string(&resolved)?))
+}
+
+fn html_media_element_src_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
+  }
+  element_reflected_string_set_native(vm, scope, host, hooks, callee, this, args)
+}
+
 fn html_media_element_current_src_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -53326,6 +53387,51 @@ fn init_window_globals(
       idl_attribute_desc(
         Value::Object(preload_get_func),
         Value::Object(preload_set_func),
+      ),
+    )?;
+
+    // HTMLMediaElement.prototype.src ([ReflectURL] attribute USVString src)
+    //
+    // Browsers resolve `video.src`/`audio.src` against the document base URL (absolute URL on get),
+    // and the IDL accessor throws `TypeError("Illegal invocation")` when called with an invalid
+    // receiver. This overrides FastRender's generic Element-level `src` reflected-string shim.
+    let media_src_get_call_id = vm.register_native_call(html_media_element_src_get_native)?;
+    let media_src_set_call_id = vm.register_native_call(html_media_element_src_set_native)?;
+
+    let media_src_get_name = scope.alloc_string("get src")?;
+    scope.push_root(Value::String(media_src_get_name))?;
+    let media_src_get_func =
+      scope.alloc_native_function(media_src_get_call_id, None, media_src_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      media_src_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(media_src_get_func))?;
+
+    let media_src_attr_s = scope.alloc_string("src")?;
+    scope.push_root(Value::String(media_src_attr_s))?;
+    let media_src_set_name = scope.alloc_string("set src")?;
+    scope.push_root(Value::String(media_src_set_name))?;
+    let media_src_set_func = scope.alloc_native_function_with_slots(
+      media_src_set_call_id,
+      None,
+      media_src_set_name,
+      1,
+      &[Value::String(media_src_attr_s)],
+    )?;
+    scope.heap_mut().object_set_prototype(
+      media_src_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(media_src_set_func))?;
+
+    let src_key = alloc_key(&mut scope, "src")?;
+    scope.define_property(
+      html_media_element_proto,
+      src_key,
+      idl_attribute_desc(
+        Value::Object(media_src_get_func),
+        Value::Object(media_src_set_func),
       ),
     )?;
 
@@ -75186,6 +75292,66 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(get_string(realm.heap(), value), "https://example.com/dir/v.mp4");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_src_resolves_against_document_url() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        v.src = 'v.mp4';
+        document.body.appendChild(v);
+        return v.src;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "https://example.com/dir/v.mp4");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_src_brand_check_throws_on_plain_object() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+        try {
+          desc.get.call({});
+          return 'did not throw';
+        } catch (e) {
+          return e && e.message;
+        }
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "Illegal invocation");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_src_does_not_change_current_src() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        v.src = 'v.mp4';
+        document.body.appendChild(v);
+        return v.src + '|' + v.currentSrc;
+      })()"#,
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), value),
+      "https://example.com/dir/v.mp4|https://example.com/dir/v.mp4"
+    );
     Ok(())
   }
 
