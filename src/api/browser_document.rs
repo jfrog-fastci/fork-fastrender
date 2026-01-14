@@ -975,7 +975,7 @@ impl BrowserDocument {
   ///
   /// Note: this method returns `output` only (i.e. `Ok(output)`), not the full `(changed, output)`
   /// tuple. If you need `changed` at the call site, include it in `output` yourself (for example:
-  /// return `(changed, (changed, my_output))`).
+  /// `let out = (changed, my_output); (changed, out)`).
   ///
   /// # Errors
   ///
