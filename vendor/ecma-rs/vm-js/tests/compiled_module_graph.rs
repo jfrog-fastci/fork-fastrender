@@ -363,6 +363,98 @@ fn compiled_module_graph_default_export_expression_is_evaluated_once() -> Result
   result
 }
 
+#[test]
+fn compiled_module_graph_prefers_compiled_decl_instantiation_when_ast_retained() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    // Create a module record that retains both a `parse-js` AST and a compiled (HIR) payload.
+    //
+    // Linking must prefer compiled declaration instantiation in this case, otherwise hoisted
+    // declarations (like `export function f(){...}`) become interpreter-backed functions even though
+    // the module body will execute via the compiled engine.
+    let record = SourceTextModuleRecord::parse_compiled(
+      &mut heap,
+      "m.js",
+      r#"export function f(){ return 1 }"#,
+    )?;
+    assert!(record.ast.is_some(), "expected parse_compiled to retain an AST");
+    let compiled = record
+      .compiled
+      .as_ref()
+      .ok_or(VmError::InvariantViolation("missing compiled module payload"))?;
+    assert!(
+      !compiled.requires_ast_fallback && !compiled.contains_async_generators,
+      "test module should compile without requiring AST fallback"
+    );
+
+    let m = graph.add_module_with_specifier("m", record)?;
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_m = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    let f = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_m, "f")?;
+    let Value::Object(f_obj) = f else {
+      return Err(VmError::InvariantViolation("expected module export `f` to be an object"));
+    };
+
+    // `Function.prototype.toString` is keyed off the function's underlying call handler:
+    // - compiled user functions stringify as `[native code]`
+    // - interpreter-backed ECMAScript functions stringify with their source span.
+    //
+    // This indirectly asserts the module declaration instantiation path used during linking.
+    let f_to_string = {
+      let mut scope = scope.reborrow();
+      scope.push_root(f)?;
+      let key_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      scope.get_with_host_and_hooks(&mut vm, &mut host, &mut hooks, f_obj, key, f)?
+    };
+    let to_string_value =
+      vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, f_to_string, f, &[])?;
+    let Value::String(to_string_s) = to_string_value else {
+      return Err(VmError::InvariantViolation(
+        "expected f.toString() to return a string",
+      ));
+    };
+    let to_string = scope.heap().get_string(to_string_s)?.to_utf8_lossy();
+    assert!(
+      to_string.contains("[native code]"),
+      "expected f to be instantiated as a compiled user function, got toString(): {to_string:?}"
+    );
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
 struct SyncDynamicImportHooks {
   microtasks: MicrotaskQueue,
   modules: HashMap<JsString, ModuleId>,

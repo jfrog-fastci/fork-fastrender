@@ -1785,6 +1785,7 @@ impl ModuleGraph {
         .local_export_entries
         .iter()
         .any(|e| e.local_name == "*default*");
+      let has_tla = self.modules[idx].has_tla;
       let compiled = self.modules[idx].compiled.clone();
       let source = self.modules[idx]
         .source
@@ -1993,7 +1994,41 @@ impl ModuleGraph {
       }
 
       // Instantiate local declarations (creates bindings + hoists function objects).
-      if let Some(ast) = ast {
+      let should_instantiate_compiled = compiled.as_ref().is_some_and(|c| {
+        if has_tla {
+          // Async module evaluation (TLA) prefers the compiled executor only when the compiled async
+          // evaluator can handle the module's top-level await shapes (no AST fallback required).
+          !c.top_level_await_requires_ast_fallback
+            && !c.requires_ast_fallback
+            && !c.contains_async_generators
+        } else {
+          // Non-TLA modules prefer the compiled executor only when HIR execution is safe.
+          !c.requires_ast_fallback && !c.contains_async_generators
+        }
+      });
+      if should_instantiate_compiled {
+        // `should_instantiate_compiled` implies a compiled payload exists.
+        let script = compiled.ok_or(VmError::InvariantViolation(
+          "module declaration instantiation selected compiled path but compiled payload is missing",
+        ))?;
+        instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
+      } else {
+        let ast = match ast {
+          Some(ast) => ast,
+          None => {
+            // Either:
+            // - no compiled module payload exists, or
+            // - this module must run through the AST evaluator (unsupported constructs, ...)
+            //
+            // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
+            // interpreter instantiation path can run.
+            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+            self.modules[idx]
+              .ast
+              .clone()
+              .ok_or(VmError::Unimplemented("module AST missing"))?
+          }
+        };
         instantiate_module_decls(
           vm,
           scope,
@@ -2003,35 +2038,6 @@ impl ModuleGraph {
           source,
           &ast.stx.body,
         )?;
-      } else {
-        let compiled = self.modules[idx].compiled.clone();
-        match compiled {
-          Some(script) if !script.requires_ast_fallback && !script.contains_async_generators => {
-            instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
-          }
-          _ => {
-            // Either:
-            // - no compiled module payload exists, or
-            // - this module must run through the AST evaluator (unsupported constructs, ...)
-            //
-            // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
-            // interpreter instantiation path can run.
-            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
-            let ast = self.modules[idx]
-              .ast
-              .clone()
-              .ok_or(VmError::Unimplemented("module AST missing"))?;
-            instantiate_module_decls(
-              vm,
-              scope,
-              global_object,
-              module,
-              module_env,
-              source,
-              &ast.stx.body,
-            )?;
-          }
-        }
       }
       Ok(())
     })();
