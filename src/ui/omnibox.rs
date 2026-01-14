@@ -1,5 +1,5 @@
 use super::string_match::{
-  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitive,
 };
 use crate::ui::about_pages;
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
@@ -195,7 +195,11 @@ impl OmniboxProvider for AboutPagesProvider {
 
     let mut out = Vec::with_capacity(
       about_pages::user_facing_about_pages().len()
-        + if input_lower.starts_with("about:test") { 4 } else { 0 },
+        + if input_lower.starts_with("about:test") {
+          4
+        } else {
+          0
+        },
     );
     for (url, title) in about_pages::user_facing_about_pages() {
       if !contains_ascii_case_insensitive(url, input_lower.as_ref())
@@ -364,7 +368,7 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::with_capacity(matches.len());
-    let mut seen_urls: HashSet<AsciiCaseInsensitiveStr<'_>, FxBuildHasher> =
+    let mut seen_urls: HashSet<AsciiCaseInsensitive<'_>, FxBuildHasher> =
       HashSet::with_capacity_and_hasher(matches.len(), FxBuildHasher::default());
 
     for id in matches {
@@ -379,7 +383,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
       // (possible via import).
-      if !seen_urls.insert(AsciiCaseInsensitiveStr(url)) {
+      if !seen_urls.insert(AsciiCaseInsensitive(url)) {
         continue;
       }
 
@@ -885,7 +889,11 @@ fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
       let domain_start = registrable_domain(host)
         .and_then(|domain| host.len().checked_sub(domain.len()))
         .unwrap_or(0) as i64;
-      if idx == domain_start { 300 } else { 250 }
+      if idx == domain_start {
+        300
+      } else {
+        250
+      }
     }
   } else {
     0
