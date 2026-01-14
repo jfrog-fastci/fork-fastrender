@@ -37534,14 +37534,14 @@ fn range_common_ancestor_container_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
   let node_id = dom
     .range_common_ancestor_container(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+    .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
 
@@ -66677,6 +66677,7 @@ mod tests {
     )?;
 
     let dataset_ctx = realm.dataset_exotic_context();
+    let collections_ctx = realm.collections_exotic_context();
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
@@ -66691,7 +66692,12 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    let mut hooks = DomShimHostHooks::new(
+      &mut host,
+      dataset_ctx,
+      collections_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
@@ -66714,6 +66720,7 @@ mod tests {
     )?;
 
     let dataset_ctx = realm.dataset_exotic_context();
+    let collections_ctx = realm.collections_exotic_context();
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
@@ -66728,7 +66735,12 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    let mut hooks = DomShimHostHooks::new(
+      &mut host,
+      dataset_ctx,
+      collections_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
