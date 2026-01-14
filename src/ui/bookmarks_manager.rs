@@ -426,8 +426,9 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       ui.collapsing("Import / Export", |ui| {
         let profile_path = crate::ui::bookmarks_path();
+        let profile_path_display = profile_path.display().to_string();
         ui.label(
-          egui::RichText::new(format!("Profile file: {}", profile_path.display()))
+          egui::RichText::new(format!("Profile file: {profile_path_display}"))
             .small()
             .color(ui.visuals().weak_text_color()),
         );
@@ -486,7 +487,7 @@ pub fn bookmarks_manager_side_panel(
             let resp = ui.add_enabled(
               !state.io_job.is_busy(),
               egui::TextEdit::singleline(&mut state.export_path)
-                .hint_text(profile_path.display().to_string())
+                .hint_text(profile_path_display.as_str())
                 .desired_width(f32::INFINITY),
             );
             resp
@@ -500,7 +501,7 @@ pub fn bookmarks_manager_side_panel(
             let use_profile =
               ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Use profile path"));
             if use_profile.clicked() {
-              state.export_path = profile_path.display().to_string();
+              state.export_path = profile_path_display.clone();
             }
 
             let export_btn =
@@ -576,7 +577,7 @@ pub fn bookmarks_manager_side_panel(
             let resp = ui.add_enabled(
               !state.io_job.is_busy(),
               egui::TextEdit::singleline(&mut state.import_path)
-                .hint_text(profile_path.display().to_string())
+                .hint_text(profile_path_display.as_str())
                 .desired_width(f32::INFINITY),
             );
             resp
@@ -590,7 +591,7 @@ pub fn bookmarks_manager_side_panel(
             let use_profile =
               ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Use profile path"));
             if use_profile.clicked() {
-              state.import_path = profile_path.display().to_string();
+              state.import_path = profile_path_display.clone();
             }
 
             let import_btn =
