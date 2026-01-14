@@ -207,6 +207,9 @@ mod hir_async_class_tests;
 #[cfg(test)]
 mod hir_async_await_stmt_tests;
 
+#[cfg(test)]
+mod hir_derived_constructor_tests;
+
 // Some unit tests are authored as standalone files under `../tests/` so they can also run as
 // integration tests. Alias the crate as `vm_js` so those files can `use vm_js::...` regardless of
 // whether they are compiled as unit or integration tests.

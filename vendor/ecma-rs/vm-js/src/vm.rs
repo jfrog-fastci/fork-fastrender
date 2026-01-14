@@ -4808,50 +4808,57 @@ impl Vm {
     let mut this_scope = scope.reborrow();
     this_scope.push_root(new_target)?;
 
-    let (this_value, this_initialized, this_root_idx, this_obj) = if derived_constructor {
-      // Reserve a root-stack slot for the derived constructor `this` value.
-      //
-      // `this` is initialized by `super()`, but the evaluator's `this` field is not traced by GC, so
-      // `super()` must update this root slot once it returns.
-      let this_root_idx = this_scope.heap().root_stack.len();
-      this_scope.push_root(Value::Undefined)?;
-      (Value::Undefined, false, Some(this_root_idx), None)
-    } else {
-      // GetPrototypeFromConstructor(newTarget, %Object.prototype%), but tolerate missing intrinsics
-      // by falling back to the heap's best-effort default prototype.
-      let proto = match new_target {
-        Value::Object(new_target_obj) => {
-          let default_proto = this_scope.heap().default_object_prototype();
+    let (this_value, this_initialized, this_root_idx, this_obj, this_state_obj): (
+      Value,
+      bool,
+      Option<usize>,
+      Option<GcObject>,
+      Option<GcObject>,
+    ) = if derived_constructor {
+        let ctor = class_constructor.ok_or(VmError::InvariantViolation(
+          "derived constructor missing class constructor metadata",
+        ))?;
+        // Use a shared heap cell for the derived `this` binding so arrow functions and direct eval
+        // can observe initialization (e.g. `(() => super())()` or `eval('super()')`).
+        let state_obj = this_scope.alloc_derived_constructor_state(ctor)?;
+        this_scope.push_root(Value::Object(state_obj))?;
+        (Value::Object(state_obj), false, None, None, Some(state_obj))
+      } else {
+        // GetPrototypeFromConstructor(newTarget, %Object.prototype%), but tolerate missing intrinsics
+        // by falling back to the heap's best-effort default prototype.
+        let proto = match new_target {
+          Value::Object(new_target_obj) => {
+            let default_proto = this_scope.heap().default_object_prototype();
 
-          let mut proto_scope = this_scope.reborrow();
-          proto_scope.push_root(Value::Object(new_target_obj))?;
-          if let Some(default_proto) = default_proto {
-            proto_scope.push_root(Value::Object(default_proto))?;
-          }
+            let mut proto_scope = this_scope.reborrow();
+            proto_scope.push_root(Value::Object(new_target_obj))?;
+            if let Some(default_proto) = default_proto {
+              proto_scope.push_root(Value::Object(default_proto))?;
+            }
 
-          let key_s = proto_scope.alloc_string("prototype")?;
-          proto_scope.push_root(Value::String(key_s))?;
-          let key = PropertyKey::from_string(key_s);
-          let proto_val = proto_scope.get_with_host_and_hooks(
-            self,
-            host,
-            hooks,
-            new_target_obj,
-            key,
-            Value::Object(new_target_obj),
-          )?;
-          match proto_val {
-            Value::Object(o) => Some(o),
-            _ => default_proto,
+            let key_s = proto_scope.alloc_string("prototype")?;
+            proto_scope.push_root(Value::String(key_s))?;
+            let key = PropertyKey::from_string(key_s);
+            let proto_val = proto_scope.get_with_host_and_hooks(
+              self,
+              host,
+              hooks,
+              new_target_obj,
+              key,
+              Value::Object(new_target_obj),
+            )?;
+            match proto_val {
+              Value::Object(o) => Some(o),
+              _ => default_proto,
+            }
           }
-        }
-        _ => this_scope.heap().default_object_prototype(),
+          _ => this_scope.heap().default_object_prototype(),
+        };
+
+        let this_obj = this_scope.alloc_object_with_prototype(proto)?;
+        this_scope.push_root(Value::Object(this_obj))?;
+        (Value::Object(this_obj), true, None, Some(this_obj), None)
       };
-
-      let this_obj = this_scope.alloc_object_with_prototype(proto)?;
-      this_scope.push_root(Value::Object(this_obj))?;
-      (Value::Object(this_obj), true, None, Some(this_obj))
-    };
 
     let func_env = this_scope.env_create(outer)?;
     let mut env =
@@ -4888,15 +4895,36 @@ impl Vm {
       this_root_idx,
     );
 
-    if !is_async {
-      env.teardown(this_scope.heap_mut());
-    }
+    let return_value = match result {
+      Ok(v) => v,
+      Err(err) => {
+        if !is_async {
+          env.teardown(this_scope.heap_mut());
+        }
+        return Err(err);
+      }
+    };
 
-    let return_value = result?;
-    match return_value {
+    let final_this = if derived_constructor {
+      let state_obj = this_state_obj.ok_or(VmError::InvariantViolation(
+        "derived constructor missing DerivedConstructorState cell",
+      ))?;
+      let state = this_scope.heap().get_derived_constructor_state(state_obj)?;
+      match state.this_value {
+        Some(o) => Value::Object(o),
+        None => Value::Undefined,
+      }
+    } else {
+      Value::Object(this_obj.ok_or(VmError::InvariantViolation(
+        "base constructor missing allocated this object",
+      ))?)
+    };
+
+    let out = match return_value {
       // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
       // construction (regardless of constructor kind).
       Value::Object(o) => Ok(Value::Object(o)),
+
       // `return;` / no explicit return / `return undefined;` -> return `this`.
       //
       // Derived constructors are special only in that they may still have an uninitialized `this`
@@ -4904,29 +4932,7 @@ impl Vm {
       // ReferenceError.
       Value::Undefined => {
         if derived_constructor {
-          // Per ECMA-262, derived constructors must not return non-object values other than
-          // `undefined`.
-          if !matches!(return_value, Value::Undefined) {
-            let intr = self
-              .intrinsics()
-              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-            let err = crate::new_type_error(
-              &mut this_scope,
-              intr,
-              "Derived constructor returned non-object",
-            )?;
-            return Err(VmError::Throw(err));
-          }
-          let this_root_idx = this_root_idx.ok_or(VmError::InvariantViolation(
-            "derived constructor missing this root slot",
-          ))?;
-          match this_scope
-            .heap()
-            .root_stack
-            .get(this_root_idx)
-            .copied()
-            .unwrap_or(Value::Undefined)
-          {
+          match final_this {
             Value::Object(o) => Ok(Value::Object(o)),
             _ => {
               let intr = self
@@ -4941,26 +4947,25 @@ impl Vm {
             }
           }
         } else {
-          // Base/ordinary constructors always allocate `this` up-front.
-          let this_obj = this_obj.ok_or(VmError::InvariantViolation(
-            "base constructor missing allocated this object",
-          ))?;
-          Ok(Value::Object(this_obj))
+          Ok(final_this)
         }
-      },
+      }
+
       // Derived constructors may only return an object or `undefined`. Any other explicit non-object
       // return value must throw a TypeError.
       _ if derived_constructor => Err(VmError::TypeError(
         "Derived constructors may only return an object or undefined",
       )),
+
       // Base/ordinary constructors ignore explicit non-object return values.
-      _ => {
-        let this_obj = this_obj.ok_or(VmError::InvariantViolation(
-          "base constructor missing allocated this object",
-        ))?;
-        Ok(Value::Object(this_obj))
-      }
+      _ => Ok(final_this),
+    };
+
+    if !is_async {
+      env.teardown(this_scope.heap_mut());
     }
+
+    out
   }
 
   fn construct_ecma_function(
