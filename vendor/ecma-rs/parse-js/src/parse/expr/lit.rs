@@ -3373,6 +3373,14 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn unicode_mode_accepts_unicode_property_escapes() {
+    assert_valid(r"/\p{ASCII}/u");
+    assert_valid(r"/\P{ASCII}/u");
+    assert_valid(r"/\p{Lu}/u");
+    assert_valid(r"/\p{Script=Greek}/u");
+  }
+
+  #[test]
   fn unicode_sets_mode_allows_non_string_disjunction_in_negated_class() {
     assert_valid(r"/[^\q{a|b}]/v");
     assert_valid(r"/[^\q{\u{41}}]/v"); // braced unicode escape counts as a single ClassSetCharacter
