@@ -88,7 +88,14 @@ struct Sample {
 #[derive(Debug, Clone)]
 enum PtsIndex {
   Monotonic,
-  Sorted { sample_indices_by_pts: Vec<u32> },
+  Sorted {
+    sample_indices_by_pts: Vec<u32>,
+    /// Suffix minima of decode-order indices for fast "first decode sample with pts>=t" seeking.
+    ///
+    /// `min_sample_index_from_pos[i]` is the smallest decode-order sample index among
+    /// `sample_indices_by_pts[i..]`.
+    min_sample_index_from_pos: Vec<u32>,
+  },
 }
 
 #[derive(Debug, Clone)]
@@ -105,12 +112,13 @@ impl TrackState {
       PtsIndex::Monotonic => self.samples.partition_point(|s| s.pts_ns < time_ns),
       PtsIndex::Sorted {
         sample_indices_by_pts,
+        min_sample_index_from_pos,
       } => {
         let pos =
           sample_indices_by_pts.partition_point(|&i| self.samples[i as usize].pts_ns < time_ns);
-        sample_indices_by_pts
+        min_sample_index_from_pos
           .get(pos)
-          .map(|&i| i as usize)
+          .map(|&idx| idx as usize)
           .unwrap_or_else(|| self.samples.len())
       }
     };
@@ -694,7 +702,104 @@ fn parse_avc_sample_entry(
     return Err(Mp4ParseError::MissingBox("avcC"));
   }
 
-  Ok((MediaVideoInfo { width, height }, avcc))
+  let codec_private = parse_avcc_for_h264_codec_private(&avcc)?;
+  Ok((MediaVideoInfo { width, height }, codec_private))
+}
+
+fn parse_avcc_for_h264_codec_private(avcc: &[u8]) -> ParseResult<Vec<u8>> {
+  // AVCDecoderConfigurationRecord (avcC) layout (ISO/IEC 14496-15):
+  //
+  // 1  configurationVersion (must be 1)
+  // 1  AVCProfileIndication
+  // 1  profile_compatibility
+  // 1  AVCLevelIndication
+  // 1  reserved (6 bits = 1) + lengthSizeMinusOne (2 bits)
+  // 1  reserved (3 bits = 1) + numOfSequenceParameterSets (5 bits)
+  //   [SPS...]
+  // 1  numOfPictureParameterSets
+  //   [PPS...]
+  //
+  // We convert this to the small custom format expected by `decoder::H264Decoder`:
+  //
+  //   u8  nal_length_size
+  //   u8  sps_count
+  //   [sps_count] { u16be len, [len] bytes }
+  //   u8  pps_count
+  //   [pps_count] { u16be len, [len] bytes }
+  if avcc.len() < 7 {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  let mut i = 0usize;
+
+  let configuration_version = avcc[i];
+  i += 1;
+  if configuration_version != 1 {
+    return Err(Mp4ParseError::Invalid(
+      "unsupported avcC configurationVersion",
+    ));
+  }
+
+  // Skip profile/compat/level.
+  i += 3;
+
+  let length_size_minus_one = avcc[i] & 0b11;
+  i += 1;
+  let nal_length_size = length_size_minus_one + 1;
+  if nal_length_size == 0 || nal_length_size > 4 {
+    return Err(Mp4ParseError::Invalid("invalid avcC NAL length size"));
+  }
+
+  let num_sps = avcc[i] & 0b1_1111;
+  i += 1;
+  let sps_count = num_sps as usize;
+
+  let mut out = Vec::new();
+  out.push(nal_length_size);
+  out.push(num_sps);
+
+  for _ in 0..sps_count {
+    if i + 2 > avcc.len() {
+      return Err(Mp4ParseError::UnexpectedEof);
+    }
+    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+    i += 2;
+    let end = i
+      .checked_add(len)
+      .ok_or(Mp4ParseError::Invalid("avcC length overflow"))?;
+    if end > avcc.len() {
+      return Err(Mp4ParseError::UnexpectedEof);
+    }
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(&avcc[i..end]);
+    i = end;
+  }
+
+  if i >= avcc.len() {
+    return Err(Mp4ParseError::UnexpectedEof);
+  }
+  let num_pps = avcc[i];
+  i += 1;
+  let pps_count = num_pps as usize;
+
+  out.push(num_pps);
+  for _ in 0..pps_count {
+    if i + 2 > avcc.len() {
+      return Err(Mp4ParseError::UnexpectedEof);
+    }
+    let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+    i += 2;
+    let end = i
+      .checked_add(len)
+      .ok_or(Mp4ParseError::Invalid("avcC length overflow"))?;
+    if end > avcc.len() {
+      return Err(Mp4ParseError::UnexpectedEof);
+    }
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(&avcc[i..end]);
+    i = end;
+  }
+
+  Ok(out)
 }
 
 fn parse_aac_sample_entry(
@@ -1256,8 +1361,16 @@ fn build_pts_index(samples: &[Sample]) -> PtsIndex {
   }
   sample_indices_by_pts.sort_unstable_by_key(|&i| (samples[i as usize].pts_ns, i));
 
+  let mut min_sample_index_from_pos = vec![0_u32; sample_indices_by_pts.len()];
+  let mut min = u32::MAX;
+  for (pos, &idx) in sample_indices_by_pts.iter().enumerate().rev() {
+    min = min.min(idx);
+    min_sample_index_from_pos[pos] = min;
+  }
+
   PtsIndex::Sorted {
     sample_indices_by_pts,
+    min_sample_index_from_pos,
   }
 }
 
@@ -1454,5 +1567,115 @@ mod tests {
       state.samples.iter().map(|s| s.pts_ns).collect::<Vec<_>>(),
       vec![0, 3_000_000_000, 5_000_000_000, 7_000_000_000]
     );
+  }
+
+  #[test]
+  fn track_state_seek_sorted_pts_returns_decode_order_sample_index() {
+    // Non-monotonic PTS in decode order (typical B-frame reordering):
+    //
+    // dts: 0, 1, 2, 3
+    // ctts: 0, +2, -1, -1
+    // pts: 0, 3, 1, 2
+    //
+    // When seeking to pts>=2, the first *decode-order* sample whose PTS is >=2 is sample 1 (pts=3),
+    // not sample 3 (pts=2).
+    let mut state = build_track_state(
+      TrackBoxes {
+        timescale: Some(1),
+        stts: Some(vec![SttsEntry {
+          sample_count: 4,
+          sample_delta: 1,
+        }]),
+        ctts: Some(vec![
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: 0,
+          },
+          CttsEntry {
+            sample_count: 1,
+            sample_offset: 2,
+          },
+          CttsEntry {
+            sample_count: 2,
+            sample_offset: -1,
+          },
+        ]),
+        stsc: Some(vec![StscEntry {
+          first_chunk: 1,
+          samples_per_chunk: 4,
+          _sample_desc_index: 1,
+        }]),
+        stsz: Some(StszBox {
+          sample_size: 1,
+          sample_sizes: Vec::new(),
+          sample_count: 4,
+        }),
+        chunk_offsets: Some(vec![0]),
+        ..Default::default()
+      },
+      1,
+    )
+    .expect("track state");
+
+    state.seek(2_000_000_000);
+    assert_eq!(state.next_sample, 1);
+  }
+
+  #[test]
+  fn demuxer_h264_codec_private_is_decoder_format() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let demuxer = Mp4Demuxer::open(Cursor::new(bytes.as_slice())).expect("open mp4");
+    let h264 = demuxer
+      .tracks()
+      .iter()
+      .find(|t| t.codec == MediaCodec::H264)
+      .expect("H264 track");
+
+    // Parse the minimal H264 extradata format expected by `decoder::H264Decoder`:
+    // u8 nal_length_size
+    // u8 sps_count
+    // [sps_count] { u16be len, [len] bytes }
+    // u8 pps_count
+    // [pps_count] { u16be len, [len] bytes }
+    let data = &h264.codec_private;
+    assert!(!data.is_empty(), "expected non-empty H264 codec_private");
+
+    let mut i = 0usize;
+    let nal_length_size = *data.get(i).expect("nal length size");
+    assert!(
+      (1..=4).contains(&nal_length_size),
+      "unexpected nal_length_size: {nal_length_size}"
+    );
+    i += 1;
+
+    let sps_count = *data.get(i).expect("sps count") as usize;
+    i += 1;
+    assert!(sps_count > 0, "expected at least one SPS");
+
+    for _ in 0..sps_count {
+      let len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+      i += 2;
+      let end = i + len;
+      assert!(end <= data.len(), "SPS out of bounds");
+      assert!(len > 0, "SPS must be non-empty");
+      i = end;
+    }
+
+    let pps_count = *data.get(i).expect("pps count") as usize;
+    i += 1;
+    assert!(pps_count > 0, "expected at least one PPS");
+
+    for _ in 0..pps_count {
+      let len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+      i += 2;
+      let end = i + len;
+      assert!(end <= data.len(), "PPS out of bounds");
+      assert!(len > 0, "PPS must be non-empty");
+      i = end;
+    }
+
+    assert_eq!(i, data.len(), "unexpected trailing bytes in codec_private");
   }
 }
