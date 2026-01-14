@@ -13956,7 +13956,7 @@ struct App {
   ///
   /// PERF: Reused across frames so that frames without paste input don't allocate.
   paste_events_buf: Vec<String>,
-  /// Enable lightweight perf logging controlled by `FASTR_PERF_LOG=1`.
+  /// Enable lightweight perf logging controlled by `browser --perf-log` / `FASTR_PERF_LOG=1`.
   perf_log_enabled: bool,
 
   window_focused: bool,
@@ -28271,8 +28271,8 @@ impl App {
         // should be allocation-free for this path.
         //
         // Validation:
-        // - Run with `FASTR_PERF_LOG=1` and scroll/paste; a log line is printed only when either
-        //   buffer grows (heap alloc).
+        // - Run with `browser --perf-log` / `FASTR_PERF_LOG=1` and scroll/paste; a log line is
+        //   printed only when either buffer grows (heap alloc).
         // - For full allocation profiling, see `docs/profiling-linux.md` ("heaptrack").
         let wheel_cap_before = self.wheel_events_buf.capacity();
         let paste_cap_before = self.paste_events_buf.capacity();
