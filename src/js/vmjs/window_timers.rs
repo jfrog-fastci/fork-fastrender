@@ -3591,7 +3591,8 @@ mod tests {
   fn request_idle_callback_timeout_fires_while_busy() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
-    let event_loop = EventLoop::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::with_clock(clock_dyn);
     let mut host = crate::js::WindowHost::new_with_fetcher_and_event_loop(
       dom,
       "https://example.com/",
@@ -3695,7 +3696,8 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock_dyn);
     let mut host = ClockHost::new(Arc::clone(&clock));
 
     {
@@ -5120,7 +5122,7 @@ mod tests {
       let global = realm.global_object();
       scope
         .push_root(Value::Object(global))
-        .expect("push root global");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
       let check = make_callback(
         vm,
@@ -5131,7 +5133,7 @@ mod tests {
       );
       scope
         .push_root(Value::Object(check))
-        .expect("push root __check_host_hooks");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       set_prop(
         &mut scope,
         global,
@@ -5186,7 +5188,7 @@ mod tests {
       let global = realm.global_object();
       scope
         .push_root(Value::Object(global))
-        .expect("push root global");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
       let check = make_callback(
         vm,
@@ -5197,7 +5199,7 @@ mod tests {
       );
       scope
         .push_root(Value::Object(check))
-        .expect("push root __check_host_hooks");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       set_prop(
         &mut scope,
         global,
@@ -5222,7 +5224,9 @@ mod tests {
         let mut scope = heap.scope();
         let global = realm.global_object();
         let binding = get_prop(&mut scope, global, "__check_host_hooks");
-        scope.push_root(binding).expect("push root binding");
+        scope
+          .push_root(binding)
+          .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
         vm.call_with_host_and_hooks(
           host_ctx,
@@ -5456,7 +5460,7 @@ mod tests {
       let global = realm.global_object();
       scope
         .push_root(Value::Object(global))
-        .expect("push root global");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
       let check = make_callback(
         vm,
@@ -5467,7 +5471,7 @@ mod tests {
       );
       scope
         .push_root(Value::Object(check))
-        .expect("push root __check_host_hooks");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       set_prop(
         &mut scope,
         global,
@@ -5636,7 +5640,7 @@ mod tests {
       let global = realm.global_object();
       scope
         .push_root(Value::Object(global))
-        .expect("push root global");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       let cb = make_callback(
         vm,
         &mut scope,
@@ -5676,7 +5680,8 @@ mod tests {
   #[test]
   fn set_timeout_parses_hex_delay_string() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_dyn);
     let mut host = Host::new();
 
     {
@@ -5858,7 +5863,7 @@ mod tests {
         );
         scope
           .push_root(Value::Object(webidl_dispatch))
-          .expect("push root __webidl_dispatch");
+          .map_err(|err| crate::error::Error::Other(err.to_string()))?;
         set_prop(
           &mut scope,
           global,
@@ -5875,7 +5880,7 @@ mod tests {
         );
         scope
           .push_root(Value::Object(timeout_cb))
-          .expect("push root timeout_cb");
+          .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
         vm.call_with_host_and_hooks(
           &mut host.host_ctx,
@@ -5925,7 +5930,7 @@ mod tests {
       );
       scope
         .push_root(Value::Object(webidl_dispatch))
-        .expect("push root __webidl_dispatch");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       set_prop(
         &mut scope,
         global,
@@ -6106,7 +6111,8 @@ mod tests {
   fn interval_continues_after_uncaught_exception() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
-    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock_dyn);
     let mut host =
       crate::js::WindowHost::new_with_fetcher_and_event_loop(
         dom,
@@ -6203,7 +6209,7 @@ mod tests {
         let x_s = scope.alloc_string("x").unwrap();
         scope
           .push_root(Value::String(x_s))
-          .expect("push root arg string");
+          .map_err(|err| crate::error::Error::Other(err.to_string()))?;
         vm.call_with_host_and_hooks(
           &mut host.host_ctx,
           &mut scope,
@@ -6306,7 +6312,8 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_dyn);
     let mut host = Host::new();
 
     {
@@ -6515,7 +6522,7 @@ mod tests {
       let handler_s = scope.alloc_string("alert(1)").unwrap();
       scope
         .push_root(Value::String(handler_s))
-        .expect("push root handler string");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       vm.call_without_host(
         &mut scope,
         queue_microtask,
@@ -6885,7 +6892,7 @@ mod tests {
       let handler_obj = scope.alloc_object().unwrap();
       scope
         .push_root(Value::Object(handler_obj))
-        .expect("push root handler object");
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
       vm.call_without_host(
         &mut scope,
         queue_microtask,
