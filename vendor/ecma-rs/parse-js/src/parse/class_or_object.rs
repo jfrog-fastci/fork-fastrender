@@ -273,7 +273,8 @@ impl<'a> Parser<'a> {
               p.super_call_allowed = 0;
               // Static blocks have their own `Await` / `Yield` context:
               // - `await` is reserved as an identifier (even in scripts),
-              // - `await` expressions are permitted only when allowed by the surrounding context,
+              // - `await` expressions are permitted only within an enclosing async function (they do
+              //   not inherit module top-level await), and
               // - `yield` is not treated as a keyword from an enclosing generator, but yield
               //   expressions are never permitted, and
               // - `return` statements are never permitted (handled above via `in_function = 0`).
@@ -281,7 +282,13 @@ impl<'a> Parser<'a> {
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: !is_module,
-                await_expr_allowed: ctx.rules.await_expr_allowed,
+                // Allow `await` only when nested within a function's await context (i.e. an enclosing
+                // async function), but not at top-level module/script.
+                //
+                // Note: `static {}` blocks are not function bodies and set `p.in_function = 0` above
+                // to ensure `return` statements are always rejected. Use the saved `prev_in_function`
+                // here to detect whether the block was nested within an enclosing function.
+                await_expr_allowed: ctx.rules.await_expr_allowed && prev_in_function > 0,
                 yield_expr_allowed: false,
               });
               let body =
