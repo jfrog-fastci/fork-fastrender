@@ -715,6 +715,43 @@ struct HitTestFragmentTreeCache {
   scroll_elements: HashMap<usize, Point>,
 }
 
+fn hit_test_fragment_tree_for_scroll(
+  cache: &mut Option<HitTestFragmentTreeCache>,
+  doc: &BrowserDocument,
+  scroll: &ScrollState,
+) -> Option<Arc<crate::FragmentTree>> {
+  // Fast path: when there is no viewport or element scroll, the prepared fragment tree can be
+  // used directly for hit testing without cloning.
+  if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
+    *cache = None;
+    return None;
+  }
+
+  let Some(prepared) = doc.prepared() else {
+    *cache = None;
+    return None;
+  };
+  let prepared_fragment_tree_ptr = prepared.fragment_tree() as *const crate::FragmentTree;
+
+  if let Some(existing) = cache.as_ref() {
+    if existing.prepared_fragment_tree_ptr == prepared_fragment_tree_ptr
+      && existing.scroll_viewport == scroll.viewport
+      && existing.scroll_elements == scroll.elements
+    {
+      return Some(Arc::clone(&existing.tree));
+    }
+  }
+
+  let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
+  *cache = Some(HitTestFragmentTreeCache {
+    tree: Arc::clone(&tree),
+    prepared_fragment_tree_ptr,
+    scroll_viewport: scroll.viewport,
+    scroll_elements: scroll.elements.clone(),
+  });
+  Some(tree)
+}
+
 // -----------------------------------------------------------------------------
 // Media wakeup scheduling
 // -----------------------------------------------------------------------------
@@ -6465,8 +6502,8 @@ impl BrowserRuntime {
       &scroll_snapshot,
       if pointer_in_page { pos_css } else { (-1.0, -1.0) },
     );
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
+      .to_string();
 
     // ---------------------------------------------------------------------------
     // Viewport autoscroll while extending a document selection.
@@ -6639,7 +6676,7 @@ impl BrowserRuntime {
                 let hovered_url = match kind {
                   HitTestKind::Link => href
                     .as_deref()
-                    .and_then(|href| resolve_link_url(base_url, href)),
+                    .and_then(|href| resolve_link_url(base_url.as_str(), href)),
                   _ => None,
                 };
 
@@ -7423,12 +7460,13 @@ impl BrowserRuntime {
 
     let pointer_buttons = tab.pointer_buttons;
 
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
+      .to_string();
     let document_url = tab
       .last_committed_url
       .as_deref()
-      .unwrap_or(about_pages::ABOUT_BASE_URL);
+      .unwrap_or(about_pages::ABOUT_BASE_URL)
+      .to_string();
     let scroll_snapshot = tab.scroll_state.clone();
     let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     let viewport_point = viewport_point_for_pos_css(
@@ -7478,8 +7516,8 @@ impl BrowserRuntime {
           button,
           modifiers,
           true,
-          document_url,
-          base_url,
+          document_url.as_str(),
+          base_url.as_str(),
         );
 
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
@@ -8468,8 +8506,8 @@ impl BrowserRuntime {
     let js_cancel_snapshot = tab.cancel.snapshot_paint();
     let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
+      .to_string();
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
@@ -8575,9 +8613,9 @@ impl BrowserRuntime {
               media_context: None,
               font_size: None,
               root_font_size: None,
-              base_url: Some(base_url),
+              base_url: Some(base_url.as_str()),
             });
-            resolve_link_url(base_url, selected.url)
+            resolve_link_url(base_url.as_str(), selected.url)
           } else {
             let node = dom_index.node(styled_id)?;
             // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
@@ -8587,7 +8625,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url, src))
+                .and_then(|src| resolve_link_url(base_url.as_str(), src))
             } else if node
               .tag_name()
               .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
@@ -8595,7 +8633,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url, src))
+                .and_then(|src| resolve_link_url(base_url.as_str(), src))
             } else {
               None
             }
@@ -8678,7 +8716,7 @@ impl BrowserRuntime {
     let link_url = hit_info
       .href
       .as_deref()
-      .and_then(|href| resolve_link_url(base_url, href));
+      .and_then(|href| resolve_link_url(base_url.as_str(), href));
     let image_url = hit_info.image_url.clone();
 
     if changed {
@@ -9976,11 +10014,13 @@ impl BrowserRuntime {
         return;
       };
       let base_url =
-        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
+          .to_string();
       let document_url = tab
         .last_committed_url
         .as_deref()
-        .unwrap_or(about_pages::ABOUT_BASE_URL);
+        .unwrap_or(about_pages::ABOUT_BASE_URL)
+        .to_string();
 
       let Some(mut doc) = tab.document.as_mut() else {
         return;
@@ -9994,8 +10034,8 @@ impl BrowserRuntime {
           Some(box_tree),
           fragment_tree,
           key,
-          document_url,
-          base_url,
+          document_url.as_str(),
+          base_url.as_str(),
         );
         let (submitter, submitter_element_id) =
           engine.take_last_form_submitter_with_element_id();
