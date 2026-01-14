@@ -2145,6 +2145,16 @@ impl Vm {
   }
 
   pub fn register_native_call(&mut self, f: NativeCall) -> Result<NativeFunctionId, VmError> {
+    if let Some(idx) = self
+      .native_calls
+      .iter()
+      .position(|&call| std::ptr::fn_addr_eq(call, f))
+    {
+      let idx = u32::try_from(idx)
+        .map_err(|_| VmError::LimitExceeded("too many native call handlers registered"))?;
+      return Ok(NativeFunctionId(idx));
+    }
+
     let len = self.native_calls.len();
     #[cfg(test)]
     let len = self.native_calls_len_override.unwrap_or(len);
@@ -2164,6 +2174,16 @@ impl Vm {
     &mut self,
     f: NativeConstruct,
   ) -> Result<NativeConstructId, VmError> {
+    if let Some(idx) = self
+      .native_constructs
+      .iter()
+      .position(|&construct| std::ptr::fn_addr_eq(construct, f))
+    {
+      let idx = u32::try_from(idx)
+        .map_err(|_| VmError::LimitExceeded("too many native construct handlers registered"))?;
+      return Ok(NativeConstructId(idx));
+    }
+
     let len = self.native_constructs.len();
     #[cfg(test)]
     let len = self.native_constructs_len_override.unwrap_or(len);
