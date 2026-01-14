@@ -339,11 +339,10 @@ impl<'a> Parser<'a> {
     // `parse-js` does not keep parentheses as distinct AST nodes; preserve the information via an
     // association marker instead so downstream consumers can implement syntax-sensitive behaviors
     // (e.g. restricted production rules).
-    //
-    // Note: The expression node's `loc` remains the location of the inner expression itself, not
-    // including the parentheses, so that spans stay "tight" around their actual syntactic form.
-    let _ = (open, close);
     expr.assoc.set(ParenthesizedExpr);
+    // Include the parentheses in the node span so downstream source slicing (e.g. lazy parsing)
+    // can recover a syntactically-valid snippet for constructs like `(() => x)()`.
+    expr.loc = open.loc + close.loc;
     Ok(expr)
   }
 

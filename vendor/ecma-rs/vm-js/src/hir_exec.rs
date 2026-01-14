@@ -3342,57 +3342,16 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
     };
 
-    // Attach `Error.stack` and annotate stack traces for compiled (HIR) execution by attributing
-    // thrown exceptions to the currently executing HIR statement span (similar to
-    // `exec.rs::eval_stmt_labelled`).
-    //
-    // This is the primary stack capture point for the compiled executor so `try/catch` inside JS
-    // can observe a populated `e.stack` when exceptions originate from HIR execution.
-
-    // Only annotate throw-completions: termination/OOM/etc must propagate untouched.
     let Err(err) = res else {
       return res;
     };
-    if !err.is_throw_completion() {
-      return Err(err);
-    }
-
-    let source = self.script.source.as_ref();
-    let (line, col) = source.line_col(stmt.span.start);
-    let update_top_frame = |stack: &mut Vec<StackFrame>| {
-      if let Some(top) = stack.first_mut() {
-        top.source = source.name.clone();
-        top.line = line;
-        top.col = col;
-      } else {
-        stack.push(StackFrame {
-          function: None,
-          source: source.name.clone(),
-          line,
-          col,
-        });
-      }
-    };
-
-    let err = crate::vm::coerce_error_to_throw(&*self.vm, scope, err);
-    match err {
-      VmError::Throw(value) => {
-        let mut stack = self.vm.capture_stack();
-        update_top_frame(&mut stack);
-        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
-        Err(VmError::ThrowWithStack { value, stack })
-      }
-      VmError::ThrowWithStack { value, mut stack } => {
-        // Mirror the AST evaluator's behavior: only patch captured stacks that have no meaningful
-        // top-frame location (typically captured while executing native code).
-        if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
-          update_top_frame(&mut stack);
-        }
-        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
-        Err(VmError::ThrowWithStack { value, stack })
-      }
-      other => Err(other),
-    }
+    Err(finalize_throw_with_stack_at_source_offset(
+      &*self.vm,
+      scope,
+      self.script.source.as_ref(),
+      stmt.span.start,
+      err,
+    ))
   }
 
   fn bind_for_in_of_head(

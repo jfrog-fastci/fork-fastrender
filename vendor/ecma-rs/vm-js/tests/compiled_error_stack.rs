@@ -234,6 +234,69 @@ fn compiled_top_level_await_implicit_throw_has_error_stack() -> Result<(), VmErr
   );
 
   rt.heap_mut().remove_root(completion_root);
+
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_rejection_reason_has_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Promise + microtask machinery needs a bit of heap headroom.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      const notCallable = 1;
+      const x = notCallable();
+      await Promise.resolve(0);
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let promise_root = rt.heap.add_root(result)?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+    panic!("expected Promise object from top-level await script");
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected Promise should have a rejection reason");
+  let Value::Object(err_obj) = reason else {
+    panic!("expected Promise rejection reason to be an object, got {reason:?}");
+  };
+
+  // `Error.stack` must be attached on the compiled/HIR path even for top-level await scripts that
+  // reject via a synchronous throw before the first `await`.
+  let stack = {
+    let mut scope = rt.heap.scope();
+    let stack_key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(stack_key_s))?;
+    let stack_key = PropertyKey::from_string(stack_key_s);
+    let stack_value = scope
+      .heap()
+      .object_get_own_data_property_value(err_obj, &stack_key)?
+      .unwrap_or(Value::Undefined);
+
+    let Value::String(stack_s) = stack_value else {
+      panic!("expected rejection reason to have string own `stack`, got {stack_value:?}");
+    };
+    scope.heap().get_string(stack_s)?.to_utf8_lossy()
+  };
+  assert!(!stack.is_empty(), "expected non-empty stack string");
+  assert!(
+    stack.contains("value is not callable"),
+    "expected stack string to include error message, got {stack:?}"
+  );
+
+  rt.heap_mut().remove_root(promise_root);
   Ok(())
 }
 
