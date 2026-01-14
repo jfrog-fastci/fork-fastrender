@@ -3360,15 +3360,6 @@ fn url_looks_like_font_asset(url: &str) -> bool {
     .any(|suffix| ends_with_ignore_ascii_case(url, suffix))
 }
 
-fn url_looks_like_media_asset(url: &str) -> bool {
-  let url = url_without_query_fragment(url);
-  [
-    ".mp4", ".webm", ".weba", ".mp3", ".m4a", ".ogg", ".oga", ".opus", ".wav",
-  ]
-  .into_iter()
-  .any(|suffix| ends_with_ignore_ascii_case(url, suffix))
-}
-
 fn url_looks_like_svg_or_html(url: &str) -> bool {
   url_looks_like_suffix(url, ".svg")
     || url_looks_like_suffix(url, ".svgz")
@@ -3649,10 +3640,7 @@ pub fn ensure_media_mime_sane(resource: &FetchedResource, requested_url: &str) -
     }
   }
 
-  let final_url = resource.final_url.as_deref().unwrap_or(requested_url);
-  if (url_looks_like_media_asset(requested_url) || url_looks_like_media_asset(final_url))
-    && file_payload_looks_like_markup_but_not_svg(&resource.bytes)
-  {
+  if file_payload_looks_like_markup(&resource.bytes) {
     return Err(response_resource_error(
       resource,
       requested_url,
@@ -14216,6 +14204,18 @@ fn file_payload_looks_like_markup_but_not_svg(bytes: &[u8]) -> bool {
   }
 }
 
+fn file_payload_looks_like_markup(bytes: &[u8]) -> bool {
+  let sample = &bytes[..bytes.len().min(256)];
+  let mut i = 0;
+  if sample.starts_with(b"\xef\xbb\xbf") {
+    i = 3;
+  }
+  while i < sample.len() && sample[i].is_ascii_whitespace() {
+    i += 1;
+  }
+  sample.get(i) == Some(&b'<')
+}
+
 fn file_payload_looks_like_font(bytes: &[u8]) -> bool {
   let Some(prefix) = bytes.get(..4) else {
     return false;
@@ -15665,6 +15665,28 @@ mod tests {
       let url = "https://example.com/video.mp4";
       let err = ensure_media_mime_sane(&resource, url)
         .expect_err("expected markup payload to be rejected for media URLs");
+      assert!(
+        err.to_string().contains("unexpected markup response body"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn media_mime_sanity_rejects_markup_bodies_for_extensionless_urls() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(
+        b"<!doctype html><html><title>blocked</title></html>".to_vec(),
+        Some("video/mp4".to_string()),
+      );
+      resource.status = Some(200);
+      let url = "https://example.com/video";
+      let err = ensure_media_mime_sane(&resource, url)
+        .expect_err("expected markup payload to be rejected for media URLs without extensions");
       assert!(
         err.to_string().contains("unexpected markup response body"),
         "unexpected error: {err}"

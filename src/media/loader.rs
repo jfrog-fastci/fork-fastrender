@@ -44,6 +44,18 @@ fn url_without_query_fragment(url: &str) -> &str {
   url.split_once('?').map(|(before, _)| before).unwrap_or(url)
 }
 
+fn payload_looks_like_markup(bytes: &[u8]) -> bool {
+  let sample = &bytes[..bytes.len().min(256)];
+  let mut i = 0;
+  if sample.starts_with(b"\xef\xbb\xbf") {
+    i = 3;
+  }
+  while i < sample.len() && sample[i].is_ascii_whitespace() {
+    i += 1;
+  }
+  sample.get(i) == Some(&b'<')
+}
+
 fn mime_is_html(mime: &str) -> bool {
   let mime = trim_http_whitespace(mime);
   starts_with_ignore_ascii_case(mime, "text/html")
@@ -133,6 +145,12 @@ pub fn open_mp4_demuxer(
   bytes: &[u8],
 ) -> MediaResult<Mp4Demuxer> {
   ensure_media_mime_sane(url, content_type)?;
+  if crate::resource::strict_mime_checks_enabled() && payload_looks_like_markup(bytes) {
+    return Err(MediaError::LoadFailed {
+      url: url.to_string(),
+      reason: "unexpected markup response body".to_string(),
+    });
+  }
   Mp4Demuxer::new(bytes).map_err(|err| MediaError::Demux(err.to_string()))
 }
 
@@ -156,6 +174,12 @@ pub fn open_webm_demuxer<'a>(
   bytes: &'a [u8],
 ) -> MediaResult<WebmDemuxer<Cursor<&'a [u8]>>> {
   ensure_media_mime_sane(url, content_type)?;
+  if crate::resource::strict_mime_checks_enabled() && payload_looks_like_markup(bytes) {
+    return Err(MediaError::LoadFailed {
+      url: url.to_string(),
+      reason: "unexpected markup response body".to_string(),
+    });
+  }
   WebmDemuxer::open(Cursor::new(bytes))
 }
 
@@ -233,6 +257,24 @@ mod tests {
       let bytes = b"not an mp4";
       match open_mp4_demuxer(url, Some("text/html"), bytes) {
         Err(MediaError::LoadFailed { .. }) => {}
+        Ok(_) => panic!("expected LoadFailed"),
+        Err(other) => panic!("expected LoadFailed, got {other:?}"),
+      }
+    });
+  }
+
+  #[test]
+  fn media_loader_rejects_markup_payloads_before_demux() {
+    runtime::with_thread_runtime_toggles(strict_mime_toggles(), || {
+      let url = "https://example.com/video.webm";
+      let bytes = b"<!doctype html><html><title>blocked</title></html>";
+      match open_webm_demuxer(url, Some("video/webm"), bytes) {
+        Err(MediaError::LoadFailed { reason, .. }) => {
+          assert!(
+            reason.contains("unexpected markup response body"),
+            "unexpected reason: {reason}"
+          );
+        }
         Ok(_) => panic!("expected LoadFailed"),
         Err(other) => panic!("expected LoadFailed, got {other:?}"),
       }
