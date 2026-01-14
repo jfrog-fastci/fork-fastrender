@@ -510,6 +510,112 @@ pub fn client_width_height_for_fragment(node: &FragmentNode, style: &ComputedSty
   (rect.size.width, rect.size.height)
 }
 
+// === Scroll anchoring (CSS Scroll Anchoring Module Level 1) ===
+//
+// The primary scroll anchoring implementation is tracked elsewhere, but unit tests depend on
+// having a deterministic anchor *selection* routine. Keep this helper internal and lint-clean for
+// non-test builds (CI runs `cargo doc -D warnings`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn select_scroll_anchoring_anchor_box_id(
+  scroller: &FragmentNode,
+  scroll_offset: Point,
+) -> Option<usize> {
+  let style = scroller.style.as_deref()?;
+  if style.overflow_anchor == crate::style::types::OverflowAnchor::None {
+    return None;
+  }
+
+  let scrollport = scrollport_rect_for_fragment(scroller, style);
+
+  let pad_left = sanitize_scroll_padding(resolve_snap_length(
+    style.scroll_padding_left,
+    scrollport.size.width,
+  ));
+  let pad_right = sanitize_scroll_padding(resolve_snap_length(
+    style.scroll_padding_right,
+    scrollport.size.width,
+  ));
+  let pad_top = sanitize_scroll_padding(resolve_snap_length(
+    style.scroll_padding_top,
+    scrollport.size.height,
+  ));
+  let pad_bottom = sanitize_scroll_padding(resolve_snap_length(
+    style.scroll_padding_bottom,
+    scrollport.size.height,
+  ));
+
+  let optimal_viewing_region = Rect::from_xywh(
+    scrollport.origin.x + pad_left,
+    scrollport.origin.y + pad_top,
+    (scrollport.size.width - pad_left - pad_right).max(0.0),
+    (scrollport.size.height - pad_top - pad_bottom).max(0.0),
+  );
+
+  fn contains_rect(outer: Rect, inner: Rect) -> bool {
+    inner.min_x() >= outer.min_x()
+      && inner.max_x() <= outer.max_x()
+      && inner.min_y() >= outer.min_y()
+      && inner.max_y() <= outer.max_y()
+  }
+
+  fn candidate_examination(
+    node: &FragmentNode,
+    origin: Point,
+    scroll_offset: Point,
+    optimal_viewing_region: Rect,
+  ) -> Option<usize> {
+    if node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.overflow_anchor == crate::style::types::OverflowAnchor::None)
+    {
+      return None;
+    }
+
+    let bounding_rect = node.scroll_overflow.translate(Point::new(
+      origin.x - scroll_offset.x,
+      origin.y - scroll_offset.y,
+    ));
+
+    if !bounding_rect.intersects(optimal_viewing_region) {
+      // Fully clipped: the scroll anchoring spec says we must skip this node and its descendants.
+      return None;
+    }
+
+    let box_id = node.box_id();
+    if box_id.is_some() && contains_rect(optimal_viewing_region, bounding_rect) {
+      return box_id;
+    }
+
+    // Partially visible. Search descendants first.
+    let child_base = origin;
+    for child in node.children.iter() {
+      let child_origin = Point::new(
+        child_base.x + child.bounds.x(),
+        child_base.y + child.bounds.y(),
+      );
+      if let Some(anchor) =
+        candidate_examination(child, child_origin, scroll_offset, optimal_viewing_region)
+      {
+        return Some(anchor);
+      }
+    }
+
+    box_id
+  }
+
+  for child in scroller.children.iter() {
+    let child_origin = Point::new(child.bounds.x(), child.bounds.y());
+    if let Some(anchor) =
+      candidate_examination(child, child_origin, scroll_offset, optimal_viewing_region)
+    {
+      return Some(anchor);
+    }
+  }
+
+  None
+}
+
 fn content_rect(node: &FragmentNode, style: &ComputedStyle, viewport: Size) -> Rect {
   let mut rect = scrollport_rect_for_fragment(node, style);
   let percentage_base = node.bounds.width().max(0.0);
@@ -2695,6 +2801,7 @@ mod tests {
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
   mod scroll_anchoring_missing_anchor_test;
+  mod scroll_anchoring_scroll_padding_test;
   mod scroll_anchoring_writing_mode_test;
   mod scroll_blit_supported_test;
 
