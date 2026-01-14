@@ -7434,6 +7434,71 @@ pub fn iterator_prototype_iterator(
   Ok(this)
 }
 
+/// `%IteratorPrototype%[@@dispose]` (tc39/proposal-explicit-resource-management).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-%iteratorprototype%-@@dispose>
+pub fn iterator_prototype_symbol_dispose(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // 1. Let O be the this value.
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  // 2. Let return be ? GetMethod(O, "return").
+  let return_key_s = scope.alloc_string("return")?;
+  scope.push_root(Value::String(return_key_s))?;
+  let return_key = PropertyKey::from_string(return_key_s);
+  let return_method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    this,
+    return_key,
+  )?;
+
+  // 3. If return is not undefined, then Perform ? Call(return, O, « »).
+  if let Some(return_method) = return_method {
+    scope.push_root(return_method)?;
+    let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, return_method, this, &[])?;
+  }
+
+  // 4. Return undefined.
+  Ok(Value::Undefined)
+}
+
+fn reject_promise_capability_from_throw_completion_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  capability: PromiseCapability,
+  err: VmError,
+) -> Result<(), VmError> {
+  let err = crate::vm::coerce_error_to_throw(&*vm, scope, err);
+  let Some(reason) = err.thrown_value() else {
+    return Err(err);
+  };
+
+  // Root the reason across the reject call in case it allocates.
+  scope.push_root(reason)?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    capability.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
+  Ok(())
+}
+
 /// `%AsyncIteratorPrototype%[@@asyncIterator]` (ECMA-262).
 ///
 /// Async iterator objects are async iterable: calling `iter[Symbol.asyncIterator]()` returns `iter`
@@ -7448,6 +7513,165 @@ pub fn async_iterator_prototype_symbol_async_iterator(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   Ok(this)
+}
+
+/// `%AsyncIteratorPrototype%[@@asyncDispose]` (tc39/proposal-explicit-resource-management).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-%asynciteratorprototype%-@@asyncDispose>
+pub fn async_iterator_prototype_symbol_async_dispose(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // 1. Let O be the this value.
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  // 2. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+  let promise_capability =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  scope.push_roots(&[
+    promise_capability.promise,
+    promise_capability.resolve,
+    promise_capability.reject,
+  ])?;
+
+  // 3. Let return be GetMethod(O, "return").
+  // 4. IfAbruptRejectPromise(return, promiseCapability).
+  let return_key_s = scope.alloc_string("return")?;
+  scope.push_root(Value::String(return_key_s))?;
+  let return_key = PropertyKey::from_string(return_key_s);
+  let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    this,
+    return_key,
+  ) {
+    Ok(m) => m,
+    Err(err) => {
+      if err.is_throw_completion() {
+        reject_promise_capability_from_throw_completion_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          promise_capability,
+          err,
+        )?;
+        return Ok(promise_capability.promise);
+      }
+      return Err(err);
+    }
+  };
+
+  // 5. If return is undefined, then
+  //   a. Perform ! Call(promiseCapability.[[Resolve]], undefined, « undefined »).
+  let Some(return_method) = return_method else {
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      promise_capability.resolve,
+      Value::Undefined,
+      &[Value::Undefined],
+    )?;
+    return Ok(promise_capability.promise);
+  };
+
+  // 6. Else,
+  //   a. Let result be Call(return, O, « undefined »).
+  //   b. IfAbruptRejectPromise(result, promiseCapability).
+  scope.push_root(return_method)?;
+  let result = match vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    return_method,
+    this,
+    &[Value::Undefined],
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      if err.is_throw_completion() {
+        reject_promise_capability_from_throw_completion_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          promise_capability,
+          err,
+        )?;
+        return Ok(promise_capability.promise);
+      }
+      return Err(err);
+    }
+  };
+
+  //   c. Let resultWrapper be Completion(PromiseResolve(%Promise%, result)).
+  //   d. IfAbruptRejectPromise(resultWrapper, promiseCapability).
+  scope.push_root(result)?;
+  let result_wrapper = match crate::promise_ops::promise_resolve_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    result,
+  ) {
+    Ok(promise) => promise,
+    Err(err) => {
+      if err.is_throw_completion() {
+        reject_promise_capability_from_throw_completion_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          promise_capability,
+          err,
+        )?;
+        return Ok(promise_capability.promise);
+      }
+      return Err(err);
+    }
+  };
+  scope.push_root(result_wrapper)?;
+
+  //   e. Let unwrap be a new Abstract Closure that performs the following steps when called:
+  //     i. Return undefined.
+  //   f. Let onFulfilled be CreateBuiltinFunction(unwrap, 1, "", « »).
+  let on_fulfilled_call_id = vm.async_iterator_close_on_fulfilled_call_id()?;
+  let on_fulfilled_name = scope.alloc_string("")?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    on_fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[Value::Bool(false /* check_object */)],
+  )?;
+  scope.push_root(Value::Object(on_fulfilled))?;
+
+  //   g. Perform PerformPromiseThen(resultWrapper, onFulfilled, undefined, promiseCapability).
+  let _ = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    result_wrapper,
+    Value::Object(on_fulfilled),
+    Value::Undefined,
+    Some(promise_capability),
+  )?
+  .ok_or(VmError::InvariantViolation(
+    "PerformPromiseThen with capability returned undefined",
+  ))?;
+
+  // 7. Return promiseCapability.[[Promise]].
+  Ok(promise_capability.promise)
 }
 
 pub fn promise_capability_executor_call(

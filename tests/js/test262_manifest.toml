@@ -1900,16 +1900,6 @@ status = "xfail"
 reason = "vm-js: Explicit Resource Management built-ins are not implemented yet (SuppressedError)."
 
 [[expectations]]
-glob = "built-ins/Iterator/prototype/Symbol.dispose/**"
-status = "xfail"
-reason = "vm-js: Explicit Resource Management iterator disposal semantics are not implemented yet."
-
-[[expectations]]
-glob = "built-ins/AsyncIteratorPrototype/Symbol.asyncDispose/**"
-status = "xfail"
-reason = "vm-js: Explicit Resource Management async iterator disposal semantics are not implemented yet."
-
-[[expectations]]
 glob = "staging/explicit-resource-management/**"
 status = "xfail"
 reason = "vm-js: Explicit Resource Management proposal runtime semantics are not implemented yet."

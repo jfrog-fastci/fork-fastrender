@@ -1039,6 +1039,8 @@ impl Intrinsics {
     let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
     let array_iterator_next_call = vm.register_native_call(builtins::array_iterator_next)?;
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
+    let iterator_prototype_symbol_dispose =
+      vm.register_native_call(builtins::iterator_prototype_symbol_dispose)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_value_of = vm.register_native_call(builtins::string_prototype_value_of)?;
     let string_prototype_char_code_at =
@@ -1296,6 +1298,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::async_generator_prototype_throw)?;
     let async_iterator_prototype_symbol_async_iterator =
       vm.register_native_call(builtins::async_iterator_prototype_symbol_async_iterator)?;
+    let async_iterator_prototype_symbol_async_dispose =
+      vm.register_native_call(builtins::async_iterator_prototype_symbol_async_dispose)?;
 
     // `%Number%`, `%Boolean%`, `%BigInt%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
@@ -1328,6 +1332,23 @@ impl Intrinsics {
         iterator_prototype,
         PropertyKey::Symbol(well_known_symbols.iterator),
         data_desc(Value::Object(iter_fn), true, false, true),
+      )?;
+    }
+
+    // `%IteratorPrototype%[@@dispose]` (tc39/proposal-explicit-resource-management)
+    {
+      let dispose_name = scope.alloc_string("[Symbol.dispose]")?;
+      scope.push_root(Value::String(dispose_name))?;
+      let dispose_fn =
+        scope.alloc_native_function(iterator_prototype_symbol_dispose, None, dispose_name, 0)?;
+      scope.push_root(Value::Object(dispose_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(dispose_fn, Some(function_prototype))?;
+      scope.define_property(
+        iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.dispose),
+        data_desc(Value::Object(dispose_fn), true, false, true),
       )?;
     }
 
@@ -1795,6 +1816,27 @@ impl Intrinsics {
         async_iterator_prototype,
         PropertyKey::Symbol(well_known_symbols.async_iterator),
         data_desc(Value::Object(iter_fn), true, false, true),
+      )?;
+    }
+
+    // `%AsyncIteratorPrototype%[@@asyncDispose]` (tc39/proposal-explicit-resource-management)
+    {
+      let dispose_name = scope.alloc_string("[Symbol.asyncDispose]")?;
+      scope.push_root(Value::String(dispose_name))?;
+      let dispose_fn = scope.alloc_native_function(
+        async_iterator_prototype_symbol_async_dispose,
+        None,
+        dispose_name,
+        0,
+      )?;
+      scope.push_root(Value::Object(dispose_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(dispose_fn, Some(function_prototype))?;
+      scope.define_property(
+        async_iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.async_dispose),
+        data_desc(Value::Object(dispose_fn), true, false, true),
       )?;
     }
 
