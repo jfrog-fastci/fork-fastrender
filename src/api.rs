@@ -2639,6 +2639,7 @@ pub struct PreparedDocument {
   paint_parallelism: PaintParallelism,
   runtime_toggles: Arc<RuntimeToggles>,
   display_list_cache: RefCell<DisplayListCache>,
+  scroll_blit_tree_scan_cache: Cell<Option<crate::scroll::ScrollBlitTreeScan>>,
 }
 
 /// Painting options for a prepared document.
@@ -3200,6 +3201,20 @@ impl PreparedDocument {
   /// Returns the laid-out fragment tree prior to any scroll translations.
   pub fn fragment_tree(&self) -> &FragmentTree {
     &self.fragment_tree
+  }
+
+  /// Returns a cached scan of fragment-tree features that invalidate scroll-blit/async-scroll
+  /// translation fast paths.
+  ///
+  /// This scan is used by the windowed browser UI on high-frequency scroll input, so we memoize it
+  /// per prepared document (the fragment tree is stable across scroll-only paints).
+  pub(crate) fn scroll_blit_tree_scan(&self) -> crate::scroll::ScrollBlitTreeScan {
+    if let Some(cached) = self.scroll_blit_tree_scan_cache.get() {
+      return cached;
+    }
+    let scan = crate::scroll::scroll_blit_tree_scan(&self.fragment_tree);
+    self.scroll_blit_tree_scan_cache.set(Some(scan));
+    scan
   }
 
   /// Applies sticky offsets using an explicit scroll state that can include element scroll offsets.
@@ -9744,6 +9759,7 @@ impl FastRender {
           paint_parallelism,
           runtime_toggles: Arc::clone(&self.runtime_toggles),
           display_list_cache: RefCell::new(DisplayListCache::default()),
+          scroll_blit_tree_scan_cache: Cell::new(None),
         };
 
         let diagnostics_value = diagnostics
@@ -11045,6 +11061,7 @@ impl FastRender {
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
       display_list_cache: RefCell::new(DisplayListCache::default()),
+      scroll_blit_tree_scan_cache: Cell::new(None),
     })
   }
 
@@ -11366,6 +11383,7 @@ impl FastRender {
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
       display_list_cache: RefCell::new(DisplayListCache::default()),
+      scroll_blit_tree_scan_cache: Cell::new(None),
     })
   }
 
@@ -11526,6 +11544,7 @@ impl FastRender {
       paint_parallelism,
       runtime_toggles: Arc::clone(&self.runtime_toggles),
       display_list_cache: RefCell::new(DisplayListCache::default()),
+      scroll_blit_tree_scan_cache: Cell::new(None),
     })
   }
 

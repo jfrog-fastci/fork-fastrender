@@ -16,11 +16,8 @@
 use crate::geometry::Point;
 use crate::paint::painter::{paint_backend_from_env, PaintBackend};
 use crate::scroll::ScrollState;
-use crate::style::position::Position;
-use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use crate::{PreparedDocument, Size};
 
-use crate::style::types::BackgroundAttachment;
 /// Reasons why the scroll blit fast-path could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScrollBlitFallbackReason {
@@ -124,100 +121,6 @@ fn approx_integer(v: f32) -> Option<i32> {
   }
 }
 
-fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
-  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
-  let mut stack: Vec<(&FragmentNode, bool)> = Vec::new();
-  stack.push((&tree.root, false));
-  for root in &tree.additional_fragments {
-    stack.push((root, false));
-  }
-
-  while let Some((node, has_fixed_cb_ancestor)) = stack.pop() {
-    match &node.content {
-      FragmentContent::RunningAnchor { snapshot, .. }
-      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-        stack.push((snapshot, has_fixed_cb_ancestor));
-      }
-      _ => {}
-    }
-
-    let Some(style) = node.style.as_deref() else {
-      for child in node.children.iter() {
-        stack.push((child, has_fixed_cb_ancestor));
-      }
-      continue;
-    };
-
-    // Sticky positioning is scroll-dependent when it has at least one inset constraint; if all
-    // insets are `auto`, it behaves like `position: relative` and remains a pure translation.
-    if matches!(style.position, Position::Sticky)
-      && !(style.top.is_auto()
-        && style.right.is_auto()
-        && style.bottom.is_auto()
-        && style.left.is_auto())
-    {
-      return true;
-    }
-
-    // A `position: fixed` element is only viewport-fixed when it has no fixed-containing-block
-    // ancestor. This mirrors the logic in `scroll::scroll_blit_supported`.
-    if matches!(style.position, Position::Fixed) && !has_fixed_cb_ancestor {
-      return true;
-    }
-
-    // `background-attachment: fixed` keeps background *images* anchored to the viewport.
-    // (It has no effect when there is no background image.)
-    if style.background_layers.iter().any(|layer| {
-      layer.image.is_some() && matches!(layer.attachment, BackgroundAttachment::Fixed)
-    })
-    {
-      return true;
-    }
-
-    let establishes_fixed_cb = style.establishes_fixed_containing_block();
-    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-    for child in node.children.iter() {
-      stack.push((child, has_fixed_cb_ancestor_for_children));
-    }
-  }
-
-  false
-}
-
-fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
-  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
-  let mut stack: Vec<&FragmentNode> = Vec::new();
-  stack.push(&tree.root);
-  for root in &tree.additional_fragments {
-    stack.push(root);
-  }
-  while let Some(node) = stack.pop() {
-    match &node.content {
-      FragmentContent::RunningAnchor { snapshot, .. }
-      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-        stack.push(snapshot);
-      }
-      _ => {}
-    }
-
-    if node
-      .style
-      .as_deref()
-      .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
-      || node
-        .starting_style
-        .as_deref()
-        .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
-    {
-      return true;
-    }
-    for child in node.children.iter() {
-      stack.push(child);
-    }
-  }
-  false
-}
-
 /// Computes a scroll-blit plan, or returns a structured reason why the fast-path is unavailable.
 pub(crate) fn scroll_blit_plan(
   prepared: &PreparedDocument,
@@ -227,6 +130,7 @@ pub(crate) fn scroll_blit_plan(
   scroll_blit_gate()?;
 
   let tree = prepared.fragment_tree();
+  let tree_scan = prepared.scroll_blit_tree_scan();
 
   let dpr = prepared.device_pixel_ratio();
   let delta_css = Point::new(
@@ -240,7 +144,7 @@ pub(crate) fn scroll_blit_plan(
   let dy =
     approx_integer(delta_device.y).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
 
-  if fragment_tree_has_fixed_or_sticky(tree) {
+  if tree_scan.fixed_or_sticky_present {
     return Err(ScrollBlitFallbackReason::FixedOrStickyPresent);
   }
 
@@ -283,7 +187,7 @@ pub(crate) fn scroll_blit_plan(
     return Err(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
   }
 
-  if fragment_tree_has_scroll_driven_animations(tree) {
+  if tree_scan.scroll_driven_animations_present {
     return Err(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent);
   }
 
@@ -352,6 +256,7 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{self, RuntimeToggles};
   use crate::text::font_db::FontConfig;
+  use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
   use crate::FastRender;
   use crate::RenderOptions;
   use std::collections::HashMap;
@@ -723,8 +628,9 @@ mod tests {
       vec![running_anchor],
     );
     let tree = FragmentTree::with_viewport(root, crate::geometry::Size::new(10.0, 10.0));
+    let scan = crate::scroll::scroll_blit_tree_scan(&tree);
     assert!(
-      fragment_tree_has_scroll_driven_animations(&tree),
+      scan.scroll_driven_animations_present,
       "expected scroll-driven animations inside running element snapshots to disable scroll blit"
     );
   }

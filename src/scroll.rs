@@ -1937,16 +1937,24 @@ pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollStat
   }
 }
 
-/// Returns `true` if a fragment tree can safely use the "scroll blit" fast-path.
+/// Summary of fragment-tree features that prevent scroll blitting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ScrollBlitTreeScan {
+  /// The tree contains `position: fixed`, scroll-effective `position: sticky`, or
+  /// `background-attachment: fixed` content that is not a pure translation of the viewport.
+  pub fixed_or_sticky_present: bool,
+  /// The tree contains scroll/view (or conservatively named) timelines which can change pixels as a
+  /// function of scroll position.
+  pub scroll_driven_animations_present: bool,
+}
+
+/// Scans a fragment tree for features that invalidate scroll-blit fast paths.
 ///
-/// Scroll blitting (reusing the previously rendered frame by shifting pixels) is only valid when
-/// the entire rendered output is translated uniformly by viewport scroll.
-///
-/// This scan is intentionally conservative: it disables scroll blitting for known scroll-breaking
-/// features that can keep parts of the page anchored to the viewport or otherwise depend on scroll
-/// position.
-pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
-  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
+/// This traversal is intentionally stack-safe (no recursion) so adversarially deep fragment trees
+/// cannot trigger stack overflows.
+pub(crate) fn scroll_blit_tree_scan(tree: &FragmentTree) -> ScrollBlitTreeScan {
+  let mut scan = ScrollBlitTreeScan::default();
+
   let mut stack: Vec<(&FragmentNode, bool)> = Vec::new();
   stack.push((&tree.root, false));
   for fragment in tree.additional_fragments.iter() {
@@ -1962,21 +1970,25 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
       _ => {}
     }
 
+    if !scan.scroll_driven_animations_present
+      && (node
+        .style
+        .as_deref()
+        .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
+        || node
+          .starting_style
+          .as_deref()
+          .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines))
+    {
+      scan.scroll_driven_animations_present = true;
+    }
+
     let Some(style) = node.style.as_deref() else {
       for child in node.children.iter() {
         stack.push((child, has_fixed_cb_ancestor));
       }
       continue;
     };
-
-    if crate::paint::scroll_blit::style_uses_scroll_linked_timelines(style)
-      || node
-        .starting_style
-        .as_deref()
-        .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
-    {
-      return false;
-    }
 
     // Sticky positioning is scroll-dependent when it has at least one inset constraint; if all
     // insets are `auto`, it behaves like `position: relative` and remains a pure translation.
@@ -1986,22 +1998,24 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
         && style.bottom.is_auto()
         && style.left.is_auto())
     {
-      return false;
+      scan.fixed_or_sticky_present = true;
+      return scan;
     }
 
     // A `position: fixed` element is only viewport-fixed when it has no fixed-containing-block
     // ancestor. This mirrors the logic in `apply_element_scroll_offsets`.
     if matches!(style.position, Position::Fixed) && !has_fixed_cb_ancestor {
-      return false;
+      scan.fixed_or_sticky_present = true;
+      return scan;
     }
 
     // `background-attachment: fixed` keeps background *images* anchored to the viewport.
     // (It has no effect when there is no background image.)
     if style.background_layers.iter().any(|layer| {
       layer.image.is_some() && matches!(layer.attachment, BackgroundAttachment::Fixed)
-    })
-    {
-      return false;
+    }) {
+      scan.fixed_or_sticky_present = true;
+      return scan;
     }
 
     let establishes_fixed_cb = style.establishes_fixed_containing_block();
@@ -2011,7 +2025,20 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
     }
   }
 
-  true
+  scan
+}
+
+/// Returns `true` if a fragment tree can safely use the "scroll blit" fast-path.
+///
+/// Scroll blitting (reusing the previously rendered frame by shifting pixels) is only valid when
+/// the entire rendered output is translated uniformly by viewport scroll.
+///
+/// This scan is intentionally conservative: it disables scroll blitting for known scroll-breaking
+/// features that can keep parts of the page anchored to the viewport or otherwise depend on scroll
+/// position.
+pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
+  let scan = scroll_blit_tree_scan(tree);
+  !scan.fixed_or_sticky_present && !scan.scroll_driven_animations_present
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

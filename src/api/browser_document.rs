@@ -1922,6 +1922,7 @@ pub(super) fn prepare_dom_inner(
     paint_parallelism,
     runtime_toggles: std::sync::Arc::clone(&renderer.runtime_toggles),
     display_list_cache: std::cell::RefCell::new(super::DisplayListCache::default()),
+    scroll_blit_tree_scan_cache: std::cell::Cell::new(None),
   })
 }
 
