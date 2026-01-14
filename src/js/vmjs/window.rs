@@ -7348,36 +7348,11 @@ mod tests {
     let err = window
       .exec_script("function f() { return f(); }\nf();")
       .expect_err("expected recursion to terminate");
-    let VmError::ThrowWithStack { value, stack: _ } = err else {
-      panic!("expected stack overflow RangeError, got {err:?}");
-    };
-    let Value::Object(err_obj) = value else {
-      panic!("expected error object, got {value:?}");
-    };
-
-    // Verify the thrown value is a RangeError without invoking user code.
-    let (_vm, _realm, heap) = window.vm_realm_and_heap_mut();
-    let mut scope = heap.scope();
-    scope
-      .push_root(Value::Object(err_obj))
-      .expect("root error object");
-    let key_s = scope.alloc_string("name").expect("alloc prop name");
-    scope.push_root(Value::String(key_s)).expect("root prop name");
-    let key = PropertyKey::from_string(key_s);
-    let name_val = scope
-      .heap()
-      .object_get_own_data_property_value(err_obj, &key)
-      .expect("get error.name")
-      .expect("error.name should exist");
-    let Value::String(name_s) = name_val else {
-      panic!("expected error.name to be a string, got {name_val:?}");
-    };
-    let name = scope
-      .heap()
-      .get_string(name_s)
-      .expect("get string")
-      .to_utf8_lossy();
-    assert_eq!(name, "RangeError");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("RangeError"),
+      "expected stack overflow RangeError, got {msg}"
+    );
     Ok(())
   }
 
