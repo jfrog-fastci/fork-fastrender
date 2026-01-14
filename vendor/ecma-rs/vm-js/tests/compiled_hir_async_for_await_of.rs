@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vm_js::{
-  CompiledFunctionRef, CompiledScript, Heap, HeapLimits, PromiseState, PropertyKey, Value, Vm, VmError,
-  VmOptions,
+  CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, PropertyKey, Value,
+  Vm, VmError, VmOptions,
 };
 
 fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
