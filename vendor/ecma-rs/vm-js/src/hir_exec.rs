@@ -18046,13 +18046,21 @@ impl HirAsyncState {
           }
         }
 
-        // For non-loop label chains, the label statements themselves have no observable effect
-        // (since expression/var/throw statements cannot produce `break`/`continue` completions),
-        // but we still need to "see through" the labels so we can handle `await` in supported
-        // top-level statement forms.
-        label_tick_count = label_count;
-        stmt = inner_stmt;
-        stmt_offset = inner_stmt.span.start;
+        // For non-loop label chains, we can still "see through" the labels for direct-await
+        // statement forms (expr/var/throw/return). This enables the async fast paths while
+        // preserving correct label semantics for statement kinds that can produce `break`/`continue`
+        // completions (e.g. labeled `try` blocks).
+        match &inner_stmt.kind {
+          hir_js::StmtKind::Expr(_)
+          | hir_js::StmtKind::Return(_)
+          | hir_js::StmtKind::Throw(_)
+          | hir_js::StmtKind::Var(_) => {
+            label_tick_count = label_count;
+            stmt = inner_stmt;
+            stmt_offset = inner_stmt.span.start;
+          }
+          _ => {}
+        }
       }
 
       // Support a minimal async-aware `try/catch` form where the try block contains a single
