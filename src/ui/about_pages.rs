@@ -54,6 +54,7 @@ pub fn user_facing_about_pages() -> &'static [(&'static str, &'static str)] {
 }
 
 use parking_lot::RwLock;
+use rustc_hash::FxHashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
@@ -365,7 +366,7 @@ pub fn sync_about_page_snapshot_open_tabs(open_tabs: Vec<OpenTabSnapshot>) {
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
   let mut out = Vec::new();
-  let mut seen = std::collections::HashSet::<BookmarkId>::new();
+  let mut seen = FxHashSet::<BookmarkId>::default();
   // Use an explicit stack to keep ordering stable and avoid recursion.
   let mut stack: Vec<BookmarkId> = bookmarks.roots.iter().rev().copied().collect();
 
@@ -1995,7 +1996,7 @@ fn history_html(full_url: &str) -> String {
   let mut results_html = String::new();
   let mut match_count = 0usize;
   let mut total_count = 0usize;
-  let mut seen_urls = std::collections::HashSet::<&str>::new();
+  let mut seen_urls = FxHashSet::<&str>::default();
 
   for entry in snapshot.history.iter() {
     let url = entry.url.trim();
@@ -2069,7 +2070,7 @@ fn bookmarks_html(full_url: &str) -> String {
   let mut results_html = String::new();
   let mut match_count = 0usize;
   let mut total_count = 0usize;
-  let mut seen_urls = std::collections::HashSet::<&str>::new();
+  let mut seen_urls = FxHashSet::<&str>::default();
 
   for bookmark in snapshot.bookmarks.iter() {
     let url = bookmark.url.trim();
