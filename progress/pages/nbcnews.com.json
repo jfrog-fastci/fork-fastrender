@@ -14,12 +14,13 @@
     "layout": 190.0087055905512,
     "paint": 56.002565858267715
   },
-  "notes": "",
+  "notes": "Good. Remaining diffs vs Chrome are mostly minor text rasterization and small color rounding.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 197916,
-    "diff_percent": 20.6163,
-    "perceptual": 0.3594,
+    "diff_pixels": 86846,
+    "diff_percent": 9.0465,
+    "perceptual": 0.0873,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 26,
       "y": 19,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
