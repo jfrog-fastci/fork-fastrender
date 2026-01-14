@@ -435,3 +435,138 @@ fn ui_document_selection_copy_word_in_second_table_cell_has_no_leading_tab() -> 
 
   Ok(())
 }
+
+#[test]
+fn ui_document_selection_double_click_drag_extends_selection_by_whole_words() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font: 40px/80px monospace; }
+  #p { position: absolute; top: 0; left: 10px; margin: 0; }
+</style>
+<p id="p"><span>AAAAA</span> <span>BBBBB</span> <span>CCCCC</span></p>
+"#,
+    "https://example.invalid/",
+    (520, 140),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let prepared = controller
+    .document()
+    .prepared()
+    .expect("expected prepared document after initial repaint");
+  let click_point =
+    find_point_in_text(prepared.fragment_tree(), "BBBBB").expect("expected point in BBBBB");
+  let drag_point =
+    find_point_in_text(prepared.fragment_tree(), "CCCCC").expect("expected point in CCCCC");
+
+  let scroll = controller.scroll_state().viewport;
+  let click_css = (click_point.x - scroll.x, click_point.y - scroll.y);
+  let drag_css = (drag_point.x - scroll.x, drag_point.y - scroll.y);
+
+  // Double-click BBBBB, then drag into CCCCC (but not to its word boundary). The selection should
+  // extend to include the whole target word.
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    click_css,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    drag_css,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    drag_css,
+    PointerButton::Primary,
+  ))?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("BBBBB CCCCC"),
+    "expected double-click drag to extend by whole words"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn ui_document_selection_triple_click_drag_extends_selection_by_blocks() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font: 40px/80px monospace; }
+  p { margin: 0; }
+</style>
+<p>FIRST</p>
+<p>SECOND</p>
+"#,
+    "https://example.invalid/",
+    (520, 240),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let prepared = controller
+    .document()
+    .prepared()
+    .expect("expected prepared document after initial repaint");
+  let first_point =
+    find_point_in_text(prepared.fragment_tree(), "FIRST").expect("expected point in FIRST");
+  let second_point =
+    find_point_in_text(prepared.fragment_tree(), "SECOND").expect("expected point in SECOND");
+
+  let scroll = controller.scroll_state().viewport;
+  let first_css = (first_point.x - scroll.x, first_point.y - scroll.y);
+  let second_css = (second_point.x - scroll.x, second_point.y - scroll.y);
+
+  // Triple-click FIRST, then drag into SECOND. The selection should extend by whole blocks (native
+  // behaviour for paragraph selection).
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    first_css,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    3,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    second_css,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    second_css,
+    PointerButton::Primary,
+  ))?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("FIRST\nSECOND"),
+    "expected triple-click drag to extend by whole blocks"
+  );
+
+  Ok(())
+}
