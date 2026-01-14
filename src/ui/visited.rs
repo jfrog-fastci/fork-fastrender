@@ -977,6 +977,7 @@ mod tests {
       "about:error",
       "about:test-scroll",
       "about:test-heavy",
+      "about:test-layout-stress",
       "about:test-form",
       // Query/fragment variants should behave the same.
       "about:newtab#foo",
