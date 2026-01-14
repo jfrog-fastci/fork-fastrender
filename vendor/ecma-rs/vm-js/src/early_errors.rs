@@ -3301,6 +3301,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if (ctx.strict || ctx.yield_allowed) && id.stx.name == "yield" {
           self.push_error(pat.loc, "yield is not allowed as an identifier in this context")?;
         }
+        if id.stx.name.starts_with('#') {
+          // `parse-js` represents `#x` tokens as identifier patterns. In ECMAScript syntax, private
+          // identifiers may only appear in:
+          // - `obj.#x` (private member access), and
+          // - `#x in obj` (private brand check).
+          //
+          // They are **not** valid assignment targets (e.g. `for (#x in y) {}`), nor valid binding
+          // identifiers.
+          self.push_error(pat.loc, "invalid private identifier")?;
+        }
         Ok(())
       }
       Pat::Obj(obj) => self.visit_obj_pat(ctx, &obj.stx, role),

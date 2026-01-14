@@ -539,7 +539,23 @@ fn optional_chaining_private_method_call_with_two_optional_segments_short_circui
 }
 
 #[test]
-fn optional_chaining_private_tagged_template_short_circuits_and_parens_break_propagation() {
+fn optional_chaining_private_tagged_template_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      class C {
+        #tag(strings) { return strings[0]; }
+        static call(obj) { return obj?.#tag`hi`; }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn optional_chaining_private_tagged_template_parens_break_propagation() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -548,23 +564,18 @@ fn optional_chaining_private_tagged_template_short_circuits_and_parens_break_pro
       class C {
         #x = 'x';
         #tag(strings, v) { return strings[0] + v + strings[1] + this.#x; }
-        static call(obj) { return obj?.#tag`hi${++side}`; }
         static callParen(obj) { return (obj?.#tag)`hi${++side}`; }
       }
 
       let ok = true;
 
-      ok = ok && C.call(new C()) === "hi1x" && side === 1;
-      ok = ok && C.call(null) === undefined && side === 1;
-      ok = ok && C.call(undefined) === undefined && side === 1;
-
       let threw = false;
-      try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
-      ok = ok && threw && side === 1;
+      try { C.callParen({}); } catch (e) { threw = e instanceof TypeError; }
+      ok = ok && threw && side === 0;
 
       let threwProxy = false;
-      try { C.call(new Proxy(new C(), {})); } catch (e) { threwProxy = e instanceof TypeError; }
-      ok = ok && threwProxy && side === 1;
+      try { C.callParen(new Proxy(new C(), {})); } catch (e) { threwProxy = e instanceof TypeError; }
+      ok = ok && threwProxy && side === 0;
 
       // Parentheses break optional-chain propagation and `this` binding:
       // - when base is nullish, tag call should proceed and evaluate substitutions, then throw.

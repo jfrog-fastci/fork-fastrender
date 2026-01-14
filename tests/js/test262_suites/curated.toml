@@ -129,11 +129,9 @@ include = [
   "language/statements/class/elements/static-private-method-and-instance-method-brand-check.js",
   "language/statements/class/elements/private-methods/prod-private-method.js",
   "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js",
-  # `#x in obj` private-brand-check operator.
-  "language/expressions/in/private-field-presence-field.js",
-  "language/expressions/in/private-field-presence-method.js",
-  "language/expressions/in/private-field-presence-accessor.js",
-  "language/expressions/in/private-field-rhs-non-object.js",
+  # `#x in obj` private-brand-check operator. The directory is small but includes valuable early
+  # error coverage for invalid uses of private identifiers in expression/pattern positions.
+  "language/expressions/in/private-field-*.js",
   # `static {}` blocks.
   "language/statements/class/static-init-sequence.js",
 
