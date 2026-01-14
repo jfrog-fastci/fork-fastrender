@@ -2440,6 +2440,41 @@ mod tests {
   }
 
   #[test]
+  fn set_text_control_value_clamps_input_maxlength() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input maxlength=\"3\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    assert!(engine.set_text_control_value(&mut dom, input_id, "abcd"));
+    assert_eq!(input_value(&mut dom, input_id), "abc");
+
+    // UTF-16: maxlength=1 cannot fit a surrogate pair; replacement should clamp to empty.
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input maxlength=\"1\" value=\"x\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    assert!(engine.set_text_control_value(&mut dom, input_id, "😀"));
+    assert_eq!(input_value(&mut dom, input_id), "");
+  }
+
+  #[test]
+  fn set_text_control_value_clamps_textarea_maxlength() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><textarea maxlength=\"2\">x</textarea></body></html>",
+    )
+    .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+    assert!(engine.set_text_control_value(&mut dom, textarea_id, "😀😀"));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "😀");
+  }
+
+  #[test]
   fn enter_inserts_newline_for_textarea_but_not_input() {
     let mut dom = crate::dom::parse_html(
       "<html><body><textarea>hi</textarea><input value=\"hi\"></body></html>",
@@ -7427,7 +7462,7 @@ impl InteractionEngine {
   pub fn set_text_control_value(&mut self, dom: &mut DomNode, node_id: usize, value: &str) -> bool {
     let mut index = DomIndexMut::new(dom);
 
-    let (is_input_text_like, is_textarea, current, textarea_default_value) = {
+    let (is_input_text_like, is_textarea, current, textarea_default_value, maxlength) = {
       let Some(node) = index.node(node_id) else {
         return false;
       };
@@ -7455,8 +7490,15 @@ impl InteractionEngine {
       } else {
         String::new()
       };
+      let maxlength = text_control_maxlength_for_user_editing(node);
 
-      (is_input_text_like, is_textarea, current, textarea_default_value)
+      (
+        is_input_text_like,
+        is_textarea,
+        current,
+        textarea_default_value,
+        maxlength,
+      )
     };
 
     self.ensure_form_default_snapshot_for_control(&index, node_id);
@@ -7486,11 +7528,14 @@ impl InteractionEngine {
     edit.caret = edit.caret.min(current_len);
     edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
 
-    let sanitized = if is_textarea {
+    let mut sanitized = if is_textarea {
       crate::dom::normalize_textarea_newlines(value.to_string())
     } else {
       strip_ascii_line_breaks(value).into_owned()
     };
+    if let Some(max) = maxlength {
+      sanitized = truncate_str_to_utf16_units(&sanitized, max).to_string();
+    }
 
     if sanitized != current {
       self.record_text_undo_snapshot(node_id, &current, &edit);
