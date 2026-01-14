@@ -42296,9 +42296,10 @@ mod tests {
     let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
     let global_object = realm.global_object();
 
+    let source = SourceText::new_charged_arc(heap, "<inline>", "")?;
+
     let mut scope = heap.scope();
     let module_env = scope.env_create(None)?;
-    let source = Arc::new(SourceText::new("<inline>", ""));
 
     let module_id = ModuleId::from_raw(0);
     let err = instantiate_module_decls(
