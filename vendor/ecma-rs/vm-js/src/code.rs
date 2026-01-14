@@ -1238,9 +1238,69 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     if !for_of.stx.await_ {
       return false;
     }
-    if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
-      return false;
+
+    // The compiled evaluator's `ForAwaitOfState` supports suspension while binding the loop head
+    // object pattern (computed keys / defaults), but only for `var`/`let`/`const` loop heads and
+    // only for direct `await <expr>` forms in those head positions.
+    //
+    // Reject `await using` loop heads for now: they add async resource-management semantics that are
+    // not modeled by `ForAwaitOfState`.
+    if let ForInOfLhs::Decl((mode, pat_decl)) = &for_of.stx.lhs {
+      if *mode == VarDeclMode::AwaitUsing {
+        return false;
+      }
+
+      let head_pat = &pat_decl.stx.pat.stx;
+      if pat_contains_await(head_pat) {
+        // Only support `await` in object-pattern computed keys / defaults.
+        let Pat::Obj(obj_pat) = &**head_pat else {
+          return false;
+        };
+        if obj_pat.stx.rest.is_some() {
+          // `AsyncObjectPatternBindingState` does not support rest patterns.
+          return false;
+        }
+
+        let mut has_await: bool = false;
+        for prop in obj_pat.stx.properties.iter() {
+          // Only allow `await` in computed keys and defaults, and only as a direct `await <expr>`
+          // with no nested `await` inside `<expr>`.
+          if let ClassOrObjKey::Computed(expr) = &prop.stx.key {
+            if expr_contains_await(expr) {
+              if !expr_is_direct_await_without_nested_await(expr) {
+                return false;
+              }
+              has_await = true;
+            }
+          }
+
+          // Property target patterns are evaluated synchronously and must not contain `await`
+          // (including nested defaults or computed keys).
+          if pat_contains_await(&prop.stx.target.stx) {
+            return false;
+          }
+
+          if let Some(default) = prop.stx.default_value.as_ref() {
+            if expr_contains_await(default) {
+              if !expr_is_direct_await_without_nested_await(default) {
+                return false;
+              }
+              has_await = true;
+            }
+          }
+        }
+
+        if !has_await {
+          return false;
+        }
+      }
+    } else {
+      // The compiled evaluator does not support `await` in non-declaration loop heads.
+      if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+        return false;
+      }
     }
+
     let rhs = &for_of.stx.rhs;
     let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
       !expr_contains_await(arg)

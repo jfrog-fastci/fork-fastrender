@@ -478,6 +478,178 @@ fn compiled_module_top_level_try_for_await_of_throw_awaits_async_iterator_close_
 }
 
 #[test]
+fn compiled_module_top_level_for_await_of_with_await_in_head_default_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        for await (const { x = await Promise.resolve("a") } of [ {} ]) {
+          actual += x;
+        }
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "top-level for-await-of loops with await in object-pattern defaults should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    assert!(record.has_tla, "for-await-of should mark the module as `[[HasTLA]]`");
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "adone");
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
+
+#[test]
+fn compiled_module_top_level_for_await_of_with_await_in_head_computed_key_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export let actual = "";
+        for await (const { [await Promise.resolve("x")]: v } of [ { x: "a" } ]) {
+          actual += v;
+        }
+        actual += "done";
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "top-level for-await-of loops with await in object-pattern computed keys should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    assert!(record.has_tla, "for-await-of should mark the module as `[[HasTLA]]`");
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(actual) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "actual")? else {
+      panic!("expected module export 'actual' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(actual)?.to_utf8_lossy(), "adone");
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
+
+#[test]
 fn compiled_module_top_level_nested_labeled_for_triple_with_await_in_init_break_outer_label_executes(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
