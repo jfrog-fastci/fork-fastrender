@@ -12647,6 +12647,15 @@ struct App {
   captured_button: fastrender::ui::PointerButton,
   primary_click_sequence: Option<PointerClickSequence>,
   touch_gesture: TouchGestureRecognizer,
+  /// Touch gesture id whose tap should be swallowed (not forwarded to the page worker).
+  ///
+  /// Used for "toggle-close" semantics on touch: when the media controls overlay is open and the
+  /// user taps the underlying media element, we close the overlay but must *not* forward the
+  /// resulting tap back to the page (otherwise the worker will immediately reopen the overlay).
+  ///
+  /// We only swallow the tap (TouchGestureAction::Tap). If the finger moves and becomes a scroll
+  /// gesture, the page should scroll normally.
+  touch_swallow_tap_id: Option<u64>,
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
   page_cursor_override: Option<fastrender::ui::CursorKind>,
@@ -13650,6 +13659,7 @@ impl App {
       captured_button: fastrender::ui::PointerButton::None,
       primary_click_sequence: None,
       touch_gesture: TouchGestureRecognizer::new(),
+      touch_swallow_tap_id: None,
       last_cursor_pos_points: None,
       cursor_in_page: false,
       page_cursor_override: None,
@@ -21835,6 +21845,7 @@ impl App {
         // pointer drags.
         self.debug_log_overlay_pointer_capture = false;
         self.touch_gesture.reset();
+        self.touch_swallow_tap_id = None;
         self.media_controls_overlay_pointer_capture = false;
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
@@ -22251,6 +22262,9 @@ impl App {
 
         match touch.phase {
           TouchPhase::Started => {
+            // Start of a new touch gesture: clear any stale swallow state.
+            self.touch_swallow_tap_id = None;
+
             // Mirror the mouse-input behaviour: touching outside the page should clear page focus
             // immediately.
             if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
@@ -22342,6 +22356,7 @@ impl App {
               }
             }
 
+            let mut swallow_tap_for_media_toggle = false;
             if self.open_media_controls.is_some() {
               // Touches inside the overlay are handled by egui.
               if self
@@ -22361,9 +22376,7 @@ impl App {
               });
               self.cancel_media_controls();
               self.window.request_redraw();
-              if clicked_media_element {
-                return;
-              }
+              swallow_tap_for_media_toggle = clicked_media_element;
             }
 
             if self.cursor_over_egui_overlay(pos_points) {
@@ -22398,6 +22411,9 @@ impl App {
             self
               .touch_gesture
               .touch_start(touch.id, now, (pos_points.x, pos_points.y));
+            if swallow_tap_for_media_toggle {
+              self.touch_swallow_tap_id = Some(touch.id);
+            }
           }
           TouchPhase::Moved => {
             let Some(delta_points) = self
@@ -22452,12 +22468,16 @@ impl App {
             let action = self
               .touch_gesture
               .touch_end(touch.id, now, (pos_points.x, pos_points.y));
+            let swallow_tap = self.touch_swallow_tap_id.take() == Some(touch.id);
             let Some(action) = action else {
               return;
             };
 
             match action {
               TouchGestureAction::Tap { pos_points } => {
+                if swallow_tap {
+                  return;
+                }
                 let pos_points = egui::pos2(pos_points.0, pos_points.1);
                 let Some(rect) = self.page_rect_points else {
                   return;
@@ -22554,6 +22574,9 @@ impl App {
           }
           TouchPhase::Cancelled => {
             self.touch_gesture.touch_cancel(touch.id);
+            if self.touch_swallow_tap_id == Some(touch.id) {
+              self.touch_swallow_tap_id = None;
+            }
           }
         }
       }
