@@ -159,6 +159,10 @@ pub mod accesskit_bounds;
 #[cfg(feature = "browser_ui")]
 pub mod page_accesskit;
 
+// AccessKit subtree utilities for the rendered page content.
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_page_tree;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;

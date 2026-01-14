@@ -13903,6 +13903,9 @@ struct App {
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
   page_cursor_override: Option<fastrender::ui::CursorKind>,
+
+  /// Helper for emitting AccessKit updates that detach stale page subtrees across navigations.
+  page_accesskit_tree: fastrender::ui::accesskit_page_tree::PageAccessKitTree,
   /// Latest pending pointer-move message.
   ///
   /// Pointer move events can arrive at very high frequency. We coalesce them so the UI worker sees
@@ -14933,6 +14936,7 @@ impl App {
       last_cursor_pos_points: None,
       cursor_in_page: false,
       page_cursor_override: None,
+      page_accesskit_tree: fastrender::ui::accesskit_page_tree::PageAccessKitTree::new(),
       pending_pointer_move: None,
       pending_scroll: ScrollCoalescer::default(),
       pending_text_input: fastrender::ui::TextInputBuffer::default(),
@@ -18940,7 +18944,31 @@ impl App {
 
     let sync_open_tabs_snapshot =
       matches!(&msg, fastrender::ui::WorkerToUi::NavigationCommitted { .. });
+
+    #[cfg(feature = "browser_ui")]
+    let page_accesskit_subtree_tab = match &msg {
+      fastrender::ui::WorkerToUi::PageAccessKitSubtree { tab_id, .. } => Some(*tab_id),
+      _ => None,
+    };
     let mut update = self.browser_state.apply_worker_msg(msg);
+
+    // Move page subtree updates out of the shared BrowserAppState and into the per-window pending
+    // map so we can merge them into egui's `PlatformOutput.accesskit_update` without cloning.
+    #[cfg(feature = "browser_ui")]
+    if let Some(tab_id) = page_accesskit_subtree_tab {
+      if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+        if let Some(subtree) = tab.page_accesskit_subtree.take() {
+          self.pending_page_subtree_accesskit.insert(
+            tab_id,
+            PendingPageSubtreeAccessKitUpdate {
+              root_id: subtree.root_id,
+              nodes: subtree.nodes,
+              focus_id: subtree.focus_id,
+            },
+          );
+        }
+      }
+    }
     if update.scroll_session_dirty {
       self
         .scroll_autosave
@@ -28516,6 +28544,10 @@ impl App {
 
     let mut crash_reload_requested = false;
     let mut unresponsive_reload_requested = false;
+    // Additional AccessKit node updates that should be appended after `end_frame`.
+    //
+    // Used for best-effort pruning of stale page subtrees when a navigation replaces the document.
+    let mut page_accesskit_prune_nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -28550,6 +28582,8 @@ impl App {
 
       let Some(active_tab) = self.browser_state.active_tab_id() else {
         ui.label("No active tab.");
+        let update = self.page_accesskit_tree.clear_document();
+        page_accesskit_prune_nodes.extend(update.nodes);
         return;
       };
 
@@ -28560,6 +28594,11 @@ impl App {
         .unwrap_or((false, None));
 
       if tab_crashed {
+        // Detach any previously attached page subtree so assistive tech doesn't keep traversing the
+        // crashed document tree.
+        let update = self.page_accesskit_tree.clear_document();
+        page_accesskit_prune_nodes.extend(update.nodes);
+
         // The page renderer crashed. Prevent forwarding any further input into the page and clear
         // any page-scoped overlays so the user sees a deterministic crash surface.
         self.clear_page_focus();
@@ -28605,6 +28644,7 @@ impl App {
         .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
         .filter(|url| fastrender::ui::about_pages::is_about_url(url))
         .map(str::to_string);
+      let is_trusted_about = trusted_about_url.is_some();
 
       if let Some(url) = trusted_about_url {
         let clamp = self
@@ -28641,6 +28681,27 @@ impl App {
       //
       // Note: media controls are intentionally excluded so the overlay can stay attached while
       // scrolling the page.
+      // Trusted `about:` pages are rendered in-process and do not currently emit AccessKit subtrees.
+      // Avoid attaching a stale renderer-produced page subtree from the previous navigation.
+      let doc_root_id = if is_trusted_about {
+        None
+      } else {
+        self.browser_state.tab(active_tab).and_then(|tab| {
+          tab.page_accessibility.as_ref().map(|snap| {
+            fastrender::ui::encode_page_node_id(
+              active_tab,
+              snap.document_generation,
+              snap.tree.dom_node_id,
+            )
+          })
+        })
+      };
+      let page_update = self.page_accesskit_tree.set_document_root(
+        doc_root_id.map(|id| (id, accesskit::Role::Document)),
+      );
+      let doc_root = page_update.document_root;
+      page_accesskit_prune_nodes.extend(page_update.nodes);
+
       let mut wheel_blocked_by_popup = false;
       if !self.wheel_events_buf.is_empty()
         && !(self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open)
@@ -28824,10 +28885,12 @@ impl App {
           let label = page_a11y_label.clone();
           move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
         });
+        let children = doc_root.map(|root| vec![root]).unwrap_or_default();
         let _ = response.ctx.accesskit_node_builder(response.id, move |builder| {
           builder.set_role(accesskit::Role::WebView);
           // Some assistive tech expects `Focus` to be explicitly exposed for focusable container nodes.
           builder.add_action(accesskit::Action::Focus);
+          builder.set_children(children);
         });
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css_for_mapping);
@@ -29283,7 +29346,13 @@ impl App {
           loading_ui.intercept_pointer_events || tab_unresponsive;
 
         let size_points = logical_viewport_points.max(egui::Vec2::ZERO);
-        let (rect, _) = ui.allocate_exact_size(size_points, egui::Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(size_points, egui::Sense::hover());
+        let children = doc_root.map(|root| vec![root]).unwrap_or_default();
+        let _ = response.ctx.accesskit_node_builder(response.id, move |builder| {
+          builder.set_role(accesskit::Role::WebView);
+          builder.add_action(accesskit::Action::Focus);
+          builder.set_children(children);
+        });
 
         let painter = ui.painter();
         painter.rect_filled(rect, egui::Rounding::same(0.0), ui.visuals().panel_fill);
@@ -29456,7 +29525,6 @@ impl App {
     if let Some(text) = self.pending_clipboard_text.take() {
       self.egui_ctx.output_mut(|o| o.copied_text = text);
     }
-
     let mut full_output = {
       let _span = self.trace.span("egui.end_frame", "ui.frame");
       self.egui_ctx.end_frame()
@@ -29488,6 +29556,21 @@ impl App {
     if !platform_output.copied_text.is_empty() {
       fastrender::ui::clipboard::clamp_clipboard_text_in_place(&mut platform_output.copied_text);
     }
+
+    // Best-effort pruning: detach stale page subtree roots when the active page root changes.
+    if !page_accesskit_prune_nodes.is_empty() {
+      if platform_output.accesskit_update.is_none() {
+        platform_output.accesskit_update = Some(accesskit::TreeUpdate {
+          nodes: Vec::new(),
+          tree: None,
+          focus: None,
+        });
+      }
+      if let Some(update) = platform_output.accesskit_update.as_mut() {
+        update.nodes.append(&mut page_accesskit_prune_nodes);
+      }
+    }
+
     if let Some(tab_id) = self.browser_state.active_tab_id() {
       if let Some(page_subtree) = self.pending_page_subtree_accesskit.remove(&tab_id) {
         let merged = Self::merge_page_subtree_accesskit_update(
