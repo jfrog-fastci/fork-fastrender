@@ -14766,7 +14766,7 @@ fn run_compiled_script_async(
       let id = vm.insert_hir_async_continuation_reserved(cont);
 
       let schedule_res: Result<(), VmError> = (|| {
-        let call_id = vm.hir_async_resume_call_id()?;
+        let call_id = vm.async_resume_call_id()?;
         let intr = vm
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -15406,7 +15406,7 @@ pub(crate) fn hir_async_resume_continuation(
         vm.replace_hir_async_continuation(id, cont)?;
 
         let then_res: Result<(), VmError> = (|| {
-          let call_id = vm.hir_async_resume_call_id()?;
+          let call_id = vm.async_resume_call_id()?;
           let intr = vm
             .intrinsics()
             .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -15493,43 +15493,6 @@ pub(crate) fn hir_async_resume_continuation(
   }
 
   resume_segment(vm, scope, host, hooks, cont)
-}
-
-pub(crate) fn hir_async_resume_call(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::Number(n) => n as u32,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "hir async resume callback missing continuation id",
-      ))
-    }
-  };
-  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
-    Value::Bool(b) => b,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "hir async resume callback missing reject flag",
-      ))
-    }
-  };
-
-  let Some(cont) = vm.take_hir_async_continuation(id) else {
-    // Embeddings can abort in-progress top-level await evaluation by tearing down async
-    // continuations. In that case, previously-registered resume callbacks must no-op.
-    return Ok(Value::Undefined);
-  };
-
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  hir_async_resume_continuation(vm, scope, host, hooks, id, cont, is_reject, arg0)
 }
 
 #[cfg(test)]
