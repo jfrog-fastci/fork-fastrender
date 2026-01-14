@@ -58675,7 +58675,7 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_computed_super_property_to_property_key_side_effects_do_not_affect_captured_super_base(
+  fn arrow_this_in_derived_constructor_computed_super_property_key_mutation_affects_super_base_lookup(
   ) -> Result<(), VmError> {
     let source = r#"
       let log = [];
@@ -58705,10 +58705,9 @@ mod tests {
           try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
 
           super();
-          // First call captures the current super base (B.prototype) *before* ToPropertyKey.
-          // ToPropertyKey mutates D.prototype's prototype, but must not affect this call's base.
+          // ToPropertyKey mutates D.prototype's prototype and must affect the super base lookup for
+          // the current `super[key()]` operation.
           this.v1 = f();
-          // Second call sees the updated super base (newProto).
           this.v2 = f();
           this.errName = errName;
           this.errMsg = errMsg;
@@ -58716,16 +58715,42 @@ mod tests {
       }
 
       let d = new D();
-      d.v1 === 0 &&
+      d.v1 === 1 &&
         d.v2 === 1 &&
         d.errName === 'ReferenceError' &&
         d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
         Object.getPrototypeOf(D.prototype) === newProto &&
-        log.join(',') === 'key,toString,base,key,toString,new'
+        log.join(',') === 'key,toString,new,key,toString,new'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
     assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn super_property_computed_key_mutation_affects_super_base_lookup_hir() -> Result<(), VmError> {
+    // Regression test: for computed `super[expr]`, `ToPropertyKey` must happen before `GetSuperBase`
+    // so prototype mutations during key conversion affect the super base lookup.
+    let source = r#"
+      class B {}
+      B.prototype.x = 1;
+      let newProto = { x: 2 };
+      class D extends B {
+        getX() {
+          return super[{
+            toString() {
+              Object.setPrototypeOf(D.prototype, newProto);
+              return "x";
+            }
+          }];
+        }
+      }
+      new D().getX()
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Number(2.0));
+    assert_eq!(eval_script_compiled(source)?, Value::Number(2.0));
     Ok(())
   }
 
