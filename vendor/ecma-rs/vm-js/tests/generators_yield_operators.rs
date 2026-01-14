@@ -987,3 +987,24 @@ fn generators_yield_in_object_literals_proto_setter() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_object_literals_computed_method_symbol_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { [(yield Symbol.toPrimitive)]() { return 3; } };
+          return o[Symbol.toPrimitive]() === 3;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(Symbol.toPrimitive);
+        r1.value === Symbol.toPrimitive && r1.done === false &&
+          r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
