@@ -217,6 +217,10 @@ pub struct WebmDemuxer<R: Read + Seek> {
   codec_delay_ns: HashMap<u64, u64>,
   /// Max codec delay across supported tracks (nanoseconds).
   max_codec_delay_ns: u64,
+  /// Seek preroll (nanoseconds) per track.
+  seek_pre_roll_ns: HashMap<u64, u64>,
+  /// Max seek preroll across supported tracks (nanoseconds).
+  max_seek_pre_roll_ns: u64,
   /// Track IDs for which we will emit packets (currently VP9 + Opus only), in deterministic order.
   active_track_ids: Vec<u64>,
   /// Bounded per-track packet queues for optional inter-track reordering.
@@ -244,6 +248,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
     let mut selection_infos = Vec::new();
     let mut supported_codec_delay_ns = HashMap::new();
+    let mut supported_seek_pre_roll_ns = HashMap::new();
     let mut tracks = Vec::new();
 
     for track in mkv.tracks() {
@@ -253,6 +258,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       let id = track.track_number().get();
       let codec_private = track.codec_private().unwrap_or(&[]).to_vec();
       let codec_delay = track.codec_delay().unwrap_or(0);
+      let seek_pre_roll = track.seek_pre_roll().unwrap_or(0);
 
       let (track_type, video, audio) = match track.track_type() {
         TrackType::Video => {
@@ -299,6 +305,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       // Store codec delay only for the codecs we currently emit packets for.
       if matches!(codec, MediaCodec::Vp9 | MediaCodec::Opus) {
         supported_codec_delay_ns.insert(id, codec_delay);
+        supported_seek_pre_roll_ns.insert(id, seek_pre_roll);
       }
 
       tracks.push(MediaTrackInfo {
@@ -341,6 +348,15 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       }
     }
 
+    let mut seek_pre_roll_ns = HashMap::new();
+    let mut max_seek_pre_roll_ns = 0_u64;
+    for id in &active_track_ids {
+      if let Some(preroll) = supported_seek_pre_roll_ns.get(id) {
+        seek_pre_roll_ns.insert(*id, *preroll);
+        max_seek_pre_roll_ns = max_seek_pre_roll_ns.max(*preroll);
+      }
+    }
+
     let mut packet_queues = HashMap::new();
     for &track_id in &active_track_ids {
       packet_queues.insert(
@@ -358,6 +374,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       timestamp_scale_ns,
       codec_delay_ns,
       max_codec_delay_ns,
+      seek_pre_roll_ns,
+      max_seek_pre_roll_ns,
       active_track_ids,
       packet_queues,
       frame: Frame::default(),
@@ -520,10 +538,17 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       return Err(MediaError::Unsupported("invalid Matroska timestamp scale".into()));
     }
 
-    // `codec_delay` must be subtracted from timestamps to get the actual PTS (see Matroska spec).
-    // For a best-effort seek that guarantees `pts_ns >= time_ns` even after applying per-track
-    // codec delay, we seek to `time_ns + max(codec_delay)` and then output PTS adjusted per track.
-    let target_ns = time_ns.saturating_add(self.max_codec_delay_ns);
+    // Matroska timestamps include `TrackEntry.CodecDelay` (see Matroska spec), which must be
+    // subtracted to get the actual PTS. `TrackEntry.SeekPreRoll` specifies a window that must be
+    // decoded (and discarded) after seeking (notably for Opus, to avoid artifacts). Therefore, we
+    // seek *earlier* by the maximum seek preroll across active tracks.
+    //
+    // Note: callers should drop decoded output items whose PTS is earlier than `time_ns`; the
+    // demuxer may emit preroll packets with `pts_ns < time_ns` to allow decoder warm-up.
+    let seek_start_ns = time_ns.saturating_sub(self.max_seek_pre_roll_ns);
+
+    // Compensate for `codec_delay` in the Matroska timestamps (timestamps include codec delay).
+    let target_ns = seek_start_ns.saturating_add(self.max_codec_delay_ns);
 
     // Convert nanoseconds to Matroska timecode units (inverse of timestamp_scale).
     // `MatroskaFile::seek()` places the cursor on the first frame with timestamp >= seek_timestamp.
@@ -837,24 +862,20 @@ mod tests {
     let seek_target_ns = 500_000_000_u64;
     demuxer.seek(seek_target_ns).expect("seek");
 
-    // Verify packets after seek are at/after the target (in nanoseconds, after codec delay
-    // adjustment).
+    // Verify we can read packets after seeking, and that we eventually reach packets at/after the
+    // seek target (in nanoseconds, after codec delay adjustment). Note: for codecs like Opus,
+    // Matroska `SeekPreRoll` requires that the demuxer emit preroll packets before the target to
+    // warm up decoders.
     let mut post_seek_video = false;
     let mut post_seek_audio = false;
     for _ in 0..1000 {
       let Some(pkt) = demuxer.next_packet().expect("read packet") else {
         break;
       };
-      assert!(
-        pkt.pts_ns >= seek_target_ns,
-        "packet PTS {}ns is before seek target {}ns",
-        pkt.pts_ns,
-        seek_target_ns
-      );
-      if pkt.track_id == video_track {
+      if pkt.track_id == video_track && pkt.pts_ns >= seek_target_ns {
         post_seek_video = true;
       }
-      if pkt.track_id == audio_track {
+      if pkt.track_id == audio_track && pkt.pts_ns >= seek_target_ns {
         post_seek_audio = true;
       }
       if post_seek_video && post_seek_audio {
@@ -863,6 +884,51 @@ mod tests {
     }
     assert!(post_seek_video, "expected VP9 packet after seek");
     assert!(post_seek_audio, "expected Opus packet after seek");
+  }
+
+  #[test]
+  fn seek_emits_preroll_packets_when_seek_preroll_present() {
+    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
+
+    let seek_target_ns = 500_000_000_u64;
+    demuxer.seek(seek_target_ns).expect("seek");
+
+    // This fixture should have a non-zero Matroska SeekPreRoll for Opus.
+    assert!(
+      demuxer.max_seek_pre_roll_ns > 0,
+      "fixture expected to have non-zero SeekPreRoll"
+    );
+
+    // We should see at least one preroll packet (< target) before we reach packets at/after the
+    // target. These preroll packets are required to warm up decoders (notably Opus).
+    let mut saw_preroll_before_target = false;
+    let mut saw_at_or_after_target = false;
+
+    for _ in 0..1000 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+
+      if !saw_at_or_after_target && pkt.pts_ns < seek_target_ns {
+        saw_preroll_before_target = true;
+      }
+      if pkt.pts_ns >= seek_target_ns {
+        saw_at_or_after_target = true;
+        if saw_preroll_before_target {
+          break;
+        }
+      }
+    }
+
+    assert!(
+      saw_preroll_before_target,
+      "expected at least one preroll packet with PTS < seek target"
+    );
+    assert!(
+      saw_at_or_after_target,
+      "expected to eventually reach packets at/after seek target"
+    );
   }
 
   #[test]
