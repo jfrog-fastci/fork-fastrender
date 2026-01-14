@@ -165,10 +165,10 @@ fn compiled_module_with_budget_rejects_duplicate_exported_name_default_vs_named(
 }
 
 #[test]
-fn compiled_script_rejects_await_in_class_static_block() {
+fn compiled_script_allows_await_in_class_static_block_via_async_classic_script_retry() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-  let err = CompiledScript::compile_script(
+  let script = CompiledScript::compile_script(
     &mut heap,
     "test.js",
     r#"
@@ -179,20 +179,24 @@ fn compiled_script_rejects_await_in_class_static_block() {
       }
     "#,
   )
-  .unwrap_err();
+  .unwrap();
 
-  match err {
-    VmError::Syntax(diags) => assert!(!diags.is_empty()),
-    other => panic!("expected VmError::Syntax, got {other:?}"),
-  }
+  assert!(
+    script.contains_top_level_await,
+    "await in class static blocks should be treated as top-level await for async classic scripts"
+  );
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await in class static blocks is not supported by the HIR async script executor; compilation should request AST fallback"
+  );
 }
 
 #[test]
-fn compiled_script_with_budget_rejects_await_in_class_static_block() {
+fn compiled_script_with_budget_allows_await_in_class_static_block_via_async_classic_script_retry() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
-  let err = CompiledScript::compile_script_with_budget(
+  let script = CompiledScript::compile_script_with_budget(
     &mut heap,
     &mut vm,
     "test.js",
@@ -204,10 +208,7 @@ fn compiled_script_with_budget_rejects_await_in_class_static_block() {
       }
     "#,
   )
-  .unwrap_err();
-
-  match err {
-    VmError::Syntax(diags) => assert!(!diags.is_empty()),
-    other => panic!("expected VmError::Syntax, got {other:?}"),
-  }
+  .unwrap();
+  assert!(script.contains_top_level_await);
+  assert!(script.top_level_await_requires_ast_fallback);
 }
