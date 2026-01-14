@@ -15,6 +15,7 @@ pub enum ChromeDialogActionUrl {
 impl ChromeDialogActionUrl {
   /// Parse a `chrome-dialog:` URL string.
   pub fn parse(raw: &str) -> Result<Self, String> {
+    let raw = trim_ascii_whitespace(raw);
     let url = Url::parse(raw).map_err(|err| err.to_string())?;
     Self::parse_url(&url)
   }
@@ -37,6 +38,11 @@ impl ChromeDialogActionUrl {
         "{CHROME_DIALOG_SCHEME}: URLs must not use an authority form (expected `chrome-dialog:accept`, not `chrome-dialog://...`)"
       ));
     }
+    if url.fragment().is_some() {
+      return Err(format!(
+        "{CHROME_DIALOG_SCHEME}: URLs must not include a fragment (`#...`)"
+      ));
+    }
 
     let action = url.path().to_ascii_lowercase();
     match action.as_str() {
@@ -54,6 +60,11 @@ impl ChromeDialogActionUrl {
       Self::Cancel => format!("{CHROME_DIALOG_SCHEME}:cancel"),
     }
   }
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // Match HTML URL-ish attribute whitespace rules (TAB/LF/FF/CR/SPACE).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
 #[cfg(test)]
@@ -88,9 +99,25 @@ mod tests {
   }
 
   #[test]
+  fn chrome_dialog_parsing_rejects_fragments() {
+    let err = ChromeDialogActionUrl::parse("chrome-dialog:accept#frag").unwrap_err();
+    assert!(
+      err.to_ascii_lowercase().contains("fragment"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn chrome_dialog_parsing_trims_ascii_whitespace() {
+    assert_eq!(
+      ChromeDialogActionUrl::parse(" chrome-dialog:accept \n").unwrap(),
+      ChromeDialogActionUrl::Accept
+    );
+  }
+
+  #[test]
   fn chrome_dialog_parsing_rejects_unknown_actions() {
     let err = ChromeDialogActionUrl::parse("chrome-dialog:maybe").unwrap_err();
     assert!(err.to_ascii_lowercase().contains("unknown"));
   }
 }
-
