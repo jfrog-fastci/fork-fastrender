@@ -573,6 +573,123 @@ fn generator_for_triple_body_restores_env_on_continue_after_yield() -> Result<()
 }
 
 #[test]
+fn generator_for_in_body_restores_lex_env_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        for (var k in {a: 0, b: 1}) {
+          let x = "inner" + k;
+          yield x;
+        }
+        return x;
+      }
+      var g = gen("outer");
+      var r1 = g.next();
+      var r2 = g.next();
+      var r3 = g.next();
+      var ys = [r1.value, r2.value];
+      ys.sort();
+      r1.done === false
+        && r2.done === false
+        && r3.done === true
+        && ys.join(",") === "innera,innerb"
+        && r3.value === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_in_body_preserves_inner_let_across_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = [];
+      function* gen(x) {
+        for (var k in {a: 0, b: 1}) {
+          let x = "inner" + k;
+          yield x;
+          out.push(x);
+        }
+        out.push(x);
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      var ys = [a, b];
+      ys.sort();
+      out.sort();
+      ys.join(",") === "innera,innerb"
+        && c === "outer"
+        && out.join(",") === "innera,innerb,outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_in_body_restores_env_on_break_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        for (var k in {a: 0, b: 1}) {
+          let x = "inner" + k;
+          yield x;
+          break;
+        }
+        return x;
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      (a === "innera" || a === "innerb") && b === "outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_in_body_restores_env_on_continue_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        var out = [];
+        for (var k in {a: 0, b: 1}) {
+          let x = "inner" + k;
+          yield x;
+          out.push(x);
+          continue;
+        }
+        out.push(x);
+        out.sort();
+        return out.join(",");
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      var ys = [a, b];
+      ys.sort();
+      ys.join(",") === "innera,innerb" && c === "innera,innerb,outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn async_for_await_of_body_preserves_inner_let_across_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
