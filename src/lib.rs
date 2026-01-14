@@ -200,6 +200,7 @@ pub mod compat;
 pub(crate) mod document_ticks;
 pub mod error;
 pub mod geometry;
+pub mod media;
 
 // ============================================================================
 // Pipeline Modules
