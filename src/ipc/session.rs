@@ -159,15 +159,6 @@ impl RendererSession {
         }))
       }
 
-      BrowserToRenderer::FrameAck { frame_seq } => {
-        if self.state != RendererSessionState::Running {
-          return Err(IpcError::InvalidParameters {
-            msg: format!("FrameAck sent in state {:?}", self.state),
-          });
-        }
-        Ok(Some(BrowserToRenderer::FrameAck { frame_seq }))
-      }
-
       BrowserToRenderer::Shutdown { .. } => unreachable!("handled above"), // fastrender-allow-panic
     }
   }
@@ -430,5 +421,92 @@ mod tests {
       .unwrap();
     assert!(matches!(ack, Some(RendererToBrowser::ShutdownAck)));
     assert_eq!(session.state(), RendererSessionState::Closed);
+  }
+
+  #[test]
+  fn frame_ack_is_only_sent_while_running() {
+    let mut session = RendererSession::new();
+
+    // Before running, FrameAck is a caller bug.
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 1 })
+      .expect_err("expected FrameAck before running to be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+
+    session
+      .handle_browser_to_renderer(BrowserToRenderer::Hello {
+        protocol_version: IPC_PROTOCOL_VERSION,
+      })
+      .unwrap()
+      .expect("hello should be sent");
+    assert_eq!(session.state(), RendererSessionState::AwaitHelloAck);
+
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 2 })
+      .expect_err("expected FrameAck before buffers installed to be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+
+    session
+      .handle_renderer_to_browser(RendererToBrowser::HelloAck {
+        protocol_version: IPC_PROTOCOL_VERSION,
+      })
+      .unwrap()
+      .expect("hello ack should be accepted");
+    assert_eq!(session.state(), RendererSessionState::AwaitFrameBuffers);
+
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 3 })
+      .expect_err("expected FrameAck before running to be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+
+    let mut session = mk_running_session();
+    let sent = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 9 })
+      .unwrap();
+    assert_eq!(sent, Some(BrowserToRenderer::FrameAck { frame_seq: 9 }));
+    assert_eq!(session.state(), RendererSessionState::Running);
+  }
+
+  #[test]
+  fn frame_ack_is_ignored_when_closing_closed_or_crashed() {
+    let mut session = mk_running_session();
+
+    session
+      .handle_browser_to_renderer(BrowserToRenderer::Shutdown { reason: None })
+      .unwrap()
+      .expect("shutdown should be sent");
+    assert_eq!(session.state(), RendererSessionState::Closing);
+
+    let ignored = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 1 })
+      .unwrap();
+    assert!(ignored.is_none());
+
+    // Once the renderer acks shutdown, we're fully closed; FrameAck is still ignored.
+    session
+      .handle_renderer_to_browser(RendererToBrowser::ShutdownAck)
+      .unwrap()
+      .expect("shutdown ack should transition to closed");
+    assert_eq!(session.state(), RendererSessionState::Closed);
+
+    let ignored = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 2 })
+      .unwrap();
+    assert!(ignored.is_none());
+
+    // Crashed sessions also ignore further browser messages.
+    let mut session = mk_running_session();
+    session
+      .handle_renderer_to_browser(RendererToBrowser::Crashed {
+        reason: "boom".to_string(),
+      })
+      .unwrap()
+      .expect("crash should be observed");
+    assert_eq!(session.state(), RendererSessionState::Crashed);
+
+    let ignored = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 3 })
+      .unwrap();
+    assert!(ignored.is_none());
   }
 }

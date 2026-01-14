@@ -243,8 +243,6 @@ impl BrowserToRenderer {
         Ok(())
       }
 
-      BrowserToRenderer::FrameAck { .. } => Ok(()),
-
       BrowserToRenderer::ReleaseFrameBuffer { .. } => Ok(()),
       BrowserToRenderer::FrameAck { .. } => Ok(()),
 
@@ -548,5 +546,14 @@ mod tests {
     let err =
       BrowserToRenderer::decode_and_validate_payload(&payload).expect_err("expected shutdown to fail");
     assert!(matches!(err, IpcError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn frame_ack_validates() {
+    let msg = BrowserToRenderer::FrameAck { frame_seq: 123 };
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let decoded =
+      BrowserToRenderer::decode_and_validate_payload(&payload).expect("frame ack should validate");
+    assert_eq!(decoded, msg);
   }
 }
