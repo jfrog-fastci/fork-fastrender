@@ -342,7 +342,7 @@ pub use bookmarks::{
 pub use chrome_action_url::{
   chrome_action_activate_tab, chrome_action_back, chrome_action_close_tab, chrome_action_forward,
   chrome_action_href, chrome_action_new_tab, chrome_action_reload, parse_chrome_action_url,
-  ChromeActionUrl, CHROME_ACTION_SCHEME,
+  ChromeActionUrl,
 };
 pub use notifications::{
   classify_warning_toast, Toast, ToastKind, ToastState, WarningToast, WarningToastIcon,

@@ -11090,6 +11090,30 @@ impl GridFormattingContext {
       }
     }
 
+    let span_alignment = |tracks: &DetailedGridTracksInfo,
+                          axis_size: f32,
+                          padding_start: f32,
+                          padding_end: f32,
+                          border_start: f32,
+                          border_end: f32,
+                          alignment: TaffyAlignContent| {
+      let track_count = tracks.sizes.len();
+      if track_count == 0 {
+        return alignment;
+      }
+
+      let mut gutters = tracks.gutters.clone();
+      if gutters.len() < track_count + 1 {
+        gutters.resize(track_count + 1, 0.0);
+      }
+
+      let used_gutters: f32 = gutters.iter().take(track_count + 1).copied().sum::<f32>();
+      let used_size: f32 = tracks.sizes.iter().copied().sum::<f32>() + used_gutters;
+      let content_size = axis_size - padding_start - padding_end - border_start - border_end;
+      let free_space = content_size - used_size;
+      apply_alignment_fallback_for_grid(free_space, track_count, alignment)
+    };
+
     let span_for_axis = |offsets: &[f32],
                          track_count: usize,
                          axis_size: f32,
@@ -11114,24 +11138,42 @@ impl GridFormattingContext {
     };
 
     let x_span = mirror_x.then(|| {
+      let aligned = span_alignment(
+        &info.rows,
+        layout.size.width,
+        layout.padding.left,
+        layout.padding.right,
+        layout.border.left,
+        layout.border.right,
+        align_x,
+      );
       span_for_axis(
         &row_offsets_transposed,
         info.rows.sizes.len(),
         layout.size.width,
         layout.padding.right,
         layout.border.right,
-        align_x,
+        aligned,
       )
     })
     .flatten();
     let y_span = mirror_y.then(|| {
+      let aligned = span_alignment(
+        &columns_no_gutters,
+        layout.size.height,
+        layout.padding.top,
+        layout.padding.bottom,
+        layout.border.top,
+        layout.border.bottom,
+        align_y,
+      );
       span_for_axis(
         &col_offsets_transposed,
         columns_no_gutters.sizes.len(),
         layout.size.height,
         layout.padding.bottom,
         layout.border.bottom,
-        align_y,
+        aligned,
       )
     })
     .flatten();

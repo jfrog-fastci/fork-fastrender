@@ -1197,12 +1197,13 @@ mod tests {
 
     assert_eq!(
       action.to_url(),
-      format!("{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs")
+      format!("{}:navigate?url=cats+%26+dogs", ChromeActionUrl::SCHEME)
     );
 
     assert_eq!(
       ChromeActionUrl::parse(&format!(
-        "{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs"
+        "{}:navigate?url=cats+%26+dogs",
+        ChromeActionUrl::SCHEME
       ))
       .unwrap(),
       action
@@ -1211,7 +1212,8 @@ mod tests {
     // Legacy alias accepted.
     assert_eq!(
       ChromeActionUrl::parse(&format!(
-        "{CHROME_ACTION_SCHEME}:navigate?input=cats+%26+dogs"
+        "{}:navigate?input=cats+%26+dogs",
+        ChromeActionUrl::SCHEME
       ))
       .unwrap(),
       action

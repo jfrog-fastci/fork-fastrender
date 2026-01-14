@@ -1817,6 +1817,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -1888,6 +1889,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![BrowserSessionTab {
@@ -1954,6 +1956,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![BrowserSessionTab {
@@ -2315,6 +2318,7 @@ mod tests {
     let session = BrowserSession {
       version: 999,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows,
       active_window_index: MAX_SESSION_WINDOWS + 123,
       appearance: AppearanceSettings::default(),
@@ -2549,6 +2553,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: long_valid,
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -2659,6 +2664,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -2702,6 +2708,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
