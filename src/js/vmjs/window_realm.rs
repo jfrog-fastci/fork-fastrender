@@ -40467,6 +40467,63 @@ fn html_media_element_seeking_get_native(
   Ok(Value::Bool(false))
 }
 
+fn html_media_element_paused_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let data = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  let paused = data.media_element_state_registry_mut().get_or_create(handle).paused;
+  Ok(Value::Bool(paused))
+}
+
+fn html_media_element_play_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let data = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  data.media_element_state_registry_mut().get_or_create(handle).paused = false;
+  vm_js::promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Undefined)
+}
+
+fn html_media_element_pause_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let data = vm
+    .user_data_mut::<WindowRealmUserData>()
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  data.media_element_state_registry_mut().get_or_create(handle).paused = true;
+  Ok(Value::Undefined)
+}
+
 fn html_media_element_load_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -51353,6 +51410,58 @@ fn init_window_globals(
       html_media_element_proto,
       seeking_key,
       idl_attribute_desc(Value::Object(seeking_get_func), Value::Undefined),
+    )?;
+
+    let paused_get_call_id = vm.register_native_call(html_media_element_paused_get_native)?;
+    let paused_get_name = scope.alloc_string("get paused")?;
+    scope.push_root(Value::String(paused_get_name))?;
+    let paused_get_func = scope.alloc_native_function(paused_get_call_id, None, paused_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      paused_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(paused_get_func))?;
+    let paused_key = alloc_key(&mut scope, "paused")?;
+    scope.define_property(
+      html_media_element_proto,
+      paused_key,
+      idl_attribute_desc(Value::Object(paused_get_func), Value::Undefined),
+    )?;
+
+    // HTMLMediaElement.prototype.play() / pause() stubs.
+    //
+    // Many pages call `video.play().catch(...)`; ensure we return a Promise even though FastRender
+    // does not yet perform actual media playback.
+    let play_call_id = vm.register_native_call(html_media_element_play_native)?;
+    let play_name = scope.alloc_string("play")?;
+    scope.push_root(Value::String(play_name))?;
+    let play_func = scope.alloc_native_function(play_call_id, None, play_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      play_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(play_func))?;
+    let play_key = alloc_key(&mut scope, "play")?;
+    scope.define_property(
+      html_media_element_proto,
+      play_key,
+      data_desc(Value::Object(play_func)),
+    )?;
+
+    let pause_call_id = vm.register_native_call(html_media_element_pause_native)?;
+    let pause_name = scope.alloc_string("pause")?;
+    scope.push_root(Value::String(pause_name))?;
+    let pause_func = scope.alloc_native_function(pause_call_id, None, pause_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      pause_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(pause_func))?;
+    let pause_key = alloc_key(&mut scope, "pause")?;
+    scope.define_property(
+      html_media_element_proto,
+      pause_key,
+      data_desc(Value::Object(pause_func)),
     )?;
 
     // HTMLMediaElement.prototype.load() stub.
@@ -70285,6 +70394,40 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_play_pause_updates_paused_state() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.paused !== true) return 'initial-paused';
+        const p = video.play();
+        if (!(p instanceof Promise)) return 'play-not-promise';
+        if (video.paused !== false) return 'after-play';
+        if (video.pause() !== undefined) return 'pause-return';
+        if (video.paused !== true) return 'after-pause';
+
+        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused');
+        if (!desc || typeof desc.get !== 'function' || desc.set !== undefined) return 'desc';
+        const bogus = document.createElement('div');
+        try { desc.get.call(bogus); return 'illegal_get:no'; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_get:' + e.name + ':' + e.message; }
+        try { HTMLMediaElement.prototype.play.call(bogus); return 'illegal_play:no'; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_play:' + e.name + ':' + e.message; }
+        try { HTMLMediaElement.prototype.pause.call(bogus); return 'illegal_pause:no'; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_pause:' + e.name + ':' + e.message; }
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
