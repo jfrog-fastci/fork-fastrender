@@ -55,9 +55,18 @@ cat >&2 <<'EOF'
 
 hint: if these are accidental, revert them before committing/pushing:
 
-  git restore --source=HEAD --staged --worktree <path>
+  # Safe auto-fix (reverts mode-only changes without touching content changes):
+  bash scripts/revert_filemode_only_changes.sh
 
-or to wipe all accidental changes in this checkout:
+or manually:
+
+  # Unstaged mode-only changes:
+  git restore --worktree <path>
+
+  # Staged mode-only changes:
+  git restore --staged --source=HEAD <path>
+
+or to wipe *all* accidental changes in this checkout (destructive):
 
   git restore --source=HEAD --staged --worktree .
 

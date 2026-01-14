@@ -220,6 +220,12 @@ To proactively catch accidental filemode-only diffs before committing, you can r
 bash scripts/check_no_filemode_only_changes.sh
 ```
 
+To automatically revert filemode-only diffs (without touching content changes), run:
+
+```bash
+bash scripts/revert_filemode_only_changes.sh
+```
+
 If your environment frequently flips the executable bit, consider setting (local-only):
 
 ```bash
