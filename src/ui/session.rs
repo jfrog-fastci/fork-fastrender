@@ -9,7 +9,7 @@ use crate::ui::browser_app::{
   BrowserAppState, DownloadStatus, TabGroupColor, TabGroupId, CLOSED_TAB_STACK_CAPACITY,
 };
 use crate::ui::protocol_limits;
-use crate::ui::protocol_limits::MAX_TITLE_BYTES;
+use crate::ui::protocol_limits::{MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_TITLE_BYTES};
 use crate::ui::untrusted::clamp_untrusted_utf8;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
@@ -81,11 +81,46 @@ where
   Ok(truncated.to_string())
 }
 
+fn deserialize_optional_string_truncated<'de, D, const MAX_BYTES: usize>(
+  deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  let opt: Option<Cow<'de, str>> = Option::deserialize(deserializer)?;
+  Ok(opt.map(|cow| {
+    let trimmed = cow.trim();
+    let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_BYTES).trim();
+    truncated.to_string()
+  }))
+}
+
 fn deserialize_url_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
   D: Deserializer<'de>,
 {
   deserialize_string_truncated::<'de, D, MAX_SESSION_URL_BYTES>(deserializer)
+}
+
+fn deserialize_closed_tab_title<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_optional_string_truncated::<'de, D, MAX_TITLE_BYTES>(deserializer)
+}
+
+fn deserialize_download_file_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_string_truncated::<'de, D, MAX_DOWNLOAD_FILE_NAME_BYTES>(deserializer)
+}
+
+fn deserialize_download_error<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  deserialize_optional_string_truncated::<'de, D, MAX_ERROR_BYTES>(deserializer)
 }
 
 fn deserialize_tab_group_title<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -263,7 +298,11 @@ pub struct BrowserSessionTab {
 pub struct BrowserSessionClosedTab {
   #[serde(deserialize_with = "deserialize_url_string")]
   pub url: String,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_closed_tab_title",
+    skip_serializing_if = "Option::is_none"
+  )]
   pub title: Option<String>,
   /// Whether this tab was pinned in the tab strip.
   #[serde(default, skip_serializing_if = "is_false")]
@@ -301,13 +340,17 @@ impl BrowserSessionTabGroup {
 pub struct BrowserSessionDownload {
   #[serde(default, deserialize_with = "deserialize_url_string")]
   pub url: String,
-  #[serde(default)]
+  #[serde(default, deserialize_with = "deserialize_download_file_name")]
   pub file_name: String,
   #[serde(default)]
   pub path: PathBuf,
   #[serde(default)]
   pub status: BrowserSessionDownloadStatus,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_download_error",
+    skip_serializing_if = "Option::is_none"
+  )]
   pub error: Option<String>,
 }
 
@@ -372,12 +415,22 @@ impl BrowserSessionDownload {
     } else {
       self.file_name = file_name.to_string();
     }
+    if self.file_name.as_bytes().len() > MAX_DOWNLOAD_FILE_NAME_BYTES {
+      self.file_name = clamp_untrusted_utf8(&self.file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
+    }
 
     self.status = self.status.sanitized();
     if self.status != BrowserSessionDownloadStatus::Failed {
       self.error = None;
     } else if let Some(err) = self.error.as_mut() {
-      *err = err.trim().to_string();
+      let trimmed = err.trim();
+      if trimmed.is_empty() {
+        self.error = None;
+      } else if trimmed.as_bytes().len() > MAX_ERROR_BYTES {
+        *err = clamp_untrusted_utf8(trimmed, MAX_ERROR_BYTES);
+      } else {
+        *err = trimmed.to_string();
+      }
     }
     self
   }
