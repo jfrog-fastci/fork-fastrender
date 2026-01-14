@@ -26822,7 +26822,10 @@ impl App {
     }
 
     if let Some(hud) = self.hud.as_mut() {
-      let now = frame_start.expect("frame timer start should exist when HUD is enabled");
+      let now = frame_start.unwrap_or_else(|| {
+        debug_assert!(false, "frame timer start should exist when HUD is enabled");
+        std::time::Instant::now()
+      });
       if let Some(prev) = hud.last_frame_start {
         let dt = now.saturating_duration_since(prev);
         let secs = dt.as_secs_f32();
@@ -28747,8 +28750,10 @@ impl App {
     };
 
     if breakdown_enabled {
-      let frame_start =
-        frame_start.expect("frame timer start should exist when breakdown is enabled");
+      let frame_start = frame_start.unwrap_or_else(|| {
+        debug_assert!(false, "frame timer start should exist when breakdown is enabled");
+        present_at
+      });
       breakdown.total = breakdown
         .worker_msgs
         .saturating_add(present_at.saturating_duration_since(frame_start));

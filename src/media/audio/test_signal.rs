@@ -84,8 +84,10 @@ pub fn impulse(sample_rate: u32, channels: u16, frames: usize) -> Vec<f32> {
 /// delegates to [`sine_wave`].
 #[must_use]
 pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+  let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
+    Ok(v) => v,
+    Err(_) => return Vec::new(),
+  };
   sine_wave(freq_hz, sample_rate, channels, frames)
 }
 
@@ -94,8 +96,10 @@ pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -
 /// Convenience wrapper over [`impulse`] that computes `frames` via [`duration_to_frames_floor`].
 #[must_use]
 pub fn impulse_duration(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+  let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
+    Ok(v) => v,
+    Err(_) => return Vec::new(),
+  };
   impulse(sample_rate, channels, frames)
 }
 
@@ -107,8 +111,10 @@ pub fn impulse_duration(duration: Duration, sample_rate: u32, channels: u16) -> 
 /// silence (`0.0`) to avoid the ambiguous "start vs end" value.
 #[must_use]
 pub fn ramp(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+  let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
+    Ok(v) => v,
+    Err(_) => return Vec::new(),
+  };
   let channels_usize = usize::from(channels);
 
   if frames == 0 || channels_usize == 0 {

@@ -194,14 +194,15 @@ impl VisitedUrlStore {
       if idx == self.records.len().saturating_sub(1)
         && self.records.get(idx).is_some_and(|r| r.url == url)
       {
-        let existing = self.records.get_mut(idx).expect("idx in-bounds");
-        existing.last_visited = visited_at;
-        existing.visit_count = existing.visit_count.saturating_add(visit_count);
-        if title.is_some() {
-          existing.title = title;
+        if let Some(existing) = self.records.get_mut(idx) {
+          existing.last_visited = visited_at;
+          existing.visit_count = existing.visit_count.saturating_add(visit_count);
+          if title.is_some() {
+            existing.title = title;
+          }
+          self.bump_revision();
+          return;
         }
-        self.bump_revision();
-        return;
       }
 
       // Slow-ish path: shift the entry to the end to preserve recency ordering.
@@ -226,14 +227,15 @@ impl VisitedUrlStore {
         if idx == self.records.len().saturating_sub(1)
           && self.records.get(idx).is_some_and(|r| r.url == url)
         {
-          let existing = self.records.get_mut(idx).expect("idx in-bounds");
-          existing.last_visited = visited_at;
-          existing.visit_count = existing.visit_count.saturating_add(visit_count);
-          if title.is_some() {
-            existing.title = title;
+          if let Some(existing) = self.records.get_mut(idx) {
+            existing.last_visited = visited_at;
+            existing.visit_count = existing.visit_count.saturating_add(visit_count);
+            if title.is_some() {
+              existing.title = title;
+            }
+            self.bump_revision();
+            return;
           }
-          self.bump_revision();
-          return;
         }
 
         if idx < self.records.len() && self.records.get(idx).is_some_and(|r| r.url == url) {

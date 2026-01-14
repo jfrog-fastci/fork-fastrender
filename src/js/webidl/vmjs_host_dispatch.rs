@@ -9087,7 +9087,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               .require_document_fragment_handle(scope.heap(), Value::Object(wrapper_obj))?;
             (handle.node_id, wrapper_obj, handle.document_id)
           }
-          _ => unreachable!(),
+          other => {
+            debug_assert!(
+              false,
+              "unexpected WebIDL interface for append/prepend dispatch: {other}"
+            );
+            return Err(VmError::InvariantViolation(
+              "unexpected WebIDL interface for append/prepend dispatch",
+            ));
+          }
         };
 
         #[derive(Debug)]

@@ -282,11 +282,10 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   if omnibox_open {
     out.push_str(" aria-controls=\"omnibox-popup\"");
     if let Some(selected_idx) = omnibox_selected_idx {
-      write!(
+      let _ = write!(
         out,
         " aria-activedescendant=\"omnibox-suggestion-{selected_idx}\""
-      )
-      .expect("write omnibox aria-activedescendant");
+      );
     }
   }
   out.push_str(">\n");

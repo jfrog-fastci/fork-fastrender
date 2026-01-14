@@ -47,8 +47,9 @@ pub fn page_node_id(tab_id: TabId, dom_node_id: usize) -> accesskit::NodeId {
   let dom_bits = dom_node_id as u64 as u128;
 
   let raw = PAGE_NODE_ID_TAG | (tab_bits << 64) | dom_bits;
-  accesskit::NodeId(NonZeroU128::new(raw).expect("page node ids must be non-zero"))
-  // fastrender-allow-unwrap
+  debug_assert_ne!(raw, 0, "page node ids must be non-zero");
+  // SAFETY: `PAGE_NODE_ID_TAG` always sets bit 127, so `raw` can never be zero.
+  accesskit::NodeId(unsafe { NonZeroU128::new_unchecked(raw) })
 }
 
 /// Returns true if `id` is in the page node ID namespace.

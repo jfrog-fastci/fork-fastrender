@@ -16,10 +16,6 @@
 /// - YV12: `(..., v_plane, ..., u_plane, ...)`
 ///
 /// Output pixels are written in RGBA byte order with alpha forced to 255.
-///
-/// # Panics
-/// Panics if the provided buffers are too small for the given dimensions and
-/// strides.
 pub fn yuv420p_to_rgba(
   width: usize,
   height: usize,
@@ -36,63 +32,82 @@ pub fn yuv420p_to_rgba(
     return;
   }
 
-  let uv_width = (width + 1) / 2;
-  let uv_height = (height + 1) / 2;
+  // Compute `ceil(width/2)` / `ceil(height/2)` without overflowing on `usize::MAX`.
+  let uv_width = (width / 2).saturating_add(width % 2);
+  let uv_height = (height / 2).saturating_add(height % 2);
 
-  assert!(
-    y_stride >= width,
-    "y_stride ({y_stride}) must be >= width ({width})"
-  );
-  assert!(
-    u_stride >= uv_width,
-    "u_stride ({u_stride}) must be >= ceil(width/2) ({uv_width})"
-  );
-  assert!(
-    v_stride >= uv_width,
-    "v_stride ({v_stride}) must be >= ceil(width/2) ({uv_width})"
-  );
+  if y_stride < width || u_stride < uv_width || v_stride < uv_width {
+    debug_assert!(
+      false,
+      "invalid YUV strides for frame (w={width} h={height} y_stride={y_stride} u_stride={u_stride} v_stride={v_stride})"
+    );
+    return;
+  }
 
-  let pixel_count = width
-    .checked_mul(height)
-    .expect("width*height overflow in yuv420p_to_rgba");
-  let out_len_needed = pixel_count
-    .checked_mul(4)
-    .expect("width*height*4 overflow in yuv420p_to_rgba");
-  assert!(
-    out_rgba.len() >= out_len_needed,
-    "out_rgba buffer too small: need {out_len_needed} bytes, got {}",
-    out_rgba.len()
-  );
+  let Some(pixel_count) = width.checked_mul(height) else {
+    debug_assert!(false, "width*height overflow in yuv420p_to_rgba");
+    return;
+  };
+  let Some(out_len_needed) = pixel_count.checked_mul(4) else {
+    debug_assert!(false, "width*height*4 overflow in yuv420p_to_rgba");
+    return;
+  };
+  if out_rgba.len() < out_len_needed {
+    debug_assert!(
+      false,
+      "out_rgba buffer too small: need {out_len_needed} bytes, got {}",
+      out_rgba.len()
+    );
+    return;
+  }
 
-  let y_len_needed = (height - 1)
+  let Some(y_len_needed) = (height - 1)
     .checked_mul(y_stride)
     .and_then(|v| v.checked_add(width))
-    .expect("y plane length overflow in yuv420p_to_rgba");
-  assert!(
-    y_plane.len() >= y_len_needed,
-    "y_plane buffer too small: need {y_len_needed} bytes, got {}",
-    y_plane.len()
-  );
+  else {
+    debug_assert!(false, "y plane length overflow in yuv420p_to_rgba");
+    return;
+  };
+  if y_plane.len() < y_len_needed {
+    debug_assert!(
+      false,
+      "y_plane buffer too small: need {y_len_needed} bytes, got {}",
+      y_plane.len()
+    );
+    return;
+  }
 
-  let u_len_needed = (uv_height - 1)
+  let Some(u_len_needed) = (uv_height - 1)
     .checked_mul(u_stride)
     .and_then(|v| v.checked_add(uv_width))
-    .expect("u plane length overflow in yuv420p_to_rgba");
-  assert!(
-    u_plane.len() >= u_len_needed,
-    "u_plane buffer too small: need {u_len_needed} bytes, got {}",
-    u_plane.len()
-  );
+  else {
+    debug_assert!(false, "u plane length overflow in yuv420p_to_rgba");
+    return;
+  };
+  if u_plane.len() < u_len_needed {
+    debug_assert!(
+      false,
+      "u_plane buffer too small: need {u_len_needed} bytes, got {}",
+      u_plane.len()
+    );
+    return;
+  }
 
-  let v_len_needed = (uv_height - 1)
+  let Some(v_len_needed) = (uv_height - 1)
     .checked_mul(v_stride)
     .and_then(|v| v.checked_add(uv_width))
-    .expect("v plane length overflow in yuv420p_to_rgba");
-  assert!(
-    v_plane.len() >= v_len_needed,
-    "v_plane buffer too small: need {v_len_needed} bytes, got {}",
-    v_plane.len()
-  );
+  else {
+    debug_assert!(false, "v plane length overflow in yuv420p_to_rgba");
+    return;
+  };
+  if v_plane.len() < v_len_needed {
+    debug_assert!(
+      false,
+      "v_plane buffer too small: need {v_len_needed} bytes, got {}",
+      v_plane.len()
+    );
+    return;
+  }
 
   #[inline]
   fn clamp_to_u8(v: i32) -> u8 {
@@ -237,4 +252,3 @@ mod tests {
     assert_eq!(out_padded, out_tight);
   }
 }
-

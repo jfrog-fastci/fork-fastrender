@@ -321,10 +321,10 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
     };
 
     let track = &mut self.active_tracks[track_idx];
-    let sample = track
-      .samples
-      .get(track.next_sample)
-      .expect("sample must exist");
+    let Some(sample) = track.samples.get(track.next_sample) else {
+      debug_assert!(false, "mp4parse: selected track index should have a next sample");
+      return Err(MediaError::Demux("mp4parse: missing sample for selected track".to_string()));
+    };
     track.next_sample += 1;
 
     let size_usize = usize::try_from(sample.size)

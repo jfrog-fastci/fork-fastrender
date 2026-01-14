@@ -95,7 +95,10 @@ impl InteractionEngineDom2 {
         changed = true;
       }
 
-      let focused = self.state.focused.unwrap();
+      let Some(focused) = self.state.focused else {
+        debug_assert!(false, "expected focused node id to be Some after is_none() check");
+        return changed;
+      };
       let next_chain = dom
         .ancestors(focused)
         .filter(|&id| matches!(dom.node(id).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }))

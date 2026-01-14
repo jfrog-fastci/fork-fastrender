@@ -13731,7 +13731,11 @@ impl DisplayListBuilder {
         match shaped {
           Ok(runs) => {
             runs_storage_arc = Some(runs);
-            runs_storage_arc.as_deref().unwrap()
+            let Some(runs) = runs_storage_arc.as_deref() else {
+              debug_assert!(false, "runs_storage_arc must be Some after assignment");
+              return builder.emit_naive_text(text, rect, Some(style));
+            };
+            runs
           }
           Err(_) => return builder.emit_naive_text(text, rect, Some(style)),
         }
@@ -13751,7 +13755,11 @@ impl DisplayListBuilder {
           style.word_spacing,
         );
         runs_storage = Some(runs);
-        runs_storage.as_deref().unwrap()
+        let Some(runs) = runs_storage.as_deref() else {
+          debug_assert!(false, "runs_storage must be Some after assignment");
+          return builder.emit_naive_text(text, rect, Some(style));
+        };
+        runs
       };
 
       let metrics_scaled = Self::resolve_scaled_metrics(style, &builder.font_ctx);
@@ -15782,7 +15790,11 @@ impl DisplayListBuilder {
       match shaped {
         Ok(runs) => {
           runs_storage_arc = Some(runs);
-          runs_storage_arc.as_deref().unwrap()
+          let Some(runs) = runs_storage_arc.as_deref() else {
+            debug_assert!(false, "runs_storage_arc must be Some after assignment");
+            return self.emit_naive_text(text, rect, Some(style));
+          };
+          runs
         }
         Err(_) => return self.emit_naive_text(text, rect, Some(style)),
       }
@@ -15802,7 +15814,11 @@ impl DisplayListBuilder {
         style.word_spacing,
       );
       runs_storage = Some(runs);
-      runs_storage.as_deref().unwrap()
+      let Some(runs) = runs_storage.as_deref() else {
+        debug_assert!(false, "runs_storage must be Some after assignment");
+        return self.emit_naive_text(text, rect, Some(style));
+      };
+      runs
     };
 
     let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);

@@ -68,8 +68,12 @@ fn encode_namespaced_id(namespace: u8, payload: u128) -> accesskit::NodeId {
   let raw = ((FASTR_ACCESSKIT_MARKER as u128) << 120)
     | ((namespace as u128) << 112)
     | (payload & PAYLOAD_MASK);
-  accesskit::NodeId(NonZeroU128::new(raw).expect("encoded AccessKit NodeId must be non-zero"))
-  // fastrender-allow-unwrap
+  debug_assert_ne!(
+    raw, 0,
+    "encoded AccessKit NodeId must be non-zero (marker/namespace scheme invariant)"
+  );
+  // SAFETY: `raw` always contains the fixed marker in the high bits, so it can never be zero.
+  accesskit::NodeId(unsafe { NonZeroU128::new_unchecked(raw) })
 }
 
 fn decode_namespaced_id(node: accesskit::NodeId) -> Option<(u8, u128)> {
@@ -168,14 +172,22 @@ pub fn accesskit_id_for_page_dom_preorder(
   document_generation: u32,
   dom_node_id: usize,
 ) -> accesskit::NodeId {
-  assert!(
-    tab_id != 0,
-    "tab_id=0 is reserved for invalid page node ids"
-  );
-  assert!(
-    tab_id <= PAGE_TAB_ID_MAX,
-    "tab_id={tab_id} too large for FastRender AccessKit NodeId encoding (max {PAGE_TAB_ID_MAX})"
-  );
+  // `tab_id=0` is reserved for invalid page node ids; returning a non-panicking ID that fails to
+  // decode avoids crashing rendering if an unexpected zero sneaks in.
+  let tab_id = if tab_id == 0 {
+    debug_assert!(false, "tab_id=0 is reserved for invalid page node ids");
+    0
+  } else if tab_id > PAGE_TAB_ID_MAX {
+    // Prevent truncation/collisions: out-of-range tab ids would be masked down to 48 bits.
+    debug_assert!(
+      false,
+      "tab_id={tab_id} too large for FastRender AccessKit NodeId encoding (max {PAGE_TAB_ID_MAX})"
+    );
+    0
+  } else {
+    tab_id
+  };
+  debug_assert!(dom_node_id != 0, "expected DOM preorder ids to be 1-indexed");
 
   let dom_u32 = if dom_node_id > u32::MAX as usize {
     u32::MAX

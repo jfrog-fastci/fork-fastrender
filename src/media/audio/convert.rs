@@ -451,7 +451,16 @@ impl AudioConverter {
       (false, true, _) => {
         resample_f32_into(input, in_rate, out_rate, in_channels, out);
       }
-      (false, false, _) => unreachable!("handled by early return"),
+      (false, false, _) => {
+        // This path should be handled by the early return above, but keep a non-panicking fallback
+        // so unexpected inputs cannot crash rendering.
+        out.clear();
+        if in_channels == 0 {
+          return;
+        }
+        let frames = input.len() / in_channels;
+        out.extend_from_slice(&input[..frames * in_channels]);
+      }
     }
   }
 }

@@ -1374,11 +1374,11 @@ impl BookmarkStore {
     match self.attach_to_parent_list(id, parent) {
       Ok(()) => {
         if is_bookmark {
-          let url = match self.nodes.get(&id) {
-            Some(BookmarkNode::Bookmark(entry)) => entry.url.as_str(),
-            _ => unreachable!("inserted bookmark node should remain a bookmark"),
-          };
-          Self::url_index_add_id(&mut self.url_index, url, id);
+          if let Some(BookmarkNode::Bookmark(entry)) = self.nodes.get(&id) {
+            Self::url_index_add_id(&mut self.url_index, entry.url.as_str(), id);
+          } else {
+            debug_assert!(false, "inserted bookmark node should remain a bookmark");
+          }
         }
         if is_folder {
           self.touch_folders();

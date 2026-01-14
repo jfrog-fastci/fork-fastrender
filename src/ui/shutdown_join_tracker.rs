@@ -128,7 +128,10 @@ impl ShutdownJoinTracker {
         };
 
         if handle.is_finished() {
-          let handle = join.take().expect("checked Some above");
+          let Some(handle) = join.take() else {
+            debug_assert!(false, "expected JoinHandle to be Some after as_ref() check");
+            return false;
+          };
           match handle.join() {
             Ok(()) => {}
             Err(_) => {

@@ -766,22 +766,18 @@ impl MediaSession for FfmpegCliSession {
       self.pending_audio = self.read_audio_chunk()?;
     }
 
-    match (self.pending_video.as_ref(), self.pending_audio.as_ref()) {
+    let pending_video = self.pending_video.take();
+    let pending_audio = self.pending_audio.take();
+    match (pending_video, pending_audio) {
       (None, None) => Ok(None),
-      (Some(_), None) => {
-        let v = self.pending_video.take().expect("checked Some");
-        Ok(Some(DecodedItem::Video(v)))
-      }
-      (None, Some(_)) => {
-        let a = self.pending_audio.take().expect("checked Some");
-        Ok(Some(DecodedItem::Audio(a)))
-      }
+      (Some(v), None) => Ok(Some(DecodedItem::Video(v))),
+      (None, Some(a)) => Ok(Some(DecodedItem::Audio(a))),
       (Some(v), Some(a)) => {
         if v.pts_ns <= a.pts_ns {
-          let v = self.pending_video.take().expect("checked Some");
+          self.pending_audio = Some(a);
           Ok(Some(DecodedItem::Video(v)))
         } else {
-          let a = self.pending_audio.take().expect("checked Some");
+          self.pending_video = Some(v);
           Ok(Some(DecodedItem::Audio(a)))
         }
       }

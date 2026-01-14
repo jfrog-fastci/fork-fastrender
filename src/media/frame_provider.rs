@@ -256,9 +256,19 @@ fn video_entry_mut<'a>(
     .find(|k| k.box_id == box_id && k.src.as_ref() == src)
     .cloned()
   {
-    return map
-      .get_mut(&existing_key)
-      .expect("video_entry_mut found existing key but could not fetch entry");
+    use std::collections::hash_map::Entry;
+
+    return match map.entry(existing_key) {
+      Entry::Occupied(entry) => entry.into_mut(),
+      Entry::Vacant(entry) => {
+        debug_assert!(
+          false,
+          "video_entry_mut found existing key but entry() returned vacant"
+        );
+        let src_arc = Arc::clone(&entry.key().src);
+        entry.insert(VideoEntry::new(src_arc))
+      }
+    };
   }
 
   let src_arc: Arc<str> = Arc::from(src);
