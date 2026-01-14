@@ -206,3 +206,29 @@ if [[ -n "${matches}" ]]; then
   fi
   exit 1
 fi
+
+# Guardrail: prevent a recurring `parse-js` merge issue where identical inherent methods are
+# duplicated on `Parser`, breaking compilation with `E0592 duplicate definitions`.
+#
+# This has happened multiple times due to bad merges landing on `main`. Catch it early with a cheap
+# textual scan so CI can fail before (or even without) building the full ecma-rs workspace.
+parse_js_parser_mod="vendor/ecma-rs/parse-js/src/parse/mod.rs"
+if [[ -f "${parse_js_parser_mod}" ]]; then
+  check_unique_inherent_method() {
+    local method_name="$1"
+    local re="^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?fn[[:space:]]+${method_name}\\b"
+    local hits
+    hits="$(grep -nE "${re}" "${parse_js_parser_mod}" || true)"
+    # Strip empty line that `grep` may produce via `|| true`.
+    local n
+    n="$(printf '%s\n' "${hits}" | sed '/^$/d' | wc -l)"
+    if [[ "${n}" -gt 1 ]]; then
+      echo "error: duplicate inherent method definitions in ${parse_js_parser_mod}: ${method_name}" >&2
+      echo "${hits}" >&2
+      exit 1
+    fi
+  }
+
+  check_unique_inherent_method "with_disallow_arguments_in_class_init"
+  check_unique_inherent_method "validate_arguments_not_disallowed_in_class_init"
+fi
