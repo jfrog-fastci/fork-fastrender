@@ -8,7 +8,7 @@ use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use crate::ui::{dom_node_id_for_current_page_action, TabId};
+use crate::ui::{dom_node_id_for_current_page_action, page_accesskit_ids, TabId};
 
 /// Shared context for routing AccessKit [`accesskit::ActionRequest`]s into FastRender's interaction
 /// engine.
@@ -136,7 +136,20 @@ pub fn fastrender_node_id_from_accesskit(
   current_tab_id: TabId,
   current_document_generation: u32,
 ) -> Option<usize> {
-  dom_node_id_for_current_page_action(node_id, current_tab_id, current_document_generation)
+  if let Some(dom_node_id) =
+    dom_node_id_for_current_page_action(node_id, current_tab_id, current_document_generation)
+  {
+    return Some(dom_node_id);
+  }
+
+  // Back-compat for the tag-bit encoding in `ui::page_accesskit_ids`. This scheme does not carry
+  // a document generation, so callers cannot filter stale action requests across navigations when
+  // using it. Prefer `encode_page_node_id` for real page subtree integration.
+  let (tab_id, dom_node_id) = page_accesskit_ids::decode_page_node_id(node_id)?;
+  if tab_id != current_tab_id {
+    return None;
+  }
+  Some(dom_node_id)
 }
 
 fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
@@ -781,6 +794,26 @@ mod tests {
       fastrender_node_id_from_accesskit(node_id, tab_id, gen + 1),
       None,
       "expected stale generation ids to be ignored"
+    );
+  }
+
+  #[test]
+  fn accesskit_decoding_accepts_tagged_page_ids_for_current_tab() {
+    let tab_id = TEST_TAB_ID;
+    let gen = TEST_DOCUMENT_GENERATION;
+    let dom_node_id = 123usize;
+
+    let tagged = page_accesskit_ids::page_node_id(tab_id, dom_node_id);
+    assert_eq!(
+      fastrender_node_id_from_accesskit(tagged, tab_id, gen),
+      Some(dom_node_id)
+    );
+
+    let other_tab = page_accesskit_ids::page_node_id(TabId(2), dom_node_id);
+    assert_eq!(
+      fastrender_node_id_from_accesskit(other_tab, tab_id, gen),
+      None,
+      "expected tagged ids for other tabs to be ignored"
     );
   }
 

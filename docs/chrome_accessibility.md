@@ -231,6 +231,10 @@ Layout (u128):
 This gives each node a stable `(tab_id, generation, dom_node_id)` identity and ensures stale action
 requests from a previous navigation can be ignored (generation mismatch).
 
+For compatibility, `fast_accesskit_actions` also accepts the tag-bit page ids produced by
+[`src/ui/page_accesskit_ids.rs`](../src/ui/page_accesskit_ids.rs), but that encoding does not
+include a document generation so it cannot filter stale action requests across navigations.
+
 #### Wrapper nodes (window/chrome/page roots)
 
 Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
