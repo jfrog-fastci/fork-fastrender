@@ -7,7 +7,10 @@ use crate::ui::{
 };
 use std::fmt::Write;
 
-use super::ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID, CHROME_NEW_TAB_ID};
+use super::ids::{
+  CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID, CHROME_NEW_TAB_ID,
+  CHROME_OMNIBOX_POPUP_ID, CHROME_TAB_STRIP_ID, CHROME_TOOLBAR_ID,
+};
 use super::theme::chrome_theme_css;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
@@ -56,7 +59,9 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
   let omnibox = &app.chrome.omnibox;
   let show = omnibox.open && !omnibox.suggestions.is_empty();
   if !show {
-    out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\" hidden></div>\n");
+    out.push_str("      <div id=\"");
+    out.push_str(CHROME_OMNIBOX_POPUP_ID);
+    out.push_str("\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\" hidden></div>\n");
     return;
   }
 
@@ -64,9 +69,9 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
     .selected
     .filter(|idx| *idx < omnibox.suggestions.len());
 
-  out.push_str(
-    "      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\">\n",
-  );
+  out.push_str("      <div id=\"");
+  out.push_str(CHROME_OMNIBOX_POPUP_ID);
+  out.push_str("\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\">\n");
 
   let setsize = omnibox.suggestions.len();
   for (idx, suggestion) in omnibox.suggestions.iter().enumerate() {
@@ -166,7 +171,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("<body>\n");
 
   // Tab strip.
-  out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\">\n");
+  out.push_str("  <div class=\"tab-strip\" id=\"");
+  out.push_str(CHROME_TAB_STRIP_ID);
+  out.push_str("\">\n");
   out.push_str("    <div class=\"tab-strip-tabs\" role=\"tablist\" aria-label=\"Tabs\">\n");
   let tab_setsize = app.tabs.len();
   for (tab_idx, tab) in app.tabs.iter().enumerate() {
@@ -224,9 +231,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("  </div>\n");
 
   // Toolbar.
-  out.push_str(
-    "  <div class=\"toolbar\" id=\"toolbar\" role=\"toolbar\" aria-label=\"Browser controls\">\n",
-  );
+  out.push_str("  <div class=\"toolbar\" id=\"");
+  out.push_str(CHROME_TOOLBAR_ID);
+  out.push_str("\" role=\"toolbar\" aria-label=\"Browser controls\">\n");
 
   // Helper for toolbar button links.
   fn push_toolbar_button(
@@ -318,7 +325,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str(CHROME_ADDRESS_BAR_ID);
   out.push_str("\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
   out.push_str(&escape_html(&app.chrome.address_bar_text));
-  out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-controls=\"omnibox-popup\" aria-expanded=\"");
+  out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-controls=\"");
+  out.push_str(CHROME_OMNIBOX_POPUP_ID);
+  out.push_str("\" aria-expanded=\"");
   out.push_str(if omnibox_open { "true" } else { "false" });
   out.push('"');
   if omnibox_open {
