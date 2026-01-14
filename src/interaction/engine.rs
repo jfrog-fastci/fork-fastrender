@@ -3509,20 +3509,6 @@ fn truncate_str_to_utf16_units(value: &str, max_units: usize) -> &str {
   &value[..end_byte]
 }
 
-fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
-  if !value.as_bytes().iter().any(|b| matches!(*b, b'\n' | b'\r')) {
-    return Cow::Borrowed(value);
-  }
-  let mut out = String::with_capacity(value.len());
-  for ch in value.chars() {
-    if matches!(ch, '\n' | '\r') {
-      continue;
-    }
-    out.push(ch);
-  }
-  Cow::Owned(out)
-}
-
 fn is_anchor_with_href(node: &DomNode) -> bool {
   // MVP: treat <a href> and <area href> as focusable/navigable "links".
   node.tag_name().is_some_and(|tag| {
@@ -7655,7 +7641,8 @@ impl InteractionEngine {
       let current = if is_textarea {
         textarea_value_for_editing(node)
       } else {
-        strip_ascii_line_breaks(node.get_attribute_ref("value").unwrap_or("")).into_owned()
+        crate::dom::strip_ascii_line_breaks(node.get_attribute_ref("value").unwrap_or(""))
+          .into_owned()
       };
       let textarea_default_value = if is_textarea {
         crate::dom::textarea_value(node)
@@ -7703,7 +7690,7 @@ impl InteractionEngine {
     let mut sanitized = if is_textarea {
       crate::dom::normalize_textarea_newlines(value.to_string())
     } else {
-      strip_ascii_line_breaks(value).into_owned()
+      crate::dom::strip_ascii_line_breaks(value).into_owned()
     };
     if let Some(max) = maxlength {
       sanitized = truncate_str_to_utf16_units(&sanitized, max).to_string();
@@ -11240,17 +11227,12 @@ impl InteractionEngine {
     let start_byte = byte_offset_for_char_idx(&current, caret);
     let end_byte = start_byte;
 
-    let insert_text = if is_text_input {
-      strip_ascii_line_breaks(text)
-    } else {
-      Cow::Borrowed(text)
-    };
     let insert_text = if let Some(max) = maxlength {
       let current_units = utf16_len(&current);
       let allowed_units = max.saturating_sub(current_units);
-      truncate_str_to_utf16_units(insert_text.as_ref(), allowed_units)
+      truncate_str_to_utf16_units(text, allowed_units)
     } else {
-      insert_text.as_ref()
+      text
     };
 
     let mut next = String::with_capacity(current.len().saturating_add(insert_text.len()));
@@ -11507,19 +11489,14 @@ impl InteractionEngine {
     let start_byte = byte_offset_for_char_idx(&current, replace_start);
     let end_byte = byte_offset_for_char_idx(&current, replace_end);
 
-    let insert_text = if focused_is_text_input {
-      strip_ascii_line_breaks(text)
-    } else {
-      Cow::Borrowed(text)
-    };
     let insert_text = if let Some(max) = maxlength {
       let current_units = utf16_len(&current);
       let replaced_units = utf16_len(&current[start_byte..end_byte]);
       let base_units = current_units.saturating_sub(replaced_units);
       let allowed_units = max.saturating_sub(base_units);
-      truncate_str_to_utf16_units(insert_text.as_ref(), allowed_units)
+      truncate_str_to_utf16_units(text, allowed_units)
     } else {
-      insert_text.as_ref()
+      text
     };
 
     let mut next = String::with_capacity(
