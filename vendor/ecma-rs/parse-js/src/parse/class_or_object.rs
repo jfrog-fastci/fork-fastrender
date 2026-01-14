@@ -271,20 +271,20 @@ impl<'a> Parser<'a> {
               p.new_target_allowed += 1;
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
-               // Static blocks have their own `Await` / `Yield` context:
-               // - `await` is reserved as an identifier (even in scripts),
-               // - `await` expressions are permitted only when allowed by an enclosing *async
-               //   function* context (static blocks do not inherit top-level await from modules), and
-               // - `yield` is not treated as a keyword from an enclosing generator, but yield
-               //   expressions are never permitted, and
-               // - `return` statements are never permitted (handled above via `in_function = 0`).
-               let is_module = p.is_module();
-               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
-                 await_allowed: false,
-                 yield_allowed: !is_module,
-                 await_expr_allowed: ctx.rules.await_expr_allowed && prev_in_function > 0,
-                 yield_expr_allowed: false,
-               });
+              // Static blocks have their own `Await` / `Yield` context:
+              // - `await` is reserved as an identifier (even in scripts),
+              // - `await` expressions are permitted when the surrounding context allows them (e.g.
+              //   within an async function body or at top-level in modules), and
+              // - `yield` is not treated as a keyword from an enclosing generator, but yield
+              //   expressions are never permitted, and
+              // - `return` statements are never permitted (handled above via `in_function = 0`).
+              let is_module = p.is_module();
+              let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+                await_allowed: false,
+                yield_allowed: !is_module,
+                await_expr_allowed: ctx.rules.await_expr_allowed,
+                yield_expr_allowed: false,
+              });
               let body =
                 p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
               p.in_iteration = prev_in_iteration;
