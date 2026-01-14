@@ -414,3 +414,52 @@ fn derived_constructor_async_arrow_super_calls_before_super_throw_before_await()
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_assignment_proxy_receiver_is_instance_across_await() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+
+      var recv_set_1;
+      var recv_set_2;
+      var target = {
+        get x() { return this._x; },
+        set x(v) { this._x = v; },
+      };
+      var proxy = new Proxy(target, {
+        set(t, p, v, r) {
+          if (p === "x") {
+            if (recv_set_1 === undefined) recv_set_1 = r;
+            else recv_set_2 = r;
+          }
+          return Reflect.set(t, p, v, r);
+        },
+      });
+
+      class B {}
+      class C extends B {
+        constructor() {
+          let f = async () => {
+            super.x = await Promise.resolve(1);
+            super[await Promise.resolve("x")] = await Promise.resolve(2);
+            return recv_set_1 === this && recv_set_2 === this && this._x === 2;
+          };
+          super();
+          this._x = 0;
+          Object.setPrototypeOf(C.prototype, proxy);
+          this.f = f;
+        }
+      }
+
+      async function run() {
+        let o = new C();
+        let ok = await o.f();
+        return ok && recv_set_1 === o && recv_set_2 === o && o._x === 2;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "true",
+  )?;
+  Ok(())
+}
