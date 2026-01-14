@@ -1,17 +1,12 @@
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
-<<<<<<< HEAD
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-=======
-use std::sync::atomic::{AtomicU32, Ordering};
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
-<<<<<<< HEAD
 use super::ring_buffer::AudioRingBuffer;
 use super::{
   audio_engine_config, duration_to_frames_ceil, frames_to_duration, AudioBackend, AudioClock,
@@ -20,11 +15,6 @@ use super::{
 use super::limits::MAX_BUFFERED_DURATION;
 use crate::debug::trace::TraceHandle;
 use crate::media::audio_clock::InterpolatedAudioClock;
-=======
-use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
-use crate::media::audio_clock::InterpolatedAudioClock;
-use crate::media::audio::ring_buffer::AudioRingBuffer;
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
 ///
@@ -45,7 +35,6 @@ impl WavAudioBackend {
   ///
   /// The output format and buffering are derived from the current [`AudioEngineConfig`].
   pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-<<<<<<< HEAD
     let cfg = audio_engine_config();
     Self::new_with_engine_config(path, &cfg)
   }
@@ -101,11 +90,6 @@ impl WavAudioBackend {
     let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
     let mixer = Arc::new(MixerState::new(config));
     let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz.max(1)));
-=======
-    let config = AudioStreamConfig::new(48_000, 2);
-    let mixer = Arc::new(MixerState::new(config));
-    let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz));
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
     let mut file = File::create(path)?;
     write_wav_header(&mut file, config, 0)?;
@@ -181,7 +165,6 @@ impl WavAudioBackend {
     update_wav_header(&mut writer.file, self.config, data_bytes)?;
     writer.file.flush()?;
 
-<<<<<<< HEAD
     let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
     let new_frames_written = self
       .clock
@@ -193,15 +176,6 @@ impl WavAudioBackend {
       .on_callback_end_with_device_time(frames_u32, device_time_at_end);
 
     drop(callback_span);
-=======
-    // Treat each `render()` call as an audio callback for clocking purposes.
-    let mut remaining = frames;
-    while remaining > 0 {
-      let chunk = remaining.min(u32::MAX as usize) as u32;
-      self.clock.on_callback_end(chunk);
-      remaining -= chunk as usize;
-    }
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
     Ok(())
   }
@@ -412,13 +386,9 @@ mod tests {
   use std::convert::TryInto;
   use std::time::Duration;
 
-<<<<<<< HEAD
   use super::*;
   use crate::debug::trace::TraceHandle;
   use crate::media::audio::test_signal;
-=======
-  use super::{AudioBackend, WavAudioBackend};
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
   #[test]
   fn wav_audio_backend_writes_valid_header_and_sizes() {
