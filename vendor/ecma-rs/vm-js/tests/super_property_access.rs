@@ -249,7 +249,7 @@ fn super_property_access_in_static_block_compiled() -> Result<(), VmError> {
 }
 
 #[test]
-fn super_computed_member_in_derived_ctor_evaluates_key_before_this_binding_error() -> Result<(), VmError> {
+fn super_computed_member_in_derived_ctor_does_not_eval_key_before_this_binding_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let Some(value) = exec_or_skip_class_inheritance(
     &mut rt,
@@ -268,12 +268,12 @@ fn super_computed_member_in_derived_ctor_evaluates_key_before_this_binding_error
   else {
     return Ok(());
   };
-  assert_value_is_utf8(&rt, value, "1:ReferenceError");
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
   Ok(())
 }
 
 #[test]
-fn super_computed_member_in_derived_ctor_evaluates_key_before_this_binding_error_compiled(
+fn super_computed_member_in_derived_ctor_does_not_eval_key_before_this_binding_error_compiled(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
   let Some(value) = exec_compiled_or_skip(
@@ -302,6 +302,6 @@ fn super_computed_member_in_derived_ctor_evaluates_key_before_this_binding_error
       return Ok(());
     }
   }
-  assert_value_is_utf8(&rt, value, "1:ReferenceError");
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
   Ok(())
 }
