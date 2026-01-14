@@ -13081,25 +13081,29 @@ impl DisplayListBuilder {
     }
 
     let text_rect = content_rect.translate(scroll_delta);
+    let empty_runs: Arc<Vec<ShapedRun>> = Arc::new(Vec::new());
 
     let shape_text_runs =
-      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Vec<ShapedRun>> {
+      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Arc<Vec<ShapedRun>>> {
         if text.is_empty() {
-          return Some(Vec::new());
+          return Some(Arc::clone(&empty_runs));
         }
         let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
+        if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+          let shaped = builder.shaper.shape_arc(text, style, &builder.font_ctx);
+          if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+            breakdown.record_text_shape(start.elapsed());
+          }
+          return shaped.ok();
+        }
+
         let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
         if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
           breakdown.record_text_shape(start.elapsed());
         }
         let mut runs = shaped.ok()?;
-        InlineTextItem::apply_spacing_to_runs(
-          &mut runs,
-          text,
-          style.letter_spacing,
-          style.word_spacing,
-        );
-        Some(runs)
+        InlineTextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+        Some(Arc::new(runs))
       };
 
     match &control.control {
@@ -13271,10 +13275,11 @@ impl DisplayListBuilder {
         if trim_ascii_whitespace(sample_text).is_empty() {
           sample_text = "M";
         }
-        let metrics_runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+        let metrics_runs =
+          shape_text_runs(self, sample_text, &text_style).unwrap_or_else(|| Arc::clone(&empty_runs));
         let metrics = InlineTextItem::metrics_from_runs(
           &self.font_ctx,
-          &metrics_runs,
+          metrics_runs.as_ref(),
           line_height,
           text_style.font_size,
         );
@@ -13284,7 +13289,8 @@ impl DisplayListBuilder {
         let bottom = baseline_y + metrics.descent;
 
         let display_text = paint_text.unwrap_or("");
-        let text_runs = shape_text_runs(self, display_text, &text_style).unwrap_or_default();
+        let text_runs = shape_text_runs(self, display_text, &text_style)
+          .unwrap_or_else(|| Arc::clone(&empty_runs));
         let fallback_advance = display_text.chars().count() as f32 * text_style.font_size * 0.6;
         let total_advance: f32 = if !text_runs.is_empty() {
           text_runs.iter().map(|run| run.advance).sum()
@@ -13298,7 +13304,7 @@ impl DisplayListBuilder {
         } else {
           0.0
         };
-        let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
+        let caret_stops = caret_stops_for_runs(display_text, text_runs.as_ref(), total_advance);
 
         let mut overlays = TextEditOverlays::default();
 
@@ -13314,7 +13320,7 @@ impl DisplayListBuilder {
             } else {
               crate::text::caret::selection_segments_for_char_range(
                 display_text,
-                &text_runs,
+                text_runs.as_ref(),
                 sel_start,
                 sel_end,
               )
@@ -13510,10 +13516,11 @@ impl DisplayListBuilder {
         if trim_ascii_whitespace(metrics_sample).is_empty() {
           metrics_sample = "M";
         }
-        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style).unwrap_or_default();
+        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style)
+          .unwrap_or_else(|| Arc::clone(&empty_runs));
         let metrics = InlineTextItem::metrics_from_runs(
           &self.font_ctx,
-          &metrics_runs,
+          metrics_runs.as_ref(),
           line_height,
           text_style.font_size,
         );
@@ -13530,7 +13537,8 @@ impl DisplayListBuilder {
           let line_end = line_start + line_len;
           let line_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
 
-          let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+          let line_runs =
+            shape_text_runs(self, line, &text_style).unwrap_or_else(|| Arc::clone(&empty_runs));
           let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
           let total_advance: f32 = if !line_runs.is_empty() {
             line_runs.iter().map(|run| run.advance).sum()
@@ -13538,7 +13546,7 @@ impl DisplayListBuilder {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
-          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(line, line_runs.as_ref(), total_advance);
 
           let baseline_y = y + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -13581,7 +13589,7 @@ impl DisplayListBuilder {
               } else {
                 crate::text::caret::selection_segments_for_char_range(
                   line,
-                  &line_runs,
+                  line_runs.as_ref(),
                   start_col,
                   end_col,
                 )
@@ -13626,10 +13634,11 @@ impl DisplayListBuilder {
           if let Some((line, line_len, line_rect, start_x, total_advance, top, bottom, _fallback)) =
             last_visible_line
           {
-            let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+            let line_runs = shape_text_runs(self, line, &text_style)
+              .unwrap_or_else(|| Arc::clone(&empty_runs));
             let caret_x = start_x
               + caret_x_for_position(
-                &caret_stops_for_runs(line, &line_runs, total_advance),
+                &caret_stops_for_runs(line, line_runs.as_ref(), total_advance),
                 line_len,
                 CaretAffinity::Downstream,
               )
@@ -13779,24 +13788,28 @@ impl DisplayListBuilder {
       true
     };
 
+    let empty_runs: Arc<Vec<ShapedRun>> = Arc::new(Vec::new());
     let shape_text_runs =
-      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Vec<ShapedRun>> {
+      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Arc<Vec<ShapedRun>>> {
         if text.is_empty() {
-          return Some(Vec::new());
+          return Some(Arc::clone(&empty_runs));
         }
         let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
+        if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+          let shaped = builder.shaper.shape_arc(text, style, &builder.font_ctx);
+          if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+            breakdown.record_text_shape(start.elapsed());
+          }
+          return shaped.ok();
+        }
+
         let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
         if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
           breakdown.record_text_shape(start.elapsed());
         }
         let mut runs = shaped.ok()?;
-        InlineTextItem::apply_spacing_to_runs(
-          &mut runs,
-          text,
-          style.letter_spacing,
-          style.word_spacing,
-        );
-        Some(runs)
+        InlineTextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+        Some(Arc::new(runs))
       };
 
     let measure_shaped_advance = |builder: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
@@ -14035,11 +14048,12 @@ impl DisplayListBuilder {
           if trim_ascii_whitespace(sample_text).is_empty() {
             sample_text = "M";
           }
-          let metrics_runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+          let metrics_runs = shape_text_runs(self, sample_text, &text_style)
+            .unwrap_or_else(|| Arc::clone(&empty_runs));
           let metrics = match &text_style.line_height {
             crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
               &self.font_ctx,
-              &metrics_runs,
+              metrics_runs.as_ref(),
               line_height,
               text_style.font_size,
             ),
@@ -14056,7 +14070,8 @@ impl DisplayListBuilder {
           let bottom = baseline_y + metrics.descent;
 
           let display_text = paint_text.unwrap_or("");
-          let text_runs = shape_text_runs(self, display_text, &text_style).unwrap_or_default();
+          let text_runs = shape_text_runs(self, display_text, &text_style)
+            .unwrap_or_else(|| Arc::clone(&empty_runs));
           let fallback_advance = display_text.chars().count() as f32 * text_style.font_size * 0.6;
           let total_advance: f32 = if !text_runs.is_empty() {
             text_runs.iter().map(|run| run.advance).sum()
@@ -14070,7 +14085,7 @@ impl DisplayListBuilder {
           } else {
             0.0
           };
-          let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(display_text, text_runs.as_ref(), total_advance);
 
           if !matches!(kind, TextControlKind::Password) && text_style.color.a > f32::EPSILON {
             if let Some((pre_start, pre_end)) = preedit_range {
@@ -14085,7 +14100,7 @@ impl DisplayListBuilder {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     display_text,
-                    &text_runs,
+                    text_runs.as_ref(),
                     pre_start,
                     pre_end,
                   )
@@ -14120,7 +14135,7 @@ impl DisplayListBuilder {
               } else {
                 crate::text::caret::selection_segments_for_char_range(
                   display_text,
-                  &text_runs,
+                  text_runs.as_ref(),
                   sel_start,
                   sel_end,
                 )
@@ -14367,11 +14382,12 @@ impl DisplayListBuilder {
         if trim_ascii_whitespace(metrics_sample).is_empty() {
           metrics_sample = "M";
         }
-        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style).unwrap_or_default();
+        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style)
+          .unwrap_or_else(|| Arc::clone(&empty_runs));
         let metrics = match &text_style.line_height {
           crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
             &self.font_ctx,
-            &metrics_runs,
+            metrics_runs.as_ref(),
             line_height,
             text_style.font_size,
           ),
@@ -14430,7 +14446,8 @@ impl DisplayListBuilder {
             continue;
           }
 
-          let line_runs = shape_text_runs(self, line_text, &text_style).unwrap_or_default();
+          let line_runs = shape_text_runs(self, line_text, &text_style)
+            .unwrap_or_else(|| Arc::clone(&empty_runs));
           let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
           let total_advance: f32 = if !line_runs.is_empty() {
             line_runs.iter().map(|run| run.advance).sum()
@@ -14438,7 +14455,7 @@ impl DisplayListBuilder {
             fallback_advance
           };
           let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
-          let caret_stops = caret_stops_for_runs(line_text, &line_runs, total_advance);
+          let caret_stops = caret_stops_for_runs(line_text, line_runs.as_ref(), total_advance);
 
           let baseline_y = line_rect.y() + half_leading + metrics.baseline_offset;
           let top = baseline_y - metrics.ascent;
@@ -14463,7 +14480,7 @@ impl DisplayListBuilder {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     line_text,
-                    &line_runs,
+                    line_runs.as_ref(),
                     start_col,
                     end_col,
                   )
@@ -14512,7 +14529,7 @@ impl DisplayListBuilder {
                 } else {
                   crate::text::caret::selection_segments_for_char_range(
                     line_text,
-                    &line_runs,
+                    line_runs.as_ref(),
                     start_col,
                     end_col,
                   )
