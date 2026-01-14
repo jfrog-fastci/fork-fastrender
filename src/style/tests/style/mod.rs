@@ -68,6 +68,7 @@ mod font_table_keywords_case_insensitive_test;
 mod font_variant_case_insensitive_test;
 mod font_variation_settings_calc_test;
 mod forced_colors_test;
+mod fullscreen_pseudo_class_test;
 mod forgiving_selector_list_test;
 mod form_control_constraint_pseudo_test;
 mod form_validity_pseudo_test;

@@ -8643,7 +8643,15 @@ impl<'a> Element for ElementRef<'a> {
         }
         true
       }
-      PseudoClass::Fullscreen => false,
+      PseudoClass::Fullscreen => {
+        let Some(state) = _context.extra_data.interaction_state else {
+          return false;
+        };
+        let Some(node_id) = self.resolved_node_id(_context) else {
+          return false;
+        };
+        state.is_fullscreen(node_id)
+      }
       PseudoClass::Open => {
         // https://html.spec.whatwg.org/multipage/semantics-other.html#selector-open
         //

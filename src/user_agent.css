@@ -618,6 +618,16 @@ details:not([open]) > :not(summary:first-of-type) {
     display: none;
 }
 
+/* Fullscreen */
+:fullscreen {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    background: black;
+    z-index: 2147483647;
+}
+
 /* Dialogs and popovers */
 dialog {
     display: block;

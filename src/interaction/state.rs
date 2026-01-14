@@ -674,6 +674,11 @@ pub struct InteractionState {
   /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
   user_validity: FxHashSet<usize>,
 
+  /// Currently fullscreen element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
+  ///
+  /// This drives the `:fullscreen` pseudo-class (and vendor aliases like `:-webkit-full-screen`).
+  fullscreen_element: Option<usize>,
+
   /// Cached hash of interaction state that can affect CSS selector matching.
   ///
   /// This is derived from fields such as focus/hover/active state, visited links, and user validity.
@@ -719,6 +724,27 @@ impl InteractionState {
   pub fn focus_visible_mut(&mut self) -> &mut bool {
     self.mark_css_hash_dirty();
     &mut self.focus_visible
+  }
+
+  /// Set (or clear) the currently fullscreen element, marking the cached CSS hash dirty on change.
+  pub fn set_fullscreen_element(&mut self, fullscreen_element: Option<usize>) {
+    if self.fullscreen_element == fullscreen_element {
+      return;
+    }
+    self.fullscreen_element = fullscreen_element;
+    self.mark_css_hash_dirty();
+  }
+
+  /// Returns the currently fullscreen element node id (preorder), if any.
+  #[inline]
+  pub fn fullscreen_element(&self) -> Option<usize> {
+    self.fullscreen_element
+  }
+
+  /// Mutably access the fullscreen element id, marking the cached CSS hash dirty.
+  pub fn fullscreen_element_mut(&mut self) -> &mut Option<usize> {
+    self.mark_css_hash_dirty();
+    &mut self.fullscreen_element
   }
 
   #[inline]
@@ -891,6 +917,11 @@ impl InteractionState {
   #[inline]
   pub fn is_active(&self, node_id: usize) -> bool {
     self.active_chain_membership.contains(&node_id)
+  }
+
+  #[inline]
+  pub fn is_fullscreen(&self, node_id: usize) -> bool {
+    self.fullscreen_element == Some(node_id)
   }
 
   #[inline]
@@ -1195,6 +1226,7 @@ impl Default for InteractionState {
       form_state: FormState::default(),
       document_selection: None,
       user_validity: FxHashSet::default(),
+      fullscreen_element: None,
       cached_css_hash: AtomicU64::new(0),
       cached_paint_hash: AtomicU64::new(0),
       css_hash_dirty: AtomicBool::new(true),
@@ -1220,6 +1252,7 @@ impl Clone for InteractionState {
       form_state: self.form_state.clone(),
       document_selection: self.document_selection.clone(),
       user_validity: self.user_validity.clone(),
+      fullscreen_element: self.fullscreen_element,
       cached_css_hash: AtomicU64::new(self.cached_css_hash.load(AtomicOrdering::Relaxed)),
       cached_paint_hash: AtomicU64::new(self.cached_paint_hash.load(AtomicOrdering::Relaxed)),
       // `InteractionState` is frequently cloned for "build a slightly modified state" patterns in
@@ -1241,6 +1274,7 @@ fn compute_css_hash(state: &InteractionState) -> u64 {
   let mut hasher = DefaultHasher::new();
   state.focused.hash(&mut hasher);
   state.focus_visible.hash(&mut hasher);
+  state.fullscreen_element.hash(&mut hasher);
   state.focus_chain.hash(&mut hasher);
   state.hover_chain.hash(&mut hasher);
   state.active_chain.hash(&mut hasher);
@@ -1495,6 +1529,8 @@ pub struct InteractionStateDom2 {
   pub document_selection: Option<DocumentSelectionStateDom2>,
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   pub user_validity: FxHashSet<NodeId>,
+  /// Currently fullscreen element `NodeId` (drives `:fullscreen` pseudo-class matching).
+  pub fullscreen_element: Option<NodeId>,
 }
 
 impl InteractionStateDom2 {
@@ -1508,6 +1544,13 @@ impl InteractionStateDom2 {
   /// prefer this method when responding to DOM mutations.
   pub fn prune_disconnected(&mut self, dom: &crate::dom2::Document) {
     let is_connected = |id: NodeId| dom.is_connected_for_scripting(id);
+
+    if self
+      .fullscreen_element
+      .is_some_and(|id| !is_connected(id))
+    {
+      self.fullscreen_element = None;
+    }
 
     if self.focused.is_some_and(|id| !is_connected(id)) {
       self.focused = None;
@@ -1565,6 +1608,10 @@ impl InteractionStateDom2 {
   /// [`RendererDomMapping::preorder_for_node_id`] returns `None`).
   pub fn prune_detached(&mut self, mapping: &RendererDomMapping) {
     let is_connected = |id: NodeId| mapping.preorder_for_node_id(id).is_some();
+
+    if self.fullscreen_element.is_some_and(|id| !is_connected(id)) {
+      self.fullscreen_element = None;
+    }
 
     if self.focused.is_some_and(|id| !is_connected(id)) {
       self.focused = None;
@@ -1709,6 +1756,10 @@ impl InteractionStateDom2 {
       .as_ref()
       .map(|sel| sel.project_to_preorder(mapping));
 
+    let fullscreen_element = self
+      .fullscreen_element
+      .and_then(|id| mapping.preorder_for_node_id(id));
+
     let mut projected = InteractionState::default();
     projected.focused = focused_preorder;
     projected.focus_visible = self.focus_visible && focused_preorder.is_some();
@@ -1721,6 +1772,7 @@ impl InteractionStateDom2 {
     projected.form_state = self.form_state.project_to_preorder(mapping);
     projected.document_selection = document_selection;
     projected.user_validity = user_validity;
+    projected.fullscreen_element = fullscreen_element;
     projected
   }
 }
