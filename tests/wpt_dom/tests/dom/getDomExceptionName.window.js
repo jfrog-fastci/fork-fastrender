@@ -1,4 +1,5 @@
 // META: script=/resources/testharness.js
+// META: script=/dom/support/setup_noop.js
 // META: script=/dom/common.js
 //
 // Regression tests for `getDomExceptionName()` in `dom/common.js`.
@@ -25,4 +26,3 @@ test(() => {
     "InvalidStateError"
   );
 }, "getDomExceptionName falls back to `.name` when `.code` is present but constants are missing");
-
