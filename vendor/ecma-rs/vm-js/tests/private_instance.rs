@@ -286,6 +286,40 @@ fn optional_chaining_private_instance_method_call_short_circuits_on_nullish_base
 }
 
 #[test]
+fn optional_chaining_private_instance_accessor_get_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      let side = 0;
+      class C {
+        #v = 'ok';
+        get #x() { side++; return this.#v; }
+        static access(obj) { return obj?.#x; }
+      }
+
+      let ok = true;
+      ok = ok && C.access(new C()) === 'ok' && side === 1;
+      ok = ok && C.access(null) === undefined && side === 1;
+      ok = ok && C.access(undefined) === undefined && side === 1;
+
+      let threw = false;
+      try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { C.access(1); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { C.access(new Proxy(new C(), {})); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy && side === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullish_base() {
   let mut rt = new_runtime();
   let value = rt
@@ -324,6 +358,44 @@ fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullis
       try { a.methodParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
 
       ok && threw && threwPrim && threwProxy && threwParenNull && threwParenUndef
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_private_accessor_get_after_optional_chain_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      let side = 0;
+      class C {
+        #v = 'init';
+        constructor(v) { this.#v = v; }
+        get #x() { side++; return this.#v; }
+        method(o) { return o?.c.#x; }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b' && side === 1;
+      ok = ok && a.method(null) === undefined && side === 1;
+      ok = ok && a.method(undefined) === undefined && side === 1;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { a.method({ c: 1 }); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { a.method({ c: new Proxy(b, {}) }); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy && side === 1
     "#,
     )
     .unwrap();
@@ -466,6 +538,48 @@ fn compiled_script_with_private_optional_chain_method_call_falls_back_and_execut
 }
 
 #[test]
+fn compiled_script_with_private_optional_chain_accessor_get_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      let side = 0;
+      class C {
+        #v = 'ok';
+        get #x() { side++; return this.#v; }
+        static access(obj) { return obj?.#x; }
+      }
+
+      let ok = true;
+      ok = ok && C.access(new C()) === 'ok' && side === 1;
+      ok = ok && C.access(null) === undefined && side === 1;
+      ok = ok && C.access(undefined) === undefined && side === 1;
+
+      let threw = false;
+      try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { C.access(1); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { C.access(new Proxy(new C(), {})); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy && side === 1
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_script_with_private_field_after_optional_chain_falls_back_and_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let script = CompiledScript::compile_script(
@@ -505,6 +619,52 @@ fn compiled_script_with_private_field_after_optional_chain_falls_back_and_execut
       try { a.methodParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
 
       ok && threw && threwPrim && threwProxy && threwParenNull && threwParenUndef
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_private_accessor_get_after_optional_chain_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      let side = 0;
+      class C {
+        #v = 'init';
+        constructor(v) { this.#v = v; }
+        get #x() { side++; return this.#v; }
+        method(o) { return o?.c.#x; }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b' && side === 1;
+      ok = ok && a.method(null) === undefined && side === 1;
+      ok = ok && a.method(undefined) === undefined && side === 1;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { a.method({ c: 1 }); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { a.method({ c: new Proxy(b, {}) }); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy && side === 1
     "#,
   )?;
 
