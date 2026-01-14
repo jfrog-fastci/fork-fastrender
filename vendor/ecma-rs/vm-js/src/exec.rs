@@ -39514,25 +39514,49 @@ fn gen_eval_lit_arr_from(
                 &mut spread_scope,
                 spread_value,
               )?;
-              spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
+              // Root the iterator record's components across iterator steps. Root `next_method` as
+              // an extra root while growing the root stack so it can't be collected before we push
+              // it.
+              spread_scope
+                .push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+              if let Err(err) = spread_scope.push_root(iter.next_method) {
+                return Err(evaluator.iterator_close_on_error(&mut spread_scope, &iter, err));
+              }
 
-              while let Some(value) = iterator::iterator_step_value(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                &mut spread_scope,
-                &mut iter,
-              )? {
-                evaluator.tick()?;
-                let idx = next_index;
-                next_index = next_index.saturating_add(1);
+              loop {
+                let next_value = match iterator::iterator_step_value(
+                  evaluator.vm,
+                  &mut *evaluator.host,
+                  &mut *evaluator.hooks,
+                  &mut spread_scope,
+                  &mut iter,
+                ) {
+                  Ok(v) => v,
+                  // Spec: array spread does not perform `IteratorClose` on errors produced while
+                  // stepping the iterator (`next`/`done`/`value`).
+                  Err(err) => return Err(err),
+                };
+                let Some(value) = next_value else {
+                  break;
+                };
 
-                let mut elem_scope = spread_scope.reborrow();
-                elem_scope.push_root(value)?;
-                let key_s = elem_scope.alloc_u32_index_string(idx)?;
-                elem_scope.push_root(Value::String(key_s))?;
-                let key = PropertyKey::from_string(key_s);
-                elem_scope.create_data_property_or_throw(arr, key, value)?;
+                let step_res: Result<(), VmError> = (|| {
+                  evaluator.tick()?;
+                  let idx = next_index;
+
+                  let mut elem_scope = spread_scope.reborrow();
+                  elem_scope.push_root(value)?;
+                  let key_s = elem_scope.alloc_u32_index_string(idx)?;
+                  elem_scope.push_root(Value::String(key_s))?;
+                  let key = PropertyKey::from_string(key_s);
+                  elem_scope.create_data_property_or_throw(arr, key, value)?;
+
+                  next_index = next_index.saturating_add(1);
+                  Ok(())
+                })();
+                if let Err(err) = step_res {
+                  return Err(evaluator.iterator_close_on_error(&mut spread_scope, &iter, err));
+                }
               }
 
               Ok(next_index)
@@ -46052,25 +46076,45 @@ fn gen_resume_from_frames(
               &mut spread_scope,
               spread_value,
             )?;
-            spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
+            spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+            if let Err(err) = spread_scope.push_root(iter.next_method) {
+              return Err(evaluator.iterator_close_on_error(&mut spread_scope, &iter, err));
+            }
 
-            while let Some(value) = iterator::iterator_step_value(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              &mut spread_scope,
-              &mut iter,
-            )? {
-              evaluator.tick()?;
-              let idx = next_index;
-              next_index = next_index.saturating_add(1);
+            loop {
+              let next_value = match iterator::iterator_step_value(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut spread_scope,
+                &mut iter,
+              ) {
+                Ok(v) => v,
+                // Spec: array spread does not perform `IteratorClose` on errors produced while
+                // stepping the iterator (`next`/`done`/`value`).
+                Err(err) => return Err(err),
+              };
+              let Some(value) = next_value else {
+                break;
+              };
 
-              let mut elem_scope = spread_scope.reborrow();
-              elem_scope.push_root(value)?;
-              let key_s = elem_scope.alloc_u32_index_string(idx)?;
-              elem_scope.push_root(Value::String(key_s))?;
-              let key = PropertyKey::from_string(key_s);
-              elem_scope.create_data_property_or_throw(arr, key, value)?;
+              let step_res: Result<(), VmError> = (|| {
+                evaluator.tick()?;
+                let idx = next_index;
+
+                let mut elem_scope = spread_scope.reborrow();
+                elem_scope.push_root(value)?;
+                let key_s = elem_scope.alloc_u32_index_string(idx)?;
+                elem_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                elem_scope.create_data_property_or_throw(arr, key, value)?;
+
+                next_index = next_index.saturating_add(1);
+                Ok(())
+              })();
+              if let Err(err) = step_res {
+                return Err(evaluator.iterator_close_on_error(&mut spread_scope, &iter, err));
+              }
             }
             Ok(next_index)
           })();
