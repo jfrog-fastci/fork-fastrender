@@ -186,8 +186,12 @@ fn compiled_constructor_body_construct(
     env.teardown(scope.heap_mut());
 
     match result? {
+      // If the derived constructor explicitly returns an object, that becomes the result of
+      // construction (even if `super()` was never called).
       Value::Object(o) => Ok(Value::Object(o)),
-      Value::Undefined => {
+      // Any non-object return value is ignored and `this` is returned instead. If `this` was never
+      // initialized via `super()`, this must throw a ReferenceError.
+      _ => {
         let state = scope.heap().get_derived_constructor_state(state_obj)?;
         match state.this_value {
           Some(this_obj) => Ok(Value::Object(this_obj)),
@@ -198,11 +202,6 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
-      _ => Err(throw_type_error(
-        vm,
-        &mut scope,
-        "Derived constructors may only return object or undefined",
-      )?),
     }
   }
 }
