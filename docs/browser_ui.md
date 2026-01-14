@@ -43,7 +43,7 @@ To save the JSONL perf log and/or a browser UI trace to disk:
 
 ```bash
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release \
-  --perf-log --perf-log-out target/browser_perf.jsonl \
+  --perf-log-out target/browser_perf.jsonl \
   --trace-out target/browser_trace.json \
   about:test-layout-stress
 ```
