@@ -199,7 +199,6 @@ fn compiled_constructor_body_construct(
       // If the derived constructor explicitly returns an object, that becomes the result of
       // construction (even if `super()` was never called).
       Value::Object(o) => Ok(Value::Object(o)),
-
       // `return;` / no explicit return (or an explicit `return undefined`): yield `this`.
       //
       // If `this` was never initialized via `super()`, this must throw a ReferenceError.
@@ -214,7 +213,6 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
-
       // ECMA-262: derived constructors that return a non-object *other than `undefined`* must throw
       // a TypeError rather than falling back to `this`.
       _ => Err(VmError::TypeError(
