@@ -11202,6 +11202,9 @@ impl<'a> Evaluator<'a> {
         "super property reference requires an active [[HomeObject]]",
       ));
     };
+    // `GetPrototypeOf([[HomeObject]])` is Proxy-aware and may allocate/GC. Root `home` so it stays
+    // alive for the duration of the lookup.
+    scope.push_root(Value::Object(home))?;
     let proto = scope.get_prototype_of_with_host_and_hooks(self.vm, self.host, self.hooks, home)?;
     Ok(match proto {
       Some(p) => Value::Object(p),
