@@ -1,6 +1,7 @@
 use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
+use crate::site_isolation::site_key_for_navigation;
 use crate::ui::about_pages;
 use crate::ui::address_bar::{
   format_address_bar_url, AddressBarDisplayParts, AddressBarSecurityState,
@@ -30,7 +31,6 @@ use crate::ui::{
   protocol_limits, GlobalHistorySearcher, GlobalHistoryStore, HistoryVisitDelta, OmniboxSuggestion,
   VisitedUrlStore,
 };
-use crate::site_isolation::site_key_for_navigation;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -531,10 +531,8 @@ impl DownloadsState {
         let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
         // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
         // clamp again to our protocol limits.
-        let safe_file_name = crate::ui::untrusted::clamp_untrusted_utf8(
-          &safe_file_name,
-          MAX_DOWNLOAD_FILE_NAME_BYTES,
-        );
+        let safe_file_name =
+          crate::ui::untrusted::clamp_untrusted_utf8(&safe_file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
         let path = path.clone();
         let path_display = path.display().to_string();
         self.insert_or_update(DownloadEntry {
@@ -932,10 +930,14 @@ impl BrowserTabState {
     has_error: bool,
     has_warning: bool,
   ) -> std::sync::Arc<str> {
-    self
-      .tab_a11y_label_cache
-      .borrow_mut()
-      .get_or_update(title, is_active, self.pinned, self.loading, has_error, has_warning)
+    self.tab_a11y_label_cache.borrow_mut().get_or_update(
+      title,
+      is_active,
+      self.pinned,
+      self.loading,
+      has_error,
+      has_warning,
+    )
   }
 
   #[cfg(any(test, feature = "browser_ui"))]
@@ -1121,8 +1123,16 @@ impl BrowserTabState {
 
   pub fn apply_optimistic_viewport_scroll_to(&mut self, pos_css: (f32, f32)) -> bool {
     let prev = self.scroll_state.viewport;
-    let target_x = if pos_css.0.is_finite() { pos_css.0 } else { prev.x };
-    let target_y = if pos_css.1.is_finite() { pos_css.1 } else { prev.y };
+    let target_x = if pos_css.0.is_finite() {
+      pos_css.0
+    } else {
+      prev.x
+    };
+    let target_y = if pos_css.1.is_finite() {
+      pos_css.1
+    } else {
+      prev.y
+    };
     self.apply_optimistic_viewport_scroll_delta((target_x - prev.x, target_y - prev.y))
   }
 
@@ -1383,7 +1393,10 @@ mod tab_tests {
     assert!(changed);
     assert_eq!(tab.scroll_state.viewport, Point::new(100.0, 50.0));
     assert_eq!(tab.scroll_state.viewport_delta, Point::new(5.0, 10.0));
-    assert_eq!(tab.scroll_metrics.as_ref().unwrap().scroll_css, (100.0, 50.0));
+    assert_eq!(
+      tab.scroll_metrics.as_ref().unwrap().scroll_css,
+      (100.0, 50.0)
+    );
   }
 
   #[test]
@@ -1402,13 +1415,15 @@ mod tab_tests {
       content_css: (900.0, 900.0),
     });
 
-    let changed =
-      tab.apply_optimistic_viewport_scroll_delta((f32::NAN, f32::INFINITY));
+    let changed = tab.apply_optimistic_viewport_scroll_delta((f32::NAN, f32::INFINITY));
 
     assert!(!changed);
     assert_eq!(tab.scroll_state.viewport, Point::new(10.0, 20.0));
     assert_eq!(tab.scroll_state.viewport_delta, Point::ZERO);
-    assert_eq!(tab.scroll_metrics.as_ref().unwrap().scroll_css, (10.0, 20.0));
+    assert_eq!(
+      tab.scroll_metrics.as_ref().unwrap().scroll_css,
+      (10.0, 20.0)
+    );
   }
 }
 
@@ -3240,14 +3255,19 @@ impl BrowserAppState {
         update.request_redraw = true;
       }
       #[cfg(feature = "browser_ui")]
-      WorkerToUi::PageAccessKitState { tab_id, update: a11y_update } => {
+      WorkerToUi::PageAccessKitState {
+        tab_id,
+        update: a11y_update,
+      } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           if let Some(subtree) = tab.page_accesskit_subtree.as_mut() {
             subtree.focus_id = a11y_update.focus_id;
             if !a11y_update.nodes.is_empty() {
               for (id, node) in a11y_update.nodes {
-                if let Some((_, existing)) =
-                  subtree.nodes.iter_mut().find(|(existing_id, _)| *existing_id == id)
+                if let Some((_, existing)) = subtree
+                  .nodes
+                  .iter_mut()
+                  .find(|(existing_id, _)| *existing_id == id)
                 {
                   *existing = node;
                 } else {
@@ -3707,7 +3727,9 @@ impl BrowserAppState {
         // downloads for known tabs so compromised renderers can't grow memory by inventing tab ids.
         if self.tab(tab_id).is_some() && self.downloads.apply_worker_msg(&msg) {
           if let Some(entry) = self.downloads.get_mut(download_id) {
-            entry.started_at_ms.get_or_insert(system_time_to_unix_ms(now));
+            entry
+              .started_at_ms
+              .get_or_insert(system_time_to_unix_ms(now));
             entry.finished_at_ms = None;
           }
           self.bump_session_revision();
@@ -3814,7 +3836,11 @@ mod downloads_state_tests {
       received_bytes: 9,
       total_bytes: Some(10),
     }));
-    let entry = downloads.downloads.iter().find(|d| d.download_id == download_id).unwrap();
+    let entry = downloads
+      .downloads
+      .iter()
+      .find(|d| d.download_id == download_id)
+      .unwrap();
     assert!(matches!(entry.status, DownloadStatus::Completed));
   }
 
@@ -3838,7 +3864,11 @@ mod downloads_state_tests {
       outcome: DownloadOutcome::Failed { error: long_error },
     });
 
-    let entry = downloads.downloads.iter().find(|d| d.download_id == download_id).unwrap();
+    let entry = downloads
+      .downloads
+      .iter()
+      .find(|d| d.download_id == download_id)
+      .unwrap();
     let DownloadStatus::Failed { error } = &entry.status else {
       panic!("expected Failed status, got {:?}", entry.status);
     };
