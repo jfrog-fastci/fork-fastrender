@@ -6,37 +6,45 @@ this swarm environment.)
 
 ## Repo health (ecma-rs)
 
-Last checked: 2026-01-14 @ `b13f7faa`
+Last checked: 2026-01-14
 
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js --lib` — **FAIL** (2 tests)
-  - `parse::tests::class_field_initializer::arguments_identifier_reference_is_allowed_in_function_in_class_field_initializer`
-    - `parse-js/src/parse/tests/class_field_initializer.rs:52:3`
-    - `parse failed: Err(ExpectedSyntax("`arguments` is not allowed in class field initializers or static initialization blocks") ... loc [39:48])`
-  - `parse::tests::class_static_block::arguments_identifier_reference_is_allowed_in_function_in_static_block`
-    - `parse-js/src/parse/tests/class_static_block.rs:246:3`
-    - `parse failed: Err(ExpectedSyntax("`arguments` is not allowed in class field initializers or static initialization blocks") ... loc [53:62])`
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js --lib` — **PASS** (`115` tests)
 
 - `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --test early_errors` — **FAIL** (1 test)
   - `await_using_declaration_in_script_block_is_syntax_error`
     - `vm-js/tests/early_errors.rs:1556:57`
     - `called Result::unwrap_err() on an Ok value`
 
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib` — **FAIL** (compile)
-  - `error[E0061]: SourceTextModuleRecord::parse_source` now requires `heap: &mut Heap`
-    - `vm-js/tests/compiled_module_graph.rs:2711:24`
-    - `vm-js/tests/compiled_module_graph.rs:2828:24`
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib` — **FAIL** (`11` tests)
+  - `compiled_module_execution_context_tests::compiled_module_import_meta_uses_callee_module_and_is_cached`
+    - `vm-js/tests/compiled_module_execution_context.rs:320:7` (`Rejected` vs `Fulfilled`)
+  - `compiled_module_execution_context_tests::compiled_module_dynamic_import_referrer_uses_callee_module`
+    - `Error: Unimplemented(\"unbound identifier\")`
+  - `compiled_module_decl_execution_context_tests::compiled_module_decl_functions_capture_realm_and_module_for_host_calls`
+    - `vm-js/tests/compiled_module_decl_execution_context.rs:371:7` (`Rejected` vs `Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_graph_dynamic_import_from_compiled_module_resolves`
+    - `Error: ThrowWithStack { ... }`
+  - `compiled_module_graph_tests::compiled_module_graph_import_meta_is_cached_within_compiled_module`
+    - `Error: ThrowWithStack { ... }`
+  - `compiled_module_graph_tests::compiled_module_hoists_top_level_function_decls_into_module_env`
+    - `vm-js/tests/compiled_module_graph.rs:2983:5` (`Rejected` vs `Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_supports_named_default_export_function_decls`
+    - `vm-js/tests/compiled_module_graph.rs:3073:5` (`Rejected` vs `Fulfilled`)
+  - `hir_exec::hir_async_await_control_flow_regression_tests::labelled_continue_across_await`
+    - `Error: InvariantViolation(\"PromiseReactionJob handler threw while capability is undefined\")`
+  - `typed_array_dataview_rooting_gc_tests::function_bind_roots_bound_args_across_gc_in_length_get_trap`
+    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
+  - `typed_array_dataview_rooting_gc_tests::array_pop_roots_result_across_gc_in_length_set_trap`
+    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
+  - `typed_array_dataview_rooting_gc_tests::reflect_apply_roots_target_across_gc_in_create_list_from_array_like`
+    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
 
 ## Open tasks
-
-- Fix `parse-js --lib` failures (likely: `arguments` check should not traverse into nested function bodies):
-  - `parse::tests::class_field_initializer::arguments_identifier_reference_is_allowed_in_function_in_class_field_initializer`
-  - `parse::tests::class_static_block::arguments_identifier_reference_is_allowed_in_function_in_static_block`
 
 - Fix `vm-js --test early_errors` failure:
   - `await_using_declaration_in_script_block_is_syntax_error` (`vm-js/tests/early_errors.rs:1556:57` — `unwrap_err` called on `Ok`)
 
-- Fix `vm-js --lib` compile error after `SourceTextModuleRecord::parse_source` signature change:
-  - `vm-js/tests/compiled_module_graph.rs:2711:24` and `:2828:24` call `parse_source(...)` without `heap: &mut Heap`
+- Fix `vm-js --lib` failures (see failing tests list above).
 
 ## Completed
 
