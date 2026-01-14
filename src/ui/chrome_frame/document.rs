@@ -308,13 +308,14 @@ impl ChromeFrameDocument {
         "aria-expanded",
         Some(if omnibox_show { "true" } else { "false" }),
       );
+      // Combobox should always point at the suggestions listbox, even when collapsed.
+      changed |= dom_mut::set_attribute_by_element_id(
+        dom,
+        "address-bar",
+        "aria-controls",
+        Some("omnibox-popup"),
+      );
       if omnibox_show {
-        changed |= dom_mut::set_attribute_by_element_id(
-          dom,
-          "address-bar",
-          "aria-controls",
-          Some("omnibox-popup"),
-        );
         if let Some(selected) = omnibox_selected_idx {
           changed |= dom_mut::set_attribute_by_element_id(
             dom,
@@ -327,23 +328,22 @@ impl ChromeFrameDocument {
             dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-activedescendant", None);
         }
       } else {
-        changed |= dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-controls", None);
         changed |=
           dom_mut::set_attribute_by_element_id(dom, "address-bar", "aria-activedescendant", None);
       }
 
       // Omnibox popup container.
+      // `aria-label` should remain stable even while hidden (mirrors state_to_html output).
+      changed |= dom_mut::set_attribute_by_element_id(
+        dom,
+        "omnibox-popup",
+        "aria-label",
+        Some("Suggestions"),
+      );
       if omnibox_show {
         changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "hidden", None);
-        changed |= dom_mut::set_attribute_by_element_id(
-          dom,
-          "omnibox-popup",
-          "aria-label",
-          Some("Suggestions"),
-        );
       } else {
         changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "hidden", Some(""));
-        changed |= dom_mut::set_attribute_by_element_id(dom, "omnibox-popup", "aria-label", None);
       }
 
       if omnibox_show {
@@ -351,6 +351,7 @@ impl ChromeFrameDocument {
           patch_failed = true;
           return false;
         };
+        let setsize = desired_omnibox_rows.to_string();
 
         // Create any additional suggestion rows needed to cover the current suggestion list.
         for idx in old_omnibox_capacity..desired_omnibox_rows {
@@ -393,6 +394,18 @@ impl ChromeFrameDocument {
             &row_id,
             "aria-selected",
             Some(aria_selected),
+          );
+          changed |= dom_mut::set_attribute_by_element_id(
+            dom,
+            &row_id,
+            "aria-posinset",
+            Some(&(idx + 1).to_string()),
+          );
+          changed |= dom_mut::set_attribute_by_element_id(
+            dom,
+            &row_id,
+            "aria-setsize",
+            Some(&setsize),
           );
           changed |= dom_mut::set_attribute_by_element_id(dom, &row_id, "href", Some(&href));
 
@@ -1284,6 +1297,18 @@ mod tests {
       .dom()
       .get_element_by_id("omnibox-suggestion-0")
       .expect("suggestion row");
+    let setsize = chrome
+      .doc
+      .dom()
+      .get_attribute(row, "aria-setsize")
+      .expect("get aria-setsize");
+    assert_eq!(setsize, Some("1"));
+    let posinset = chrome
+      .doc
+      .dom()
+      .get_attribute(row, "aria-posinset")
+      .expect("get aria-posinset");
+    assert_eq!(posinset, Some("1"));
 
     app.chrome.omnibox.suggestions[0].title = Some("Updated".to_string());
     assert!(
@@ -1300,6 +1325,65 @@ mod tests {
     let title = text_child_contents(chrome.doc.dom(), "omnibox-title-0");
     assert_eq!(title, "Updated");
 
+    // Add a second suggestion; the existing row should be reused and ARIA setsize/posinset should
+    // update in-place.
+    app.chrome.omnibox.suggestions.push(OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl,
+      title: Some("Second".to_string()),
+      url: Some("https://second.example/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    });
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected omnibox list growth to avoid reset"
+    );
+    let row_after_grow = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion row");
+    assert_eq!(
+      row, row_after_grow,
+      "expected suggestion-0 row to be reused when suggestions grow"
+    );
+    let row1 = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-1")
+      .expect("suggestion row 1");
+    assert_eq!(
+      chrome
+        .doc
+        .dom()
+        .get_attribute(row, "aria-setsize")
+        .expect("get aria-setsize"),
+      Some("2")
+    );
+    assert_eq!(
+      chrome
+        .doc
+        .dom()
+        .get_attribute(row, "aria-posinset")
+        .expect("get aria-posinset"),
+      Some("1")
+    );
+    assert_eq!(
+      chrome
+        .doc
+        .dom()
+        .get_attribute(row1, "aria-setsize")
+        .expect("get aria-setsize"),
+      Some("2")
+    );
+    assert_eq!(
+      chrome
+        .doc
+        .dom()
+        .get_attribute(row1, "aria-posinset")
+        .expect("get aria-posinset"),
+      Some("2")
+    );
+
     // Close then reopen omnibox; rows should remain available for reuse.
     app.chrome.omnibox.open = false;
     assert!(
@@ -1315,6 +1399,15 @@ mod tests {
       row, row_closed,
       "expected suggestion row node id to remain stable while omnibox is hidden"
     );
+    let row1_closed = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-1")
+      .expect("suggestion row 1");
+    assert_eq!(
+      row1, row1_closed,
+      "expected second suggestion row node id to remain stable while omnibox is hidden"
+    );
 
     app.chrome.omnibox.open = true;
     assert!(
@@ -1329,6 +1422,15 @@ mod tests {
     assert_eq!(
       row, row_open,
       "expected suggestion row node id to be reused"
+    );
+    let row1_open = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-1")
+      .expect("suggestion row 1");
+    assert_eq!(
+      row1, row1_open,
+      "expected second suggestion row node id to be reused"
     );
   }
 
