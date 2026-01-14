@@ -43,7 +43,6 @@ pub enum IpcError {
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
-
   #[error("frame buffer list too large: {len} (max {max})")]
   TooManyFrameBuffers { len: usize, max: usize },
 
@@ -62,7 +61,9 @@ pub enum IpcError {
   #[error("frame buffer max_width_px/max_height_px must be non-zero")]
   FrameBufferMaxDimensionsZero,
 
-  #[error("frame buffer stride_bytes={stride_bytes} is smaller than min_row_bytes={min_row_bytes}")]
+  #[error(
+    "frame buffer stride_bytes={stride_bytes} is smaller than min_row_bytes={min_row_bytes}"
+  )]
   FrameBufferStrideTooSmall {
     stride_bytes: usize,
     min_row_bytes: usize,

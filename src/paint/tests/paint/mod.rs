@@ -93,6 +93,7 @@ mod iframe_background_compositing;
 mod remote_iframe_stacking_order;
 mod image_downscale_sampling;
 mod image_fractional_src_rect_baking_downscale;
+mod image_large_fractional_src_rect_phase_raster;
 mod image_set_intrinsic_background_size;
 mod image_set_intrinsic_sizing;
 mod image_set_type_and_dpr_selection;

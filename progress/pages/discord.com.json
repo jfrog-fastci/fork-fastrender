@@ -16,7 +16,7 @@
     "layout": 35.021703521671824,
     "paint": 223.1382824380805
   },
-  "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/discord.com`) shows correct overall layout/structure; the ~92% pixel diff at tolerance=0 is dominated by tiny per-channel differences (≈95% of pixels differ by ≤10) from text rasterization/hinting and minor blur/shadow/gradient rounding. No missing layout or paint primitives identified.",
+  "notes": "Visually good. discord.com is dominated by a viewport-sized `background-size: cover` hero image and lots of high-contrast text; at tolerance=0 the pixel diff stays ~90%+ because most pixels differ by small per-channel amounts (median max-channel diff ≈9) from sampling-grid/rounding differences plus text rasterization/hinting. The SSIM-based perceptual metric is also sensitive to subpixel text AA, so `perceptual` can look high even when the page is visually close. Large per-pixel diffs are mostly along text/edge AA rather than missing layout. Note: a prior renderer bug caused large `src_rect` upscales to clamp/summarize incorrectly when falling back to tiny-skia pattern sampling; fixed by extending the phase-aware pre-rasterization path to ~2M pixels and correcting the magnification sampler for clipped upscales.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 866585,

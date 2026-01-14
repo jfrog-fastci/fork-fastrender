@@ -230,8 +230,8 @@ fn macos_renderer_sandbox_mode_override_via_env() -> Option<MacosSandboxMode> {
 
 /// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
 ///
-/// This is primarily intended for sandboxing untrusted renderer subprocesses. It is a one-way
-/// operation: once applied, the sandbox cannot be removed.
+/// This is intended for sandboxing untrusted renderer subprocesses. It is a one-way operation:
+/// once applied, the sandbox cannot be removed.
 ///
 /// This is only supported on macOS (Seatbelt). On other platforms this returns
 /// `io::ErrorKind::Unsupported`.

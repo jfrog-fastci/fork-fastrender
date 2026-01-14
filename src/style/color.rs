@@ -1830,11 +1830,36 @@ fn parse_percentage_component(
   parser: &mut cssparser::Parser<'_, '_>,
 ) -> Result<f32, ColorParseError> {
   use cssparser::Token;
+  let start = parser.position();
   let token = parser
     .next()
     .map_err(|_| ColorParseError::InvalidFormat("percentage".to_string()))?;
   match token {
     Token::Percentage { unit_value, .. } => Ok(unit_value.clamp(0.0, 1.0)),
+    Token::Function(ref _name) => {
+      // CSS Color 4 allows calc() and related math functions inside percentage components.
+      //
+      // This is common in real-world variable-driven palettes, e.g.:
+      //   hsl(240 calc(var(--saturation-factor, 1) * 98.788%) 32.353% / 1)
+      //
+      // We reuse the length/calc parser (it already supports `%` and the math function set) and
+      // then reinterpret the resulting percentage as a unit_value fraction.
+      let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'_, ()>>(()));
+      let raw = parser.slice_from(start);
+      let len = crate::css::properties::parse_length(raw)
+        .ok_or_else(|| ColorParseError::InvalidComponent(raw.to_string()))?;
+
+      // `0` is unitless in many CSS contexts; accept it here as `0%`.
+      if len.calc.is_none() && len.value == 0.0 {
+        return Ok(0.0);
+      }
+
+      if len.unit != crate::style::values::LengthUnit::Percent {
+        return Err(ColorParseError::InvalidComponent(raw.to_string()));
+      }
+
+      Ok((len.value / 100.0).clamp(0.0, 1.0))
+    }
     other => Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
   }
 }
@@ -3820,6 +3845,19 @@ mod tests {
     let hwb = Color::parse("hwb(90 40% 10% / 0.5)").unwrap();
     let rgba = hwb.to_rgba(Rgba::BLACK);
     assert_eq!(rgba.a, 0.5);
+  }
+
+  #[test]
+  fn test_parse_hsl_with_calc_percent_components() {
+    // CSS Color 4 allows calc()/min()/max()/... in percentage positions of hsl().
+    let color = Color::parse("hsl(120 calc(50% + 10%) calc(25% * 2) / 50%)").unwrap();
+    let Color::Hsla(hsl) = color else {
+      panic!("expected hsla");
+    };
+    assert!((hsl.h - 120.0).abs() < 1e-6);
+    assert!((hsl.s - 60.0).abs() < 1e-3, "saturation was {}", hsl.s);
+    assert!((hsl.l - 50.0).abs() < 1e-3, "lightness was {}", hsl.l);
+    assert!((hsl.a - 0.5).abs() < 1e-6, "alpha was {}", hsl.a);
   }
 
   #[test]

@@ -2895,4 +2895,29 @@ mod tests {
     let element_ref = ElementRef::with_ancestors(&dom, &[]);
     assert!(selector_matches(&element_ref, &selector));
   }
+
+  #[test]
+  fn matches_compound_class_selectors() {
+    // Many real-world sites (including the discord.com fixture) rely heavily on compound class
+    // selectors like `.foo.bar` (an element that has *both* classes).
+    //
+    // This is distinct from descendant selectors (`.foo .bar`) and must match the same element.
+    let selector = parse_selector(".foo.bar");
+    let dom = element_with_class("div", Some("foo bar"), vec![]);
+    let element_ref = ElementRef::with_ancestors(&dom, &[]);
+    assert!(selector_matches(&element_ref, &selector));
+
+    let dom = element_with_class("div", Some("foo"), vec![]);
+    let element_ref = ElementRef::with_ancestors(&dom, &[]);
+    assert!(!selector_matches(&element_ref, &selector));
+  }
+
+  #[test]
+  fn matches_compound_class_selectors_with_hyphens() {
+    // Regression for hyphenated class names used in Discord/Webflow stylesheets.
+    let selector = parse_selector(".body.is-dark-blue");
+    let dom = element_with_class("body", Some("body is-dark-blue"), vec![]);
+    let element_ref = ElementRef::with_ancestors(&dom, &[]);
+    assert!(selector_matches(&element_ref, &selector));
+  }
 }

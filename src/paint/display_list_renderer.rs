@@ -18074,7 +18074,13 @@ impl DisplayListRenderer {
               // Be more aggressive than the cached path, but cap by output pixel count to keep the
               // per-draw CPU/memory bounded.
               let target_pixels = u64::from(out_w).saturating_mul(u64::from(out_h));
-              const PHASE_AWARE_RASTER_MAX_PIXELS: u64 = 1024 * 1024;
+              // This fidelity path pre-rasterizes a temporary pixmap, so it needs a hard cap to
+              // avoid allocating enormous buffers for pathological pages. The default fixture
+              // viewport (1040x1240) is ~1.29M pixels though, so we allow modestly more than 1M to
+              // ensure large `background-size: cover` images with fractional `src_rect`s don't
+              // fall back to tiny-skia's shader sampling (which can diverge significantly from
+              // Chrome/Skia on some inputs).
+              const PHASE_AWARE_RASTER_MAX_PIXELS: u64 = 2 * 1024 * 1024;
               let should_phase_rasterize =
                 target_pixels > 0 && target_pixels <= PHASE_AWARE_RASTER_MAX_PIXELS;
               if Self::should_use_scaled_image_pixmap(
@@ -19602,11 +19608,13 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   // tiny-skia truncates intermediate results between the horizontal and vertical lerps, which can
   // produce pervasive ±1 diffs across photo-heavy regions.
   //
-  // Chrome/Skia appears to keep enough precision for the full 2D bilinear calculation and only
-  // floors once at the end. We therefore:
-  // - use a float bilinear path for pure upscales (different mapping + 16-phase weight quantization),
-  // - and a fixed-point + mipmap-capable path for downscales (but without intermediate truncation).
-  if scale_x0 <= 1.0 && scale_y0 <= 1.0 {
+  // Use a float bilinear path for pure upscales to match Chrome/Skia more closely, and keep the
+  // mipmap-capable fixed-point path for downscales.
+  //
+  // Use the specialized magnification path only when we're scaling up in *both* axes. When one
+  // axis is 1:1 (e.g. 1px-tall gradients upscaled horizontally), the fixed-point sampler below
+  // matches Chrome/Skia more closely.
+  if scale_x0 < 1.0 && scale_y0 < 1.0 {
     #[derive(Clone, Copy)]
     struct AxisSampleF32 {
       i0: u32,
