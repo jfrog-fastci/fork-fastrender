@@ -35,6 +35,36 @@ fn bbox_for_ink(pixmap: &fastrender::Pixmap) -> Option<(u32, u32, u32, u32)> {
   (min_x != u32::MAX).then_some((min_x, min_y, max_x, max_y))
 }
 
+fn ink_row_counts(pixmap: &fastrender::Pixmap) -> Vec<u32> {
+  let mut counts = vec![0u32; pixmap.height() as usize];
+  for y in 0..pixmap.height() {
+    let mut count = 0u32;
+    for x in 0..pixmap.width() {
+      let px = pixmap.pixel(x, y).expect("pixel in bounds");
+      if px.alpha() != 0 && (px.red() < 250 || px.green() < 250 || px.blue() < 250) {
+        count += 1;
+      }
+    }
+    counts[y as usize] = count;
+  }
+  counts
+}
+
+fn count_vertical_bands(row_counts: &[u32], min_row_ink: u32) -> u32 {
+  let mut bands = 0u32;
+  let mut in_band = false;
+  for &count in row_counts {
+    let has_ink = count >= min_row_ink;
+    if has_ink && !in_band {
+      bands += 1;
+      in_band = true;
+    } else if !has_ink {
+      in_band = false;
+    }
+  }
+  bands
+}
+
 #[test]
 fn legacy_text_input_forces_single_line_value_no_wrap() {
   ensure_test_env();
@@ -88,10 +118,17 @@ fn legacy_text_input_forces_single_line_value_no_wrap() {
 
   let (_, min_y, _, max_y) = bbox_for_ink(&pixmap).expect("expected input value text to paint ink");
   let ink_height = max_y - min_y + 1;
+  let row_counts = ink_row_counts(&pixmap);
+  // Require a small number of pixels so antialias noise doesn't count as a band.
+  let ink_bands = count_vertical_bands(&row_counts, 5);
 
   // With the legacy wrapping bug, the long value would soft-wrap into multiple lines because the
   // input is narrow but tall enough to fit them. We expect a single line of text, so the vertical
   // ink height should stay well below two line boxes.
+  assert_eq!(
+    ink_bands, 1,
+    "expected `<input>` value to paint on a single band in legacy backend; bands={ink_bands}"
+  );
   assert!(
     ink_height < 30,
     "expected `<input>` value to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
@@ -154,7 +191,13 @@ fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
   let (_, min_y, _, max_y) =
     bbox_for_ink(&pixmap).expect("expected input placeholder text to paint ink");
   let ink_height = max_y - min_y + 1;
+  let row_counts = ink_row_counts(&pixmap);
+  let ink_bands = count_vertical_bands(&row_counts, 5);
 
+  assert_eq!(
+    ink_bands, 1,
+    "expected `<input>` placeholder to paint on a single band in legacy backend; bands={ink_bands}"
+  );
   assert!(
     ink_height < 30,
     "expected `<input>` placeholder to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
