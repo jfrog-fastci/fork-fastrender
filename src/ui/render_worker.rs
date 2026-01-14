@@ -4174,7 +4174,7 @@ impl BrowserRuntime {
                   fragment_tree,
                   &scroll_snapshot,
                   Point::new(pointer_css.0, pointer_css.1),
-                 delta_y,
+                  delta_y,
                 );
                 let changed = step_result.unwrap_or(false);
                 (changed, step_result)
