@@ -40296,6 +40296,18 @@ fn gen_root_values_for_continuation(
           .saturating_add(usize::from(key.is_some()))
           .saturating_add(usize::from(receiver.is_some()));
       }
+      GenFrame::AssignExpAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
+        needed = needed
+          .saturating_add(1) // `left`.
+          .saturating_add(usize::from(base.is_some()))
+          .saturating_add(usize::from(key.is_some()))
+          .saturating_add(usize::from(receiver.is_some()));
+      }
       _ => {}
     }
   }
@@ -40371,6 +40383,24 @@ fn gen_root_values_for_continuation(
         ..
       }
       | GenFrame::AssignExpAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
+      } => {
+        if let Some(base) = base {
+          values.push(*base);
+        }
+        if let Some(key) = key {
+          values.push(*key);
+        }
+        if let Some(receiver) = receiver {
+          values.push(*receiver);
+        }
+        values.push(*left);
+      }
+      GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
