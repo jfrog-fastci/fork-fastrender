@@ -11335,12 +11335,8 @@ impl DisplayListRenderer {
       let dst_h = dest.height() as i32;
       let dest_width = dest.width() as usize;
       let dest_height = dest.height() as usize;
-
-      // `tiny-skia` no longer exposes an immutable `PixmapMut::data()` accessor. Borrow the pixel
-      // buffer mutably once and treat it as read-only until we write the final scratch back.
-      let dest_data = dest.data_mut();
       if dst_w <= 0 || dst_h <= 0 {
-        dest_data.copy_from_slice(scratch.data());
+        dest.data_mut().copy_from_slice(scratch.data());
         return Ok(());
       }
 
@@ -11358,16 +11354,20 @@ impl DisplayListRenderer {
         let dst_stride = scratch.width() as usize * 4;
         let src_stride = dest_width * 4;
         let row_bytes = copy_w * 4;
+        // `tiny-skia::PixmapMut` no longer exposes an immutable `data()` accessor; read from the
+        // backing buffer via `data_mut()` and narrow it to `&[u8]`. Keep the borrow scoped so we
+        // can later overwrite `dest` with the completed scratch buffer.
+        let src_data: &[u8] = &*dest.data_mut();
         let dst_data = scratch.data_mut();
         for row in 0..copy_h {
           let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
           let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
           dst_data[dst_idx..dst_idx + row_bytes]
-            .copy_from_slice(&dest_data[src_idx..src_idx + row_bytes]);
+            .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
         }
       }
 
-      dest_data.copy_from_slice(scratch.data());
+      dest.data_mut().copy_from_slice(scratch.data());
       Ok(())
     })?;
     self.mark_current_pixmap_mutated();
