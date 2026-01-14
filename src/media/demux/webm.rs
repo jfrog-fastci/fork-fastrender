@@ -1036,6 +1036,8 @@ mod tests {
 
   #[test]
   fn rejects_oversized_webm_packet() {
+    check_webm_packet_size(7, MAX_WEBM_PACKET_BYTES).expect("cap-sized packet should be allowed");
+
     let len = MAX_WEBM_PACKET_BYTES + 1;
     let err = check_webm_packet_size(7, len).expect_err("expected size cap error");
     let MediaError::Demux(msg) = err else {
