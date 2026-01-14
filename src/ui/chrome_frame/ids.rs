@@ -7,3 +7,5 @@ pub const CHROME_ADDRESS_FORM_ID: &str = "address-form";
 /// Stable `id=` attribute for the placeholder element representing the content viewport.
 pub const CHROME_CONTENT_FRAME_ID: &str = "content-frame";
 
+/// Stable `id=` attribute for the "New tab" control in the chrome-frame tab strip.
+pub const CHROME_NEW_TAB_ID: &str = "new-tab";

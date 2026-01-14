@@ -7,7 +7,7 @@ use crate::ui::{
 };
 use std::fmt::Write;
 
-use super::ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID};
+use super::ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID, CHROME_NEW_TAB_ID};
 use super::theme::chrome_theme_css;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
@@ -215,7 +215,11 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   }
   out.push_str("    </div>\n");
   out.push_str(
-    "    <a id=\"new-tab\" class=\"tab tab-new\" role=\"button\" aria-label=\"New tab\" href=\"chrome-action:new-tab\">+</a>\n",
+    "    <a id=\"",
+  );
+  out.push_str(CHROME_NEW_TAB_ID);
+  out.push_str(
+    "\" class=\"tab tab-new\" role=\"button\" aria-label=\"New tab\" href=\"chrome-action:new-tab\">+</a>\n",
   );
   out.push_str("  </div>\n");
 

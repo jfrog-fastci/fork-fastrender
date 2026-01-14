@@ -19,7 +19,7 @@ pub mod geometry;
 pub use document::{ChromeFrameDocument, ChromeFrameOutput};
 pub use state_to_html::chrome_frame_html_from_state;
 pub use event::ChromeFrameEvent;
-pub use ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID};
+pub use ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID, CHROME_NEW_TAB_ID};
 pub use runtime::{ChromeFrameRuntime, ChromeFrameRuntimeOutput};
 pub use status_bar::StatusBarDocument;
 
