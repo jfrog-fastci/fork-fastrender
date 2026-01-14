@@ -15668,7 +15668,7 @@ mod async_for_await_of_async_iterator_close_tests {
     // call-time AST fallback marker.
     if matches!(
       rt.heap.get_function_data(func_obj)?,
-      FunctionData::EcmaFallback { .. }
+      FunctionData::AsyncEcmaFallback { .. }
     ) {
       rt.heap.set_function_data(func_obj, FunctionData::None)?;
     }
@@ -15925,7 +15925,7 @@ mod async_for_await_of_async_iterator_close_tests {
     // Force compiled async/await semantics (see above).
     if matches!(
       rt.heap.get_function_data(func_obj)?,
-      FunctionData::EcmaFallback { .. }
+      FunctionData::AsyncEcmaFallback { .. }
     ) {
       rt.heap.set_function_data(func_obj, FunctionData::None)?;
     }
@@ -16031,7 +16031,7 @@ mod async_for_await_of_async_iterator_close_tests {
 
     if matches!(
       rt.heap.get_function_data(func_obj)?,
-      FunctionData::EcmaFallback { .. }
+      FunctionData::AsyncEcmaFallback { .. }
     ) {
       rt.heap.set_function_data(func_obj, FunctionData::None)?;
     }
