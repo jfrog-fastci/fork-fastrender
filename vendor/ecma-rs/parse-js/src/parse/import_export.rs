@@ -275,28 +275,50 @@ impl<'a> Parser<'a> {
     } else {
       false
     };
-    let (default, can_have_names) = if is_valid_pattern_identifier(self.peek().typ, ctx.rules) {
-      let alias = self.id_pat_decl(ctx)?;
+    // Stage-3 source phase imports:
+    //   import source <binding> from "mod";
+    //
+    // Note: `source` remains a valid default import binding identifier:
+    //   import source from "mod";
+    //
+    // Disambiguate by requiring a binding identifier *and* a `from` keyword after `source`.
+    let (default, can_have_names) = {
+      let t0 = self.peek();
+      if !type_only
+        && !ctx.in_namespace
+        && t0.typ == TT::Identifier
+        && self.str(t0.loc) == "source"
+        && {
+          let [_t0, t1, t2] = self.peek_n::<3>();
+          t2.typ == TT::KeywordFrom && is_valid_pattern_identifier(t1.typ, ctx.rules)
+        }
+      {
+        self.consume(); // consume contextual `source`
+        let binding = self.id_pat_decl(ctx)?;
+        (Some(binding), false)
+      } else if is_valid_pattern_identifier(t0.typ, ctx.rules) {
+        let alias = self.id_pat_decl(ctx)?;
 
-      // TypeScript: import equals: import id = require("module") or import id = EntityName
-      if self.is_typescript() && self.peek().typ == TT::Equals {
-        self.consume(); // =
-        return self.import_equals_decl(export, type_only, alias, start);
-      }
-      if ctx.in_namespace {
-        return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax(
-          "import equals declarations must use `=`",
-        )));
-      }
+        // TypeScript: import equals: import id = require("module") or import id = EntityName
+        if self.is_typescript() && self.peek().typ == TT::Equals {
+          self.consume(); // =
+          return self.import_equals_decl(export, type_only, alias, start);
+        }
+        if ctx.in_namespace {
+          return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax(
+            "import equals declarations must use `=`",
+          )));
+        }
 
-      (Some(alias), self.consume_if(TT::Comma).is_match())
-    } else {
-      if ctx.in_namespace {
-        return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax(
-          "import equals declarations require an identifier",
-        )));
+        (Some(alias), self.consume_if(TT::Comma).is_match())
+      } else {
+        if ctx.in_namespace {
+          return Err(self.peek().error(SyntaxErrorType::ExpectedSyntax(
+            "import equals declarations require an identifier",
+          )));
+        }
+        (None, true)
       }
-      (None, true)
     };
     let names = if !can_have_names {
       None
@@ -921,5 +943,18 @@ mod tests {
     assert!(
       parse_with_options(r#"export * as "\uD83C\uDF19" from "./m.js";"#, opts).is_ok()
     );
+  }
+
+  #[test]
+  fn parses_source_phase_import_declarations() {
+    let opts = ecma_module_opts();
+
+    // Source phase imports (stage-3 / test262 `features: [source-phase-imports]`).
+    assert!(parse_with_options(r#"import source x from "./m.js";"#, opts).is_ok());
+    assert!(parse_with_options(r#"import source source from "./m.js";"#, opts).is_ok());
+    assert!(parse_with_options(r#"import source from from "./m.js";"#, opts).is_ok());
+
+    // `source` remains a valid default import binding identifier.
+    assert!(parse_with_options(r#"import source from "./m.js";"#, opts).is_ok());
   }
 }
