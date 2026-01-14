@@ -28838,10 +28838,10 @@ fn async_yield_star_begin(
       Ok(AsyncEval::Suspend(suspend))
     }
 
-    YieldStarStep::Yield(iter_result) => {
+    YieldStarStep::Yield(value) => {
       let mut suspend = AsyncSuspend {
-        kind: AsyncSuspendKind::YieldIteratorResult,
-        await_value: iter_result,
+        kind: AsyncSuspendKind::Yield,
+        await_value: value,
         frames: VecDeque::new(),
       };
       if let Err(_) = async_frames_push(
@@ -34954,7 +34954,7 @@ fn async_resume_from_frames(
                 frames: out_frames,
               });
             }
-            YieldStarStep::Yield(iter_result) => {
+            YieldStarStep::Yield(value) => {
               let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
               if let Err(_) = async_frames_push(
                 &mut out_frames,
@@ -34970,8 +34970,8 @@ fn async_resume_from_frames(
               }
               async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
               return Ok(AsyncBodyResult::Await {
-                kind: AsyncSuspendKind::YieldIteratorResult,
-                await_value: iter_result,
+                kind: AsyncSuspendKind::Yield,
+                await_value: value,
                 frames: out_frames,
               });
             }

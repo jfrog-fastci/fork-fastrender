@@ -384,39 +384,9 @@ status = "xfail"
 reason = "vm-js: async generator return tick ordering differs from spec."
 
 [[expectations]]
-id = "language/statements/async-generator/yield-star-async-next.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-star-async-return.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-star-async-throw.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-star-normal-notdone-iter-value-throws.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-star-return-notdone-iter-value-throws.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
-
-[[expectations]]
 id = "language/statements/async-generator/yield-star-return-then-getter-ticks.js"
 status = "xfail"
 reason = "vm-js: async generator `yield*` return thenable tick ordering differs from spec."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-star-throw-notdone-iter-value-throws.js"
-status = "xfail"
-reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
 
 [[expectations]]
 glob = "language/statements/async-generator/**"
