@@ -1246,8 +1246,8 @@ fn group_chip_ui(
       response = response.on_hover_text(title);
     }
     response.widget_info({
-      let label = a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+      let a11y_label = a11y_label;
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.as_ref())
     });
     // Accessibility: if focus lands on a chip that is outside the horizontal scroll viewport, bring
     // it into view so keyboard and screen-reader users can see the focused control.
@@ -1616,8 +1616,8 @@ fn tab_ui(
   // allocation-free on the steady-state hot path (the closure only runs when egui requests widget
   // info, e.g. for AccessKit updates).
   response.widget_info({
-    let a11y_label = a11y_label.clone();
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+    let a11y_label = a11y_label;
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.as_ref())
   });
   let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
     builder.set_role(accesskit::Role::Tab);
@@ -1815,8 +1815,8 @@ fn tab_ui(
     }
     let close_a11y_label = tab.tab_close_accessible_label(title);
     close_resp.widget_info({
-      let label = close_a11y_label.clone();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+      let close_a11y_label = close_a11y_label;
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, close_a11y_label.as_ref())
     });
     super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
     close_clicked =
@@ -2034,8 +2034,8 @@ fn pinned_tab_ui(
   let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
   // See note in `tab_ui`: constructing `WidgetInfo` allocates when the closure is executed.
   response.widget_info({
-    let a11y_label = a11y_label.clone();
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+    let a11y_label = a11y_label;
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.as_ref())
   });
   let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
     builder.set_role(accesskit::Role::Tab);
