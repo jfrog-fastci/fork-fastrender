@@ -515,6 +515,42 @@ fn escaped_arguments_identifier_reference_is_syntax_error_in_object_shorthand_in
 }
 
 #[test]
+fn arguments_is_allowed_as_label_identifier_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        arguments: ;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
+fn escaped_arguments_is_allowed_as_label_identifier_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        argument\u0073: ;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
 fn for_await_of_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
