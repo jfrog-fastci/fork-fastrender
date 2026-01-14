@@ -15576,13 +15576,6 @@ pub(crate) enum AsyncFrame {
     expr: *const BinaryExpr,
   },
 
-  /// Continue an assignment expression after evaluating the RHS (binding target).
-  AssignAfterRhsBinding { name: *const String },
-  /// Continue an assignment expression after evaluating the RHS (property target).
-  AssignAfterRhsProperty { base_root: RootId, key_root: RootId },
-  /// Continue a destructuring assignment after evaluating the RHS.
-  AssignAfterRhsPattern { expr: *const BinaryExpr },
-
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -16428,13 +16421,6 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     }
     AsyncFrame::CallComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::BinaryAfterRight { left_root, .. } => heap.remove_root(*left_root),
-    AsyncFrame::AssignAfterRhsProperty {
-      base_root,
-      key_root,
-    } => {
-      heap.remove_root(*base_root);
-      heap.remove_root(*key_root);
-    }
     AsyncFrame::DeleteComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::CallArgs {
       callee_root,
@@ -24947,52 +24933,6 @@ fn async_eval_assignment_to_binding(
   }
 }
 
-fn async_assign_to_rooted_property_reference(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  base_root: RootId,
-  key_root: RootId,
-  value: Value,
-) -> Result<Value, VmError> {
-  let base = scope
-    .heap()
-    .get_root(base_root)
-    .ok_or(VmError::InvariantViolation(
-      "missing assignment target base root",
-    ))?;
-  let key_value = scope
-    .heap()
-    .get_root(key_root)
-    .ok_or(VmError::InvariantViolation(
-      "missing assignment target key root",
-    ))?;
-  let key = match key_value {
-    Value::String(s) => PropertyKey::from_string(s),
-    Value::Symbol(sym) => PropertyKey::from_symbol(sym),
-    _ => {
-      scope.heap_mut().remove_root(base_root);
-      scope.heap_mut().remove_root(key_root);
-      return Err(VmError::InvariantViolation(
-        "assignment target key root is not a string or symbol",
-      ));
-    }
-  };
-
-  let mut assign_scope = scope.reborrow();
-  assign_scope.push_roots(&[base, key_value, value])?;
-  let reference = Reference::Property { base, key };
-  let res = evaluator
-    .put_value_to_reference(&mut assign_scope, &reference, value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err));
-
-  // Always remove roots; they are no longer needed after assignment completes.
-  assign_scope.heap_mut().remove_root(base_root);
-  assign_scope.heap_mut().remove_root(key_root);
-
-  res?;
-  Ok(value)
-}
-
 fn async_eval_assignment_to_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -29314,103 +29254,12 @@ fn async_resume_from_frames(
             Err(err) => state = AsyncState::Expr(Err(err)),
           }
         }
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "private-in frame received completion state",
-          ))
-        }
-      },
-
-      AsyncFrame::AssignAfterRhsBinding { name } => match state {
-        AsyncState::Expr(Ok(v)) => {
-          let name = unsafe { &*name };
-          match evaluator
-            .env
-            .set(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              name,
-              v,
-              evaluator.strict,
-            )
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
-          {
-            Ok(()) => state = AsyncState::Expr(Ok(v)),
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
-          }
-        }
-        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "assign-after-rhs frame received completion state",
-          ))
-        }
-      },
-
-      AsyncFrame::AssignAfterRhsProperty {
-        base_root,
-        key_root,
-      } => match state {
-        AsyncState::Expr(rhs_res) => match rhs_res {
-          Ok(v) => match async_assign_to_rooted_property_reference(
-            evaluator, scope, base_root, key_root, v,
-          ) {
-            Ok(v) => state = AsyncState::Expr(Ok(v)),
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
-          },
-          Err(err) => {
-            scope.heap_mut().remove_root(base_root);
-            scope.heap_mut().remove_root(key_root);
-            state = AsyncState::Expr(Err(err));
-          }
-        },
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "assign-after-rhs-property frame received completion state",
-          ))
-        }
-      },
-
-      AsyncFrame::AssignAfterRhsPattern { expr } => match state {
-        AsyncState::Expr(Ok(v)) => {
-          let expr = unsafe { &*expr };
-          let mut bind_scope = scope.reborrow();
-          bind_scope.push_root(v)?;
-          match bind_assignment_target(
-            evaluator.vm,
-            &mut *evaluator.host,
-            &mut *evaluator.hooks,
-            &mut bind_scope,
-            evaluator.env,
-            &expr.left,
-            v,
-            evaluator.strict,
-            evaluator.this,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bind_scope, err))
-          {
-            Ok(()) => state = AsyncState::Expr(Ok(v)),
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
-          }
-        }
-        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "assign-after-rhs-pattern frame received completion state",
-          ))
-        }
-      },
+      AsyncState::Completion(_) => {
+        return Err(VmError::InvariantViolation(
+          "private-in frame received completion state",
+        ))
+      }
+    },
 
       AsyncFrame::CallAfterCallee { expr } => match state {
         AsyncState::Expr(Ok(callee_value)) => {
