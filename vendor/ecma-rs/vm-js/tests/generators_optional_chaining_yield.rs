@@ -204,3 +204,29 @@ fn generator_parenthesized_optional_chain_does_not_propagate_into_following_comp
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_parenthesized_optional_chain_does_not_propagate_into_following_call_and_yield_in_arg_runs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try {
+          return ((yield null)?.x)(yield "arg");
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      var r3 = it.next(0);
+      r1.value === null && r1.done === false &&
+      r2.value === "arg" && r2.done === false &&
+      r3.value === "TypeError" && r3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
