@@ -299,6 +299,13 @@ impl MediaClock for AudioStreamClock {
   }
 }
 
+/// Whether a [`PlaybackClock`] is currently advancing (`Playing`) or frozen (`Paused`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media
 /// **timeline time** that supports pause/seek/playbackRate.
 ///
