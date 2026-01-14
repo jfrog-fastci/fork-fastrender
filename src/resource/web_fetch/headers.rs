@@ -776,13 +776,13 @@ fn is_cors_safelisted_language_byte(byte: u8) -> bool {
 fn is_safelisted_range_header_value(value: &str) -> bool {
   // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
   let trimmed = trim_http_whitespace(value);
-  let Some(rest) = trimmed
-    .strip_prefix("bytes=")
-    .or_else(|| trimmed.strip_prefix("Bytes="))
-    .or_else(|| trimmed.strip_prefix("BYTES="))
-  else {
+  let prefix = b"bytes=";
+  let bytes = trimmed.as_bytes();
+  if bytes.len() < prefix.len() || !bytes[..prefix.len()].eq_ignore_ascii_case(prefix) {
     return false;
-  };
+  }
+  // Safety: we only slice at a byte boundary after confirming the prefix bytes are ASCII.
+  let rest = &trimmed[prefix.len()..];
 
   // Only allow `bytes=<start>-<end>` or `bytes=<start>-`.
   let Some((start, end)) = rest.split_once('-') else {
@@ -801,6 +801,30 @@ fn is_safelisted_range_header_value(value: &str) -> bool {
     return false;
   }
 
+  // Fetch's "parse a single range header value" algorithm rejects ranges where start > end.
+  // Compare as decimal strings to avoid integer overflow, while still matching numeric semantics
+  // (including leading zeros).
+  if !end.is_empty() {
+    fn normalized_decimal_digits(s: &str) -> &str {
+      let bytes = s.as_bytes();
+      let mut i = 0usize;
+      while i + 1 < bytes.len() && bytes[i] == b'0' {
+        i += 1;
+      }
+      // Safety: `s` contains only ASCII digits so `i` is always on a char boundary.
+      &s[i..]
+    }
+
+    let start_norm = normalized_decimal_digits(start);
+    let end_norm = normalized_decimal_digits(end);
+
+    if start_norm.len() > end_norm.len()
+      || (start_norm.len() == end_norm.len() && start_norm > end_norm)
+    {
+      return false;
+    }
+  }
+
   true
 }
 
@@ -811,7 +835,13 @@ mod tests {
   #[test]
   fn cors_safelisted_range_request_header_value_grammar() {
     // Valid single range forms.
-    for value in ["bytes=0-1", "bytes=123-", "bytes=0-0", "Bytes=0-1"] {
+    for value in [
+      "bytes=0-1",
+      "bytes=123-",
+      "bytes=0-0",
+      "Bytes=0-1",
+      "bYtEs=0-1",
+    ] {
       assert!(
         crate::resource::web_fetch::is_cors_safelisted_request_header("range", value),
         "expected {value:?} to be CORS-safelisted"
@@ -826,6 +856,8 @@ mod tests {
       "bytes=-10",
       // Non-digits.
       "bytes=abc-1",
+      // Invalid start/end ordering.
+      "bytes=5-4",
     ] {
       assert!(
         !crate::resource::web_fetch::is_cors_safelisted_request_header("range", value),
