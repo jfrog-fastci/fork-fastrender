@@ -1591,13 +1591,6 @@ impl InteractionStateDom2 {
       }
     }
 
-    if self
-      .fullscreen_element
-      .is_some_and(|id| !is_connected(id))
-    {
-      self.fullscreen_element = None;
-    }
-
     fn prune_hit_chain(chain: &mut Vec<NodeId>, dom: &crate::dom2::Document) {
       let Some(&root) = chain.first() else {
         return;

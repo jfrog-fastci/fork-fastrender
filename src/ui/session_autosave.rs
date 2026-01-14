@@ -550,13 +550,15 @@ impl SessionAutosave {
         ))
       }
     }
+
+    let spawner = ForcedSpawnFailureSpawner;
     Self::new_with_debounce_and_initial_and_max_interval_with_spawner_and_saver(
       path,
       debounce,
       MAX_WRITE_INTERVAL,
       None,
       save_fn,
-      &ForcedSpawnFailureSpawner,
+      &spawner,
     )
   }
 
@@ -634,7 +636,11 @@ impl SessionAutosave {
         spawn_error: None,
       },
       Err(err) => {
+        eprintln!(
+          "failed to spawn session autosave writer thread ({err}); falling back to synchronous session saves"
+        );
         drop(tx);
+
         let initial_session = initial_session_cell
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -694,15 +700,15 @@ impl SessionAutosave {
   /// This call is non-blocking; it simply sends the snapshot to the writer thread. Multiple rapid
   /// calls are debounced/coalesced so only the latest snapshot is persisted.
   pub fn request_save(&self, session: BrowserSession) {
-    if let Some(sync) = self.sync_fallback.as_ref() {
-      sync.request_save(session);
-      return;
-    }
-
     let mut session = session;
     // Running sessions should always be persisted as "unclean". The clean marker is only written
     // on explicit shutdown.
     session.did_exit_cleanly = false;
+
+    if let Some(sync) = self.sync_fallback.as_ref() {
+      sync.request_save(session);
+      return;
+    }
 
     if self.is_background_thread_running() {
       if let Some(tx) = self.tx.as_ref() {
