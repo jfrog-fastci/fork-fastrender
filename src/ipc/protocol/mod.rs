@@ -243,6 +243,8 @@ impl BrowserToRenderer {
         Ok(())
       }
 
+      BrowserToRenderer::FrameAck { .. } => Ok(()),
+
       BrowserToRenderer::ReleaseFrameBuffer { .. } => Ok(()),
       BrowserToRenderer::FrameAck { .. } => Ok(()),
 

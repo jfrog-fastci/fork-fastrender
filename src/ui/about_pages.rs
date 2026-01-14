@@ -2564,7 +2564,7 @@ mod tests {
       }
     }
 
-    let before_open_tabs = about_page_snapshot().open_tabs;
+    let before_open_tabs = about_page_snapshot().as_ref().open_tabs.clone();
     let _restore = RestoreOpenTabs(before_open_tabs);
 
     let raw_title = "My <Tab> & \"quotes\" 'single'";

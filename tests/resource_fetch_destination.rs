@@ -1,5 +1,6 @@
 use fastrender::debug::runtime;
 use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher};
+use fastrender::resource::ResourceFetcher as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -106,4 +107,3 @@ fn http_request_headers_for_audio_cors_destination() {
     );
   });
 }
-

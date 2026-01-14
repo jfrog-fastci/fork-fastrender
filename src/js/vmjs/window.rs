@@ -358,6 +358,59 @@ impl WindowHost {
     )
   }
 
+  pub fn new_with_fetcher_and_clock_and_options_and_dom_backend(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    clock: Arc<dyn Clock>,
+    options: JsExecutionOptions,
+    dom_backend: DomBindingsBackend,
+  ) -> Result<Self> {
+    let queue_limits = options.event_loop_queue_limits;
+    let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+    event_loop.set_queue_limits(queue_limits);
+    let clock = event_loop.clock();
+
+    let host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      options,
+      dom_backend,
+    )?;
+
+    let (window_id, local_ptr, session_ptr) = {
+      let Some(data) = host
+        .window()
+        .vm()
+        .user_data::<crate::js::window_realm::WindowRealmUserData>()
+      else {
+        return Err(Error::Other(
+          "window realm missing WindowRealmUserData".to_string(),
+        ));
+      };
+      (
+        data.window_id,
+        Arc::as_ptr(&data.local_storage_area) as usize,
+        Arc::as_ptr(&data.session_storage_area) as usize,
+      )
+    };
+
+    let storage_event_guard = crate::js::window_realm::register_window_host_storage_event_listener(
+      window_id,
+      local_ptr,
+      session_ptr,
+      event_loop.external_task_queue_handle(),
+    );
+
+    Ok(Self {
+      _storage_event_listener_guard: storage_event_guard,
+      host,
+      event_loop,
+    })
+  }
+
   #[cfg(feature = "direct_network")]
   pub fn new_with_event_loop_and_options(
     dom: dom2::Document,

@@ -3463,7 +3463,7 @@ fn audio_src_prefers_playable_type_hint_over_unplayable_type_hint() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }
@@ -3519,7 +3519,7 @@ fn audio_src_respects_source_media_queries_with_viewport_option() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }

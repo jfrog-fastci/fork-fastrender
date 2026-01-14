@@ -4271,6 +4271,7 @@ mod browser_app_tests {
       tab_id,
       hovered_url: Some("javascript:alert(1)".to_string()),
       cursor: CursorKind::Pointer,
+      tooltip: None,
     });
 
     let tab = app.tab(tab_id).expect("tab should exist");
@@ -5325,7 +5326,7 @@ mod address_bar_tests {
         dpr: f32::NAN,
         scroll_state,
         scroll_metrics,
-        wants_ticks: false,
+        next_tick: None,
       },
     });
 

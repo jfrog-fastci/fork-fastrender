@@ -18,31 +18,34 @@ fn aac_packet_duration_matches_decoded_samples() {
   let mut format =
     IsoMp4Reader::try_new(mss, &FormatOptions::default()).expect("open mp4 demuxer");
 
-  let track = format
-    .tracks()
-    .iter()
-    .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
-    .expect("aac track");
+  let (track_id, asc, sample_rate_hz, channels) = {
+    let track = format
+      .tracks()
+      .iter()
+      .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
+      .expect("aac track");
 
-  let asc = track
-    .codec_params
-    .extra_data
-    .as_ref()
-    .expect("aac extradata")
-    .clone();
-  let sample_rate_hz = track.codec_params.sample_rate.expect("sample rate");
-  let channels = track
-    .codec_params
-    .channels
-    .expect("channels")
-    .count() as u16;
+    let asc = track
+      .codec_params
+      .extra_data
+      .as_ref()
+      .expect("aac extradata")
+      .clone();
+    let sample_rate_hz = track.codec_params.sample_rate.expect("sample rate");
+    let channels = track
+      .codec_params
+      .channels
+      .expect("channels")
+      .count() as u16;
+    (track.id, asc, sample_rate_hz, channels)
+  };
 
   let mut decoder = AacDecoder::new(&asc, sample_rate_hz, channels).expect("init decoder");
 
   let mut first_packet = None;
   for _ in 0..32 {
     let pkt = format.next_packet().expect("next packet");
-    if pkt.track_id() == track.id {
+    if pkt.track_id() == track_id {
       first_packet = Some(pkt);
       break;
     }

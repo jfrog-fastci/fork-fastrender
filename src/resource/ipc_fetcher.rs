@@ -1135,6 +1135,14 @@ pub struct IpcResourceFetcher {
   inner: Arc<IpcResourceFetcherInner>,
 }
 
+impl std::fmt::Debug for IpcResourceFetcher {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("IpcResourceFetcher")
+      .field("endpoint", &self.inner.endpoint)
+      .finish_non_exhaustive()
+  }
+}
+
 impl IpcResourceFetcher {
   /// Connect to the network process at `socket_name`.
   ///
