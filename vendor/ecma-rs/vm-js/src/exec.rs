@@ -35648,6 +35648,32 @@ fn gen_eval_delete_expr(
     // property references, the key expression is still evaluated (and `ToPropertyKey` performed)
     // before throwing.
     Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      // Evaluating a super property reference requires an initialized `this` binding. In derived
+      // constructors before `super()`, this check happens before evaluating the computed key
+      // expression.
+      //
+      // Keep ordering consistent with the non-generator delete evaluator (`Evaluator::eval_unary`):
+      // the `this`-initialization check wins over evaluating the computed key (and any yield within
+      // it).
+      if let Value::Object(obj) = evaluator.this {
+        if scope.heap().is_derived_constructor_state(obj) {
+          let state = scope.heap().get_derived_constructor_state(obj)?;
+          if state.this_value.is_none() {
+            return Err(throw_reference_error(
+              evaluator.vm,
+              scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+        } else if evaluator.derived_constructor && !evaluator.this_initialized {
+          return Err(throw_reference_error(
+            evaluator.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+      }
+
       match gen_eval_expr(evaluator, scope, &member.stx.member)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
