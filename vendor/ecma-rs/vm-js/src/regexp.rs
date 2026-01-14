@@ -5090,23 +5090,15 @@ impl<'a> Parser<'a> {
         Ok(Atom::Literal(0x0000))
       }
       x if x == (b'k' as u16) => {
-        // `\k<name>` is a named backreference in UnicodeMode (`/u` or `/v`).
-        //
-        // In non-UnicodeMode, `\k` is an identity escape for `k` (and does *not* consume a
-        // following `<...>`). This matches JS engines and test262 expectations like:
-        // `"x".split(/\\k<x>/) === ["x"]`.
-        if self.flags.has_either_unicode_flag() {
-          if self.eat(b'<' as u16) {
-            let name = self.parse_group_name(ctx)?;
-            Ok(Atom::NamedBackRef(name))
-          } else {
-            Err(RegExpSyntaxError {
-              message: "Invalid regular expression",
-            }
-            .into())
-          }
+        // `\k<name>` is a named backreference (not tied to `/u` / `/v`).
+        if self.eat(b'<' as u16) {
+          let name = self.parse_group_name(ctx)?;
+          Ok(Atom::NamedBackRef(name))
         } else {
-          Ok(Atom::Literal(x as u32))
+          Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into())
         }
       }
       x if x == (b'p' as u16) || x == (b'P' as u16) => {
