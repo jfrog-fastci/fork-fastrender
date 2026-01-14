@@ -617,7 +617,6 @@ static ENGINE_OVERRIDE: OnceLock<Mutex<Option<Arc<AudioEngine>>>> = OnceLock::ne
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::media::audio::AudioClock;
   use crate::media::audio::NullAudioBackend;
   use crate::media::audio_clock::InterpolatedAudioClock;
   use crate::testing::global_test_lock;
@@ -824,14 +823,14 @@ mod tests {
       self.cfg
     }
 
-    fn clock(&self) -> AudioClock {
+    fn clock(&self) -> crate::media::audio::AudioClock {
       if self.use_instant.load(Ordering::Relaxed) {
-        AudioClock::Instant {
+        crate::media::audio::AudioClock::Instant {
           start: Instant::now(),
           sample_rate_hz: self.cfg.sample_rate_hz,
         }
       } else {
-        AudioClock::OutputFrames {
+        crate::media::audio::AudioClock::OutputFrames {
           clock: self.clock.clone(),
         }
       }
