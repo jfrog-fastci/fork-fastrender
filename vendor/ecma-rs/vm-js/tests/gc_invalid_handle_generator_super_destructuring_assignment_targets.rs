@@ -64,3 +64,65 @@ fn generator_object_destructuring_super_computed_target_survives_gc_between_yiel
   Ok(())
 }
 
+#[test]
+fn generator_array_destructuring_super_computed_target_survives_gc_between_yields() -> Result<(), VmError>
+{
+  let mut rt = new_runtime_with_frequent_gc();
+
+  // Like the object test above, but exercises the array destructuring path so we cover:
+  // - suspension while evaluating the `super[(yield ...)]` target key, and
+  // - iterator state rooting while resuming and while suspended at the default-value `yield`.
+  let value = rt.exec_script(
+    r#"
+      'use strict';
+
+      function churn() {
+        let junk = [];
+        for (let i = 0; i < 200; i++) {
+          junk.push(new Uint8Array(1024));
+        }
+        return junk.length;
+      }
+
+      class Base {
+        set k(v) { this._k = v; }
+      }
+
+      class Derived extends Base {
+        *g(iterable) {
+          [super[(yield 0)] = (churn(), (yield 1))] = iterable;
+          return this._k;
+        }
+      }
+
+      let iterable = {
+        [Symbol.iterator]() {
+          let done = false;
+          return {
+            next() {
+              if (done) return { value: undefined, done: true };
+              done = true;
+              return { value: undefined, done: false };
+            }
+          };
+        }
+      };
+
+      let it = (new Derived()).g(iterable);
+      let r0 = it.next();
+      // Stress GC while suspended after the computed-key `yield`.
+      churn();
+      let r1 = it.next("k");
+      // Stress GC while suspended at the default-value `yield` (so the continuation is traced).
+      churn();
+      let r2 = it.next(42);
+
+      r0.value === 0 && r0.done === false &&
+      r1.value === 1 && r1.done === false &&
+      r2.value === 42 && r2.done === true
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
