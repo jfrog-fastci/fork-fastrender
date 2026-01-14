@@ -37595,54 +37595,55 @@ fn range_set_start_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError("Range.setStart requires a node argument"));
+  };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.setStart requires a node argument",
+  )?;
+  if node_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
+      &mut scope,
+      "WrongDocumentError",
       "",
     )?));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
   let result = if is_host_document_id(vm, handle.document_id) {
-    mutate_dom_for_vm_host(host, |dom| (dom.range_set_start(handle.range_id, node_key.node_id, offset), false))
-      .ok_or(VmError::TypeError("Illegal invocation"))?
+    mutate_dom_for_vm_host(host, |dom| {
+      (
+        dom.range_set_start(handle.range_id, node_handle.node_id, offset),
+        false,
+      )
+    })
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
   } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    let result = dom.range_set_start(handle.range_id, node_key.node_id, offset);
+    let result = dom.range_set_start(handle.range_id, node_handle.node_id, offset);
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom.take_mutation_observer_microtask_needed();
     result
   };
 
-  match result {
-    Ok(()) => Ok(Value::Undefined),
-    Err(dom2::DomError::IndexSizeError) => {
-      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
-    }
-    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
-      vm,
-      scope,
-      "InvalidNodeTypeError",
-      "",
-    )?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  if let Err(err) = result {
+    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
   }
+
+  Ok(Value::Undefined)
 }
 
 fn range_set_end_native(
@@ -37654,54 +37655,51 @@ fn range_set_end_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError("Range.setEnd requires a node argument"));
+  };
+  let node_handle =
+    node_handle_from_wrapper_obj(vm, &mut scope, node_obj, "Range.setEnd requires a node argument")?;
+  if node_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
+      &mut scope,
+      "WrongDocumentError",
       "",
     )?));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
   let result = if is_host_document_id(vm, handle.document_id) {
-    mutate_dom_for_vm_host(host, |dom| (dom.range_set_end(handle.range_id, node_key.node_id, offset), false))
-      .ok_or(VmError::TypeError("Illegal invocation"))?
+    mutate_dom_for_vm_host(host, |dom| {
+      (
+        dom.range_set_end(handle.range_id, node_handle.node_id, offset),
+        false,
+      )
+    })
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
   } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    let result = dom.range_set_end(handle.range_id, node_key.node_id, offset);
+    let result = dom.range_set_end(handle.range_id, node_handle.node_id, offset);
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom.take_mutation_observer_microtask_needed();
     result
   };
 
-  match result {
-    Ok(()) => Ok(Value::Undefined),
-    Err(dom2::DomError::IndexSizeError) => {
-      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
-    }
-    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
-      vm,
-      scope,
-      "InvalidNodeTypeError",
-      "",
-    )?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  if let Err(err) = result {
+    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
   }
+
+  Ok(Value::Undefined)
 }
 
 fn range_collapse_native(
@@ -37713,25 +37711,17 @@ fn range_collapse_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
-
-  // WebIDL: collapse(optional boolean toStart = false)
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
   let to_start_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let to_start = if matches!(to_start_value, Value::Undefined) {
-    false
-  } else {
-    scope.heap().to_boolean(to_start_value)?
-  };
+  let to_start = scope.heap().to_boolean(to_start_value)?;
 
   let result = if is_host_document_id(vm, handle.document_id) {
     mutate_dom_for_vm_host(host, |dom| (dom.range_collapse(handle.range_id, to_start), false))
-      .ok_or(VmError::TypeError("Illegal invocation"))?
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
   } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
     let result = dom.range_collapse(handle.range_id, to_start);
     // Owned documents: skip MutationObserver microtask scheduling.
@@ -37739,72 +37729,10 @@ fn range_collapse_native(
     result
   };
 
-  match result {
-    Ok(()) => Ok(Value::Undefined),
-    Err(_) => Err(VmError::TypeError("Illegal invocation")),
+  if let Err(err) = result {
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
-}
-
-fn range_clone_range_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
-
-  let range_id = if is_host_document_id(vm, handle.document_id) {
-    mutate_dom_for_vm_host(host, |dom| (dom.range_clone_range(handle.range_id), false))
-      .ok_or(VmError::TypeError("Illegal invocation"))?
-  } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_mut() };
-    let result = dom.range_clone_range(handle.range_id);
-    // Owned documents: skip MutationObserver microtask scheduling.
-    let _ = dom.take_mutation_observer_microtask_needed();
-    result
-  };
-
-  let range_id = range_id.map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  // Allocate and register the JS wrapper for the new range id.
-  let range_obj = alloc_range_wrapper(scope, handle.document_obj)?;
-  scope.push_root(Value::Object(range_obj))?;
-
-  if is_host_document_id(vm, handle.document_id) {
-    mutate_dom_for_vm_host(host, |dom| {
-      dom.register_live_range_wrapper_for_id(scope.heap(), range_id, range_obj);
-      ((), false)
-    })
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
-  } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_mut() };
-    dom.register_live_range_wrapper_for_id(scope.heap(), range_id, range_obj);
-    // Owned documents: skip MutationObserver microtask scheduling.
-    let _ = dom.take_mutation_observer_microtask_needed();
-  }
-
-  scope.heap_mut().object_set_host_slots(
-    range_obj,
-    HostSlots {
-      a: range_id.as_u64(),
-      b: RANGE_HOST_TAG,
-    },
-  )?;
-
-  Ok(Value::Object(range_obj))
+  Ok(Value::Undefined)
 }
 
 fn range_select_node_contents_native(
@@ -37816,67 +37744,116 @@ fn range_select_node_contents_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError(
+      "Range.selectNodeContents requires a node argument",
+    ));
+  };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.selectNodeContents requires a node argument",
+  )?;
+  if node_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
+      &mut scope,
+      "WrongDocumentError",
       "",
     )?));
   }
 
   let result = if is_host_document_id(vm, handle.document_id) {
     mutate_dom_for_vm_host(host, |dom| {
-      let end_offset = match dom.node_length(node_key.node_id) {
-        Ok(v) => v,
-        Err(err) => return (Err(err), false),
-      };
-      let result = dom
-        .range_set_start(handle.range_id, node_key.node_id, 0)
-        .and_then(|_| dom.range_set_end(handle.range_id, node_key.node_id, end_offset));
-      (result, false)
+      let res: dom2::DomResult<()> = (|| {
+        let end_offset = dom.node_length(node_handle.node_id)?;
+        dom.range_set_start(handle.range_id, node_handle.node_id, 0)?;
+        dom.range_set_end(handle.range_id, node_handle.node_id, end_offset)?;
+        Ok(())
+      })();
+      (res, false)
     })
-    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
   } else {
-    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
-    };
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
-    // exclusive access for the duration of this native call.
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-
-    let result = dom
-      .node_length(node_key.node_id)
-      .and_then(|end_offset| {
-        dom
-          .range_set_start(handle.range_id, node_key.node_id, 0)
-          .and_then(|_| dom.range_set_end(handle.range_id, node_key.node_id, end_offset))
-      });
+    let result: dom2::DomResult<()> = (|| {
+      let end_offset = dom.node_length(node_handle.node_id)?;
+      dom.range_set_start(handle.range_id, node_handle.node_id, 0)?;
+      dom.range_set_end(handle.range_id, node_handle.node_id, end_offset)?;
+      Ok(())
+    })();
     // Owned documents: skip MutationObserver microtask scheduling.
     let _ = dom.take_mutation_observer_microtask_needed();
     result
   };
 
-  match result {
-    Ok(()) => Ok(Value::Undefined),
-    Err(dom2::DomError::IndexSizeError) => {
-      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
-    }
-    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
-      vm,
-      scope,
-      "InvalidNodeTypeError",
-      "",
-    )?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  if let Err(err) = result {
+    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
   }
+
+  Ok(Value::Undefined)
+}
+
+fn range_clone_range_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
+
+  let cloned_obj = alloc_range_wrapper(&mut scope, handle.document_obj)?;
+  scope.push_root(Value::Object(cloned_obj))?;
+
+  let range_id = if is_host_document_id(vm, handle.document_id) {
+    let result = mutate_dom_for_vm_host(host, |dom| {
+      let result = dom.range_clone_range(handle.range_id);
+      if let Ok(id) = result {
+        dom.register_live_range_wrapper_for_id(scope.heap(), id, cloned_obj);
+      }
+      (result, false)
+    })
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    match result {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+    }
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let id = match dom.range_clone_range(handle.range_id) {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+    };
+    dom.register_live_range_wrapper_for_id(scope.heap(), id, cloned_obj);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    id
+  };
+
+  scope.heap_mut().object_set_host_slots(
+    cloned_obj,
+    HostSlots {
+      a: range_id.as_u64(),
+      b: RANGE_HOST_TAG,
+    },
+  )?;
+
+  Ok(Value::Object(cloned_obj))
 }
 
 fn range_to_string_native(
@@ -37888,26 +37865,21 @@ fn range_to_string_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
 
-  let s = match dom.range_to_string(handle.range_id) {
-    Ok(s) => s,
-    Err(dom2::DomError::InvalidNodeTypeError) => {
-      return Err(VmError::Throw(make_dom_exception(
-        vm,
-        scope,
-        "InvalidNodeTypeError",
-        "",
-      )?));
+  let s = dom.range_to_string(handle.range_id).map_err(|err| {
+    let exc = make_dom_exception(vm, scope, err.code(), "");
+    match exc {
+      Ok(v) => VmError::Throw(v),
+      Err(e) => e,
     }
-    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-  };
-
-  Ok(Value::String(scope.alloc_string(&s)?))
+  })?;
+  let out = scope.alloc_string(&s)?;
+  Ok(Value::String(out))
 }
 
 fn range_compare_boundary_points_native(
@@ -37919,70 +37891,79 @@ fn range_compare_boundary_points_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let how_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let how = webidl_to_uint16(vm, scope, host, hooks, how_value)?;
+  let how = webidl_to_uint16(vm, &mut scope, host, hooks, how_value)?;
 
-  if how > 3 {
-    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotSupportedError", "")?));
-  }
-
-  let source_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let source_handle = range_handle_from_this(vm, scope, source_value, "Illegal invocation")?;
-
-  if source_handle.document_id != handle.document_id {
+  let other_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let other_handle = range_handle_from_this(
+    vm,
+    &mut scope,
+    other_value,
+    "Range.compareBoundaryPoints requires a Range argument",
+  )?;
+  if other_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
+      &mut scope,
+      "WrongDocumentError",
       "",
     )?));
   }
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
-  match dom.range_compare_boundary_points(handle.range_id, how, source_handle.range_id) {
-    Ok(v) => Ok(Value::Number(v as f64)),
-    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-  }
+  let result = dom
+    .range_compare_boundary_points(handle.range_id, how, other_handle.range_id)
+    .map_err(|err| {
+      let exc = make_dom_exception(vm, &mut scope, err.code(), "");
+      match exc {
+        Ok(v) => VmError::Throw(v),
+        Err(e) => e,
+      }
+    })?;
+  Ok(Value::Number(result as f64))
 }
 
 fn range_clone_contents_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
-  let fragment_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, handle.document_id) {
-    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
-    // this native call.
-    match unsafe { dom_ptr.as_mut() }.range_clone_contents(handle.range_id) {
-      Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-    }
-  } else {
-    // Cloning is not a live DOM mutation; keep host-backed documents from being conservatively
-    // invalidated.
-    let result = mutate_dom_for_vm_host(host, |dom| (dom.range_clone_contents(handle.range_id), false))
-      .ok_or(VmError::TypeError("Illegal invocation"))?;
+  let fragment_id = if is_host_document_id(vm, handle.document_id) {
+    let result =
+      mutate_dom_for_vm_host(host, |dom| (dom.range_clone_contents(handle.range_id), false))
+        .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
     match result {
       Ok(id) => id,
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let fragment = match dom.range_clone_contents(handle.range_id) {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    };
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    fragment
   };
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)
@@ -37997,31 +37978,42 @@ fn range_is_point_in_range_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError(
+      "Range.isPointInRange requires a node argument",
+    ));
+  };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.isPointInRange requires a node argument",
+  )?;
+  if node_handle.document_id != handle.document_id {
     return Ok(Value::Bool(false));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
-  match dom.range_is_point_in_range(handle.range_id, node_key.node_id, offset) {
-    Ok(v) => Ok(Value::Bool(v)),
-    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-  }
+  let result = dom
+    .range_is_point_in_range(handle.range_id, node_handle.node_id, offset)
+    .map_err(|err| {
+      let exc = make_dom_exception(vm, &mut scope, err.code(), "");
+      match exc {
+        Ok(v) => VmError::Throw(v),
+        Err(e) => e,
+      }
+    })?;
+  Ok(Value::Bool(result))
 }
 
 fn range_compare_point_native(
@@ -38033,36 +38025,45 @@ fn range_compare_point_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError("Range.comparePoint requires a node argument"));
+  };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.comparePoint requires a node argument",
+  )?;
+  if node_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
+      &mut scope,
+      "WrongDocumentError",
       "",
     )?));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
-  match dom.range_compare_point(handle.range_id, node_key.node_id, offset) {
-    Ok(v) => Ok(Value::Number(v as f64)),
-    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-  }
+  let result = dom
+    .range_compare_point(handle.range_id, node_handle.node_id, offset)
+    .map_err(|err| {
+      let exc = make_dom_exception(vm, &mut scope, err.code(), "");
+      match exc {
+        Ok(v) => VmError::Throw(v),
+        Err(e) => e,
+      }
+    })?;
+  Ok(Value::Number(result as f64))
 }
 
 fn range_intersects_node_native(
@@ -38074,28 +38075,37 @@ fn range_intersects_node_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
 
   let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let node_key = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), node_value)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  if node_key.document_id != handle.document_id {
+  let Value::Object(node_obj) = node_value else {
+    return Err(VmError::TypeError("Range.intersectsNode requires a node argument"));
+  };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.intersectsNode requires a node argument",
+  )?;
+  if node_handle.document_id != handle.document_id {
     return Ok(Value::Bool(false));
   }
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
-  match dom.range_intersects_node(handle.range_id, node_key.node_id) {
-    Ok(v) => Ok(Value::Bool(v)),
-    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
-    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-  }
+  let result = dom
+    .range_intersects_node(handle.range_id, node_handle.node_id)
+    .map_err(|err| {
+      let exc = make_dom_exception(vm, &mut scope, err.code(), "");
+      match exc {
+        Ok(v) => VmError::Throw(v),
+        Err(e) => e,
+      }
+    })?;
+  Ok(Value::Bool(result))
 }
 
 fn range_delete_contents_native(
@@ -38107,39 +38117,50 @@ fn range_delete_contents_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
+  let run_side_effects =
+    should_run_dom_side_effects_for_document(vm, &mut scope, handle.document_id, handle.document_obj)?;
 
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
 
-  let (mutations, needs_microtask) = {
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
-    // access for the duration of this native call.
+  let (child_list_changed, needs_microtask) = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    match dom.range_delete_contents(handle.range_id) {
-      Ok(()) => {}
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    if let Err(err) = dom.range_delete_contents(handle.range_id) {
+      return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
     }
-    // Range algorithms can mutate multiple parents (removing nodes, splitting Text, etc). Keep any
-    // cached wrapper-owned live collections (`childNodes`, `children`, `<select>.options`) in sync
-    // using the dom2 mutation log.
     let mutations = dom.take_mutations();
     let needs_microtask = dom.take_mutation_observer_microtask_needed();
-    (mutations, needs_microtask)
+    (mutations.child_list_changed, needs_microtask)
   };
 
-  if !mutations.child_list_changed.is_empty() {
+  if !child_list_changed.is_empty() {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_ref() };
-    for parent in mutations.child_list_changed {
-      sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-      sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-      sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+    for parent in &child_list_changed {
+      sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, *parent)?;
+      sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, *parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, *parent)?;
     }
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  if run_side_effects {
+    for parent in &child_list_changed {
+      run_dynamic_script_children_changed_steps(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        handle.document_obj,
+        dom_ptr,
+        *parent,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, handle.document_obj, needs_microtask)?;
+  }
 
   Ok(Value::Undefined)
 }
@@ -38153,40 +38174,55 @@ fn range_extract_contents_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let mut scope = scope.reborrow();
+  let handle = range_handle_from_this(vm, &mut scope, this, ILLEGAL_INVOCATION_ERROR)?;
+  let run_side_effects =
+    should_run_dom_side_effects_for_document(vm, &mut scope, handle.document_id, handle.document_obj)?;
 
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
 
-  let (fragment_id, mutations, needs_microtask) = {
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
-    // access for the duration of this native call.
+  let (fragment_id, child_list_changed, needs_microtask) = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
     let fragment_id = match dom.range_extract_contents(handle.range_id) {
       Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
     };
     let mutations = dom.take_mutations();
     let needs_microtask = dom.take_mutation_observer_microtask_needed();
-    (fragment_id, mutations, needs_microtask)
+    (fragment_id, mutations.child_list_changed, needs_microtask)
   };
 
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  let fragment_wrapper = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)?;
-
-  if !mutations.child_list_changed.is_empty() {
-    for parent in mutations.child_list_changed {
-      sync_cached_child_nodes_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-      sync_cached_children_for_node_id(vm, scope, handle.document_obj, dom, parent)?;
-      sync_cached_select_options_for_select_ancestor(vm, scope, handle.document_obj, dom, parent)?;
+  if !child_list_changed.is_empty() {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    for parent in &child_list_changed {
+      sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, *parent)?;
+      sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, *parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, *parent)?;
     }
   }
 
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  if run_side_effects {
+    for parent in &child_list_changed {
+      run_dynamic_script_children_changed_steps(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        handle.document_obj,
+        dom_ptr,
+        *parent,
+      )?;
+    }
+    maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, handle.document_obj, needs_microtask)?;
+  }
 
-  Ok(fragment_wrapper)
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  get_or_create_node_wrapper(vm, &mut scope, handle.document_obj, Some(dom), fragment_id)
 }
 
 fn range_create_contextual_fragment_native(

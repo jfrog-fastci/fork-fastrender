@@ -1214,7 +1214,6 @@ fn run_scroll_fixture(
         status: ScenarioStatus::Error,
         message: format!("failed to send ScrollTo: {err}"),
       })?;
-
       let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
       frame = next;
       scroll_y = frame.scroll_css.1;

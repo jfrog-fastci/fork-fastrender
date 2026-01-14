@@ -1097,22 +1097,6 @@ impl TabState {
   ) -> Option<Arc<crate::FragmentTree>> {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
-
-  fn desired_next_tick(&mut self) -> Option<Duration> {
-    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
-    let css_tick = self
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
-    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
-
-    match (css_tick, js_tick) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
-  }
 }
 
 fn hit_test_fragment_tree_for_scroll_cached(
@@ -4183,7 +4167,7 @@ impl BrowserRuntime {
             if let Ok(Some(dom_changed)) =
               doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
-                let step_result = engine.wheel_step_number_input(
+                let result = engine.wheel_step_number_input(
                   dom,
                   box_tree,
                   fragment_tree,
@@ -4191,8 +4175,8 @@ impl BrowserRuntime {
                   Point::new(pointer_css.0, pointer_css.1),
                   delta_y,
                 );
-                let changed = step_result.unwrap_or(false);
-                (changed, step_result)
+                let changed = result.unwrap_or(false);
+                (changed, result)
               })
             {
               scroll_handled = true;
@@ -6722,19 +6706,17 @@ impl BrowserRuntime {
             };
           }
 
-          (
+          let out = (
             changed,
-            (
-              changed,
-              hovered_url,
-              cursor,
-              hovered_dom_node_id,
-              hovered_dom_element_id,
-              textarea_scroll,
-            ),
-          )
+            hovered_url,
+            cursor,
+            hovered_dom_node_id,
+            hovered_dom_element_id,
+            textarea_scroll,
+          );
+          (changed, out)
         }) {
-          Ok(result) => result,
+          Ok(out) => out,
           Err(_) => return,
         };
 
@@ -7243,7 +7225,7 @@ impl BrowserRuntime {
         };
         (changed, (changed, target_id, target_element_id))
       }) {
-        Ok(result) => result,
+        Ok(out) => out,
         Err(_) => return,
       };
 
@@ -7609,21 +7591,19 @@ impl BrowserRuntime {
           _ => None,
         };
 
-        (
+        let out = (
           dom_changed,
-          (
-            dom_changed,
-            action,
-            picker_value,
-            focus_scroll,
-            mouseup_target,
-            mouseup_target_element_id,
-            click_target,
-            click_target_element_id,
-            form_submitter,
-            form_submitter_element_id,
-          ),
-        )
+          action,
+          picker_value,
+          focus_scroll,
+          mouseup_target,
+          mouseup_target_element_id,
+          click_target,
+          click_target_element_id,
+          form_submitter,
+          form_submitter_element_id,
+        );
+        (dom_changed, out)
       }) {
         Ok(result) => result,
         Err(_) => return,
