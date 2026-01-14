@@ -39,23 +39,33 @@ fn download_progress_a11y_label(
   total_bytes: Option<u64>,
 ) -> String {
   let file_name = file_name.trim();
-  let prefix = if file_name.is_empty() {
-    "Downloading".to_string()
-  } else {
-    format!("Downloading {file_name}")
-  };
-
   match total_bytes.filter(|t| *t > 0) {
-    Some(total) => format!(
-      "{prefix}: {} of {}",
-      format_bytes(received_bytes),
-      format_bytes(total)
-    ),
+    Some(total) => {
+      if file_name.is_empty() {
+        format!(
+          "Downloading: {} of {}",
+          format_bytes(received_bytes),
+          format_bytes(total)
+        )
+      } else {
+        format!(
+          "Downloading {file_name}: {} of {}",
+          format_bytes(received_bytes),
+          format_bytes(total)
+        )
+      }
+    }
     None => {
       if received_bytes > 0 {
-        format!("{prefix}: {}", format_bytes(received_bytes))
+        if file_name.is_empty() {
+          format!("Downloading: {}", format_bytes(received_bytes))
+        } else {
+          format!("Downloading {file_name}: {}", format_bytes(received_bytes))
+        }
+      } else if file_name.is_empty() {
+        "Downloading".to_string()
       } else {
-        prefix
+        format!("Downloading {file_name}")
       }
     }
   }
@@ -199,8 +209,9 @@ pub fn downloads_panel_ui(
         BrowserIcon::Download,
         "Downloads",
         |ui| {
-          let tooltip = format!("Current folder: {}", download_dir.display());
-          let change_folder = ui.small_button("Change download folder…").on_hover_text(tooltip);
+          let change_folder = ui
+            .small_button("Change download folder…")
+            .on_hover_ui(|ui| ui.label(format!("Current folder: {}", download_dir.display())));
           #[cfg(test)]
           store_test_id(
             ui.ctx(),
@@ -628,7 +639,7 @@ pub fn downloads_panel_ui(
                       .wrap(false)
                       .truncate(true),
                     )
-                    .on_hover_text(err.to_string());
+                    .on_hover_text(err);
                   }
                 }
 
