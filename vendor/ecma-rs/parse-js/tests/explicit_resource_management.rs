@@ -161,6 +161,30 @@ fn await_using_declarations_reject_binding_patterns_after_comma() {
 }
 
 #[test]
+fn using_declarations_are_syntax_error_in_switch_case_statement_list() {
+  let src = "switch (true) { case true: using x = null; }";
+  assert!(parse_with_options(src, ecma_script_opts()).is_err());
+}
+
+#[test]
+fn using_declarations_are_syntax_error_in_switch_default_statement_list() {
+  let src = "switch (true) { default: using x = null; }";
+  assert!(parse_with_options(src, ecma_script_opts()).is_err());
+}
+
+#[test]
+fn await_using_declarations_are_syntax_error_in_switch_case_statement_list() {
+  let src = "async function f() { switch (true) { case true: await using x = null; } }";
+  assert!(parse_with_options(src, ecma_script_opts()).is_err());
+}
+
+#[test]
+fn await_using_declarations_are_syntax_error_in_switch_default_statement_list() {
+  let src = "async function f() { switch (true) { default: await using x = null; } }";
+  assert!(parse_with_options(src, ecma_script_opts()).is_err());
+}
+
+#[test]
 fn using_decl_parses_as_var_decl_mode_using() {
   let src = "{ using x = null; }";
   let ast = parse_ecma_script(src);

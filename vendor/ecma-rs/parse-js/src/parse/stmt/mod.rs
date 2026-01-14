@@ -1351,6 +1351,7 @@ impl<'a> Parser<'a> {
           None
         };
         p.require(TT::Colon)?;
+        let branch_ctx = ctx.non_top_level();
         let body = p.repeat_while(
           |p| {
             !matches!(
@@ -1358,7 +1359,33 @@ impl<'a> Parser<'a> {
               TT::KeywordCase | TT::KeywordDefault | TT::BraceClose
             )
           },
-          |p| p.stmt(ctx.non_top_level()),
+          |p| {
+            // Explicit Resource Management early errors:
+            // `using` / `await using` declarations are not permitted directly within the
+            // StatementList of a switch CaseClause/DefaultClause.
+            //
+            // test262:
+            // - language/statements/using/syntax/with-initializer-case-expression-statement-list.js
+            // - language/statements/await-using/syntax/with-initializer-default-statement-list.js
+            if p.is_strict_ecmascript() {
+              let [t0, t1, t2] = p.peek_n();
+              let is_using_decl =
+                t0.typ == TT::KeywordUsing
+                  && !t1.preceded_by_line_terminator
+                  && is_valid_pattern_identifier(t1.typ, branch_ctx.rules);
+              let is_await_using_decl =
+                t0.typ == TT::KeywordAwait
+                  && t1.typ == TT::KeywordUsing
+                  && !t2.preceded_by_line_terminator
+                  && is_valid_pattern_identifier(t2.typ, branch_ctx.rules);
+              if is_using_decl || is_await_using_decl {
+                return Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+                  "`using` declarations are not allowed directly in switch case clauses",
+                )));
+              }
+            }
+            p.stmt(branch_ctx)
+          },
         )?;
         Ok(SwitchBranch { case, body })
       });
