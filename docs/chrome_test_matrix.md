@@ -16,6 +16,7 @@ Recommended deterministic test pages:
 
 - `about:test-form` (focus + text input)
 - `about:test-scroll` (scroll)
+- `about:test-layout-stress` (width-sensitive layout; useful for resize/scroll responsiveness)
 
 Key notation:
 
