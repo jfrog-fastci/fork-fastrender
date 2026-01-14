@@ -1882,19 +1882,19 @@ impl ModuleGraph {
       } else {
         let has_tla = self.modules[idx].has_tla;
         let compiled = self.modules[idx].compiled.clone();
-          match compiled {
-            Some(script) if !script.requires_ast_fallback && !has_tla => {
-              instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
-            }
-            _ => {
-              // Either:
-              // - no compiled module payload exists, or
-              // - this module must run through the AST evaluator (top-level await, async/generator
-              //   fallback, ...).
-              //
-              // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
-              // interpreter instantiation path can run.
-              self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+        match compiled {
+          Some(script) if !script.requires_ast_fallback && !has_tla => {
+            instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
+          }
+          _ => {
+            // Either:
+            // - no compiled module payload exists, or
+            // - this module must run through the AST evaluator (top-level await, async/generator
+            //   fallback, ...).
+            //
+            // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
+            // interpreter instantiation path can run.
+            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
             let ast = self.modules[idx]
               .ast
               .clone()
@@ -2589,20 +2589,15 @@ impl ModuleGraph {
       let idx = module_index(module);
 
       // Execute the module body.
-      let (has_tla, env_root, source, has_default_export, ast, compiled) = {
+      let (has_tla, env_root, source, ast, compiled) = {
         let record = self
           .modules
           .get(idx)
           .ok_or_else(|| VmError::invalid_handle())?;
-        let has_default_export = record
-          .local_export_entries
-          .iter()
-          .any(|e| e.local_name == "*default*");
         (
           record.has_tla,
           record.environment,
           record.source.clone(),
-          has_default_export,
           record.ast.clone(),
           record.compiled.clone(),
         )
@@ -2719,13 +2714,13 @@ impl ModuleGraph {
         // Non-TLA modules can execute via either:
         // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
-        if let Some(compiled) = compiled.clone() {
-          if !compiled.requires_ast_fallback && !has_default_export {
-            match crate::hir_exec::run_compiled_module(
-              vm,
-              scope,
-              host,
-              hooks,
+          if let Some(compiled) = compiled.clone() {
+            if !compiled.requires_ast_fallback {
+              match crate::hir_exec::run_compiled_module(
+                vm,
+                scope,
+                host,
+                hooks,
               state.global_object,
               state.realm_id,
               module,
@@ -3179,12 +3174,8 @@ impl ModuleGraph {
 
       let compiled = self.modules[idx].compiled.clone();
       let has_tla = self.modules[idx].has_tla;
-      let has_default_export = self.modules[idx]
-        .local_export_entries
-        .iter()
-        .any(|e| e.local_name == "*default*");
       match compiled {
-        Some(script) if !script.requires_ast_fallback && !has_tla && !has_default_export => {
+        Some(script) if !script.requires_ast_fallback && !has_tla => {
           crate::hir_exec::run_compiled_module(
             vm,
             scope,
