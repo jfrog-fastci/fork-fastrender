@@ -5527,7 +5527,7 @@ mod tests {
     // below that limit.
     let msg_len = (MAX_WEBSOCKET_PENDING_EVENT_BYTES / 2).saturating_add(1);
     assert!(
-      msg_len <= MAX_WEBSOCKET_MESSAGE_BYTES as usize,
+      msg_len <= MAX_WEBSOCKET_MESSAGE_BYTES,
       "test message len must be <= MAX_WEBSOCKET_MESSAGE_BYTES"
     );
 

@@ -227,15 +227,15 @@ fn apply_signed_offset_frames(base_frame: u64, offset_ns: i64, sample_rate: u32)
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::media::audio::{test_signal, AudioStreamConfig, TimedAudioSegment};
-  use crate::media::audio_clock::InterpolatedAudioClock;
-  use std::sync::Arc;
+  mod tests {
+    use super::*;
+    use crate::media::audio::{test_signal, AudioStreamConfig, TimedAudioSegment};
+    use crate::media::audio_clock::InterpolatedAudioClock;
+    use std::sync::Arc;
 
-  fn seg(start_ms: u64, samples: &[f32], sample_rate: u32) -> TimedAudioSegment {
-    TimedAudioSegment {
-      start_pts: Duration::from_millis(start_ms),
+    fn seg(start_ms: u64, samples: &[f32], sample_rate: u32) -> TimedAudioSegment {
+      TimedAudioSegment {
+        start_pts: Duration::from_millis(start_ms),
       samples: samples.to_vec(),
       channels: 1,
       sample_rate,

@@ -79,7 +79,6 @@ impl TabGroupId {
     }
   }
 }
-
 /// Opaque focus token used to restore focus to a UI element after dismissing a popup/context menu.
 ///
 /// This is intentionally UI-backend-agnostic: egui-based front-ends can convert from/to egui ids,

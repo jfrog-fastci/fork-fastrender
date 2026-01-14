@@ -576,7 +576,8 @@ mod tests {
     let base = factory.site_key_for_navigation("about:history", None, false);
     let query = factory.site_key_for_navigation("about:history?q=rust", None, false);
     let frag = factory.site_key_for_navigation("about:history#foo", None, false);
-    let mixed_case = factory.site_key_for_navigation("ABOUT:History?q=ignored#bar", None, false);
+    let mixed_case =
+      factory.site_key_for_navigation("ABOUT:History?q=ignored#bar", None, false);
 
     assert_eq!(base, query);
     assert_eq!(base, frag);

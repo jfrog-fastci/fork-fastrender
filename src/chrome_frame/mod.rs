@@ -1612,4 +1612,80 @@ mod tests {
     );
     Ok(())
   }
-}
+  #[test]
+  fn chrome_frame_tick_realtime_animations_only_repaint_when_clock_advances() -> Result<()> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+
+    let options = RenderOptions::new().with_viewport(32, 32);
+    let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #box {
+        width: 32px;
+        height: 32px;
+        background: rgb(255, 0, 0);
+        animation: bg 1000ms linear infinite;
+      }
+      @keyframes bg {
+        from { background: rgb(255, 0, 0); }
+        to   { background: rgb(0, 0, 255); }
+      }
+    </style>
+  </head>
+  <body><div id="box"></div></body>
+</html>"#;
+
+    // Install a deterministic animation clock so real-time sampling is predictable in tests.
+    let clock = Arc::new(VirtualClock::new());
+    chrome.document_mut().set_animation_clock(clock.clone());
+    chrome.document_mut().reset_with_html(html, options.clone())?;
+
+    // Prime the layout/paint cache so `wants_ticks()` can observe keyframes.
+    chrome.render()?;
+    assert!(chrome.wants_ticks(), "expected wants_ticks after first render");
+
+    // First realtime tick enables sampling and should request a paint.
+    assert!(
+      chrome.tick(None),
+      "expected tick(None) to request a repaint when enabling realtime animations"
+    );
+    let first = chrome
+      .render_if_needed()?
+      .expect("expected repaint after enabling realtime animations");
+    let first_hash = pixmap_hash(&first);
+
+    // Without advancing the clock, no repaint should be needed.
+    assert!(
+      !chrome.tick(None),
+      "expected tick(None) to be false when animation clock did not advance"
+    );
+    assert!(
+      chrome.render_if_needed()?.is_none(),
+      "expected render_if_needed to return None when clock did not advance"
+    );
+
+    // Advance the clock: repaint should be needed and the output should change.
+    clock.advance(Duration::from_millis(500));
+    assert!(
+      chrome.tick(None),
+      "expected tick(None) to request repaint after clock advance"
+    );
+    let second = chrome
+      .render_if_needed()?
+      .expect("expected repaint after clock advance");
+    let second_hash = pixmap_hash(&second);
+    assert_ne!(
+      first_hash, second_hash,
+      "expected real-time animation sampling to change rendered output after clock advance"
+    );
+
+    Ok(())
+  }
+} 
