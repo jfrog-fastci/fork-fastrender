@@ -215,6 +215,8 @@ fn auto_skip_reason(case: &TestCase) -> Option<String> {
     // Atomics + SharedArrayBuffer are part of ECMA-262, but `vm-js` doesn't implement them yet.
     "Atomics",
     "SharedArrayBuffer",
+    // Temporal is a stage-3 proposal and is not implemented by `vm-js` yet.
+    "Temporal",
     // Proposals / staged features not implemented yet.
     "ShadowRealm",
     "source-phase-imports",
@@ -223,6 +225,13 @@ fn auto_skip_reason(case: &TestCase) -> Option<String> {
     // `vm-js` does not implement ECMA-402 Internationalization APIs yet.
     "Intl.",
   ];
+
+  // `intl402/` is a separate test262 suite for ECMA-402 Internationalization APIs. Tests in this
+  // directory do not consistently declare `features: [Intl.*]` metadata, so skip them explicitly
+  // when Intl is not implemented.
+  if case.id.starts_with("intl402/") {
+    return Some("unsupported test262 suite: intl402 (Intl APIs not implemented)".to_string());
+  }
 
   if case.metadata.features.is_empty() {
     return None;
@@ -687,6 +696,46 @@ status = "skip"
     assert_eq!(
       auto_skip_reason(&case),
       Some("unsupported test262 feature(s): Atomics".to_string())
+    );
+  }
+
+  #[test]
+  fn auto_skip_reason_skips_temporal_feature() {
+    let case = TestCase {
+      id: "built-ins/Temporal/toStringTag/string.js".to_string(),
+      path: PathBuf::from("test/built-ins/Temporal/toStringTag/string.js"),
+      variant: Variant::NonStrict,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter {
+        features: vec!["Symbol.toStringTag".to_string(), "Temporal".to_string()],
+        ..Frontmatter::default()
+      },
+      body: String::new(),
+    };
+    assert_eq!(
+      auto_skip_reason(&case),
+      Some("unsupported test262 feature(s): Temporal".to_string())
+    );
+  }
+
+  #[test]
+  fn auto_skip_reason_skips_intl402_suite() {
+    let case = TestCase {
+      id: "intl402/Collator/prototype/toStringTag/toString.js".to_string(),
+      path: PathBuf::from("test/intl402/Collator/prototype/toStringTag/toString.js"),
+      variant: Variant::NonStrict,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter {
+        // Many intl402 tests do not declare `Intl.*` in the `features:` frontmatter, so this suite
+        // must be skipped based on path until Intl is implemented.
+        features: vec!["Symbol.toStringTag".to_string()],
+        ..Frontmatter::default()
+      },
+      body: String::new(),
+    };
+    assert_eq!(
+      auto_skip_reason(&case),
+      Some("unsupported test262 suite: intl402 (Intl APIs not implemented)".to_string())
     );
   }
 
