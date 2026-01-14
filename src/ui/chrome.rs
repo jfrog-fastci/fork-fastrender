@@ -1541,9 +1541,8 @@ pub fn chrome_ui_with_bookmarks(
         };
 
         let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
-        let try_http_url =
-          err_msg.and_then(|_| http_fallback_url_for_failed_https(active_url_trim));
-        let show_try_http = try_http_url.is_some();
+        let show_try_http = err_msg.is_some()
+          && matches!(formatted_url.security_state, AddressBarSecurityState::Https);
         let err_t = motion.animate_bool(
           ctx,
           address_bar_id.with("status_badge_error"),
@@ -2032,7 +2031,7 @@ pub fn chrome_ui_with_bookmarks(
 
             // HTTPS → HTTP fallback (only shown when the active URL is https:// and the tab has an
             // error).
-            if let Some(http_url) = try_http_url.as_deref() {
+            if show_try_http {
               let label = "Try HTTP";
               let tooltip = "Retry this URL over HTTP";
               let err_fg = ui.visuals().error_fg_color;
@@ -2068,18 +2067,19 @@ pub fn chrome_ui_with_bookmarks(
               paint_focus_ring(ui, &resp, focus_ring);
 
               if resp.clicked() || keyboard_activate(ui, &resp) {
-                let http_url = http_url.to_string();
-                app.chrome.address_bar_text = http_url.clone();
-                app.chrome.address_bar_editing = false;
-                let had_focus = app.chrome.address_bar_has_focus;
-                app.chrome.address_bar_has_focus = false;
-                app.chrome.omnibox.reset();
+                if let Some(http_url) = http_fallback_url_for_failed_https(active_url_trim) {
+                  app.chrome.address_bar_text = http_url.clone();
+                  app.chrome.address_bar_editing = false;
+                  let had_focus = app.chrome.address_bar_has_focus;
+                  app.chrome.address_bar_has_focus = false;
+                  app.chrome.omnibox.reset();
 
-                actions.push(ChromeAction::NavigateTo(http_url));
-                if had_focus {
-                  actions.push(ChromeAction::AddressBarFocusChanged(false));
+                  actions.push(ChromeAction::NavigateTo(http_url));
+                  if had_focus {
+                    actions.push(ChromeAction::AddressBarFocusChanged(false));
+                  }
+                  resp.surrender_focus();
                 }
-                resp.surrender_focus();
               }
             }
 
