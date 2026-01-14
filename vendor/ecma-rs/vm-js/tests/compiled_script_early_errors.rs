@@ -212,3 +212,30 @@ fn compiled_script_with_budget_allows_await_in_class_static_block_via_async_clas
   assert!(script.contains_top_level_await);
   assert!(script.top_level_await_requires_ast_fallback);
 }
+
+#[test]
+fn compiled_script_rejects_super_property_in_top_level_arrow_function() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Mirrors test262 `language/global-code/super-prop-arrow.js`.
+  let err = CompiledScript::compile_script(&mut heap, "test.js", "() => { super.property; };")
+    .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_script_rejects_super_property_in_async_arrow_function() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Mirrors test262 `language/expressions/async-arrow-function/early-errors-arrow-body-contains-super-property.js`.
+  let err =
+    CompiledScript::compile_script(&mut heap, "test.js", "async(foo) => { super.prop };")
+      .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
