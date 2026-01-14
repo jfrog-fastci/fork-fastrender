@@ -10778,6 +10778,8 @@ impl BrowserRuntime {
               }
               crate::interaction::KeyAction::ArrowDown
               | crate::interaction::KeyAction::ArrowUp
+              | crate::interaction::KeyAction::ShiftArrowDown
+              | crate::interaction::KeyAction::ShiftArrowUp
               | crate::interaction::KeyAction::ArrowLeft
               | crate::interaction::KeyAction::ArrowRight => !focus_consumes_arrows,
               crate::interaction::KeyAction::Home
@@ -11193,12 +11195,14 @@ impl BrowserRuntime {
                       pos_css: (tab.scroll_state.viewport.x, f32::MAX),
                     })
                   }
-                  crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
+                  crate::interaction::KeyAction::ArrowDown
+                  | crate::interaction::KeyAction::ShiftArrowDown => Some(UiToWorker::Scroll {
                     tab_id,
                     delta_css: (0.0, 40.0),
                     pointer_css: None,
                   }),
-                  crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
+                  crate::interaction::KeyAction::ArrowUp
+                  | crate::interaction::KeyAction::ShiftArrowUp => Some(UiToWorker::Scroll {
                     tab_id,
                     delta_css: (0.0, -40.0),
                     pointer_css: None,

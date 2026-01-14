@@ -36,6 +36,14 @@ fn insert_at_char_idx(original: &str, idx: usize, insert: &str) -> String {
   out
 }
 
+fn replace_range_at_char_idx(original: &str, start: usize, end: usize, replacement: &str) -> String {
+  let mut out = String::with_capacity(original.len().saturating_add(replacement.len()));
+  out.extend(original.chars().take(start));
+  out.push_str(replacement);
+  out.extend(original.chars().skip(end));
+  out
+}
+
 #[test]
 fn click_to_place_caret_then_text_input_inserts_at_caret() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
@@ -1730,6 +1738,161 @@ fn textarea_arrow_down_moves_by_visual_lines_when_wrapped() -> Result<()> {
     x_pos > 0,
     "expected ArrowDown to move caret to a wrapped line (inserted X at {x_pos})"
   );
+
+  Ok(())
+}
+
+#[test]
+fn textarea_shift_arrow_up_down_extends_selection_and_typing_replaces_it() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+  let initial = "012345678901234567890123456789";
+
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 120px;
+              height: 80px;
+              font-family: "Noto Sans Mono";
+              font-size: 20px;
+            }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">{initial}</textarea>
+        </body>
+      </html>
+    "#
+  );
+
+  let initial_len = initial.chars().count();
+
+  // Determine how many characters fit on a visual line (soft wrap) for the given textarea width + font.
+  // This depends on UA defaults (e.g. padding/border) and can change if layout heuristics change, so
+  // derive it from actual ArrowDown behaviour instead of hardcoding.
+  let chars_per_visual_line = {
+    let tab_id = TabId(1);
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      support::deterministic_renderer(),
+      tab_id,
+      &html,
+      url,
+      viewport_css,
+      1.0,
+    )?;
+    let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+    let click = (10.0, 10.0);
+    let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+    let _ = controller.handle_message(support::text_input(tab_id, "M"))?;
+
+    let textarea = find_element_by_id(controller.document().dom(), "ta");
+    let value = textarea
+      .get_attribute_ref("data-fastr-value")
+      .expect("expected textarea value after insertion");
+    let m_pos = value
+      .chars()
+      .position(|ch| ch == 'M')
+      .expect("expected inserted marker to appear in textarea value");
+    assert!(
+      m_pos > 0 && m_pos < initial_len,
+      "expected textarea to wrap to multiple visual lines (marker at {m_pos}, initial_len={initial_len})",
+    );
+    m_pos
+  };
+
+  assert!(
+    chars_per_visual_line.saturating_mul(2) <= initial_len,
+    "expected initial textarea value to span at least 3 visual lines; got chars_per_visual_line={chars_per_visual_line}, initial_len={initial_len}",
+  );
+
+  // Shift+ArrowDown should extend selection to the next visual line.
+  {
+    let tab_id = TabId(1);
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      support::deterministic_renderer(),
+      tab_id,
+      &html,
+      url,
+      viewport_css,
+      1.0,
+    )?;
+    let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+    let click = (10.0, 10.0);
+    let _ =
+      controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowDown))?;
+    let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+    let textarea = find_element_by_id(controller.document().dom(), "ta");
+    let expected = replace_range_at_char_idx(
+      initial,
+      chars_per_visual_line,
+      chars_per_visual_line.saturating_mul(2),
+      "X",
+    );
+    assert_eq!(
+      textarea.get_attribute_ref("data-fastr-value"),
+      Some(expected.as_str()),
+      "expected ShiftArrowDown selection to be replaced by typed text"
+    );
+  }
+
+  // Shift+ArrowUp should extend selection to the previous visual line.
+  {
+    let tab_id = TabId(2);
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      support::deterministic_renderer(),
+      tab_id,
+      &html,
+      url,
+      viewport_css,
+      1.0,
+    )?;
+    let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+    let click = (10.0, 10.0);
+    let _ =
+      controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowUp))?;
+    let _ = controller.handle_message(support::text_input(tab_id, "Y"))?;
+
+    let textarea = find_element_by_id(controller.document().dom(), "ta");
+    let expected = replace_range_at_char_idx(
+      initial,
+      chars_per_visual_line,
+      chars_per_visual_line.saturating_mul(2),
+      "Y",
+    );
+    assert_eq!(
+      textarea.get_attribute_ref("data-fastr-value"),
+      Some(expected.as_str()),
+      "expected ShiftArrowUp selection to be replaced by typed text"
+    );
+  }
 
   Ok(())
 }
