@@ -391,7 +391,13 @@ fn await_in_class_static_block_is_syntax_error_ast() -> Result<(), VmError> {
       "#,
     )
     .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  let VmError::Syntax(diags) = err else {
+    panic!("expected syntax error for await in class static block");
+  };
+  assert!(
+    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
+    "expected early error VMJS0004 for await in class static block, got {diags:?}"
+  );
   Ok(())
 }
 
