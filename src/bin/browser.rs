@@ -9754,6 +9754,7 @@ fn run_headless_download_smoke_mode(
     DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker,
     WorkerToUi,
   };
+  use fastrender::ui::WorkerToUiInbox;
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
 
@@ -9774,6 +9775,7 @@ fn run_headless_download_smoke_mode(
 
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-download-smoke-worker")?;
+  let worker_to_ui_rx = WorkerToUiInbox::new(worker_to_ui_rx);
 
   ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory {
     path: download_dir.clone(),
