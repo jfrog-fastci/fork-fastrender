@@ -247,10 +247,12 @@ impl Dom2TreeSink {
     }
 
     doc.live_mutation.pre_insert(parent, insertion_idx, 1);
+    let tree_index = doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx);
+    let inserted = doc.inserted_tree_children_count_for_range(parent, &[child]);
     doc.live_range_pre_insert_steps(
       parent,
-      doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
-      doc.inserted_tree_children_count_for_range(parent, &[child]),
+      tree_index,
+      inserted,
     );
     doc.node_mut(parent).children.insert(insertion_idx, child);
     doc.node_mut(child).parent = Some(parent);
@@ -307,9 +309,10 @@ impl Dom2TreeSink {
 
       let insertion_idx = doc.node(parent).children.len();
       doc.live_mutation.pre_insert(parent, insertion_idx, 1);
+      let tree_index = doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx);
       doc.live_range_pre_insert_steps(
         parent,
-        doc.tree_child_index_from_raw_index_for_range(parent, insertion_idx),
+        tree_index,
         /* count */ 1,
       );
       doc.push_node(
@@ -456,9 +459,10 @@ impl Dom2TreeSink {
       /* inert_subtree */ false,
     );
     doc.live_mutation.pre_insert(parent, insert_pos, 1);
+    let tree_index = doc.tree_child_index_from_raw_index_for_range(parent, insert_pos);
     doc.live_range_pre_insert_steps(
       parent,
-      doc.tree_child_index_from_raw_index_for_range(parent, insert_pos),
+      tree_index,
       /* count */ 1,
     );
     doc.node_mut(parent).children.insert(insert_pos, text_id);
