@@ -1153,3 +1153,39 @@ fn union_object_string_object_special_case_prefers_string_over_object() {
   assert_eq!(*member_ty, IdlType::String(StringType::DomString));
   assert_eq!(*value, ConvertedValue::String("hello".to_string()));
 }
+
+#[test]
+fn union_sequence_enum_string_object_special_case_does_not_probe_iterator() {
+  let mut rt = VmJsRuntime::new();
+
+  let mut ctx = TypeContext::default();
+  ctx.add_enum("MyEnum", ["hello", "world"]);
+
+  let enum_ty = IdlType::Named(NamedType {
+    name: "MyEnum".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+
+  let union_ty = IdlType::Union(vec![IdlType::Sequence(Box::new(IdlType::Any)), enum_ty.clone()]);
+
+  // Create a String object wrapper.
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  // If the union conversion tried to probe @@iterator (sequence/FrozenArray), it would trigger this
+  // getter and throw. The special-case (d) must treat String objects as strings (including enums)
+  // when a string member is present.
+  let throwing_getter = rt
+    .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+    .unwrap();
+  let iter_key = rt.symbol_iterator().unwrap();
+  rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+    .unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, enum_ty);
+  assert_eq!(*value, ConvertedValue::Enum("hello".to_string()));
+}
