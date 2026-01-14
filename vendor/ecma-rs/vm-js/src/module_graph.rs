@@ -1882,19 +1882,19 @@ impl ModuleGraph {
       } else {
         let has_tla = self.modules[idx].has_tla;
         let compiled = self.modules[idx].compiled.clone();
-        match compiled {
-          Some(script) if !script.requires_ast_fallback && !has_tla && !has_default_export => {
-            instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
-          }
-          _ => {
-            // Either:
-            // - no compiled module payload exists, or
-            // - this module must run through the AST evaluator (top-level await, async/generator
-            //   fallback, default export, ...).
-            //
-            // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
-            // interpreter instantiation path can run.
-            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+          match compiled {
+            Some(script) if !script.requires_ast_fallback && !has_tla => {
+              instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
+            }
+            _ => {
+              // Either:
+              // - no compiled module payload exists, or
+              // - this module must run through the AST evaluator (top-level await, async/generator
+              //   fallback, ...).
+              //
+              // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
+              // interpreter instantiation path can run.
+              self.ensure_module_ast(vm, scope.heap_mut(), module)?;
             let ast = self.modules[idx]
               .ast
               .clone()
