@@ -1613,6 +1613,11 @@ fn truncate_middle<'a>(s: &'a str, max_chars: usize) -> Cow<'a, str> {
   if max_chars == 0 || s.is_empty() {
     return Cow::Borrowed("");
   }
+  // ASCII/byte-length fast path: `chars().count()` is O(n). If the string is already shorter than
+  // the max *byte* length, it is necessarily <= max chars (since every char is at least 1 byte).
+  if s.len() <= max_chars {
+    return Cow::Borrowed(s);
+  }
   let len = s.chars().count();
   if len <= max_chars {
     return Cow::Borrowed(s);
