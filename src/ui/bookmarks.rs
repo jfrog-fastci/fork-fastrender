@@ -803,12 +803,23 @@ impl BookmarkStore {
     let parent = self.nodes.get(&id).and_then(BookmarkNode::parent);
     self.detach_from_parent_list(id, parent);
 
-    let mut subtree = Vec::new();
-    self.collect_subtree_ids(id, &mut subtree);
-    for node_id in subtree {
-      if let Some(node) = self.nodes.remove(&node_id) {
-        if let BookmarkNode::Bookmark(entry) = node {
+    // Remove the full subtree without allocating an intermediate `Vec` of IDs (which can be large
+    // when deleting folders).
+    let mut stack: Vec<BookmarkId> = vec![id];
+    while let Some(node_id) = stack.pop() {
+      let Some(node) = self.nodes.remove(&node_id) else {
+        continue;
+      };
+      match node {
+        BookmarkNode::Bookmark(entry) => {
           self.url_index_dec(&entry.url);
+        }
+        BookmarkNode::Folder(folder) => {
+          // Maintain the same traversal order as the old recursive implementation by pushing
+          // children in reverse onto the LIFO stack.
+          for child in folder.children.into_iter().rev() {
+            stack.push(child);
+          }
         }
       }
     }
@@ -1617,22 +1628,6 @@ impl BookmarkStore {
       self.touch_structure();
     }
     Ok(())
-  }
-
-  fn collect_subtree_ids(&self, id: BookmarkId, out: &mut Vec<BookmarkId>) {
-    // Use an explicit stack to avoid deep recursion on heavily nested bookmark folders.
-    let mut stack: Vec<BookmarkId> = vec![id];
-    while let Some(id) = stack.pop() {
-      out.push(id);
-      let Some(BookmarkNode::Folder(folder)) = self.nodes.get(&id) else {
-        continue;
-      };
-      // Maintain the same traversal order as the old recursive implementation by pushing children in
-      // reverse onto the LIFO stack.
-      for child in folder.children.iter().rev() {
-        stack.push(*child);
-      }
-    }
   }
 
   fn is_ancestor(&self, ancestor: BookmarkId, descendant: BookmarkId) -> bool {
