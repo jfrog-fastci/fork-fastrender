@@ -4070,8 +4070,8 @@ impl BrowserRuntime {
           // When scrolling with a stationary pointer, the hovered element can change as content
           // moves under the cursor. Track the latest pointer position so we can re-run hover
           // hit-testing after applying scroll offsets.
-          let pointer_pos_css = pointer_css
-            .filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
+          let pointer_pos_css =
+            pointer_css.filter(|pos_css| pointer_pos_css_in_viewport(*pos_css, tab.viewport_css));
 
           // Dispatch a cancelable `wheel` event *before* applying wheel deltas. If a listener calls
           // `preventDefault()`, the scroll gesture should be ignored.
@@ -8784,6 +8784,9 @@ impl BrowserRuntime {
       let max_y = tab.viewport_css.1 as f32;
       let sanitize = |v: f32, max: f32| {
         if v.is_finite() {
+          // `pos_css` is viewport-local (0 <= x < width). Clamp to just under the max to keep
+          // coordinates inside the viewport for hit testing (the right/bottom edge is out-of-page).
+          let max = (max - f32::EPSILON).max(0.0);
           v.clamp(0.0, max)
         } else {
           0.0
