@@ -36252,6 +36252,40 @@ fn gen_eval_assignment_to_member(
     ));
   }
 
+  // `super.prop = <rhs>` / `super.prop += <rhs>` in generator mode.
+  //
+  // The assignment expression as a whole may contain `yield` in the RHS, but the `super` token
+  // itself is not a normal expression and must not be evaluated via `gen_eval_expr`.
+  if matches!(&*member.left.stx, Expr::Super(_)) {
+    if member.right.starts_with('#') {
+      return Err(VmError::InvariantViolation(
+        "super private member access is not valid (early errors should prevent this)",
+      ));
+    }
+    if evaluator.derived_constructor && !evaluator.this_initialized {
+      return Err(throw_reference_error(
+        evaluator.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+    let receiver = evaluator.this;
+
+    let mut super_scope = scope.reborrow();
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    super_scope.push_root(receiver)?;
+    let key_s = super_scope.alloc_string(&member.right)?;
+    super_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let base = evaluator.get_super_base(&mut super_scope)?;
+    // Root the computed super base across RHS evaluation / generator suspension handling.
+    super_scope.push_root(base)?;
+
+    let reference = Reference::SuperProperty { base, key, receiver };
+    return gen_eval_assignment_apply_reference(evaluator, &mut super_scope, expr, reference);
+  }
+
   match gen_eval_expr(evaluator, scope, &member.left)? {
     GenEval::Complete(c) => match c {
       Completion::Normal(v) => {
