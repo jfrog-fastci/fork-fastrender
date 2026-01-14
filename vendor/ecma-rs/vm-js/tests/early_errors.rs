@@ -21,9 +21,23 @@ fn break_outside_loop_is_syntax_error() {
 }
 
 #[test]
+fn break_to_undefined_label_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("break missing;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn continue_outside_loop_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("continue;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn continue_to_undefined_label_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("continue missing;").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -38,6 +52,47 @@ fn continue_to_non_iteration_label_is_syntax_error() {
 fn duplicate_label_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("lbl: lbl: ;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn break_label_does_not_cross_function_boundary_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("outer: { (() => { break outer; }); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn continue_label_does_not_cross_function_boundary_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("outer: for(;;) { (() => { for(;;) { continue outer; } }); break; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_catch_parameter_bound_names_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("try {} catch ([a, a]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn catch_parameter_name_conflicts_with_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("try {} catch (e) { let e; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn catch_parameter_name_conflicts_with_function_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("try {} catch (e) { function e(){} }")
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
