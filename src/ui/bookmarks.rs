@@ -1809,7 +1809,9 @@ impl BookmarkStore {
     let should_remove = match url_index.get_mut(url) {
       Some(ids) => {
         if let Some(idx) = ids.iter().position(|existing| *existing == id) {
-          ids.remove(idx);
+          // The per-URL ID list is treated as an unordered bag: swap-remove avoids shifting
+          // potentially large duplicate lists when removing.
+          ids.swap_remove(idx);
         } else {
           debug_assert!(
             false,
