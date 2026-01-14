@@ -53,6 +53,7 @@ run_vm_js_test generators_super_property_logical_assignment_yield
 run_vm_js_test generators_private_name_logical_assignment_yield
 run_vm_js_test generators_assignment_exponentiation_yield
 run_vm_js_test generators_assignment_other_ops_yield
+run_vm_js_test generators_assignment_bitwise_shift_yield
 run_vm_js_test generators_assignment_update_yield_in_base
 
 # Keep the test target name stable: CI relies on this exact integration test name.
