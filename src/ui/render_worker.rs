@@ -10580,9 +10580,9 @@ impl BrowserRuntime {
           let mut focused_is_textarea = false;
           let mut focused_is_select = false;
           let mut focused_is_button = false;
-          let mut focused_is_video_controls = false;
-          let mut focused_media_kind: Option<MediaElementKind> = None;
-          let engine = &mut tab.interaction;
+            let mut focused_is_video_controls = false;
+            let mut focused_media_kind: Option<MediaElementKind> = None;
+            let engine = &mut tab.interaction;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) = engine.key_activate(dom, key, document_url, base_url);
             action = next_action;
