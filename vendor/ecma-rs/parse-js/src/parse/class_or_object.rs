@@ -273,7 +273,8 @@ impl<'a> Parser<'a> {
               p.super_call_allowed = 0;
               // Static blocks have their own `Await` / `Yield` context:
               // - `await` is reserved as an identifier (even in scripts),
-              // - `await` expressions are permitted only when allowed by the surrounding context, and
+              // - `await` expressions are permitted when the surrounding context allows them (e.g.
+              //   within an async function body or at top-level in modules), and
               // - `yield` is not treated as a keyword from an enclosing generator, but yield
               //   expressions are never permitted, and
               // - `return` statements are never permitted (handled above via `in_function = 0`).
