@@ -7809,6 +7809,7 @@ impl InlineFormattingContext {
     if rtl {
       items.reverse();
     }
+    let mut reshape_cache = ReshapeCache::default();
     // Floats are taken out-of-flow; if any remain in the line items, skip them
     // so they don't affect justification or fragment construction.
     items.retain(|p| !matches!(p.item, InlineItem::Floating(_)));
@@ -7913,6 +7914,105 @@ impl InlineFormattingContext {
       let start = text.text.len().saturating_sub(last.len_utf8());
       let before = text.advance_at_offset(start);
       Some((text.advance - before).max(0.0))
+    }
+
+    // Split text items so fullwidth punctuation characters become their own items. This enables the
+    // adjacent-pairs collapsing logic to apply within a single text run (common in real documents
+    // and WPT cases) without needing to inspect/modify interior clusters of a shaped item.
+    //
+    // Like the rest of this MVP implementation, this runs during fragment construction rather than
+    // line building, so it affects alignment/justification and glyph positioning but does not
+    // perturb earlier line-breaking decisions.
+    if !items.is_empty() {
+      let mut idx = 0usize;
+      while idx < items.len() {
+        let baseline_offset = items[idx].baseline_offset;
+        let should_split = match &items[idx].item {
+          InlineItem::Text(t) => !t.is_marker && !matches!(t.style.text_spacing_trim, TextSpacingTrim::SpaceAll),
+          _ => false,
+        };
+        if !should_split {
+          idx += 1;
+          continue;
+        }
+
+        let InlineItem::Text(original_text) = &items[idx].item else {
+          idx += 1;
+          continue;
+        };
+
+        let len = original_text.text.len();
+        if len <= 1 {
+          idx += 1;
+          continue;
+        }
+
+        let mut split_points: Vec<usize> = Vec::new();
+        for (off, ch) in original_text.text.char_indices() {
+          if is_fullwidth_opening_punctuation(ch) || is_fullwidth_closing_punctuation(ch) {
+            split_points.push(off);
+            split_points.push(off + ch.len_utf8());
+          }
+        }
+        split_points.sort_unstable();
+        split_points.dedup();
+        split_points.retain(|o| *o > 0 && *o < len);
+        if split_points.is_empty() {
+          idx += 1;
+          continue;
+        }
+
+        let mut segments: Vec<TextItem> = Vec::new();
+        let mut remaining = original_text.clone();
+        let mut consumed = 0usize;
+        let mut failed = false;
+        for point in split_points {
+          if point <= consumed || point >= len {
+            continue;
+          }
+          let local = point - consumed;
+          let Some((before, after)) = remaining.split_at(
+            local,
+            false,
+            &self.pipeline,
+            &self.font_context,
+            &mut reshape_cache,
+          ) else {
+            failed = true;
+            break;
+          };
+          segments.push(before);
+          remaining = after;
+          consumed = point;
+        }
+        if failed {
+          idx += 1;
+          continue;
+        }
+        segments.push(remaining);
+        if segments.len() <= 1 {
+          idx += 1;
+          continue;
+        }
+
+        items[idx].item = InlineItem::Text(segments[0].clone());
+        let mut insert_at = idx + 1;
+        for seg in segments.into_iter().skip(1) {
+          if seg.text.is_empty() {
+            continue;
+          }
+          items.insert(
+            insert_at,
+            PositionedItem {
+              item: InlineItem::Text(seg),
+              x: 0.0,
+              baseline_offset,
+            },
+          );
+          insert_at += 1;
+        }
+        idx = insert_at;
+      }
     }
 
     let mut inline_shifts: Vec<f32> = vec![0.0; items.len()];
@@ -8650,8 +8750,6 @@ impl InlineFormattingContext {
         _ => (false, None),
       }
     }
-
-    let mut reshape_cache = ReshapeCache::default();
 
     if is_first_formatted_line {
       let mut idx = 0usize;
