@@ -16452,6 +16452,9 @@ impl<'a> Evaluator<'a> {
               let key = PropertyKey::from_string(name_s);
               self.eval_expr_named(&mut op_scope, &expr.right, key)?
             }
+            // Logical assignment to member expressions participates in `NamedEvaluation` (and
+            // therefore `SetFunctionName`) when the operator actually assigns.
+            Reference::Property { key, .. } => self.eval_expr_named(&mut op_scope, &expr.right, key)?,
             _ => self.eval_expr(&mut op_scope, &expr.right)?,
           };
 

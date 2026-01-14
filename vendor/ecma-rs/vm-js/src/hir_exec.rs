@@ -9985,7 +9985,7 @@ impl<'vm> HirEvaluator<'vm> {
               }
 
               scope.push_root(left)?;
-              let right = self.eval_expr(&mut scope, body, value)?;
+              let right = self.eval_expr_named(&mut scope, body, value, key)?;
               scope.push_root(right)?;
 
               let ok = crate::spec_ops::internal_set_with_host_and_hooks(
@@ -10029,7 +10029,7 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             scope.push_root(left)?;
-            let right = self.eval_expr(&mut scope, body, value)?;
+            let right = self.eval_expr_named(&mut scope, body, value, key)?;
             scope.push_root(right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(

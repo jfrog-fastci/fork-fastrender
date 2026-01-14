@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -202,6 +202,44 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
     Value::Bool(true)
   );
 
+  Ok(())
+}
+
+#[test]
+fn compiled_logical_assignment_anonymous_function_name_inference() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      (() => {
+        let x = 0;
+        x ||= function() {};
+        if (x.name !== "x") return false;
+
+        const o = {};
+        o.f ??= function() {};
+        if (o.f.name !== "f") return false;
+
+        o.g = true;
+        o.g &&= function() {};
+        if (o.g.name !== "g") return false;
+
+        const prop = "comp";
+        o[prop] ||= function() {};
+        if (o[prop].name !== "comp") return false;
+
+        return true;
+      })()
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "expected logical assignment name inference to execute via HIR (no AST fallback)"
+  );
+
+  assert_eq!(rt.exec_compiled_script(script)?, Value::Bool(true));
   Ok(())
 }
 
