@@ -12,6 +12,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Coarse playback state of a [`PlaybackClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 /// Abstraction over the master clock used for A/V sync and HTMLMediaElement timekeeping.
 ///
 /// The clock origin is intentionally unspecified; callers should only compute deltas.

@@ -403,6 +403,12 @@ path = "src/bin/render_fixtures.rs"
 test = false
 
 [[bin]]
+name = "network"
+path = "src/bin/network.rs"
+test = false
+required-features = ["direct_websocket"]
+
+[[bin]]
 name = "browser"
 path = "src/bin/browser.rs"
 test = false
