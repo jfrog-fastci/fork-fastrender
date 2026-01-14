@@ -9195,10 +9195,11 @@ impl BrowserRuntime {
     let prev_open = tab.datalist_open_input;
     let scroll_snapshot = tab.scroll_state.clone();
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
-    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let mut changed = false;
+    let caret_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
       // painted option list (skipping options hidden via computed `display:none`, etc).
-      let changed = tab
+      changed = tab
         .interaction
         .text_input_with_box_tree(dom, Some(box_tree), text);
 
@@ -9241,12 +9242,11 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (changed, (changed, caret_scroll))
-    });
-    let (changed, caret_scroll) = match result {
+      (changed, caret_scroll)
+    }) {
       Ok(result) => result,
       Err(_) => {
-        let changed = doc.mutate_dom(|dom| {
+        changed = doc.mutate_dom(|dom| {
           let changed = tab.interaction.text_input(dom, text);
           if changed {
             let Some(input_node_id) = tab.interaction.focused_node_id() else {
@@ -9286,7 +9286,7 @@ impl BrowserRuntime {
           }
           changed
         });
-        (changed, None)
+        None
       }
     };
 
@@ -9510,8 +9510,9 @@ impl BrowserRuntime {
     };
 
     let scroll_snapshot = tab.scroll_state.clone();
-    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let dom_changed = tab.interaction.ime_commit(dom, text);
+    let mut changed = false;
+    let caret_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      changed = tab.interaction.ime_commit(dom, text);
       let caret_scroll =
         crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
           dom,
@@ -9520,13 +9521,12 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
-    });
-    let (changed, caret_scroll) = match result {
+      (changed, caret_scroll)
+    }) {
       Ok(result) => result,
       Err(_) => {
-        let changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
-        (changed, None)
+        changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
+        None
       }
     };
 
@@ -9600,8 +9600,9 @@ impl BrowserRuntime {
     // Selecting text updates the focused control's caret/selection data attributes so the painter
     // can render highlights/caret state, but it should not require a full navigation refresh.
     let scroll_snapshot = tab.scroll_state.clone();
-    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let dom_changed = tab.interaction.clipboard_select_all(dom);
+    let mut changed = false;
+    let caret_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      changed = tab.interaction.clipboard_select_all(dom);
       let caret_scroll =
         crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
           dom,
@@ -9610,13 +9611,12 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
-    });
-    let (changed, caret_scroll) = match result {
+      (changed, caret_scroll)
+    }) {
       Ok(result) => result,
       Err(_) => {
-        let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
-        (changed, None)
+        changed = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
+        None
       }
     };
 
@@ -9696,8 +9696,10 @@ impl BrowserRuntime {
 
     let mut cut_text: Option<String> = None;
     let scroll_snapshot = tab.scroll_state.clone();
-    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let mut changed = false;
+    let caret_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let (dom_changed, text) = tab.interaction.clipboard_cut(dom);
+      changed = dom_changed;
       cut_text = text;
       let caret_scroll =
         crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
@@ -9707,17 +9709,16 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
-    });
-    let (changed, caret_scroll) = match result {
+      (changed, caret_scroll)
+    }) {
       Ok(result) => result,
       Err(_) => {
-        let changed = doc.mutate_dom(|dom| {
+        changed = doc.mutate_dom(|dom| {
           let (dom_changed, text) = tab.interaction.clipboard_cut(dom);
           cut_text = text;
           dom_changed
         });
-        (changed, None)
+        None
       }
     };
 
@@ -9785,8 +9786,9 @@ impl BrowserRuntime {
 
     let text = clipboard::clamp_clipboard_text(text);
     let scroll_snapshot = tab.scroll_state.clone();
-    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let dom_changed = tab.interaction.clipboard_paste(dom, text);
+    let mut changed = false;
+    let caret_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      changed = tab.interaction.clipboard_paste(dom, text);
       let caret_scroll =
         crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
           dom,
@@ -9795,13 +9797,12 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
-    });
-    let (changed, caret_scroll) = match result {
+      (changed, caret_scroll)
+    }) {
       Ok(result) => result,
       Err(_) => {
-        let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
-        (changed, None)
+        changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
+        None
       }
     };
 
