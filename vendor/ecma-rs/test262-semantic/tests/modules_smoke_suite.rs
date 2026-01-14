@@ -12,11 +12,13 @@ fn modules_smoke_suite_selects_module_tests() {
   let module_dir = temp.path().join("test/language/module-code");
   let tla_dir = temp.path().join("test/language/module-code/top-level-await");
   let import_dir = temp.path().join("test/language/import");
+  let import_attr_dir = temp.path().join("test/language/import/import-attributes");
   let export_dir = temp.path().join("test/language/export");
   let import_meta_dir = temp.path().join("test/language/expressions/import.meta");
   fs::create_dir_all(&module_dir).unwrap();
   fs::create_dir_all(&tla_dir).unwrap();
   fs::create_dir_all(&import_dir).unwrap();
+  fs::create_dir_all(&import_attr_dir).unwrap();
   fs::create_dir_all(&export_dir).unwrap();
   fs::create_dir_all(&import_meta_dir).unwrap();
 
@@ -32,8 +34,18 @@ fn modules_smoke_suite_selects_module_tests() {
   )
   .unwrap();
   fs::write(
+    tla_dir.join("dynamic-import-resolution.js"),
+    "/*---\nflags: [module, async]\n---*/\nimport('./mod.js').then($DONE, $DONE);\n",
+  )
+  .unwrap();
+  fs::write(
     import_dir.join("dup-bound-names.js"),
     "/*---\nflags: [module]\n---*/\nimport { a as a } from './x.js';\n",
+  )
+  .unwrap();
+  fs::write(
+    import_attr_dir.join("json-value-string.js"),
+    "/*---\nflags: [module]\n---*/\nimport value from './fixture.json' with { type: 'json' };\nvalue;\n",
   )
   .unwrap();
   fs::write(
@@ -65,8 +77,20 @@ fn modules_smoke_suite_selects_module_tests() {
     "expected suite to include language/module-code/top-level-await/await-expr-resolution.js, got: {selected:#?}"
   );
   assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/top-level-await/dynamic-import-resolution.js"),
+    "expected suite to include language/module-code/top-level-await/dynamic-import-resolution.js, got: {selected:#?}"
+  );
+  assert!(
     selected.iter().any(|id| id == "language/import/dup-bound-names.js"),
     "expected suite to include language/import/dup-bound-names.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/import/import-attributes/json-value-string.js"),
+    "expected suite to include language/import/import-attributes/json-value-string.js, got: {selected:#?}"
   );
   assert!(
     selected.iter().any(|id| id == "language/export/escaped-default.js"),

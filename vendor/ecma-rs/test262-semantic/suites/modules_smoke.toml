@@ -12,9 +12,13 @@ tests = [
 
   # Top-level await basic semantics.
   "language/module-code/top-level-await/await-expr-resolution.js",
+  # Dynamic import of an async (top-level await) module.
+  "language/module-code/top-level-await/dynamic-import-resolution.js",
 
   # Standalone module syntax tests outside `language/module-code/`.
   "language/import/dup-bound-names.js",
+  # JSON modules via import attributes.
+  "language/import/import-attributes/json-value-string.js",
   "language/export/escaped-default.js",
 ]
 
