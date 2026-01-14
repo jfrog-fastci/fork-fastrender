@@ -1272,8 +1272,8 @@ fn group_chip_ui(
       return;
     };
     let color = group.color;
-    let collapsed = group.collapsed;
-    let a11y_label = group.tab_group_chip_accessible_label();
+    let mut collapsed = group.collapsed;
+    let mut a11y_label = group.tab_group_chip_accessible_label();
     let title = group_chip_title(group);
 
     let width = precomputed_width
@@ -1285,9 +1285,46 @@ fn group_chip_ui(
     if response.hovered() {
       response = response.on_hover_text(title);
     }
+
+    // AccessKit may request explicit expand/collapse actions when the node exposes an expanded state.
+    // Prefer Expand when both actions are requested in the same frame.
+    let expand_requested =
+      ui.input(|i| i.has_accesskit_action_request(response.id, accesskit::Action::Expand));
+    let collapse_requested =
+      ui.input(|i| i.has_accesskit_action_request(response.id, accesskit::Action::Collapse));
+    let mut collapsed_changed_via_a11y = false;
+    if expand_requested || collapse_requested {
+      let desired_collapsed = if expand_requested { false } else { true };
+      if collapsed != desired_collapsed {
+        collapsed = desired_collapsed;
+        ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
+        collapsed_changed_via_a11y = true;
+        // Ensure focus remains on the chip even when collapsing hides previously focused tabs.
+        response.request_focus();
+        ui.ctx().request_repaint();
+      }
+    }
+
+    // Preserve the existing accessible-name behavior ("Expand tab group: …" / "Collapse tab group: …").
+    if collapsed_changed_via_a11y {
+      a11y_label = std::sync::Arc::<str>::from(group_chip_a11y_label(title, collapsed));
+    }
     response.widget_info({
       let a11y_label = a11y_label;
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.as_ref())
+    });
+    // Expose expanded state and explicit Expand/Collapse actions so assistive tech can announce and
+    // request the state change without relying on the accessible name.
+    let _ = ui.ctx().accesskit_node_builder(response.id, |builder| {
+      builder.set_role(accesskit::Role::Button);
+      builder.set_expanded(!collapsed);
+      if collapsed {
+        builder.add_action(accesskit::Action::Expand);
+        builder.remove_action(accesskit::Action::Collapse);
+      } else {
+        builder.add_action(accesskit::Action::Collapse);
+        builder.remove_action(accesskit::Action::Expand);
+      }
     });
     // Accessibility: if focus lands on a chip that is outside the horizontal scroll viewport, bring
     // it into view so keyboard and screen-reader users can see the focused control.
@@ -5826,6 +5863,134 @@ mod tests {
     assert_eq!(
       group_chip_a11y_label("Reading list", false),
       "Collapse tab group: Reading list"
+    );
+  }
+
+  #[test]
+  fn group_chip_exposes_expanded_state_and_expand_collapse_actions() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "https://c.example/".to_string()),
+      false,
+    );
+
+    let group_id = app.create_group_with_tabs(&[tab_b, tab_c]);
+    assert_ne!(group_id, TabGroupId(0));
+    app.set_group_title(group_id, "Work".to_string());
+    // The active tab is not in the group, so toggling collapsed should collapse the group.
+    app.toggle_group_collapsed(group_id);
+    assert!(
+      app
+        .tab_groups
+        .get(&group_id)
+        .is_some_and(|group| group.collapsed),
+      "expected group to start collapsed"
+    );
+
+    let mut store = a11y_test_util::AccessKitTestTree::default();
+
+    // Frame 1: render collapsed group.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let output = ctx.end_frame();
+    store.apply_full_output(&output);
+
+    let collapsed_label = group_chip_a11y_label("Work", true);
+    let (node_id, node) = store
+      .node_by_name_from_full_output(&output, &collapsed_label)
+      .unwrap_or_else(|| panic!("expected AccessKit node named {collapsed_label:?}"));
+    assert_eq!(node.is_expanded(), Some(false));
+    assert!(node.supports_action(accesskit::Action::Expand));
+    assert!(!node.supports_action(accesskit::Action::Collapse));
+
+    // Frame 2: request Expand and ensure the group becomes expanded.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: node_id,
+        data: None,
+      })],
+    );
+    let _ = render_tab_strip(&ctx, &mut app);
+    let output = ctx.end_frame();
+    store.apply_full_output(&output);
+
+    assert!(
+      app
+        .tab_groups
+        .get(&group_id)
+        .is_some_and(|group| !group.collapsed),
+      "expected Expand action request to expand the group"
+    );
+    let node = store
+      .nodes
+      .get(&node_id)
+      .expect("expected group chip node to remain in AccessKit tree");
+    assert_eq!(node.is_expanded(), Some(true));
+    assert!(node.supports_action(accesskit::Action::Collapse));
+    assert!(!node.supports_action(accesskit::Action::Expand));
+    assert_eq!(
+      output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("expected AccessKit update")
+        .focus,
+      Some(node_id),
+      "expected group chip to retain focus after Expand action request"
+    );
+
+    // Frame 3: request Collapse and ensure the group becomes collapsed again.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+        action: accesskit::Action::Collapse,
+        target: node_id,
+        data: None,
+      })],
+    );
+    let _ = render_tab_strip(&ctx, &mut app);
+    let output = ctx.end_frame();
+    store.apply_full_output(&output);
+
+    assert!(
+      app
+        .tab_groups
+        .get(&group_id)
+        .is_some_and(|group| group.collapsed),
+      "expected Collapse action request to collapse the group"
+    );
+    let node = store
+      .nodes
+      .get(&node_id)
+      .expect("expected group chip node to remain in AccessKit tree");
+    assert_eq!(node.is_expanded(), Some(false));
+    assert!(node.supports_action(accesskit::Action::Expand));
+    assert!(!node.supports_action(accesskit::Action::Collapse));
+    assert_eq!(
+      output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("expected AccessKit update")
+        .focus,
+      Some(node_id),
+      "expected group chip to retain focus after Collapse action request"
     );
   }
 
