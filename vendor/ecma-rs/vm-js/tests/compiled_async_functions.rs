@@ -977,3 +977,155 @@ fn compiled_async_arrow_expr_body_await_rejects_without_leaking_env_roots() -> R
   );
   Ok(())
 }
+
+#[test]
+fn compiled_async_assignment_await_with_gc() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_assignment_await_with_gc.js",
+    r#"
+      async function f() {
+        const o = {};
+        o["a" + "b"] = await Promise.resolve(41);
+        return o.ab + 1;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  // Install the compiled user function object onto the realm global so we can invoke it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+  rt.exec_script("var out = 0; var p = f(); p.then(v => { out = v; });")?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(0.0));
+
+  // Force a GC cycle while the async function is suspended to ensure any captured assignment
+  // reference roots are registered correctly.
+  rt.heap.collect_garbage();
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(42.0));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled assignment-await call should not leak persistent env roots"
+  );
+  Ok(())
+}
+
+#[test]
+fn compiled_async_await_operand_throw_rejects_promise() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_await_operand_throw_rejects_promise.js",
+    r#"
+      async function f() {
+        await (0)();
+        return 1;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  // Install the compiled user function object onto the realm global so we can invoke it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+  rt.exec_script(
+    r#"
+      var out = 0;
+      var p = f();
+      p.then(
+        () => { out = 1; },
+        (e) => { out = (e instanceof TypeError) ? 42 : 2; }
+      );
+    "#,
+  )?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(42.0));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled await operand rejection should not leak persistent env roots"
+  );
+  Ok(())
+}
