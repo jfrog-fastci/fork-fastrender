@@ -1620,13 +1620,17 @@ impl BookmarkStore {
   }
 
   fn collect_subtree_ids(&self, id: BookmarkId, out: &mut Vec<BookmarkId>) {
-    out.push(id);
-    let Some(node) = self.nodes.get(&id) else {
-      return;
-    };
-    if let BookmarkNode::Folder(folder) = node {
-      for child in &folder.children {
-        self.collect_subtree_ids(*child, out);
+    // Use an explicit stack to avoid deep recursion on heavily nested bookmark folders.
+    let mut stack: Vec<BookmarkId> = vec![id];
+    while let Some(id) = stack.pop() {
+      out.push(id);
+      let Some(BookmarkNode::Folder(folder)) = self.nodes.get(&id) else {
+        continue;
+      };
+      // Maintain the same traversal order as the old recursive implementation by pushing children in
+      // reverse onto the LIFO stack.
+      for child in folder.children.iter().rev() {
+        stack.push(*child);
       }
     }
   }
