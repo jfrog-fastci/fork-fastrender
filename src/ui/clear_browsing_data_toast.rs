@@ -16,8 +16,12 @@ pub fn format_clear_browsing_data_toast(
   let range_label = range.label();
   match removed_entries {
     Some(count) => {
-      let noun = if count == 1 { "entry" } else { "entries" };
-      format!("Cleared browsing data: removed {count} {noun} ({range_label})")
+      let noun = if count == 1 {
+        "history entry"
+      } else {
+        "history entries"
+      };
+      format!("Cleared browsing data ({range_label}) — removed {count} {noun}")
     }
     None => format!("Cleared browsing data ({range_label})"),
   }
@@ -51,16 +55,15 @@ mod tests {
   fn removed_entry_count_formatting_is_stable() {
     assert_eq!(
       format_clear_browsing_data_toast(ClearBrowsingDataRange::Last24Hours, Some(0)),
-      "Cleared browsing data: removed 0 entries (Last 24 hours)"
+      "Cleared browsing data (Last 24 hours) — removed 0 history entries"
     );
     assert_eq!(
       format_clear_browsing_data_toast(ClearBrowsingDataRange::Last24Hours, Some(1)),
-      "Cleared browsing data: removed 1 entry (Last 24 hours)"
+      "Cleared browsing data (Last 24 hours) — removed 1 history entry"
     );
     assert_eq!(
       format_clear_browsing_data_toast(ClearBrowsingDataRange::Last24Hours, Some(2)),
-      "Cleared browsing data: removed 2 entries (Last 24 hours)"
+      "Cleared browsing data (Last 24 hours) — removed 2 history entries"
     );
   }
 }
-

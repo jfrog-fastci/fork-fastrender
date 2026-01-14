@@ -21735,6 +21735,18 @@ impl App {
     let removed = before.saturating_sub(after);
     self.sync_history_after_mutation(true);
     let toast = fastrender::ui::format_clear_browsing_data_toast(range, Some(removed));
+    // Avoid repeatedly resetting the toast TTL if the clear action is triggered multiple times
+    // (double-clicks, redundant UI actions, etc).
+    let now = std::time::Instant::now();
+    if self
+      .chrome_toast
+      .toast()
+      .is_some_and(|existing| existing.kind == fastrender::ui::ToastKind::Info
+        && existing.text == toast
+        && now < existing.expires_at)
+    {
+      return;
+    }
     self.show_chrome_toast(toast);
   }
 

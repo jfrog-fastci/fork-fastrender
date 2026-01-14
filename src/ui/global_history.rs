@@ -1446,6 +1446,58 @@ mod tests {
   }
 
   #[test]
+  fn clear_browsing_data_range_len_diff_matches_expected_removed_counts() {
+    const HOUR_MS: u64 = 60 * 60 * 1000;
+    const DAY_MS: u64 = 24 * HOUR_MS;
+    let now_ms = 1_000_000_000_000_u64;
+
+    let mut baseline = GlobalHistoryStore::default();
+    let _ = baseline.record_at_ms(
+      "https://old.example/".to_string(),
+      None,
+      now_ms - 8 * DAY_MS,
+    );
+    let _ = baseline.record_at_ms(
+      "https://days.example/".to_string(),
+      None,
+      now_ms - 2 * DAY_MS,
+    );
+    let _ = baseline.record_at_ms(
+      "https://hours.example/".to_string(),
+      None,
+      now_ms - 2 * HOUR_MS,
+    );
+    let _ = baseline.record_at_ms(
+      "https://recent.example/".to_string(),
+      None,
+      now_ms - 10 * 60 * 1000,
+    );
+    baseline.entries.push(GlobalHistoryEntry {
+      url: "https://unknown.example/".to_string(),
+      title: None,
+      visited_at_ms: 0,
+      visit_count: 1,
+    });
+
+    for (range, expected_removed) in [
+      (ClearBrowsingDataRange::LastHour, 1usize),
+      (ClearBrowsingDataRange::Last24Hours, 2),
+      (ClearBrowsingDataRange::Last7Days, 3),
+      (ClearBrowsingDataRange::AllTime, 5),
+    ] {
+      let mut history = baseline.clone();
+      let before = history.len();
+      history.clear_browsing_data_range_at_ms(range, now_ms);
+      let removed = before.saturating_sub(history.len());
+      assert_eq!(
+        removed, expected_removed,
+        "unexpected removed count for range {:?}",
+        range
+      );
+    }
+  }
+
+  #[test]
   fn search_returns_results_ordered_by_recency() {
     let mut history = GlobalHistoryStore::default();
     let _ = history.record_at_ms(
