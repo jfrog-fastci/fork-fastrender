@@ -2304,6 +2304,10 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 # (DisposableStack/AsyncDisposableStack/SuppressedError) are implemented, and `using` / `await using`
 # runtime semantics are wired up across functions/modules/scripts/generators. Async generators are
 # still unimplemented, so we keep the lone async-generator staging test as `xfail`.
+#
+# Note: two ERM staging tests currently allow `using` / `await using` directly in `switch`
+# case/default clause StatementLists. The spec requires these to be early SyntaxErrors (see the
+# non-staging syntax corpus), so we track them as `xfail` until test262 staging aligns.
 [[expectations]]
 glob = "built-ins/DisposableStack/**"
 status = "pass"
@@ -2324,6 +2328,16 @@ status = "pass"
 id = "staging/explicit-resource-management/await-using-in-async-generator-body.js"
 status = "xfail"
 reason = "vm-js: async generators are not implemented yet (required for await using in async generator bodies)."
+
+[[expectations]]
+id = "staging/explicit-resource-management/call-dispose-methods.js"
+status = "xfail"
+reason = "test262 staging drift: spec requires `using` in switch case/default clause StatementLists to be an early SyntaxError (non-staging syntax tests enforce this)."
+
+[[expectations]]
+id = "staging/explicit-resource-management/await-using-in-switch-case-block.js"
+status = "xfail"
+reason = "test262 staging drift: spec requires `await using` in switch case/default clause StatementLists to be an early SyntaxError (non-staging syntax tests enforce this)."
 
 # --- Map / Set (core built-ins, partially implemented) ---
 [[expectations]]
