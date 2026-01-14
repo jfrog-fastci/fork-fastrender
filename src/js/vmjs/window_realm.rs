@@ -51398,58 +51398,6 @@ fn init_window_globals(
       idl_attribute_desc(Value::Object(seeking_get_func), Value::Undefined),
     )?;
 
-    let paused_get_call_id = vm.register_native_call(html_media_element_paused_get_native)?;
-    let paused_get_name = scope.alloc_string("get paused")?;
-    scope.push_root(Value::String(paused_get_name))?;
-    let paused_get_func = scope.alloc_native_function(paused_get_call_id, None, paused_get_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      paused_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(paused_get_func))?;
-    let paused_key = alloc_key(&mut scope, "paused")?;
-    scope.define_property(
-      html_media_element_proto,
-      paused_key,
-      idl_attribute_desc(Value::Object(paused_get_func), Value::Undefined),
-    )?;
-
-    // HTMLMediaElement.prototype.play() / pause() stubs.
-    //
-    // Many pages call `video.play().catch(...)`; ensure we return a Promise even though FastRender
-    // does not yet perform actual media playback.
-    let play_call_id = vm.register_native_call(html_media_element_play_native)?;
-    let play_name = scope.alloc_string("play")?;
-    scope.push_root(Value::String(play_name))?;
-    let play_func = scope.alloc_native_function(play_call_id, None, play_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      play_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(play_func))?;
-    let play_key = alloc_key(&mut scope, "play")?;
-    scope.define_property(
-      html_media_element_proto,
-      play_key,
-      data_desc(Value::Object(play_func)),
-    )?;
-
-    let pause_call_id = vm.register_native_call(html_media_element_pause_native)?;
-    let pause_name = scope.alloc_string("pause")?;
-    scope.push_root(Value::String(pause_name))?;
-    let pause_func = scope.alloc_native_function(pause_call_id, None, pause_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      pause_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(pause_func))?;
-    let pause_key = alloc_key(&mut scope, "pause")?;
-    scope.define_property(
-      html_media_element_proto,
-      pause_key,
-      data_desc(Value::Object(pause_func)),
-    )?;
-
     // HTMLMediaElement.prototype.load() stub.
     let load_call_id = vm.register_native_call(html_media_element_load_native)?;
     let load_name = scope.alloc_string("load")?;
@@ -53649,25 +53597,6 @@ fn init_window_globals(
         scope.push_root(Value::Object(func))?;
         let key = alloc_key(&mut scope, "createContextualFragment")?;
         scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
-      }
-
-      // Range.prototype.commonAncestorContainer (getter).
-      {
-        let call_id = vm.register_native_call(range_common_ancestor_container_get_native)?;
-        let name_s = scope.alloc_string("get commonAncestorContainer")?;
-        scope.push_root(Value::String(name_s))?;
-        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
-        scope.heap_mut().object_set_prototype(
-          func,
-          Some(realm.intrinsics().function_prototype()),
-        )?;
-        scope.push_root(Value::Object(func))?;
-        let key = alloc_key(&mut scope, "commonAncestorContainer")?;
-        scope.define_property(
-          range_proto,
-          key,
-          idl_attribute_desc(Value::Object(func), Value::Undefined),
-        )?;
       }
 
       // Range.prototype.insertNode(node)
