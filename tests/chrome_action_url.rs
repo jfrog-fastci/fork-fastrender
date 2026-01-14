@@ -314,6 +314,21 @@ fn rejects_duplicate_or_conflicting_params() {
 }
 
 #[test]
+fn rejects_unknown_params() {
+  let err = ChromeActionUrl::parse("chrome-action:back?x=1").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("unknown") && err.contains("x"),
+    "unexpected error: {err}"
+  );
+
+  let err = ChromeActionUrl::parse("chrome-action:close-tab?tab=1&x=1").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("unknown") && err.contains("x"),
+    "unexpected error: {err}"
+  );
+}
+
+#[test]
 fn accepts_legacy_param_names() {
   assert_eq!(
     ChromeActionUrl::parse("chrome-action:close-tab?tab_id=1").unwrap(),

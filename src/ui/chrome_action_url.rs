@@ -172,56 +172,108 @@ impl ChromeActionUrl {
 
     match action.as_str() {
       // Window / chrome-wide actions.
-      "focus-address-bar" => Ok(Self::FocusAddressBar),
-      "new-window" => Ok(Self::NewWindow),
-      "toggle-full-screen" => Ok(Self::ToggleFullScreen),
-      "open-find-in-page" => Ok(Self::OpenFindInPage),
-      "save-page" => Ok(Self::SavePage),
-      "print-page" => Ok(Self::PrintPage),
+      "focus-address-bar" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::FocusAddressBar)
+      }
+      "new-window" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::NewWindow)
+      }
+      "toggle-full-screen" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleFullScreen)
+      }
+      "open-find-in-page" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::OpenFindInPage)
+      }
+      "save-page" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::SavePage)
+      }
+      "print-page" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::PrintPage)
+      }
 
       // Find in page (per-tab).
-      "find-query" => Ok(Self::FindQuery {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-        query: required_param(&params, "query")?.to_string(),
-        case_sensitive: parse_bool_param(optional_param(&params, "case_sensitive")?)?,
-      }),
-      "find-next" => Ok(Self::FindNext {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "find-prev" => Ok(Self::FindPrev {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "close-find-in-page" => Ok(Self::CloseFindInPage {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
+      "find-query" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        let query = required_param(&params, "query")?.to_string();
+        let case_sensitive = parse_bool_param(optional_param(&params, "case_sensitive")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id", "query", "case_sensitive"])?;
+        Ok(Self::FindQuery {
+          tab_id,
+          query,
+          case_sensitive,
+        })
+      }
+      "find-next" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::FindNext { tab_id })
+      }
+      "find-prev" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::FindPrev { tab_id })
+      }
+      "close-find-in-page" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::CloseFindInPage { tab_id })
+      }
 
       // Tab management.
-      "new-tab" => Ok(Self::NewTab),
-      "close-tab" => Ok(Self::CloseTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "detach-tab" => Ok(Self::DetachTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "reload-tab" => Ok(Self::ReloadTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "duplicate-tab" => Ok(Self::DuplicateTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "close-other-tabs" => Ok(Self::CloseOtherTabs {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "close-tabs-to-right" => Ok(Self::CloseTabsToRight {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "reopen-closed-tab" => Ok(Self::ReopenClosedTab),
-      "activate-tab" => Ok(Self::ActivateTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
-      "toggle-pin-tab" => Ok(Self::TogglePinTab {
-        tab_id: parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?,
-      }),
+      "new-tab" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::NewTab)
+      }
+      "close-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::CloseTab { tab_id })
+      }
+      "detach-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::DetachTab { tab_id })
+      }
+      "reload-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::ReloadTab { tab_id })
+      }
+      "duplicate-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::DuplicateTab { tab_id })
+      }
+      "close-other-tabs" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::CloseOtherTabs { tab_id })
+      }
+      "close-tabs-to-right" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::CloseTabsToRight { tab_id })
+      }
+      "reopen-closed-tab" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ReopenClosedTab)
+      }
+      "activate-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::ActivateTab { tab_id })
+      }
+      "toggle-pin-tab" => {
+        let tab_id = parse_tab_id(required_param_any(&params, &["tab", "tab_id"], "tab")?)?;
+        reject_unknown_params(&params, &["tab", "tab_id"])?;
+        Ok(Self::TogglePinTab { tab_id })
+      }
 
       // Navigations.
       "navigate" => {
@@ -229,6 +281,7 @@ impl ChromeActionUrl {
         if target.is_empty() {
           return Err("navigate requires a non-empty url".to_string());
         }
+        reject_unknown_params(&params, &["url", "input"])?;
         reject_javascript_nested_target(target)?;
         Ok(Self::Navigate {
           url: target.to_string(),
@@ -239,6 +292,7 @@ impl ChromeActionUrl {
         if target.is_empty() {
           return Err("open-url-in-new-tab requires a non-empty url".to_string());
         }
+        reject_unknown_params(&params, &["url", "input"])?;
         reject_javascript_nested_target(target)?;
         Ok(Self::OpenUrlInNewTab {
           url: target.to_string(),
@@ -246,30 +300,59 @@ impl ChromeActionUrl {
       }
 
       // History controls.
-      "back" => Ok(Self::Back),
-      "forward" => Ok(Self::Forward),
-      "reload" => Ok(Self::Reload),
-      "stop-loading" => Ok(Self::StopLoading),
-      "home" => Ok(Self::Home),
+      "back" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::Back)
+      }
+      "forward" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::Forward)
+      }
+      "reload" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::Reload)
+      }
+      "stop-loading" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::StopLoading)
+      }
+      "home" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::Home)
+      }
 
       // Tab search.
-      "open-tab-search" => Ok(Self::OpenTabSearch),
-      "close-tab-search" => Ok(Self::CloseTabSearch),
+      "open-tab-search" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::OpenTabSearch)
+      }
+      "close-tab-search" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::CloseTabSearch)
+      }
 
       // Panels / chrome UI.
-      "toggle-bookmarks-bar" => Ok(Self::ToggleBookmarksBar),
-      "set-show-menu-bar" => Ok(Self::SetShowMenuBar {
-        show: parse_bool_param(Some(required_param(&params, "show")?))?,
-      }),
-      "address-bar-focus-changed" => {
-        let raw_focus =
-          required_param_any(&params, &["has_focus", "focused"], "has_focus")?;
-        Ok(Self::AddressBarFocusChanged {
-          has_focus: parse_bool_param(Some(raw_focus))?,
-        })
+      "toggle-bookmarks-bar" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleBookmarksBar)
       }
-      "toggle-bookmark" => Ok(Self::ToggleBookmarkForActiveTab),
+      "set-show-menu-bar" => {
+        let show = parse_bool_param(Some(required_param(&params, "show")?))?;
+        reject_unknown_params(&params, &["show"])?;
+        Ok(Self::SetShowMenuBar { show })
+      }
+      "address-bar-focus-changed" => {
+        let raw_focus = required_param_any(&params, &["has_focus", "focused"], "has_focus")?;
+        let has_focus = parse_bool_param(Some(raw_focus))?;
+        reject_unknown_params(&params, &["has_focus", "focused"])?;
+        Ok(Self::AddressBarFocusChanged { has_focus })
+      }
+      "toggle-bookmark" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleBookmarkForActiveTab)
+      }
       "reorder-bookmarks-bar" => {
+        reject_unknown_params(&params, &["id"])?;
         let ids = all_params(&params, "id")
           .into_iter()
           .map(|raw| parse_bookmark_id(&raw))
@@ -279,11 +362,26 @@ impl ChromeActionUrl {
         }
         Ok(Self::ReorderBookmarksBar { ids })
       }
-      "toggle-history-panel" => Ok(Self::ToggleHistoryPanel),
-      "toggle-bookmarks-manager" => Ok(Self::ToggleBookmarksManager),
-      "open-clear-browsing-data-dialog" => Ok(Self::OpenClearBrowsingDataDialog),
-      "open-home-url-dialog" => Ok(Self::OpenHomeUrlDialog),
-      "toggle-downloads-panel" => Ok(Self::ToggleDownloadsPanel),
+      "toggle-history-panel" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleHistoryPanel)
+      }
+      "toggle-bookmarks-manager" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleBookmarksManager)
+      }
+      "open-clear-browsing-data-dialog" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::OpenClearBrowsingDataDialog)
+      }
+      "open-home-url-dialog" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::OpenHomeUrlDialog)
+      }
+      "toggle-downloads-panel" => {
+        reject_unknown_params(&params, &[])?;
+        Ok(Self::ToggleDownloadsPanel)
+      }
 
       other => Err(format!("unknown chrome-action: {other}")),
     }
@@ -645,6 +743,15 @@ fn all_params(params: &[(String, String)], key: &str) -> Vec<String> {
     .filter(|(k, _)| k == key)
     .map(|(_, v)| v.clone())
     .collect()
+}
+
+fn reject_unknown_params(params: &[(String, String)], allowed: &[&str]) -> Result<(), String> {
+  for (k, _) in params {
+    if !allowed.iter().any(|allowed| allowed == &k.as_str()) {
+      return Err(format!("unknown chrome-action param: {k}"));
+    }
+  }
+  Ok(())
 }
 
 fn parse_tab_id(raw: &str) -> Result<TabId, String> {
