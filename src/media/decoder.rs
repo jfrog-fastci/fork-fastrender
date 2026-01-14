@@ -77,9 +77,9 @@ pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Audio
       )?;
       Ok(Box::new(decoder))
     }
-    MediaCodec::Opus => Ok(Box::new(super::codecs::opus::OpusDecoder::new(
-      &track.codec_private,
-    )?)),
+    MediaCodec::Opus => Ok(Box::new(
+      super::codecs::opus::OpusDecoder::from_codec_private(&track.codec_private)?,
+    )),
     _ => Err(MediaError::Unsupported("unsupported audio codec")),
   }
 }

@@ -1901,6 +1901,7 @@ dependencies = [
  "mp4",
  "mp4parse",
  "openh264",
+ "opus",
  "parking_lot",
  "parse-js",
  "pathdiff",
@@ -4126,6 +4127,15 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "opus"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d3809943dff6fbad5f0484449ea26bdb9cb7d8efdf26ed50d3c7f227f69eb5c"
+dependencies = [
+ "audiopus_sys",
+]
 
 [[package]]
 name = "orbclient"

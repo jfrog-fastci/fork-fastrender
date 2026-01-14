@@ -37,11 +37,28 @@ pub mod opus {
   /// Opus always decodes at 48kHz internally.
   pub const OPUS_SAMPLE_RATE_HZ: u32 = 48_000;
 
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub struct OpusHead;
+
+  impl OpusHead {
+    pub fn parse(_codec_private: &[u8]) -> MediaResult<Self> {
+      Err(MediaError::Unsupported(
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+      ))
+    }
+  }
+
   #[derive(Debug, Default)]
   pub struct OpusDecoder;
 
   impl OpusDecoder {
-    pub fn new(_codec_private: &[u8]) -> MediaResult<Self> {
+    pub fn new(_opus_head: &OpusHead) -> MediaResult<Self> {
+      Err(MediaError::Unsupported(
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+      ))
+    }
+
+    pub fn from_codec_private(_codec_private: &[u8]) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
         "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
       ))
@@ -88,4 +105,3 @@ pub mod vp9 {
     }
   }
 }
-
