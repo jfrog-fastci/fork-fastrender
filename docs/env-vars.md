@@ -93,13 +93,30 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
     decoder (used by `src/media/decoder.rs`).
   - Defaults to `min(available_parallelism(), 4)` and is clamped to at least 1.
 - Media playback (audio output / `FASTR_AUDIO_*`):
-  - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS=<ms>` – per-sink buffered audio limit (default 2000ms; clamped
-    to a hard cap; see `src/media/audio/config.rs`).
-  - `FASTR_AUDIO_MAX_STREAMS=<N>` – global cap on concurrently active audio sinks (default 32).
-  - `FASTR_AUDIO_BUFFER_BUDGET=<bytes>` – global buffered-audio memory budget (default 32 MiB).
-    - Accepts `kb`/`mb`/`gb`/`kib`/`mib`/`gib` suffixes and `_` separators.
-  - When the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op sink
-    (push accepts 0 samples) to bound memory usage.
+  - These are parsed by `AudioEngineConfig` (`src/media/audio/config.rs`) and are read directly from
+    the process environment (not via `RuntimeToggles`).
+  - Invalid/empty values fall back to defaults and emit a warning to stderr.
+  - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS=<ms>` – per-stream buffered-audio cap (ring-buffer capacity).
+    - Default: 2000ms.
+    - Clamped to `MAX_BUFFERED_DURATION` (currently 5000ms; see `src/media/audio/limits.rs`).
+  - `FASTR_AUDIO_MAX_STREAMS=<N>` – global cap on concurrently active audio streams/sinks.
+    - Default: 32.
+    - Enforced by `AudioEngine` (when creating sinks); when exceeded, the engine returns a no-op sink
+      (pushes accept 0 samples).
+  - `FASTR_AUDIO_BUFFER_BUDGET=<bytes>` – global cap on total buffered audio across all streams.
+    - Default: 32MiB.
+    - Supports optional units: `k|kb|kib`, `m|mb|mib`, `g|gb|gib` (binary, 1024-based).
+  - `FASTR_AUDIO_IDLE_TIMEOUT_MS=<ms>` – when all streams are idle for this duration, the output
+    backend may stop/pause its device stream (power saving; used by the CPAL backend).
+    - Default: 3000ms.
+  - `FASTR_AUDIO_DEFAULT_SAMPLE_RATE_HZ=<hz>` – default output sample rate for non-device backends
+    (null/WAV).
+    - Default: 48000.
+  - `FASTR_AUDIO_DEFAULT_CHANNELS=<N>` – default channel count for non-device backends (null/WAV).
+    - Default: 2.
+  - `FASTR_AUDIO_PREROLL_MS=<ms>`, `FASTR_AUDIO_LOW_BUFFER_MS=<ms>`,
+    `FASTR_AUDIO_LOW_BUFFER_DEBOUNCE_MS=<ms>` – buffering thresholds used by the media pipeline.
+    - Note: these are currently experimental and may not be fully wired into playback state yet.
 - `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
   - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
   - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.
