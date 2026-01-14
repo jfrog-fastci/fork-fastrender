@@ -1,9 +1,50 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{GcObject, Heap, HeapLimits, JsRuntime, MicrotaskQueue, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn get_prop(rt: &mut JsRuntime, obj: GcObject, name: &str) -> Result<Value, VmError> {
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut scope = rt.heap.scope();
+  scope.push_root(Value::Object(obj))?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut host,
+    &mut hooks,
+    obj,
+    key,
+    Value::Object(obj),
+  )
+}
+
+fn call_next(rt: &mut JsRuntime, it: GcObject, arg: Option<Value>) -> Result<Value, VmError> {
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut scope = rt.heap.scope();
+  scope.push_root(Value::Object(it))?;
+
+  let key_s = scope.alloc_string("next")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  let next = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut host,
+    &mut hooks,
+    it,
+    key,
+    Value::Object(it),
+  )?;
+  scope.push_root(next)?;
+  let args = arg.map_or(Vec::new(), |v| vec![v]);
+  rt.vm
+    .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, next, Value::Object(it), &args)
 }
 
 #[test]
@@ -20,6 +61,30 @@ fn generator_binary_addition_yield_on_both_sides() {
       r1.value === 1 && r1.done === false &&
       r2.value === 2 && r2.done === false &&
       r3.done === true && r3.value === 30
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_addition_to_primitive_happens_after_rhs_evaluation() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){
+        var log = [];
+        var o = { valueOf() { log.push("valueOf"); return 10; } };
+        Object.defineProperty(globalThis, "x", { get() { log.push("get x"); return 1; }, configurable: true });
+        var r = (yield o) + x;
+        delete globalThis.x;
+        return r === 11 && log.length === 2 && log[0] === "get x" && log[1] === "valueOf";
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r1.done === false && r2.done === true && r2.value === true
     "#,
     )
     .unwrap();
@@ -205,6 +270,53 @@ fn generator_binary_strict_equality_yield_on_both_sides() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_strict_equality_roots_left_value_across_rhs_yield_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let it = rt.exec_script("function* g(){ return (yield {}) === (yield 0); } g();")?;
+  let Value::Object(it) = it else {
+    panic!("expected generator iterator object, got {it:?}");
+  };
+
+  // Keep the generator object alive across the explicit GC below.
+  let it_root = rt.heap_mut().add_root(Value::Object(it))?;
+
+  // First yield returns an object.
+  let r1 = call_next(&mut rt, it, None)?;
+  let Value::Object(r1) = r1 else {
+    panic!("expected IteratorResult object, got {r1:?}");
+  };
+  assert_eq!(get_prop(&mut rt, r1, "done")?, Value::Bool(false));
+  let left_obj = get_prop(&mut rt, r1, "value")?;
+  // Keep the yielded object alive until we've resumed the generator once; after that, the only
+  // remaining reference should be the generator continuation's captured left operand.
+  let left_root = rt.heap_mut().add_root(left_obj)?;
+
+  // Resume generator: capture left operand (the object), then yield the RHS prompt.
+  let r2 = call_next(&mut rt, it, Some(left_obj))?;
+  let Value::Object(r2) = r2 else {
+    panic!("expected IteratorResult object, got {r2:?}");
+  };
+  assert_eq!(get_prop(&mut rt, r2, "done")?, Value::Bool(false));
+  assert_eq!(get_prop(&mut rt, r2, "value")?, Value::Number(0.0));
+  rt.heap_mut().remove_root(left_root);
+
+  // While the generator is suspended on the RHS yield, force a GC cycle. The generator continuation
+  // must keep the captured left operand alive.
+  rt.heap_mut().collect_garbage();
+
+  // Resume RHS yield with the same object so `===` returns true.
+  let r3 = call_next(&mut rt, it, Some(left_obj))?;
+  let Value::Object(r3) = r3 else {
+    panic!("expected IteratorResult object, got {r3:?}");
+  };
+  assert_eq!(get_prop(&mut rt, r3, "done")?, Value::Bool(true));
+  assert_eq!(get_prop(&mut rt, r3, "value")?, Value::Bool(true));
+
+  rt.heap_mut().remove_root(it_root);
+  Ok(())
 }
 
 #[test]
