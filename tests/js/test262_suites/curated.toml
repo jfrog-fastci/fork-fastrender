@@ -124,6 +124,9 @@ include = [
   "language/statements/class/elements/privatemethods-on-proxy.js",
   "language/statements/class/elements/privategetter-on-proxy.js",
   "language/statements/class/elements/static-private-fields-proxy-default-handler-throws.js",
+  # Brand check failures for private methods/accessors should throw TypeError.
+  "language/statements/class/elements/private-*-brand-check*.js",
+  "language/statements/class/elements/static-private-method-and-instance-method-brand-check.js",
   "language/statements/class/elements/private-methods/prod-private-method.js",
   "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js",
   # `#x in obj` private-brand-check operator.
