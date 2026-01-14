@@ -18287,7 +18287,11 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let prev_active = self.browser_state.active_tab_id();
+    let prev_active = if self.tab_switch_latency.is_some() {
+      self.browser_state.active_tab_id()
+    } else {
+      None
+    };
     let (tab_id, msgs) =
       open_url_in_new_tab_state(&mut self.browser_state, &mut self.tab_cancel, url, reason);
     if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
@@ -18333,7 +18337,11 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let prev_active = self.browser_state.active_tab_id();
+    let prev_active = if self.tab_switch_latency.is_some() {
+      self.browser_state.active_tab_id()
+    } else {
+      None
+    };
     let (tab_id, msgs) = fastrender::ui::open_in_new_tab::open_request_in_new_tab_state(
       &mut self.browser_state,
       &mut self.tab_cancel,
@@ -26847,7 +26855,11 @@ impl App {
         ChromeAction::NewTab => {
           session_dirty = true;
           open_tabs_snapshot_dirty = true;
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
           let tab_id = fastrender::ui::TabId::new();
           let initial_url = "about:newtab".to_string();
           let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
@@ -26890,7 +26902,11 @@ impl App {
 
           session_dirty = true;
           open_tabs_snapshot_dirty = true;
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
           let tab_id = fastrender::ui::TabId::new();
           let url = closed.url;
           let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
@@ -26942,7 +26958,11 @@ impl App {
           if self.browser_state.tab(tab_id).is_none() {
             continue;
           }
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
 
           // Capture the detached tab's serializable state before we mutate the window.
           //
@@ -27428,7 +27448,11 @@ impl App {
             continue;
           };
           open_tabs_snapshot_dirty = true;
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
           let url = source
             .committed_url
             .clone()
@@ -27479,7 +27503,11 @@ impl App {
           self.window.request_redraw();
         }
         ChromeAction::ActivateTab(tab_id) => {
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
           if self.browser_state.set_active_tab(tab_id) {
             session_dirty = true;
             open_tabs_snapshot_dirty = true;
@@ -27510,7 +27538,11 @@ impl App {
           }
         }
         ChromeAction::OpenUrlInNewTab(raw) => {
-          let prev_active = self.browser_state.active_tab_id();
+          let prev_active = if self.tab_switch_latency.is_some() {
+            self.browser_state.active_tab_id()
+          } else {
+            None
+          };
           // Resolve/normalize/validate the typed input (including fragment-only `#foo` joins)
           // consistently with `BrowserTabState::navigate_typed`.
           let result =

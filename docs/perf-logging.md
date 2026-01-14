@@ -110,6 +110,14 @@ When enabled, you should expect events covering at least:
 - **Input latency** samples (input arrival → visible UI response).
 - **Tab switch latency** samples (`event=tab_switch`), including whether the switch was served from a
   cached tab render.
+  - Fields include:
+    - `from_tab_id` / `to_tab_id`
+    - `t_ms_start`: timestamp (ms since perf-log start) when the activation was initiated
+    - `had_cached_texture`: true when the destination tab already had a GPU texture at activation
+      time
+    - `switch_to_present_ms`: activation → present latency (computed at the first presented frame
+      that actually displays the destination tab content)
+  - Back-compat: `cached` and `latency_ms` are still emitted for older log parsers.
 - **Frame upload/coalescing** samples: `event=frame_upload` reports wgpu upload timing and
   `FrameUploadCoalescer` counters (push/overwrite/drain/pending) to help diagnose scroll/resize
   jank caused by dropped frames or expensive texture uploads.

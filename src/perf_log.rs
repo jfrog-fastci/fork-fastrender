@@ -649,6 +649,29 @@ mod tests {
   }
 
   #[test]
+  fn tab_switch_roundtrip() {
+    let event = PerfEvent::TabSwitch {
+      schema_version: SCHEMA_VERSION,
+      t_ms: 123,
+      window_id: "WindowId(1)",
+      from_tab_id: 1,
+      to_tab_id: 2,
+      t_ms_start: 100,
+      had_cached_texture: true,
+      switch_to_present_ms: 23.0,
+      // Back-compat fields: still emitted by the windowed browser so older parsers can read logs.
+      cached: true,
+      latency_ms: 23,
+    };
+
+    let mut buf = Vec::new();
+    write_event_jsonl(&mut buf, &event).expect("write_event_jsonl");
+    let text = String::from_utf8(buf).expect("utf8");
+    let parsed = parse_jsonl_line(text.lines().next().expect("line")).expect("parse_jsonl_line");
+    assert_eq!(parsed, event);
+  }
+
+  #[test]
   fn schema_version_mismatch_is_a_parse_error() {
     let bad = r#"{"schema_version":999,"event":"frame","t_ms":0,"ui_frame_ms":1.0}"#;
     assert!(parse_jsonl_line(bad).is_err());
