@@ -152,3 +152,101 @@ fn context_menu_bookmark_page_toggles_bookmark_store() {
   assert!(!res2.ui_changed);
   assert!(!bookmarks.contains_url(page_url));
 }
+
+#[test]
+fn context_menu_toggle_history_panel_closes_bookmarks_panel() {
+  let _lock = super::stage_listener_test_lock();
+  let mut bookmarks = BookmarkStore::default();
+  let mut history_panel_open = false;
+  let mut bookmarks_panel_open = true;
+
+  let res = apply_page_context_menu_action(
+    &mut bookmarks,
+    &mut history_panel_open,
+    &mut bookmarks_panel_open,
+    &PageContextMenuAction::ToggleHistoryPanel,
+  );
+
+  assert!(history_panel_open, "expected history panel to be open");
+  assert!(
+    !bookmarks_panel_open,
+    "expected bookmarks panel to be closed when history is opened"
+  );
+  assert!(res.ui_changed, "expected ui_changed when toggling history panel");
+  assert!(!res.bookmarks_changed);
+}
+
+#[test]
+fn context_menu_toggle_history_panel_from_closed_state_opens_history() {
+  let _lock = super::stage_listener_test_lock();
+  let mut bookmarks = BookmarkStore::default();
+  let mut history_panel_open = false;
+  let mut bookmarks_panel_open = false;
+
+  let res = apply_page_context_menu_action(
+    &mut bookmarks,
+    &mut history_panel_open,
+    &mut bookmarks_panel_open,
+    &PageContextMenuAction::ToggleHistoryPanel,
+  );
+
+  assert!(history_panel_open, "expected history panel to be open");
+  assert!(
+    !bookmarks_panel_open,
+    "expected bookmarks panel to be closed when history is opened"
+  );
+  assert!(
+    res.ui_changed,
+    "expected ui_changed when opening history panel from closed state"
+  );
+  assert!(!res.bookmarks_changed);
+}
+
+#[test]
+fn context_menu_toggle_bookmarks_panel_closes_history_panel() {
+  let _lock = super::stage_listener_test_lock();
+  let mut bookmarks = BookmarkStore::default();
+  let mut history_panel_open = true;
+  let mut bookmarks_panel_open = false;
+
+  let res = apply_page_context_menu_action(
+    &mut bookmarks,
+    &mut history_panel_open,
+    &mut bookmarks_panel_open,
+    &PageContextMenuAction::ToggleBookmarksPanel,
+  );
+
+  assert!(
+    !history_panel_open,
+    "expected history panel to be closed when bookmarks is opened"
+  );
+  assert!(bookmarks_panel_open, "expected bookmarks panel to be open");
+  assert!(
+    res.ui_changed,
+    "expected ui_changed when toggling bookmarks panel on"
+  );
+  assert!(!res.bookmarks_changed);
+}
+
+#[test]
+fn context_menu_toggle_history_panel_off_reports_ui_changed() {
+  let _lock = super::stage_listener_test_lock();
+  let mut bookmarks = BookmarkStore::default();
+  let mut history_panel_open = true;
+  let mut bookmarks_panel_open = false;
+
+  let res = apply_page_context_menu_action(
+    &mut bookmarks,
+    &mut history_panel_open,
+    &mut bookmarks_panel_open,
+    &PageContextMenuAction::ToggleHistoryPanel,
+  );
+
+  assert!(!history_panel_open, "expected history panel to be closed");
+  assert!(!bookmarks_panel_open, "expected bookmarks panel to remain closed");
+  assert!(
+    res.ui_changed,
+    "expected ui_changed when toggling history panel off"
+  );
+  assert!(!res.bookmarks_changed);
+}
