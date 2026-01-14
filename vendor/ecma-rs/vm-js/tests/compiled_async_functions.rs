@@ -450,6 +450,155 @@ fn compiled_async_unimplemented_nested_await_rejects_without_leaking_env_roots()
   Ok(())
 }
 
+#[test]
+fn compiled_async_await_expr_stmt_rejects_without_leaking_env_roots() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_await_expr_stmt_rejects.js",
+    r#"
+      async function f() {
+        await Promise.reject("boom");
+        // Should not execute.
+        return "ok";
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  // Install the compiled user function object onto the realm global so we can invoke it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      f().then(v => { out = v; }, e => { out = e; });
+    "#,
+  )?;
+  assert_eq!(rt.exec_script("out === ''")?, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.exec_script("out === 'boom'")?, Value::Bool(true));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled await expr-stmt rejection should not leak persistent env roots"
+  );
+  Ok(())
+}
+
+#[test]
+fn compiled_async_return_await_rejects_without_leaking_env_roots() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_return_await_rejects.js",
+    r#"
+      async function f() {
+        return await Promise.reject("boom");
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      f().then(v => { out = v; }, e => { out = e; });
+    "#,
+  )?;
+  assert_eq!(rt.exec_script("out === ''")?, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.exec_script("out === 'boom'")?, Value::Bool(true));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled return-await rejection should not leak persistent env roots"
+  );
+  Ok(())
+}
+
 fn find_async_arrow_expr_body_await(script: &Arc<CompiledScript>) -> hir_js::BodyId {
   let hir = script.hir.as_ref();
   for def in hir.defs.iter() {
