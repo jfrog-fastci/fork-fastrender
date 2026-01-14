@@ -27,13 +27,14 @@ pub fn format_profile_store_load_failure_toast(
     return None;
   }
 
-  let safe_error = sanitize_untrusted_text(error, STARTUP_PROFILE_TOAST_ERROR_MAX_BYTES);
+  let safe_error = sanitize_error_for_toast(error);
   if safe_error.trim().is_empty() {
     return None;
   }
 
   let raw_path = path.to_string_lossy();
-  let safe_path = sanitize_untrusted_text(&raw_path, STARTUP_PROFILE_TOAST_PATH_MAX_BYTES);
+  let safe_path =
+    sanitize_untrusted_text_with_ellipsis(&raw_path, STARTUP_PROFILE_TOAST_PATH_MAX_BYTES);
   if safe_path.trim().is_empty() {
     return None;
   }
@@ -41,6 +42,46 @@ pub fn format_profile_store_load_failure_toast(
   Some(format!(
     "Using empty {store_label}: failed to load on startup.\nPath: {safe_path}\nError: {safe_error}"
   ))
+}
+
+fn sanitize_error_for_toast(error: &str) -> String {
+  let trimmed = error.trim();
+  if trimmed.is_empty() {
+    return String::new();
+  }
+
+  // Prefer the first non-empty line; error chains can include verbose context on later lines.
+  let first_line = trimmed
+    .lines()
+    .map(|line| line.trim())
+    .find(|line| !line.is_empty())
+    .unwrap_or(trimmed);
+
+  sanitize_untrusted_text_with_ellipsis(first_line, STARTUP_PROFILE_TOAST_ERROR_MAX_BYTES)
+}
+
+fn sanitize_untrusted_text_with_ellipsis(text: &str, max_bytes: usize) -> String {
+  if max_bytes == 0 {
+    return String::new();
+  }
+
+  const ELLIPSIS: char = '…';
+  let ellipsis_bytes = ELLIPSIS.len_utf8();
+
+  // Probe with +1 so we can detect truncation without allocating unboundedly.
+  let probe_limit = max_bytes.saturating_add(1);
+  let probe = sanitize_untrusted_text(text, probe_limit);
+  if probe.len() <= max_bytes {
+    return probe;
+  }
+
+  if max_bytes <= ellipsis_bytes {
+    return ELLIPSIS.to_string();
+  }
+
+  let mut out = sanitize_untrusted_text(text, max_bytes - ellipsis_bytes);
+  out.push(ELLIPSIS);
+  out
 }
 
 #[cfg(test)]
@@ -62,6 +103,10 @@ mod tests {
       .map(|(_, rest)| rest.trim_start())
       .unwrap_or("");
     assert_eq!(error_value.len(), STARTUP_PROFILE_TOAST_ERROR_MAX_BYTES);
+    assert!(
+      error_value.ends_with('…'),
+      "expected truncated error to end with ellipsis"
+    );
   }
 
   #[test]
