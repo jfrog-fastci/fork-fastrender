@@ -395,9 +395,10 @@ impl<'a> Parser<'a> {
     if !self.is_strict_ecmascript() {
       return f(self);
     }
+    let prev = self.disallow_arguments_in_class_init;
     self.disallow_arguments_in_class_init += 1;
     let res = f(self);
-    self.disallow_arguments_in_class_init -= 1;
+    self.disallow_arguments_in_class_init = prev;
     res
   }
 
