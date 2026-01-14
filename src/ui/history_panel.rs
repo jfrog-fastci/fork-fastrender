@@ -173,11 +173,11 @@ pub fn history_panel_ui(
               .filter(|t| !t.is_empty())
               .unwrap_or(entry.url.as_str());
             let url = &entry.url;
-            let entry_label = if title == url.as_str() {
-              title.to_string()
-            } else {
-              format!("{title} ({url})")
-            };
+            // Only allocate a combined `title (url)` label when the title differs from the URL.
+            // When the title is missing (common), we can pass `None` to a11y label helpers so they
+            // fall back to the URL without extra allocations.
+            let entry_label = (title != url.as_str()).then(|| format!("{title} ({url})"));
+            let entry_label_title = entry_label.as_deref();
 
             let ts = format_history_timestamp_ms_cached(ctx, entry.visited_at_ms);
             let ts_text: egui::WidgetText = match ts.as_deref() {
@@ -195,7 +195,7 @@ pub fn history_panel_ui(
               |ui| {
                 let delete_resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
                 delete_resp.widget_info({
-                  let label = a11y_labels::history_delete_label(Some(&entry_label), url.as_str());
+                  let label = a11y_labels::history_delete_label(entry_label_title, url.as_str());
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 if delete_resp.clicked() {
@@ -207,7 +207,7 @@ pub fn history_panel_ui(
                   icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
                 new_tab_resp.widget_info({
                   let label =
-                    a11y_labels::history_open_in_new_tab_label(Some(&entry_label), url.as_str());
+                    a11y_labels::history_open_in_new_tab_label(entry_label_title, url.as_str());
                   move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 if new_tab_resp.clicked() {
@@ -218,7 +218,7 @@ pub fn history_panel_ui(
             );
 
             row_resp.response.widget_info({
-              let label = a11y_labels::history_open_label(Some(&entry_label), url.as_str());
+              let label = a11y_labels::history_open_label(entry_label_title, url.as_str());
               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
             });
 
