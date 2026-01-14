@@ -19232,6 +19232,39 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Err(err) => {
+      // `Await` resumes the async function via `PerformPromiseThen(..., resultCapability =
+      // undefined)`. Per spec, the resume callbacks must never throw; any abrupt completion should
+      // reject the async function's promise.
+      //
+      // `async_resume_from_frames` is expected to convert throw completions into
+      // `AsyncBodyResult::CompleteThrow`, but be defensive here to avoid breaking the Promise job
+      // invariants if a throw completion escapes as an error.
+      if err.is_throw_completion() {
+        let mut call_scope = scope.reborrow();
+        let err = coerce_error_to_throw_for_async(vm, &mut call_scope, err);
+        let reason = match err {
+          VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
+          other => {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(other);
+          }
+        };
+        if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+          async_teardown_continuation(&mut call_scope, cont);
+          return Err(err);
+        }
+        let res = vm.call_with_host_and_hooks(
+          host,
+          &mut call_scope,
+          hooks,
+          reject,
+          Value::Undefined,
+          &[reason],
+        );
+        async_teardown_continuation(&mut call_scope, cont);
+        return res.map(|_| Value::Undefined);
+      }
+
       // Fatal error during resumption: clean up roots/env to avoid leaks.
       async_teardown_continuation(scope, cont);
       Err(err)
@@ -19549,7 +19582,32 @@ pub(crate) fn async_resume_call(
           .unwrap_or(Value::Undefined),
       );
 
-      async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
+      // `Await` resume callbacks are scheduled with `resultCapability = undefined`, so they must
+      // never throw (ECMA-262 `NewPromiseReactionJob` assertion). Be defensive: if async body
+      // handling fails with a throw completion, reject the async function promise instead of
+      // throwing synchronously out of the PromiseReactionJob.
+      match async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result) {
+        Ok(v) => Ok(v),
+        Err(err) if err.is_throw_completion() => {
+          let mut call_scope = scope.reborrow();
+          let err = coerce_error_to_throw_for_async(vm, &mut call_scope, err);
+          let reason = match err {
+            VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
+            other => return Err(other),
+          };
+          call_scope.push_roots(&[reject, reason])?;
+          let _ = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            reject,
+            Value::Undefined,
+            &[reason],
+          )?;
+          Ok(Value::Undefined)
+        }
+        Err(err) => Err(err),
+      }
     }
     VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_resume_continuation(
       vm, scope, host, hooks, id, cont, is_reject, arg0,
@@ -61600,6 +61658,7 @@ mod tests {
           // `ToPropertyKey` mutates D.prototype's prototype, but it must not affect the super base
           // captured for the current `super[key()]` operation.
           this.v1 = f();
+          // Second call sees the updated super base (newProto).
           this.v2 = f();
           this.errName = errName;
           this.errMsg = errMsg;
@@ -61623,6 +61682,10 @@ mod tests {
   #[test]
   fn super_property_computed_key_mutation_does_not_affect_captured_super_base_lookup_hir(
   ) -> Result<(), VmError> {
+    // Regression test: for computed `super[expr]`, `GetSuperBase` must be observed before
+    // `ToPropertyKey` (test262: `prop-expr-getsuperbase-before-topropertykey-*`), so prototype
+    // mutations during key conversion do not affect the resolved super base for the current
+    // operation.
     let source = r#"
       class B {}
       B.prototype.x = 1;
