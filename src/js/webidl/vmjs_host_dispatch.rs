@@ -9317,7 +9317,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               (old_parents, fragments, adopt_roots)
             }))
         })?;
-
         // Snapshot subtree mappings for adoption. Apply wrapper remaps only after the DOM mutation
         // succeeds so failed `replaceWith` calls don't corrupt wrapper identity / `ownerDocument`.
         let mut adopt_mappings: Vec<(DocumentId, HashMap<NodeId, NodeId>)> = Vec::new();
