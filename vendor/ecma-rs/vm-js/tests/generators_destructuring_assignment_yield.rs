@@ -1,4 +1,15 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmOptions};
+
+fn data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -174,4 +185,177 @@ fn generator_object_destructuring_assignment_rhs_from_yield_resumption_rest_defa
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_destructuring_assignment_rhs_and_pattern_yield_are_gc_safe() {
+  let mut rt = new_runtime();
+
+  // Allocate an object in Rust and expose it via a global property (not a var binding) so we can
+  // delete the last external reference after passing it into the generator.
+  let rhs_obj = {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let mut scope = heap.scope();
+
+    let rhs = scope.alloc_object().unwrap();
+    scope.push_root(Value::Object(rhs)).unwrap();
+
+    let key_x = scope.alloc_string("x").unwrap();
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_x), data_desc(Value::Number(5.0)))
+      .unwrap();
+
+    let key_rhs = scope.alloc_string("rhsObj").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(key_rhs),
+        data_desc(Value::Object(rhs)),
+      )
+      .unwrap();
+
+    rhs
+  };
+
+  rt
+    .exec_script(
+      r#"
+        var assigned;
+        var a = 0;
+        var b = 0;
+        function* g() {
+          assigned = ({x: b, [(yield 1)]: a} = yield 0);
+          return a === 5 && b === 5;
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  let v = rt.exec_script("r1.done === false && r1.value === 0").unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  // Resume with the Rust-allocated RHS object and immediately delete the global property so the
+  // object is only kept alive by the generator continuation frames.
+  rt
+    .exec_script(
+      r#"
+        var r2 = it.next(globalThis.rhsObj);
+        delete globalThis.rhsObj;
+      "#,
+    )
+    .unwrap();
+
+  let v = rt
+    .exec_script("r2.done === false && r2.value === 1 && typeof assigned === \"undefined\"")
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  // Force GC while the generator is suspended inside the destructuring pattern.
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(rhs_obj),
+    "RHS object should be kept alive by generator continuation frames"
+  );
+
+  let v = rt
+    .exec_script(
+      r#"
+        var r3 = it.next("x");
+        r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  // Destructuring assignment expressions evaluate to the RHS value; ensure it is the same object.
+  let assigned = rt.exec_script("assigned").unwrap();
+  assert_eq!(assigned, Value::Object(rhs_obj));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_rhs_and_pattern_yield_are_gc_safe() {
+  let mut rt = new_runtime();
+
+  // Allocate an empty array and expose it via a global property so we can delete the last external
+  // reference after passing it into the generator.
+  let rhs_arr = {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let intr = realm.intrinsics();
+    let mut scope = heap.scope();
+
+    let rhs = scope.alloc_array(0).unwrap();
+    // `alloc_array` initialises `[[Prototype]]` to null; install the realm's %Array.prototype%
+    // so `GetIterator` works during destructuring.
+    scope
+      .heap_mut()
+      .object_set_prototype(rhs, Some(intr.array_prototype()))
+      .unwrap();
+
+    scope.push_root(Value::Object(rhs)).unwrap();
+    let key_rhs = scope.alloc_string("rhsArr").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(key_rhs),
+        data_desc(Value::Object(rhs)),
+      )
+      .unwrap();
+    rhs
+  };
+
+  rt
+    .exec_script(
+      r#"
+        var assigned;
+        function* g() {
+          var a = 0;
+          assigned = ([a = yield 1] = yield 0);
+          return a === 7;
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  let v = rt.exec_script("r1.done === false && r1.value === 0").unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  rt
+    .exec_script(
+      r#"
+        var r2 = it.next(globalThis.rhsArr);
+        delete globalThis.rhsArr;
+      "#,
+    )
+    .unwrap();
+
+  let v = rt
+    .exec_script("r2.done === false && r2.value === 1 && typeof assigned === \"undefined\"")
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  // Force GC while the generator is suspended inside the array pattern (default initializer).
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(rhs_arr),
+    "RHS array should be kept alive by generator continuation frames"
+  );
+
+  let v = rt
+    .exec_script(
+      r#"
+        var r3 = it.next(7);
+        r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let assigned = rt.exec_script("assigned").unwrap();
+  assert_eq!(assigned, Value::Object(rhs_arr));
 }
