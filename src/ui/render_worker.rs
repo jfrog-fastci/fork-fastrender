@@ -2050,6 +2050,11 @@ fn mirror_dom1_form_control_state_into_dom2(
     return;
   };
 
+  // Treat `element_id` as an optional stability hint. When absent, derive it from the DOM node we
+  // already looked up so callers don't need to do an extra preorder walk just to read `"id"`.
+  let element_id = element_id
+    .or_else(|| dom_node.get_attribute_ref("id"))
+    .filter(|id| !id.is_empty());
   let dom2_node_by_id = element_id.and_then(|id| js_tab.dom().get_element_by_id(id));
   let dom2_node = dom2_node_by_id
     .or_else(|| dom_mapping.and_then(|mapping| mapping.node_id_for_preorder(preorder_id)))
@@ -4543,14 +4548,12 @@ impl BrowserRuntime {
         if changed {
           if let Some(js_tab) = tab.js_tab.as_mut() {
             let dom_snapshot = doc.dom();
-            let element_id = dom_node_by_preorder_id(dom_snapshot, node_id)
-              .and_then(|node| node.get_attribute_ref("id"));
             mirror_dom1_form_control_state_into_dom2(
               js_tab,
               tab.js_dom_mapping.as_ref(),
               dom_snapshot,
               node_id,
-              element_id,
+              None,
             );
             tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
           }
@@ -6654,14 +6657,12 @@ impl BrowserRuntime {
         tab.document.as_ref().map(|doc| doc.dom()),
         tab.js_tab.as_mut(),
       ) {
-        let element_id = dom_node_by_preorder_id(dom_snapshot, range_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           range_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -7088,14 +7089,12 @@ impl BrowserRuntime {
         tab.js_tab.as_mut(),
       ) {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, range_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           range_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -8311,14 +8310,12 @@ impl BrowserRuntime {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           focused,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -8780,14 +8777,12 @@ impl BrowserRuntime {
     if dom_changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, option_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           option_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -8885,14 +8880,12 @@ impl BrowserRuntime {
     if dom_changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           input_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -8942,14 +8935,12 @@ impl BrowserRuntime {
     if dom_changed {
       if let (Some(option_node_id), Some(js_tab)) = (selected_option, tab.js_tab.as_mut()) {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, option_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           option_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9130,14 +9121,12 @@ impl BrowserRuntime {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           focused,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9172,14 +9161,12 @@ impl BrowserRuntime {
     if dom_changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           input_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9208,14 +9195,12 @@ impl BrowserRuntime {
     if dom_changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           input_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9252,14 +9237,12 @@ impl BrowserRuntime {
     if changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           input_node_id,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9339,14 +9322,12 @@ impl BrowserRuntime {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           focused,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9542,14 +9523,12 @@ impl BrowserRuntime {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           focused,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
@@ -9618,14 +9597,12 @@ impl BrowserRuntime {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
         let dom_snapshot = doc.dom();
-        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
-          .and_then(|node| node.get_attribute_ref("id"));
         mirror_dom1_form_control_state_into_dom2(
           js_tab,
           tab.js_dom_mapping.as_ref(),
           dom_snapshot,
           focused,
-          element_id,
+          None,
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
