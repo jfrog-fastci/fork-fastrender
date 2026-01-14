@@ -34,8 +34,32 @@ use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserI
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
 const BOOKMARKS_BAR_MAX_ITEMS: usize = 12;
+const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 
 mod tab_strip;
+
+fn show_menu_bar_env_override() -> Option<bool> {
+  let raw = std::env::var(ENV_BROWSER_SHOW_MENU_BAR).ok()?;
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  if raw == "1"
+    || raw.eq_ignore_ascii_case("true")
+    || raw.eq_ignore_ascii_case("yes")
+    || raw.eq_ignore_ascii_case("on")
+  {
+    return Some(true);
+  }
+  if raw == "0"
+    || raw.eq_ignore_ascii_case("false")
+    || raw.eq_ignore_ascii_case("no")
+    || raw.eq_ignore_ascii_case("off")
+  {
+    return Some(false);
+  }
+  None
+}
 
 fn format_bytes(bytes: u64) -> String {
   const KB: f64 = 1024.0;
@@ -2826,7 +2850,14 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.label(egui::RichText::new("Window").strong());
             let mut show_menu_bar = app.chrome.show_menu_bar;
-            let show_menu_bar_toggle = ui.checkbox(&mut show_menu_bar, "Show menu bar");
+            let mut show_menu_bar_toggle = ui.checkbox(&mut show_menu_bar, "Show menu bar");
+            if let Some(forced) = show_menu_bar_env_override() {
+              show_menu_bar_toggle = show_menu_bar_toggle.on_hover_text(if forced {
+                "FASTR_BROWSER_SHOW_MENU_BAR is set; the menu bar is forced shown for this process. This checkbox controls the persisted session preference used when the env override is not set."
+              } else {
+                "FASTR_BROWSER_SHOW_MENU_BAR is set; the menu bar is forced hidden for this process. This checkbox controls the persisted session preference used when the env override is not set."
+              });
+            }
             popup_focus_ids.push(show_menu_bar_toggle.id);
             show_menu_bar_toggle.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "Show menu bar")
