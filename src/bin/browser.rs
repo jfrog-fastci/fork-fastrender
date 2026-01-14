@@ -7554,7 +7554,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let kind = if profile_autosave_failure_toast
           .as_deref()
           .is_some_and(|text| !text.trim().is_empty())
-          || startup_profile_toast_text.is_some()
         {
           fastrender::ui::ToastKind::Error
         } else {
