@@ -299,13 +299,6 @@ impl MediaClock for AudioStreamClock {
   }
 }
 
-/// Whether a [`PlaybackClock`] is currently advancing (`Playing`) or frozen (`Paused`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackState {
-  Playing,
-  Paused,
-}
-
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media
 /// **timeline time** that supports pause/seek/playbackRate.
 ///
@@ -528,7 +521,7 @@ fn scale_nanos(nanos: u64, rate: f64) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::VirtualClock;
+  use crate::clock::VirtualClock;
 
   #[derive(Debug, Default)]
   struct FakeDeviceClock {
