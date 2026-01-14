@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use super::{
   duration_to_frames_ceil, AudioBackend, AudioClock, AudioEngineConfig, AudioOutputInfo, AudioSink,
   AudioStreamConfig,
 };
-use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::debug::trace::TraceHandle;
 use crate::js::clock::{Clock, RealClock};
 use crate::media::audio_clock::InterpolatedAudioClock;
@@ -84,7 +84,11 @@ impl NullAudioBackend {
 
   /// Like [`Self::new_with_defaults`], but installs a [`TraceHandle`] used for profiling spans.
   #[must_use]
-  pub fn new_with_defaults_and_trace(sample_rate_hz: u32, channels: u16, trace: TraceHandle) -> Self {
+  pub fn new_with_defaults_and_trace(
+    sample_rate_hz: u32,
+    channels: u16,
+    trace: TraceHandle,
+  ) -> Self {
     Self::new_with_defaults_and_trace_and_max_buffered_duration(
       sample_rate_hz,
       channels,
@@ -322,7 +326,10 @@ impl NullAudioBackend {
     self.output_clock.advance_frames(frames_u64);
     state.last_clock_now = state
       .last_clock_now
-      .saturating_add(frames_to_duration_floor(frames_u64, self.config.sample_rate_hz));
+      .saturating_add(frames_to_duration_floor(
+        frames_u64,
+        self.config.sample_rate_hz,
+      ));
   }
 
   #[must_use]
@@ -513,8 +520,12 @@ impl SinkState {
     let dropped = usable_len - accepted_samples;
     if dropped > 0 {
       let dropped_u64 = dropped as u64;
-      self.dropped_samples.fetch_add(dropped_u64, Ordering::Relaxed);
-      self.total_dropped_samples.fetch_add(dropped_u64, Ordering::Relaxed);
+      self
+        .dropped_samples
+        .fetch_add(dropped_u64, Ordering::Relaxed);
+      self
+        .total_dropped_samples
+        .fetch_add(dropped_u64, Ordering::Relaxed);
     }
 
     accepted_samples
@@ -685,9 +696,7 @@ mod tests {
     let json = std::fs::read_to_string(&path).expect("read trace");
     let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
 
-    let trace_events = value["traceEvents"]
-      .as_array()
-      .expect("traceEvents array");
+    let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
     assert_eq!(trace_events.len(), max_events);
 
     let names: Vec<&str> = trace_events
