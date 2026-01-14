@@ -1057,3 +1057,53 @@ fn derived_ctor_arrow_new_target_is_available_before_super_compiled() -> Result<
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_eval_created_arrow_super_call_can_escape_constructor_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { constructor() { this.fromB = 1; } }
+      class D extends B {
+        constructor() {
+          // Returning an object without calling super() is allowed, so we can return an arrow that
+          // calls `super()` later.
+          return eval("(() => { super(); this.after = 2; return this; })");
+        }
+      }
+
+      var f = new D();
+      var o = f();
+      var second;
+      try { f(); second = "no"; } catch (e) { second = e.name; }
+
+      o.after === 2 && o.fromB === 1 && o instanceof D && second === "ReferenceError"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_eval_created_arrow_this_escapes_without_super_and_throws_when_called_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          return eval("(() => this)");
+        }
+      }
+      var f = new D();
+      try { f(); } catch (e) { ok = e instanceof ReferenceError; }
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
