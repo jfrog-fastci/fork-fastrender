@@ -1,3 +1,4 @@
+use crate::geometry::{Point, Rect};
 use crate::style::types::WritingMode;
 use crate::text::pipeline::RunRotation;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -179,3 +180,86 @@ td {{ padding: 0; }}
   }
 }
 
+#[test]
+fn table_cell_vertical_rl_uses_block_axis_inversion() {
+  // Regression test for `writing-mode: vertical-rl` inside table cells: the block axis is
+  // horizontal and flows right-to-left, so a single vertical line should be anchored to the
+  // right edge of the cell (unlike `vertical-lr`, which anchors left).
+  //
+  // The MDN "Using multiple writing modes" fixture (`mdn_writing_mode_multiple`) exposed a bug
+  // where `vertical-rl` behaved like `vertical-lr` in tables because cell fragments were being
+  // unconverted twice (once in table layout and again by the parent block formatting context).
+  let html = r#"<style>
+table {
+  font-family: "DejaVu Sans", sans-serif;
+  font-size: 16px;
+  line-height: 1;
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 240px;
+}
+td { padding: 0; border: 0; }
+.lr td { writing-mode: vertical-lr; }
+.rl td { writing-mode: vertical-rl; }
+</style>
+<table>
+  <tr class="lr"><td>Example</td></tr>
+  <tr class="rl"><td>Example</td></tr>
+</table>"#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 800, 600)
+    .expect("layout document");
+
+  // Capture global (viewport-relative) bounds so we observe offsets applied by ancestor fragments
+  // (e.g. the line box positioned at the right edge of the cell for vertical-rl).
+  let mut vertical_lr_example: Option<(Rect, &FragmentNode)> = None;
+  let mut vertical_rl_example: Option<(Rect, &FragmentNode)> = None;
+
+  let mut stack = vec![(&fragments.root, Point::ZERO)];
+  while let Some((node, offset)) = stack.pop() {
+    let origin = Point::new(offset.x + node.bounds.x(), offset.y + node.bounds.y());
+    if let FragmentContent::Text { text, .. } = &node.content {
+      if text.trim() == "Example" {
+        let style = node
+          .style
+          .as_deref()
+          .expect("expected computed style on Example text fragment");
+        let global_bounds = Rect::new(origin, node.bounds.size);
+        match style.writing_mode {
+          WritingMode::VerticalLr => {
+            if vertical_lr_example.is_none() {
+              vertical_lr_example = Some((global_bounds, node));
+            }
+          }
+          WritingMode::VerticalRl => {
+            if vertical_rl_example.is_none() {
+              vertical_rl_example = Some((global_bounds, node));
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push((child, origin));
+    }
+  }
+
+  let (lr_bounds, _) = vertical_lr_example.expect("missing vertical-lr Example fragment");
+  let (rl_bounds, _) = vertical_rl_example.expect("missing vertical-rl Example fragment");
+
+  let delta_x = rl_bounds.x() - lr_bounds.x();
+  assert!(
+    delta_x > 50.0,
+    "expected vertical-rl Example fragment to be positioned to the right of vertical-lr (delta_x={delta_x:.2}, lr_bounds={:?}, rl_bounds={:?})",
+    lr_bounds,
+    rl_bounds
+  );
+}

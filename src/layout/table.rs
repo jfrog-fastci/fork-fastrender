@@ -9233,8 +9233,16 @@ impl FormattingContext for TableFormattingContext {
           spanned_width += h_spacing * (cell_span_end - cell.col).saturating_sub(1) as f32;
         }
 
-        let mut fragment =
-          crate::layout::contexts::block::unconvert_fragment_axes_root(laid.fragment);
+        // `layout_cell` returns a fully converted fragment tree in physical coordinates.
+        //
+        // Keep cells in physical coordinates inside the table as well; the parent block formatting
+        // context will unconvert/convert the full table subtree as needed to apply writing-mode
+        // transforms exactly once.
+        //
+        // Converting the cell fragment back into logical coordinates here would cause its
+        // descendants to be "unconverted" twice (once here and once by the parent BFC), which
+        // cancels block-axis inversion for `writing-mode: vertical-rl/sideways-rl`.
+        let mut fragment = laid.fragment;
 
         // In the collapsed border model, CSS border conflict resolution yields a single shared
         // border stroke per grid edge (painted via `TableCollapsedBordersItem`).
@@ -9318,10 +9326,12 @@ impl FormattingContext for TableFormattingContext {
           }
         };
 
-        // Position the cell box at the start of its row/column span and give it the full spanned size
-        // so backgrounds and borders cover the allocated grid slot. Table slot geometry is expressed
-        // in the table's logical axes (inline = x, block = y). Each fragment stores its own logical
-        // coordinates, so the cell's writing-mode does not affect its placement in the table grid.
+        // Position the cell box at the start of its row/column span and give it the full spanned
+        // size so backgrounds and borders cover the allocated grid slot.
+        //
+        // Cell writing-mode affects how the cell lays out its descendants, but does not affect the
+        // cell's own placement in the table grid (which is determined solely by row/column
+        // geometry).
         fragment.bounds =
           crate::geometry::Rect::from_xywh(x, base_y, spanned_width, spanned_height);
 
