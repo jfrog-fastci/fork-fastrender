@@ -103,3 +103,58 @@ fn generator_array_destructuring_rest_target_with_yield() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_object_destructuring_assignment_target_is_evaluated_before_getv() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          function* g() {
+            var o = {};
+            var src = { get a() { log.push("get"); return 7; } };
+            ({a: o[(yield (log.push("yield"), 1))]} = src);
+            return o.k === 7;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          // The assignment target yields before `GetV` reads `src.a`.
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === true && log.join("|") === "yield|get";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_rest_target_is_evaluated_before_copy_data_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          function* g() {
+            var o = {};
+            var src = { get a() { log.push("get"); return 1; } };
+            ({...o[(yield (log.push("yield"), 1))]} = src);
+            return o.k.a === 1;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          // The rest assignment target yields before `CopyDataProperties` reads `src.a`.
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === true && log.join("|") === "yield|get";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

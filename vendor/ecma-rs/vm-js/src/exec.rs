@@ -17213,6 +17213,12 @@ pub(crate) enum GenFrame {
     prop_index: usize,
     value: Value,
     excluded: Vec<PropertyKey>,
+    /// Pre-evaluated assignment target (binding/member/computed member) for destructuring
+    /// *assignment*.
+    ///
+    /// This is captured before the `GetV`/default initializer step so we can preserve spec
+    /// evaluation order when the default initializer contains `yield`.
+    assign_target: Option<GenAssignTarget>,
     kind: BindingKind,
   },
   /// Continue object destructuring after binding a property target pattern.
@@ -17221,6 +17227,67 @@ pub(crate) enum GenFrame {
     next_prop_index: usize,
     value: Value,
     excluded: Vec<PropertyKey>,
+    kind: BindingKind,
+  },
+
+  /// Continue object destructuring assignment after evaluating a member-expression assignment target
+  /// base.
+  BindObjPropAssignMemberAfterBase {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring assignment after evaluating a computed-member assignment target
+  /// base.
+  BindObjPropAssignComputedMemberAfterBase {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring assignment after evaluating a computed-member assignment target
+  /// key expression.
+  BindObjPropAssignComputedMemberAfterMember {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const ComputedMemberExpr,
+    base: Value,
+    kind: BindingKind,
+  },
+
+  /// Continue object destructuring assignment rest-property binding after evaluating a member
+  /// assignment target base.
+  BindObjRestAssignMemberAfterBase {
+    pat: *const ObjPat,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring assignment rest-property binding after evaluating a computed
+  /// member assignment target base.
+  BindObjRestAssignComputedMemberAfterBase {
+    pat: *const ObjPat,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring assignment rest-property binding after evaluating a computed
+  /// member assignment target key expression.
+  BindObjRestAssignComputedMemberAfterMember {
+    pat: *const ObjPat,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    member: *const ComputedMemberExpr,
+    base: Value,
     kind: BindingKind,
   },
 
@@ -17640,13 +17707,51 @@ impl Trace for GenFrame {
       GenFrame::BindObjAfterKey {
         value, excluded, ..
       }
-      | GenFrame::BindObjAfterDefault {
-        value, excluded, ..
-      }
       | GenFrame::BindObjContinue {
         value, excluded, ..
       } => {
         tracer.trace_value(*value);
+        for key in excluded {
+          key.trace(tracer);
+        }
+      }
+      GenFrame::BindObjAfterDefault {
+        value,
+        excluded,
+        assign_target,
+        ..
+      } => {
+        tracer.trace_value(*value);
+        for key in excluded {
+          key.trace(tracer);
+        }
+        if let Some(target) = assign_target {
+          target.trace(tracer);
+        }
+      }
+      GenFrame::BindObjPropAssignMemberAfterBase { value, excluded, .. }
+      | GenFrame::BindObjPropAssignComputedMemberAfterBase { value, excluded, .. }
+      | GenFrame::BindObjRestAssignMemberAfterBase { value, excluded, .. }
+      | GenFrame::BindObjRestAssignComputedMemberAfterBase { value, excluded, .. } => {
+        tracer.trace_value(*value);
+        for key in excluded {
+          key.trace(tracer);
+        }
+      }
+      GenFrame::BindObjPropAssignComputedMemberAfterMember {
+        value,
+        excluded,
+        base,
+        ..
+      }
+      | GenFrame::BindObjRestAssignComputedMemberAfterMember {
+        value,
+        excluded,
+        base,
+        ..
+      } => {
+        tracer.trace_value(*value);
+        tracer.trace_value(*base);
         for key in excluded {
           key.trace(tracer);
         }
@@ -47559,7 +47664,243 @@ fn gen_bind_object_pattern_from(
       PropertyKey::Symbol(sym) => scope.push_root(Value::Symbol(sym))?,
     };
 
-    let mut prop_value = match scope.get_with_host_and_hooks(
+    // --- Assignment target evaluation order (ECMA-262 `KeyedDestructuringAssignmentEvaluation`) ---
+    //
+    // For destructuring *assignment* (not binding), the spec evaluates the assignment target
+    // reference (binding resolution / member base+key expressions) before accessing the source
+    // property (`GetV`). This ensures that an abrupt completion in the LHS (including a `yield`
+    // suspension) occurs before any source-property access.
+    //
+    // Additionally, `ToPropertyKey` for computed-member assignment targets is delayed until
+    // `PutValue`, after the `GetV` / default initializer step.
+      let mut prop_scope = scope.reborrow();
+      let mut assign_target: Option<GenAssignTarget> = None;
+      if matches!(kind, BindingKind::Assignment) {
+      match &*prop.target.stx {
+        Pat::Id(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut prop_scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator,
+                &mut prop_scope,
+                err,
+              )?))
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty { name: name_ptr },
+            ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+          };
+          assign_target = Some(GenAssignTarget::Binding(gen_binding));
+        }
+        Pat::AssignTarget(target) => match &*target.stx {
+          Expr::Id(id) => {
+            let name_ptr = &id.stx.name as *const String;
+            let binding = match evaluator.env.resolve_binding_reference(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut prop_scope,
+              &id.stx.name,
+            ) {
+              Ok(b) => b,
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut prop_scope,
+                  err,
+                )?))
+              }
+            };
+            let gen_binding = match binding {
+              ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                env,
+                name: name_ptr,
+              },
+              ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                binding_object,
+                name: name_ptr,
+              },
+              ResolvedBinding::GlobalProperty { .. } => {
+                GenResolvedBinding::GlobalProperty { name: name_ptr }
+              }
+              ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+            };
+            assign_target = Some(GenAssignTarget::Binding(gen_binding));
+          }
+          Expr::IdPat(id) => {
+            let name_ptr = &id.stx.name as *const String;
+            let binding = match evaluator.env.resolve_binding_reference(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut prop_scope,
+              &id.stx.name,
+            ) {
+              Ok(b) => b,
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut prop_scope,
+                  err,
+                )?))
+              }
+            };
+            let gen_binding = match binding {
+              ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                env,
+                name: name_ptr,
+              },
+              ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                binding_object,
+                name: name_ptr,
+              },
+              ResolvedBinding::GlobalProperty { .. } => {
+                GenResolvedBinding::GlobalProperty { name: name_ptr }
+              }
+              ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+            };
+            assign_target = Some(GenAssignTarget::Binding(gen_binding));
+          }
+          Expr::Member(member) => {
+            if member.stx.optional_chaining {
+              return Err(VmError::InvariantViolation(
+                "optional chaining used in assignment target",
+              ));
+            }
+            // `super.prop` is a Super Reference, not a normal property reference, and cannot be
+            // represented as a `GenAssignTarget` today. Fall back to the generic binder for now.
+            if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+              match gen_eval_expr(evaluator, &mut prop_scope, &member.stx.left)? {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let base = v.unwrap_or(Value::Undefined);
+                    assign_target = Some(GenAssignTarget::Member {
+                      base,
+                      key: &member.stx.right as *const String,
+                    });
+                  }
+                  abrupt => return Ok(GenEval::Complete(abrupt)),
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindObjPropAssignMemberAfterBase {
+                      pat: pat as *const ObjPat,
+                      prop_index: idx,
+                      value: src_value,
+                      excluded,
+                      member: &*member.stx as *const MemberExpr,
+                      kind,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+          }
+          Expr::ComputedMember(member) => {
+            if member.stx.optional_chaining {
+              return Err(VmError::InvariantViolation(
+                "optional chaining used in assignment target",
+              ));
+            }
+
+            // `super[expr]` is a Super Reference; defer to the generic binder for now.
+            if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+              let base_eval = gen_eval_expr(evaluator, &mut prop_scope, &member.stx.object)?;
+              match base_eval {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let base = v.unwrap_or(Value::Undefined);
+                    let member_eval = {
+                      let mut member_scope = prop_scope.reborrow();
+                      member_scope.push_root(base)?;
+                      gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                    };
+                    match member_eval {
+                      GenEval::Complete(c) => match c {
+                        Completion::Normal(v) => {
+                          let key_value = v.unwrap_or(Value::Undefined);
+                          assign_target =
+                            Some(GenAssignTarget::ComputedMember { base, key_value });
+                        }
+                        abrupt => return Ok(GenEval::Complete(abrupt)),
+                      },
+                      GenEval::Suspend(mut suspend) => {
+                        // Root the base value so it survives until the next yield boundary.
+                        prop_scope.push_root(base)?;
+                        gen_frames_push(
+                          &mut suspend.frames,
+                          GenFrame::BindObjPropAssignComputedMemberAfterMember {
+                            pat: pat as *const ObjPat,
+                            prop_index: idx,
+                            value: src_value,
+                            excluded,
+                            member: &*member.stx as *const ComputedMemberExpr,
+                            base,
+                            kind,
+                          },
+                        )?;
+                        return Ok(GenEval::Suspend(suspend));
+                      }
+                    }
+                  }
+                  abrupt => return Ok(GenEval::Complete(abrupt)),
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindObjPropAssignComputedMemberAfterBase {
+                      pat: pat as *const ObjPat,
+                      prop_index: idx,
+                      value: src_value,
+                      excluded,
+                      member: &*member.stx as *const ComputedMemberExpr,
+                      kind,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+          }
+          _ => {}
+        },
+        _ => {}
+      }
+    }
+
+    // Root the pre-evaluated assignment target until this property finishes binding/assignment.
+    if let Some(target) = assign_target {
+      match target {
+        GenAssignTarget::Binding(_) => {}
+        GenAssignTarget::Member { base, .. } => {
+          prop_scope.push_root(base)?;
+        }
+        GenAssignTarget::ComputedMember { base, key_value } => {
+          prop_scope.push_roots(&[base, key_value])?;
+        }
+      }
+    }
+
+    let mut prop_value = match prop_scope.get_with_host_and_hooks(
       evaluator.vm,
       &mut *evaluator.host,
       &mut *evaluator.hooks,
@@ -47570,14 +47911,16 @@ fn gen_bind_object_pattern_from(
       Ok(v) => v,
       Err(err) => {
         return Ok(GenEval::Complete(gen_error_to_completion(
-          evaluator, &mut scope, err,
+          evaluator,
+          &mut prop_scope,
+          err,
         )?))
       }
     };
 
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.default_value {
-        match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+        match gen_eval_expr(evaluator, &mut prop_scope, default_expr)? {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
             abrupt => return Ok(GenEval::Complete(abrupt)),
@@ -47590,6 +47933,7 @@ fn gen_bind_object_pattern_from(
                 prop_index: idx,
                 value: src_value,
                 excluded,
+                assign_target,
                 kind,
               },
             )?;
@@ -47599,23 +47943,34 @@ fn gen_bind_object_pattern_from(
       }
     }
 
-    match gen_bind_pattern(evaluator, &mut scope, &prop.target.stx, prop_value, kind)? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(_) => {}
-        abrupt => return Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::BindObjContinue {
-            pat: pat as *const ObjPat,
-            next_prop_index: idx.saturating_add(1),
-            value: src_value,
-            excluded,
-            kind,
-          },
-        )?;
-        return Ok(GenEval::Suspend(suspend));
+    if let Some(target) = assign_target {
+      if let Err(err) = gen_assign_target_put_value(evaluator, &mut prop_scope, target, prop_value)
+      {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut prop_scope,
+          err,
+        )?));
+      }
+    } else {
+      match gen_bind_pattern(evaluator, &mut prop_scope, &prop.target.stx, prop_value, kind)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(_) => {}
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::BindObjContinue {
+              pat: pat as *const ObjPat,
+              next_prop_index: idx.saturating_add(1),
+              value: src_value,
+              excluded,
+              kind,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
       }
     }
   }
@@ -47623,6 +47978,426 @@ fn gen_bind_object_pattern_from(
   let Some(rest_pat) = &pat.rest else {
     return Ok(GenEval::Complete(Completion::empty()));
   };
+
+  // Rest property assignment (e.g. `{...obj[prop]} = source`) must evaluate the LHS reference
+  // before copying properties from the source object. Otherwise, getters (or a large source object)
+  // could run before an abrupt LHS evaluation.
+  let mut rest_assign_target: Option<GenAssignTarget> = None;
+  if matches!(kind, BindingKind::Assignment) {
+    match &*rest_pat.stx {
+      Pat::Id(id) => {
+        let name_ptr = &id.stx.name as *const String;
+        let binding = match evaluator.env.resolve_binding_reference(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut scope,
+          &id.stx.name,
+        ) {
+          Ok(b) => b,
+          Err(err) => {
+            return Ok(GenEval::Complete(gen_error_to_completion(
+              evaluator, &mut scope, err,
+            )?))
+          }
+        };
+        let gen_binding = match binding {
+          ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+            env,
+            name: name_ptr,
+          },
+          ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+            binding_object,
+            name: name_ptr,
+          },
+          ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty { name: name_ptr },
+          ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+        };
+        rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+      }
+      Pat::AssignTarget(target) => match &*target.stx {
+        Expr::Id(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?))
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => {
+              GenResolvedBinding::GlobalProperty { name: name_ptr }
+            }
+            ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+          };
+          rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+        }
+        Expr::IdPat(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?))
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => {
+              GenResolvedBinding::GlobalProperty { name: name_ptr }
+            }
+            ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable { name: name_ptr },
+          };
+          rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+        }
+        Expr::Member(member) => {
+          if member.stx.optional_chaining {
+            return Err(VmError::InvariantViolation(
+              "optional chaining used in assignment target",
+            ));
+          }
+          // `super.prop` is a Super Reference and cannot be represented as a `GenAssignTarget`.
+          if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+            match gen_eval_expr(evaluator, &mut scope, &member.stx.left)? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let base = v.unwrap_or(Value::Undefined);
+                  rest_assign_target = Some(GenAssignTarget::Member {
+                    base,
+                    key: &member.stx.right as *const String,
+                  });
+                }
+                abrupt => return Ok(GenEval::Complete(abrupt)),
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindObjRestAssignMemberAfterBase {
+                    pat: pat as *const ObjPat,
+                    value: src_value,
+                    excluded,
+                    member: &*member.stx as *const MemberExpr,
+                    kind,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          }
+        }
+        Expr::ComputedMember(member) => {
+          if member.stx.optional_chaining {
+            return Err(VmError::InvariantViolation(
+              "optional chaining used in assignment target",
+            ));
+          }
+
+          // `super[expr]` is a Super Reference and cannot be represented as a `GenAssignTarget`.
+          if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+            let base_eval = gen_eval_expr(evaluator, &mut scope, &member.stx.object)?;
+            match base_eval {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let base = v.unwrap_or(Value::Undefined);
+                  let member_eval = {
+                    let mut member_scope = scope.reborrow();
+                    member_scope.push_root(base)?;
+                    gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                  };
+                  match member_eval {
+                    GenEval::Complete(c) => match c {
+                      Completion::Normal(v) => {
+                        let key_value = v.unwrap_or(Value::Undefined);
+                        rest_assign_target =
+                          Some(GenAssignTarget::ComputedMember { base, key_value });
+                      }
+                      abrupt => return Ok(GenEval::Complete(abrupt)),
+                    },
+                    GenEval::Suspend(mut suspend) => {
+                      // Root the base value so it survives until the next yield boundary.
+                      scope.push_root(base)?;
+                      gen_frames_push(
+                        &mut suspend.frames,
+                        GenFrame::BindObjRestAssignComputedMemberAfterMember {
+                          pat: pat as *const ObjPat,
+                          value: src_value,
+                          excluded,
+                          member: &*member.stx as *const ComputedMemberExpr,
+                          base,
+                          kind,
+                        },
+                      )?;
+                      return Ok(GenEval::Suspend(suspend));
+                    }
+                  }
+                }
+                abrupt => return Ok(GenEval::Complete(abrupt)),
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindObjRestAssignComputedMemberAfterBase {
+                    pat: pat as *const ObjPat,
+                    value: src_value,
+                    excluded,
+                    member: &*member.stx as *const ComputedMemberExpr,
+                    kind,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          }
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  gen_bind_object_pattern_rest_after_target(
+    evaluator,
+    &mut scope,
+    pat,
+    obj,
+    src_value,
+    excluded,
+    kind,
+    rest_assign_target,
+  )
+}
+
+fn gen_bind_object_pattern_prop_after_assign_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  prop_index: usize,
+  src_value: Value,
+  excluded: Vec<PropertyKey>,
+  kind: BindingKind,
+  assign_target: GenAssignTarget,
+) -> Result<GenEval<Completion>, VmError> {
+  // Keep temporary roots local to this binding operation.
+  let mut scope = scope.reborrow();
+
+  let key = excluded.last().copied().ok_or(VmError::InvariantViolation(
+    "object destructuring continuation missing excluded key for property",
+  ))?;
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(sym) => Value::Symbol(sym),
+  };
+
+  // Root the pre-evaluated assignment target across `GetV`/default evaluation and any temporary
+  // rooting operations performed while setting up the property binding.
+  match assign_target {
+    GenAssignTarget::Binding(_) => {}
+    GenAssignTarget::Member { base, .. } => {
+      scope.push_root(base)?;
+    }
+    GenAssignTarget::ComputedMember { base, key_value } => {
+      scope.push_roots(&[base, key_value])?;
+    }
+  }
+
+  // Root the source value + key across boxing and property access.
+  scope.push_roots(&[src_value, key_root])?;
+
+  // Recreate the boxed object wrapper for property access (GetV semantics).
+  let obj = match scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    src_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?))
+    }
+  };
+  scope.push_root(Value::Object(obj))?;
+  let receiver = src_value;
+
+  let prop = pat.properties.get(prop_index).ok_or(VmError::InvariantViolation(
+    "generator object pattern continuation out of bounds",
+  ))?;
+  let prop = &prop.stx;
+
+  let mut prop_value = match scope.get_with_host_and_hooks(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    obj,
+    key,
+    receiver,
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?))
+    }
+  };
+
+  if matches!(prop_value, Value::Undefined) {
+    if let Some(default_expr) = &prop.default_value {
+      match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::BindObjAfterDefault {
+              pat: pat as *const ObjPat,
+              prop_index,
+              value: src_value,
+              excluded,
+              assign_target: Some(assign_target),
+              kind,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      }
+    }
+  }
+
+  if let Err(err) = gen_assign_target_put_value(evaluator, &mut scope, assign_target, prop_value) {
+    return Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator, &mut scope, err,
+    )?));
+  }
+
+  gen_bind_object_pattern_from(
+    evaluator,
+    &mut scope,
+    pat,
+    src_value,
+    excluded,
+    prop_index.saturating_add(1),
+    kind,
+  )
+}
+
+fn gen_bind_object_pattern_rest_after_target_with_boxing(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  src_value: Value,
+  excluded: Vec<PropertyKey>,
+  kind: BindingKind,
+  rest_assign_target: Option<GenAssignTarget>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Keep temporary roots local to this binding operation.
+  let mut scope = scope.reborrow();
+  scope.push_root(src_value)?;
+
+  // Root the pre-evaluated assignment target across `ToObject(value)` boxing.
+  if let Some(target) = rest_assign_target {
+    match target {
+      GenAssignTarget::Binding(_) => {}
+      GenAssignTarget::Member { base, .. } => {
+        scope.push_root(base)?;
+      }
+      GenAssignTarget::ComputedMember { base, key_value } => {
+        scope.push_roots(&[base, key_value])?;
+      }
+    }
+  }
+
+  let obj = match scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    src_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?))
+    }
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  gen_bind_object_pattern_rest_after_target(
+    evaluator,
+    &mut scope,
+    pat,
+    obj,
+    src_value,
+    excluded,
+    kind,
+    rest_assign_target,
+  )
+}
+
+fn gen_bind_object_pattern_rest_after_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  obj: GcObject,
+  src_value: Value,
+  excluded: Vec<PropertyKey>,
+  kind: BindingKind,
+  rest_assign_target: Option<GenAssignTarget>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Keep temporary roots local to this binding operation.
+  let mut scope = scope.reborrow();
+
+  // Root the pre-evaluated assignment target across `Object.keys`/property access/copy operations
+  // that can allocate and trigger GC.
+  if let Some(target) = rest_assign_target {
+    match target {
+      GenAssignTarget::Binding(_) => {}
+      GenAssignTarget::Member { base, .. } => {
+        scope.push_root(base)?;
+      }
+      GenAssignTarget::ComputedMember { base, key_value } => {
+        scope.push_roots(&[base, key_value])?;
+      }
+    }
+  }
+
+  scope.push_roots(&[src_value, Value::Object(obj)])?;
+
+  let rest_pat = pat.rest.as_ref().ok_or(VmError::InvariantViolation(
+    "object rest continuation called without rest pattern",
+  ))?;
 
   let rest_obj = scope.alloc_object()?;
   // Root the rest object only for the duration of this operation.
@@ -47684,6 +48459,19 @@ fn gen_bind_object_pattern_from(
       }
     };
     rest_scope.create_data_property(rest_obj, key, v)?;
+  }
+
+  if let Some(target) = rest_assign_target {
+    if let Err(err) =
+      gen_assign_target_put_value(evaluator, &mut rest_scope, target, Value::Object(rest_obj))
+    {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator,
+        &mut rest_scope,
+        err,
+      )?));
+    }
+    return Ok(GenEval::Complete(Completion::empty()));
   }
 
   match gen_bind_pattern(
@@ -47774,7 +48562,8 @@ fn gen_assign_target_put_value(
     GenAssignTarget::Member { base, key } => {
       let key = unsafe { &*key };
 
-      // Root the RHS + base across property-key allocation and assignment.
+      // Root the RHS + base across private-name resolution / property-key allocation and
+      // assignment.
       let mut assign_scope = scope.reborrow();
       assign_scope.push_roots(&[base, value])?;
       let reference = if key.starts_with('#') {
@@ -49689,9 +50478,252 @@ fn gen_resume_from_frames(
             ))?;
           let prop = &prop.stx;
 
-          // Recreate the boxed object wrapper for property access (GetV semantics).
+          // Root the source value + source key across assignment-target evaluation and `ToObject`
+          // boxing. Both can allocate and trigger GC.
           let mut obj_scope = scope.reborrow();
           obj_scope.push_roots(&[value, key_root])?;
+
+          // Pre-evaluate assignment targets for destructuring assignment (ECMA-262
+          // `KeyedDestructuringAssignmentEvaluation`).
+          let mut assign_target: Option<GenAssignTarget> = None;
+          if matches!(kind, BindingKind::Assignment) {
+            match &*prop.target.stx {
+              Pat::Id(id) => {
+                let name_ptr = &id.stx.name as *const String;
+                let binding = match evaluator.env.resolve_binding_reference(
+                  evaluator.vm,
+                  &mut *evaluator.host,
+                  &mut *evaluator.hooks,
+                  &mut obj_scope,
+                  &id.stx.name,
+                ) {
+                  Ok(b) => b,
+                  Err(err) => {
+                    state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                    continue;
+                  }
+                };
+                let gen_binding = match binding {
+                  ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                    env,
+                    name: name_ptr,
+                  },
+                  ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                    binding_object,
+                    name: name_ptr,
+                  },
+                  ResolvedBinding::GlobalProperty { .. } => {
+                    GenResolvedBinding::GlobalProperty { name: name_ptr }
+                  }
+                  ResolvedBinding::Unresolvable { .. } => {
+                    GenResolvedBinding::Unresolvable { name: name_ptr }
+                  }
+                };
+                assign_target = Some(GenAssignTarget::Binding(gen_binding));
+              }
+              Pat::AssignTarget(target) => match &*target.stx {
+                Expr::Id(id) => {
+                  let name_ptr = &id.stx.name as *const String;
+                  let binding = match evaluator.env.resolve_binding_reference(
+                    evaluator.vm,
+                    &mut *evaluator.host,
+                    &mut *evaluator.hooks,
+                    &mut obj_scope,
+                    &id.stx.name,
+                  ) {
+                    Ok(b) => b,
+                    Err(err) => {
+                      state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                      continue;
+                    }
+                  };
+                  let gen_binding = match binding {
+                    ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                      env,
+                      name: name_ptr,
+                    },
+                    ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                      binding_object,
+                      name: name_ptr,
+                    },
+                    ResolvedBinding::GlobalProperty { .. } => {
+                      GenResolvedBinding::GlobalProperty { name: name_ptr }
+                    }
+                    ResolvedBinding::Unresolvable { .. } => {
+                      GenResolvedBinding::Unresolvable { name: name_ptr }
+                    }
+                  };
+                  assign_target = Some(GenAssignTarget::Binding(gen_binding));
+                }
+                Expr::IdPat(id) => {
+                  let name_ptr = &id.stx.name as *const String;
+                  let binding = match evaluator.env.resolve_binding_reference(
+                    evaluator.vm,
+                    &mut *evaluator.host,
+                    &mut *evaluator.hooks,
+                    &mut obj_scope,
+                    &id.stx.name,
+                  ) {
+                    Ok(b) => b,
+                    Err(err) => {
+                      state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                      continue;
+                    }
+                  };
+                  let gen_binding = match binding {
+                    ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                      env,
+                      name: name_ptr,
+                    },
+                    ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                      binding_object,
+                      name: name_ptr,
+                    },
+                    ResolvedBinding::GlobalProperty { .. } => {
+                      GenResolvedBinding::GlobalProperty { name: name_ptr }
+                    }
+                    ResolvedBinding::Unresolvable { .. } => {
+                      GenResolvedBinding::Unresolvable { name: name_ptr }
+                    }
+                  };
+                  assign_target = Some(GenAssignTarget::Binding(gen_binding));
+                }
+                Expr::Member(member) => {
+                  if member.stx.optional_chaining {
+                    return Err(VmError::InvariantViolation(
+                      "optional chaining used in assignment target",
+                    ));
+                  }
+                  // `super.prop` is a Super Reference and cannot be represented as a
+                  // `GenAssignTarget` today.
+                  if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                    match gen_eval_expr(evaluator, &mut obj_scope, &member.stx.left)? {
+                      GenEval::Complete(c) => match c {
+                        Completion::Normal(v) => {
+                          let base = v.unwrap_or(Value::Undefined);
+                          assign_target = Some(GenAssignTarget::Member {
+                            base,
+                            key: &member.stx.right as *const String,
+                          });
+                        }
+                        abrupt => {
+                          state = abrupt;
+                          continue;
+                        }
+                      },
+                      GenEval::Suspend(mut suspend) => {
+                        gen_frames_push(
+                          &mut suspend.frames,
+                          GenFrame::BindObjPropAssignMemberAfterBase {
+                            pat,
+                            prop_index,
+                            value,
+                            excluded,
+                            member: &*member.stx as *const MemberExpr,
+                            kind,
+                          },
+                        )?;
+                        vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                        return Ok(GenEval::Suspend(suspend));
+                      }
+                    }
+                  }
+                }
+                Expr::ComputedMember(member) => {
+                  if member.stx.optional_chaining {
+                    return Err(VmError::InvariantViolation(
+                      "optional chaining used in assignment target",
+                    ));
+                  }
+
+                  // `super[expr]` is a Super Reference and cannot be represented as a
+                  // `GenAssignTarget` today.
+                  if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                    let base_eval = gen_eval_expr(evaluator, &mut obj_scope, &member.stx.object)?;
+                    match base_eval {
+                      GenEval::Complete(c) => match c {
+                        Completion::Normal(v) => {
+                          let base = v.unwrap_or(Value::Undefined);
+                          let member_eval = {
+                            let mut member_scope = obj_scope.reborrow();
+                            member_scope.push_root(base)?;
+                            gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                          };
+                          match member_eval {
+                            GenEval::Complete(c) => match c {
+                              Completion::Normal(v) => {
+                                let key_value = v.unwrap_or(Value::Undefined);
+                                assign_target =
+                                  Some(GenAssignTarget::ComputedMember { base, key_value });
+                              }
+                              abrupt => {
+                                state = abrupt;
+                                continue;
+                              }
+                            },
+                            GenEval::Suspend(mut suspend) => {
+                              // Root the base value so it survives until the next yield boundary.
+                              obj_scope.push_root(base)?;
+                              gen_frames_push(
+                                &mut suspend.frames,
+                                GenFrame::BindObjPropAssignComputedMemberAfterMember {
+                                  pat,
+                                  prop_index,
+                                  value,
+                                  excluded,
+                                  member: &*member.stx as *const ComputedMemberExpr,
+                                  base,
+                                  kind,
+                                },
+                              )?;
+                              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                              return Ok(GenEval::Suspend(suspend));
+                            }
+                          }
+                        }
+                        abrupt => {
+                          state = abrupt;
+                          continue;
+                        }
+                      },
+                      GenEval::Suspend(mut suspend) => {
+                        gen_frames_push(
+                          &mut suspend.frames,
+                          GenFrame::BindObjPropAssignComputedMemberAfterBase {
+                            pat,
+                            prop_index,
+                            value,
+                            excluded,
+                            member: &*member.stx as *const ComputedMemberExpr,
+                            kind,
+                          },
+                        )?;
+                        vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                        return Ok(GenEval::Suspend(suspend));
+                      }
+                    }
+                  }
+                }
+                _ => {}
+              },
+              _ => {}
+            }
+          }
+
+          // Root the pre-evaluated assignment target across property access + default evaluation.
+          if let Some(target) = assign_target {
+            match target {
+              GenAssignTarget::Binding(_) => {}
+              GenAssignTarget::Member { base, .. } => {
+                obj_scope.push_root(base)?;
+              }
+              GenAssignTarget::ComputedMember { base, key_value } => {
+                obj_scope.push_roots(&[base, key_value])?;
+              }
+            }
+          }
+
+          // Recreate the boxed object wrapper for property access (GetV semantics).
           let obj = match obj_scope.to_object(
             evaluator.vm,
             &mut *evaluator.host,
@@ -49740,6 +50772,7 @@ fn gen_resume_from_frames(
                       prop_index,
                       value,
                       excluded,
+                      assign_target,
                       kind,
                     },
                   )?;
@@ -49750,33 +50783,41 @@ fn gen_resume_from_frames(
             }
           }
 
-          match gen_bind_pattern(
-            evaluator,
-            &mut obj_scope,
-            &prop.target.stx,
-            prop_value,
-            kind,
-          )? {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(_) => {}
-              abrupt => {
-                state = abrupt;
-                continue;
+          if let Some(target) = assign_target {
+            if let Err(err) = gen_assign_target_put_value(evaluator, &mut obj_scope, target, prop_value)
+            {
+              state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+              continue;
+            }
+          } else {
+            match gen_bind_pattern(
+              evaluator,
+              &mut obj_scope,
+              &prop.target.stx,
+              prop_value,
+              kind,
+            )? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(_) => {}
+                abrupt => {
+                  state = abrupt;
+                  continue;
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindObjContinue {
+                    pat,
+                    next_prop_index: prop_index.saturating_add(1),
+                    value,
+                    excluded,
+                    kind,
+                  },
+                )?;
+                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                return Ok(GenEval::Suspend(suspend));
               }
-            },
-            GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindObjContinue {
-                  pat,
-                  next_prop_index: prop_index.saturating_add(1),
-                  value,
-                  excluded,
-                  kind,
-                },
-              )?;
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-              return Ok(GenEval::Suspend(suspend));
             }
           }
 
@@ -49804,6 +50845,7 @@ fn gen_resume_from_frames(
         prop_index,
         value,
         excluded,
+        assign_target,
         kind,
       } => match state {
         Completion::Normal(v) => {
@@ -49817,27 +50859,34 @@ fn gen_resume_from_frames(
             ))?;
           let prop = &prop.stx;
 
-          match gen_bind_pattern(evaluator, scope, &prop.target.stx, default_value, kind)? {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(_) => {}
-              abrupt => {
-                state = abrupt;
-                continue;
+          if let Some(target) = assign_target {
+            if let Err(err) = gen_assign_target_put_value(evaluator, scope, target, default_value) {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          } else {
+            match gen_bind_pattern(evaluator, scope, &prop.target.stx, default_value, kind)? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(_) => {}
+                abrupt => {
+                  state = abrupt;
+                  continue;
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindObjContinue {
+                    pat,
+                    next_prop_index: prop_index.saturating_add(1),
+                    value,
+                    excluded,
+                    kind,
+                  },
+                )?;
+                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                return Ok(GenEval::Suspend(suspend));
               }
-            },
-            GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindObjContinue {
-                  pat,
-                  next_prop_index: prop_index.saturating_add(1),
-                  value,
-                  excluded,
-                  kind,
-                },
-              )?;
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-              return Ok(GenEval::Suspend(suspend));
             }
           }
 
@@ -49877,6 +50926,261 @@ fn gen_resume_from_frames(
             excluded,
             next_prop_index,
             kind,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjPropAssignMemberAfterBase {
+        pat,
+        prop_index,
+        value,
+        excluded,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member = unsafe { &*member };
+          let target = GenAssignTarget::Member {
+            base,
+            key: &member.right as *const String,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_prop_after_assign_target(
+            evaluator,
+            scope,
+            pat_ref,
+            prop_index,
+            value,
+            excluded,
+            kind,
+            target,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjPropAssignComputedMemberAfterBase {
+        pat,
+        prop_index,
+        value,
+        excluded,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member_ref = unsafe { &*member };
+          let member_eval = {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(base)?;
+            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
+          };
+          match member_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let target = GenAssignTarget::ComputedMember { base, key_value };
+                let pat_ref = unsafe { &*pat };
+                match gen_bind_object_pattern_prop_after_assign_target(
+                  evaluator,
+                  scope,
+                  pat_ref,
+                  prop_index,
+                  value,
+                  excluded,
+                  kind,
+                  target,
+                )? {
+                  GenEval::Complete(c) => state = c,
+                  GenEval::Suspend(mut suspend) => {
+                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => state = abrupt,
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindObjPropAssignComputedMemberAfterMember {
+                  pat,
+                  prop_index,
+                  value,
+                  excluded,
+                  member,
+                  base,
+                  kind,
+                },
+              )?;
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjPropAssignComputedMemberAfterMember {
+        pat,
+        prop_index,
+        value,
+        excluded,
+        base,
+        kind,
+        ..
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_prop_after_assign_target(
+            evaluator,
+            scope,
+            pat_ref,
+            prop_index,
+            value,
+            excluded,
+            kind,
+            target,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjRestAssignMemberAfterBase {
+        pat,
+        value,
+        excluded,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member = unsafe { &*member };
+          let target = GenAssignTarget::Member {
+            base,
+            key: &member.right as *const String,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_rest_after_target_with_boxing(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            excluded,
+            kind,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjRestAssignComputedMemberAfterBase {
+        pat,
+        value,
+        excluded,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member_ref = unsafe { &*member };
+          let member_eval = {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(base)?;
+            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
+          };
+          match member_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let target = GenAssignTarget::ComputedMember { base, key_value };
+                let pat_ref = unsafe { &*pat };
+                match gen_bind_object_pattern_rest_after_target_with_boxing(
+                  evaluator,
+                  scope,
+                  pat_ref,
+                  value,
+                  excluded,
+                  kind,
+                  Some(target),
+                )? {
+                  GenEval::Complete(c) => state = c,
+                  GenEval::Suspend(mut suspend) => {
+                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => state = abrupt,
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindObjRestAssignComputedMemberAfterMember {
+                  pat,
+                  value,
+                  excluded,
+                  member,
+                  base,
+                  kind,
+                },
+              )?;
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjRestAssignComputedMemberAfterMember {
+        pat,
+        value,
+        excluded,
+        base,
+        kind,
+        ..
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_rest_after_target_with_boxing(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            excluded,
+            kind,
+            Some(target),
           )? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
@@ -52134,10 +53438,32 @@ fn gen_root_values_for_continuation(
       GenFrame::AssignPatternAfterBind { .. } => {
         needed = needed.saturating_add(1);
       }
-      GenFrame::BindObjAfterKey { excluded, .. }
-      | GenFrame::BindObjAfterDefault { excluded, .. }
-      | GenFrame::BindObjContinue { excluded, .. } => {
+      GenFrame::BindObjAfterKey { excluded, .. } | GenFrame::BindObjContinue { excluded, .. } => {
         needed = needed.saturating_add(1).saturating_add(excluded.len());
+      }
+      GenFrame::BindObjAfterDefault {
+        excluded,
+        assign_target,
+        ..
+      } => {
+        needed = needed.saturating_add(1).saturating_add(excluded.len());
+        if let Some(target) = assign_target {
+          match target {
+            GenAssignTarget::Binding(_) => {}
+            GenAssignTarget::Member { .. } => needed = needed.saturating_add(1),
+            GenAssignTarget::ComputedMember { .. } => needed = needed.saturating_add(2),
+          }
+        }
+      }
+      GenFrame::BindObjPropAssignMemberAfterBase { excluded, .. }
+      | GenFrame::BindObjPropAssignComputedMemberAfterBase { excluded, .. }
+      | GenFrame::BindObjRestAssignMemberAfterBase { excluded, .. }
+      | GenFrame::BindObjRestAssignComputedMemberAfterBase { excluded, .. } => {
+        needed = needed.saturating_add(1).saturating_add(excluded.len());
+      }
+      GenFrame::BindObjPropAssignComputedMemberAfterMember { excluded, .. }
+      | GenFrame::BindObjRestAssignComputedMemberAfterMember { excluded, .. } => {
+        needed = needed.saturating_add(2).saturating_add(excluded.len());
       }
       GenFrame::BindArrAfterDefault { assign_target, .. } => {
         // `iterator_record` (`iterator` + `next_method`) plus any pre-evaluated assignment target
@@ -52346,13 +53672,75 @@ fn gen_root_values_for_continuation(
       GenFrame::BindObjAfterKey {
         value, excluded, ..
       }
-      | GenFrame::BindObjAfterDefault {
-        value, excluded, ..
-      }
       | GenFrame::BindObjContinue {
         value, excluded, ..
       } => {
         values.push(*value);
+        for key in excluded.iter() {
+          match key {
+            PropertyKey::String(s) => values.push(Value::String(*s)),
+            PropertyKey::Symbol(sym) => values.push(Value::Symbol(*sym)),
+          }
+        }
+      }
+      GenFrame::BindObjAfterDefault {
+        value,
+        excluded,
+        assign_target,
+        ..
+      } => {
+        values.push(*value);
+        for key in excluded.iter() {
+          match key {
+            PropertyKey::String(s) => values.push(Value::String(*s)),
+            PropertyKey::Symbol(sym) => values.push(Value::Symbol(*sym)),
+          }
+        }
+        if let Some(target) = assign_target {
+          match target {
+            GenAssignTarget::Binding(_) => {}
+            GenAssignTarget::Member { base, .. } => values.push(*base),
+            GenAssignTarget::ComputedMember { base, key_value } => {
+              values.push(*base);
+              values.push(*key_value);
+            }
+          }
+        }
+      }
+      GenFrame::BindObjPropAssignMemberAfterBase {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjPropAssignComputedMemberAfterBase {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjRestAssignMemberAfterBase {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjRestAssignComputedMemberAfterBase {
+        value, excluded, ..
+      } => {
+        values.push(*value);
+        for key in excluded.iter() {
+          match key {
+            PropertyKey::String(s) => values.push(Value::String(*s)),
+            PropertyKey::Symbol(sym) => values.push(Value::Symbol(*sym)),
+          }
+        }
+      }
+      GenFrame::BindObjPropAssignComputedMemberAfterMember {
+        value,
+        excluded,
+        base,
+        ..
+      }
+      | GenFrame::BindObjRestAssignComputedMemberAfterMember {
+        value,
+        excluded,
+        base,
+        ..
+      } => {
+        values.push(*value);
+        values.push(*base);
         for key in excluded.iter() {
           match key {
             PropertyKey::String(s) => values.push(Value::String(*s)),
