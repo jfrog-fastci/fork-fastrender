@@ -11,6 +11,13 @@ use crate::{BrowserDocumentDom2, FastRender, RenderOptions};
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use crate::resource::ResourceFetcher;
+use crate::ui::chrome_assets::ChromeAssetsFetcher;
+use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+use crate::ui::trusted_chrome_fetcher::TrustedChromeFetcher;
+use crate::FontConfig;
 
 /// Output events produced by the HTML-rendered chrome document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +63,26 @@ pub struct ChromeFrameDocument {
 
 impl ChromeFrameDocument {
   pub fn new(viewport_css: (u32, u32), dpr: f32) -> Result<Self> {
-    let renderer = FastRender::new()?;
+    // Use deterministic bundled fonts for unit tests and browser-ui builds; fall back to platform
+    // fonts for minimal renderer builds.
+    let font_config = if cfg!(any(test, feature = "browser_ui")) {
+      FontConfig::bundled_only()
+    } else {
+      FontConfig::default()
+    };
+
+    // Renderer-chrome is trusted browser-process UI. Ensure all loads stay within the chrome://
+    // allowlist (no network access) via a strict fetcher stack.
+    let chrome_fetcher: Arc<dyn ResourceFetcher> = {
+      let assets: Arc<dyn ResourceFetcher> = Arc::new(ChromeAssetsFetcher::new());
+      let dynamic: Arc<dyn ResourceFetcher> = Arc::new(ChromeDynamicAssetFetcher::new(assets));
+      Arc::new(TrustedChromeFetcher::new(dynamic))
+    };
+
+    let renderer = FastRender::builder()
+      .font_sources(font_config)
+      .fetcher(chrome_fetcher)
+      .build()?;
     Self::new_with_renderer(renderer, viewport_css, dpr)
   }
 
