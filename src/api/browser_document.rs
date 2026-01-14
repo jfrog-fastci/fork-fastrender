@@ -967,6 +967,10 @@ impl BrowserDocument {
   /// The closure returns `(changed, output)` where `changed` indicates whether the DOM mutation
   /// should invalidate cached style/layout/paint state.
   ///
+  /// Note: this method returns `output` only (i.e. `Ok(output)`), not the full `(changed, output)`
+  /// tuple. If you need `changed` at the call site, include it in `output` yourself (for example:
+  /// return `(changed, (changed, my_output))`).
+  ///
   /// # Errors
   ///
   /// Returns an error when the document has no cached layout yet (i.e. `render_frame()` has not
