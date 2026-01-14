@@ -6923,6 +6923,11 @@ fn prepare_fragment_tree_paint_state(
                   let preedit = control
                     .ime_preedit
                     .as_ref()
+                    .map(|p| p.text.as_str())
+                    .filter(|t| !t.is_empty());
+                  let preedit_state = control
+                    .ime_preedit
+                    .as_ref()
                     .filter(|state| !state.text.is_empty());
                   let committed_is_empty = value.is_empty();
                   let display_is_empty = committed_is_empty && preedit.is_none();
@@ -6962,18 +6967,16 @@ fn prepare_fragment_tree_paint_state(
                         } else {
                           0
                         };
-                        let preedit_len = preedit
-                          .map(|state| state.text.chars().count())
-                          .unwrap_or(0);
+                        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
                         let mask_len = committed_len
                           .saturating_sub(replaced_len)
                           .saturating_add(preedit_len)
                           .clamp(3, 50);
                         display_text = Cow::Owned("•".repeat(mask_len));
 
-                        if let Some(preedit) = preedit {
-                          let preedit_len = preedit.text.chars().count();
-                          let cursor_end = preedit
+                        if let Some(preedit_state) = preedit_state {
+                          let preedit_len = preedit_state.text.chars().count();
+                          let cursor_end = preedit_state
                             .cursor
                             .map(|(a, b)| a.max(b))
                             .unwrap_or(preedit_len)
@@ -6985,22 +6988,22 @@ fn prepare_fragment_tree_paint_state(
                     crate::tree::box_tree::TextControlKind::Number
                     | crate::tree::box_tree::TextControlKind::Date
                       | crate::tree::box_tree::TextControlKind::Plain => {
-                      if let Some(preedit) = preedit {
+                      if let (Some(preedit), Some(preedit_state)) = (preedit, preedit_state) {
                         let start_byte = byte_offset_for_char_idx(value, replace_start);
                         let end_byte = byte_offset_for_char_idx(value, replace_end);
                         let mut combined = String::with_capacity(
                           value
                             .len()
                             .saturating_sub(end_byte.saturating_sub(start_byte))
-                            .saturating_add(preedit.text.len()),
+                            .saturating_add(preedit.len()),
                         );
                         combined.push_str(&value[..start_byte]);
-                        combined.push_str(&preedit.text);
+                        combined.push_str(preedit);
                         combined.push_str(&value[end_byte..]);
                         display_text = Cow::Owned(combined);
 
-                        let preedit_len = preedit.text.chars().count();
-                        let cursor_end = preedit
+                        let preedit_len = preedit.chars().count();
+                        let cursor_end = preedit_state
                           .cursor
                           .map(|(a, b)| a.max(b))
                           .unwrap_or(preedit_len)
