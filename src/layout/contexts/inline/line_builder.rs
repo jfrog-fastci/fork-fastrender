@@ -1666,9 +1666,9 @@ impl TextItem {
       sorted_run_indices.sort_by_key(|idx| runs[*idx].start);
     }
 
+    let run_count = runs.len();
     let mut cluster_count = 0usize;
     let mut last_offset: Option<usize> = None;
-    let mut needs_sort = false;
 
     let mut check_run = |run_idx: usize| -> bool {
       let run_len = runs[run_idx].glyphs.len();
@@ -1717,15 +1717,16 @@ impl TextItem {
       false
     };
 
+    let mut needs_sort = false;
     if run_starts_increasing {
-      for run_idx in 0..runs.len() {
+      for run_idx in 0..run_count {
         if check_run(run_idx) {
           needs_sort = true;
           break;
         }
       }
     } else if run_starts_decreasing {
-      for run_idx in (0..runs.len()).rev() {
+      for run_idx in (0..run_count).rev() {
         if check_run(run_idx) {
           needs_sort = true;
           break;

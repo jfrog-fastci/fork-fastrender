@@ -322,6 +322,12 @@ pub enum PlaybackState {
 /// Playback rate is stored as an `f64` multiplier. To avoid accumulating floating-point error over
 /// time (drift), the rate is applied to the **absolute** master-clock delta from a stored origin and
 /// rounded once to the nearest nanosecond, similar to [`AudioStreamClock`].
+///
+/// The clock exposes a lightweight [`PlaybackState`] so callers can query whether it is currently
+/// advancing (`Playing`) or frozen (`Paused`).
+///
+/// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
+/// `playing` remains `true`).
 
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
