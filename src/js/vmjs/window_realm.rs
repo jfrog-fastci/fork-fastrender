@@ -51015,53 +51015,23 @@ fn init_window_globals(
       scope.define_property(global, document_key, data_desc(Value::Object(document_ctor)))?;
       document_ctor
     } else {
-      // WebIDL bindings currently install `Document` as an "Illegal constructor". Curated WPT DOM
-      // tests (Range harness) use `new Document()` to fabricate an XML document, so override the
-      // global `Document` constructor with our construct handler while preserving the
-      // WebIDL-installed `Document.prototype` object.
+      // When using WebIDL bindings, `Document` is installed by the generated bindings runtime and
+      // should already be constructible (`new Document()`).
       let document_key = alloc_key(&mut scope, "Document")?;
-
-      let document_ctor_call_id = vm.register_native_call(document_constructor_native)?;
-      let name = scope.alloc_string("Document")?;
-      scope.push_root(Value::String(name))?;
-      let document_ctor = scope.alloc_native_function(
-        document_ctor_call_id,
-        Some(document_ctor_construct_id),
-        name,
-        0,
-      )?;
-      scope
-        .heap_mut()
-        .object_set_prototype(document_ctor, Some(realm.intrinsics().function_prototype()))?;
+      let Some(document_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &document_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Document to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(document_ctor) = document_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Document to be an object",
+        ));
+      };
       scope.push_root(Value::Object(document_ctor))?;
-
-      // Ensure `instanceof Document` uses the WebIDL-generated `Document.prototype`.
-      scope.define_property(
-        document_ctor,
-        prototype_key,
-        ctor_link_desc(Value::Object(document_proto)),
-      )?;
-
-      // Keep `Document.prototype.constructor === Document` even if WebIDL installed the property
-      // as non-configurable/non-writable: `object_set_existing_data_property_value` bypasses
-      // JS-visible attributes and is safe for host-side initialization.
-      match scope.heap_mut().object_set_existing_data_property_value(
-        document_proto,
-        &constructor_key,
-        Value::Object(document_ctor),
-      ) {
-        Ok(()) => {}
-        Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
-          scope.define_property(
-            document_proto,
-            constructor_key,
-            ctor_link_desc(Value::Object(document_ctor)),
-          )?;
-        }
-        Err(err) => return Err(err),
-      }
-
-      scope.define_property(global, document_key, data_desc(Value::Object(document_ctor)))?;
       document_ctor
     };
 
