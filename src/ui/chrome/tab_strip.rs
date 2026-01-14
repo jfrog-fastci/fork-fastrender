@@ -1188,6 +1188,19 @@ fn group_chip_a11y_label(title: &str, collapsed: bool) -> String {
   }
 }
 
+fn group_color_menu_item_a11y_label(color: TabGroupColor) -> &'static str {
+  match color {
+    TabGroupColor::Blue => "Set group color: Blue",
+    TabGroupColor::Gray => "Set group color: Gray",
+    TabGroupColor::Red => "Set group color: Red",
+    TabGroupColor::Orange => "Set group color: Orange",
+    TabGroupColor::Yellow => "Set group color: Yellow",
+    TabGroupColor::Green => "Set group color: Green",
+    TabGroupColor::Purple => "Set group color: Purple",
+    TabGroupColor::Pink => "Set group color: Pink",
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GroupChipContextMenuState {
   open: bool,
@@ -1447,8 +1460,12 @@ fn group_chip_ui(
                 .stroke(Stroke::new(1.0, group_color_egui(color)));
               let resp = ui.add(button);
               resp.widget_info({
-                let label = format!("Set group color: {}", color.as_str());
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                move || {
+                  egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    group_color_menu_item_a11y_label(color),
+                  )
+                }
               });
               if resp.clicked() {
                 ops.push(TabStripOp::SetGroupColor(group_id, color));
@@ -1471,15 +1488,14 @@ fn group_chip_ui(
             close_menu = true;
           }
 
-          let label = if collapsed {
+          let label: &'static str = if collapsed {
             "Expand group"
           } else {
             "Collapse group"
           };
           let collapse_toggle = ui.button(label);
           collapse_toggle.widget_info({
-            let label = label.to_string();
-            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
           });
           if collapse_toggle.clicked() {
             ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
