@@ -244,7 +244,6 @@ pub mod dom;
 pub mod dom2;
 pub(crate) mod fallible_vec_writer;
 pub mod html;
-pub mod media;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
@@ -252,7 +251,6 @@ pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
-pub mod media;
 pub mod memory;
 pub mod perf_log;
 pub mod perf_log_schema;
