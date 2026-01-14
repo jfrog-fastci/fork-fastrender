@@ -90,6 +90,27 @@ pub enum BrowserPerfLogEventV2 {
     ui_frame_ms: Option<f64>,
     #[serde(default)]
     fps: Option<f64>,
+    /// Breakdown: time spent draining UI↔worker messages outside the core egui frame.
+    #[serde(default)]
+    worker_msgs_ms: Option<f64>,
+    /// Breakdown: time spent uploading page textures to the GPU (ms).
+    #[serde(default)]
+    upload_ms: Option<f64>,
+    /// Breakdown: time spent building egui UI (ms).
+    #[serde(default)]
+    egui_ms: Option<f64>,
+    /// Breakdown: time spent tessellating egui meshes (ms).
+    #[serde(default)]
+    tessellate_ms: Option<f64>,
+    /// Breakdown: time spent executing wgpu render passes (ms).
+    #[serde(default)]
+    wgpu_ms: Option<f64>,
+    /// Breakdown: time spent presenting the swapchain surface (ms).
+    #[serde(default)]
+    present_ms: Option<f64>,
+    /// Breakdown: total UI CPU time estimate (ms); includes `worker_msgs_ms`.
+    #[serde(default)]
+    total_ms: Option<f64>,
   },
   Input {
     #[serde(default)]
@@ -431,6 +452,37 @@ mod tests {
       }) => {
         assert_eq!(frames_presented, Some(10));
         assert_eq!(dropped_frames, Some(2));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_frame_breakdown_v2() {
+    let json = r#"{
+      "event":"frame",
+      "schema_version":2,
+      "t_ms":123,
+      "ui_frame_ms":9.5,
+      "fps":60.0,
+      "worker_msgs_ms":1.0,
+      "upload_ms":2.0,
+      "egui_ms":3.0,
+      "tessellate_ms":4.0,
+      "wgpu_ms":5.0,
+      "present_ms":6.0,
+      "total_ms":10.0
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::Frame {
+        worker_msgs_ms,
+        total_ms,
+        ..
+      }) => {
+        assert_eq!(worker_msgs_ms, Some(1.0));
+        assert_eq!(total_ms, Some(10.0));
       }
       other => panic!("unexpected event parsed: {other:?}"),
     }

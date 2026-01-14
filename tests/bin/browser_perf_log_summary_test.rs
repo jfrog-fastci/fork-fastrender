@@ -5,8 +5,8 @@ use std::process::{Command, Stdio};
 fn json_output_parses_and_contains_expected_keys() {
   let input = r#"
 {"event":"run_start","t_ms":0,"rss_bytes":1000}
-{"event":"frame","ui_frame_ms":10.0,"extra_field":"ok"}
-{"event":"frame","ui_frame_ms":20.0}
+{"event":"frame","ui_frame_ms":10.0,"worker_msgs_ms":1.0,"upload_ms":2.0,"egui_ms":3.0,"tessellate_ms":1.0,"wgpu_ms":2.0,"present_ms":4.0,"total_ms":15.0,"extra_field":"ok"}
+{"event":"frame","ui_frame_ms":20.0,"worker_msgs_ms":2.0,"upload_ms":4.0,"egui_ms":6.0,"tessellate_ms":2.0,"wgpu_ms":4.0,"present_ms":8.0,"total_ms":30.0}
 {"event":"ttfp","ttfp_ms":100.0}
 {"event":"input","input_kind":"mouse_wheel","input_to_present_ms":5.0}
 {"event":"input","input_kind":"keyboard","input_to_present_ms":11.0}
@@ -52,6 +52,13 @@ fn json_output_parses_and_contains_expected_keys() {
   for key in [
     "meta",
     "ui_frame_time_ms",
+    "ui_frame_worker_msgs_ms",
+    "ui_frame_upload_ms",
+    "ui_frame_egui_ms",
+    "ui_frame_tessellate_ms",
+    "ui_frame_wgpu_ms",
+    "ui_frame_present_ms",
+    "ui_frame_cpu_ms",
     "ttfp_ms",
     "scroll_latency_ms",
     "resize_latency_ms",
@@ -85,6 +92,20 @@ fn json_output_parses_and_contains_expected_keys() {
   assert_eq!(rss_bytes["min"].as_u64(), Some(1000));
   assert_eq!(rss_bytes["max"].as_u64(), Some(4000));
   assert_eq!(rss_bytes["mean"].as_f64(), Some(2500.0));
+
+  let ui_frame_worker_msgs_ms = &value["ui_frame_worker_msgs_ms"];
+  assert_eq!(ui_frame_worker_msgs_ms["count"].as_u64(), Some(2));
+  assert_eq!(ui_frame_worker_msgs_ms["mean"].as_f64(), Some(1.5));
+  assert_eq!(ui_frame_worker_msgs_ms["p50"].as_f64(), Some(1.5));
+  assert_eq!(ui_frame_worker_msgs_ms["p95"].as_f64(), Some(1.95));
+  assert_eq!(ui_frame_worker_msgs_ms["max"].as_f64(), Some(2.0));
+
+  let ui_frame_cpu_ms = &value["ui_frame_cpu_ms"];
+  assert_eq!(ui_frame_cpu_ms["count"].as_u64(), Some(2));
+  assert_eq!(ui_frame_cpu_ms["mean"].as_f64(), Some(22.5));
+  assert_eq!(ui_frame_cpu_ms["p50"].as_f64(), Some(22.5));
+  assert_eq!(ui_frame_cpu_ms["p95"].as_f64(), Some(29.25));
+  assert_eq!(ui_frame_cpu_ms["max"].as_f64(), Some(30.0));
 
   let worker_msgs_forwarded = &value["worker_msgs_forwarded_per_sec"];
   assert_eq!(worker_msgs_forwarded["count"].as_u64(), Some(2));

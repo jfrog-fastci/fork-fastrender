@@ -176,6 +176,13 @@ fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> boo
 #[derive(Debug, Default)]
 struct Samples {
   ui_frame_time_ms: Vec<f64>,
+  ui_frame_worker_msgs_ms: Vec<f64>,
+  ui_frame_upload_ms: Vec<f64>,
+  ui_frame_egui_ms: Vec<f64>,
+  ui_frame_tessellate_ms: Vec<f64>,
+  ui_frame_wgpu_ms: Vec<f64>,
+  ui_frame_present_ms: Vec<f64>,
+  ui_frame_cpu_ms: Vec<f64>,
   ttfp_ms: Vec<f64>,
   scroll_latency_ms: Vec<f64>,
   resize_latency_ms: Vec<f64>,
@@ -208,6 +215,13 @@ struct Samples {
 struct Summary {
   meta: MetaSummary,
   ui_frame_time_ms: TimeStats,
+  ui_frame_worker_msgs_ms: TimeStats,
+  ui_frame_upload_ms: TimeStats,
+  ui_frame_egui_ms: TimeStats,
+  ui_frame_tessellate_ms: TimeStats,
+  ui_frame_wgpu_ms: TimeStats,
+  ui_frame_present_ms: TimeStats,
+  ui_frame_cpu_ms: TimeStats,
   ttfp_ms: TimeStats,
   scroll_latency_ms: TimeStats,
   resize_latency_ms: TimeStats,
@@ -358,8 +372,15 @@ fn print_table(summary: &Summary) {
     "metric", "count", "mean", "p50", "p95", "max"
   );
 
-  let rows: [(&str, &TimeStats); 10] = [
+  let rows: [(&str, &TimeStats); 17] = [
     ("ui_frame_time_ms", &summary.ui_frame_time_ms),
+    ("ui_frame_worker_msgs_ms", &summary.ui_frame_worker_msgs_ms),
+    ("ui_frame_upload_ms", &summary.ui_frame_upload_ms),
+    ("ui_frame_egui_ms", &summary.ui_frame_egui_ms),
+    ("ui_frame_tessellate_ms", &summary.ui_frame_tessellate_ms),
+    ("ui_frame_wgpu_ms", &summary.ui_frame_wgpu_ms),
+    ("ui_frame_present_ms", &summary.ui_frame_present_ms),
+    ("ui_frame_cpu_ms", &summary.ui_frame_cpu_ms),
     ("ttfp_ms", &summary.ttfp_ms),
     ("scroll_latency_ms", &summary.scroll_latency_ms),
     ("resize_latency_ms", &summary.resize_latency_ms),
@@ -636,9 +657,40 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.rss_last_bytes = Some(rss);
               }
             }
-            BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
+            BrowserPerfLogEventV2::Frame {
+              ui_frame_ms,
+              worker_msgs_ms,
+              upload_ms,
+              egui_ms,
+              tessellate_ms,
+              wgpu_ms,
+              present_ms,
+              total_ms,
+              ..
+            } => {
               if let Some(ms) = ui_frame_ms.filter(f64::is_finite) {
                 samples.ui_frame_time_ms.push(ms);
+              }
+              if let Some(ms) = worker_msgs_ms.filter(f64::is_finite) {
+                samples.ui_frame_worker_msgs_ms.push(ms);
+              }
+              if let Some(ms) = upload_ms.filter(f64::is_finite) {
+                samples.ui_frame_upload_ms.push(ms);
+              }
+              if let Some(ms) = egui_ms.filter(f64::is_finite) {
+                samples.ui_frame_egui_ms.push(ms);
+              }
+              if let Some(ms) = tessellate_ms.filter(f64::is_finite) {
+                samples.ui_frame_tessellate_ms.push(ms);
+              }
+              if let Some(ms) = wgpu_ms.filter(f64::is_finite) {
+                samples.ui_frame_wgpu_ms.push(ms);
+              }
+              if let Some(ms) = present_ms.filter(f64::is_finite) {
+                samples.ui_frame_present_ms.push(ms);
+              }
+              if let Some(ms) = total_ms.filter(f64::is_finite) {
+                samples.ui_frame_cpu_ms.push(ms);
               }
             }
             BrowserPerfLogEventV2::TabSwitch {
@@ -871,6 +923,13 @@ fn run(cli: Cli) -> Result<(), String> {
       unknown_events,
     },
     ui_frame_time_ms: time_stats(&mut samples.ui_frame_time_ms),
+    ui_frame_worker_msgs_ms: time_stats(&mut samples.ui_frame_worker_msgs_ms),
+    ui_frame_upload_ms: time_stats(&mut samples.ui_frame_upload_ms),
+    ui_frame_egui_ms: time_stats(&mut samples.ui_frame_egui_ms),
+    ui_frame_tessellate_ms: time_stats(&mut samples.ui_frame_tessellate_ms),
+    ui_frame_wgpu_ms: time_stats(&mut samples.ui_frame_wgpu_ms),
+    ui_frame_present_ms: time_stats(&mut samples.ui_frame_present_ms),
+    ui_frame_cpu_ms: time_stats(&mut samples.ui_frame_cpu_ms),
     ttfp_ms: time_stats(&mut samples.ttfp_ms),
     scroll_latency_ms: time_stats(&mut samples.scroll_latency_ms),
     resize_latency_ms: time_stats(&mut samples.resize_latency_ms),

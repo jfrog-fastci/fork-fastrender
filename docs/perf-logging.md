@@ -144,6 +144,8 @@ include:
   summaries).
 - Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
   `ttfp_ms`, etc.
+- For `event=frame`, a coarse breakdown (ms) is also emitted to help attribute UI jank:
+  `worker_msgs_ms`, `upload_ms`, `egui_ms`, `tessellate_ms`, `wgpu_ms`, `present_ms`, `total_ms`.
 
 ### Summarizing a capture: `browser_perf_log_summary`
 
@@ -175,6 +177,10 @@ to quickly spot RSS growth over the selected window.
 
 For idle diagnostics, you can also summarize `idle_sample` events; the summary output reports
 `idle_fps` (lower is better; ideally the browser is not drawing frames at all while idle).
+
+For UI jank attribution, `frame` events include coarse breakdown fields (see above); the summary
+output reports them as `ui_frame_*_ms` rows (e.g. `ui_frame_upload_ms`, `ui_frame_egui_ms`,
+`ui_frame_cpu_ms`).
 
 To diagnose UI↔worker wake coalescing, summarize `worker_wake_summary` events; the summary output
 reports wake rates (sent/coalesced) and a best-effort `worker_pending_msgs_estimate`.
