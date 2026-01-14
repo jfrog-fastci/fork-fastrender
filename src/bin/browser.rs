@@ -6700,6 +6700,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
+  let emit_run_end =
+    |frames_presented: u64, idle_frames: u64, input_events: u64, dropped_frames: Option<u64>| {
+      let Some(writer) = perf_log_writer.as_ref() else {
+        return;
+      };
+
+      let now = std::time::Instant::now();
+      let t_ms = now
+        .saturating_duration_since(perf_log_start)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+
+      let cpu_time_ms = match (perf_log_cpu_start_ms, perf_log::process_cpu_time_ms()) {
+        (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+        _ => None,
+      };
+      let rss_bytes = fastrender::memory::current_rss_bytes();
+
+      let event = perf_log::PerfEvent::RunEnd {
+        schema_version: perf_log::SCHEMA_VERSION,
+        t_ms,
+        frames_presented,
+        idle_frames,
+        input_events,
+        dropped_frames,
+        elapsed_ms: t_ms,
+        cpu_time_ms,
+        rss_bytes,
+      };
+
+      if let Ok(mut writer) = writer.try_borrow_mut() {
+        writer.emit(&event);
+        writer.flush();
+      }
+    };
+
   // ---------------------------------------------------------------------------
   // Crash/unresponsive testing knobs (CLI/env)
   // ---------------------------------------------------------------------------
@@ -6803,6 +6839,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
   // parsing) without opening a window or initialising wgpu.
   if cli.exit_immediately || std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
+    emit_run_end(0, 0, 0, None);
     return Ok(());
   }
 
@@ -6868,7 +6905,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   if cli.headless_crash_smoke
     || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_some()
   {
-    return run_headless_crash_smoke_mode(download_dir);
+    let res = run_headless_crash_smoke_mode(download_dir);
+    if res.is_ok() {
+      emit_run_end(0, 0, 0, None);
+    }
+    return res;
   }
   if cli.headless_download_smoke
     || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE").is_some()
@@ -6884,11 +6925,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .into(),
       );
     };
-    return run_headless_download_smoke_mode(download_dir, page_url);
+    let res = run_headless_download_smoke_mode(download_dir, page_url);
+    if res.is_ok() {
+      emit_run_end(0, 0, 0, None);
+    }
+    return res;
   }
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     if cli.js_enabled {
-      return run_headless_vmjs_smoke_mode();
+      let res = run_headless_vmjs_smoke_mode();
+      if res.is_ok() {
+        emit_run_end(0, 0, 0, None);
+      }
+      return res;
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
@@ -6901,7 +6950,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
 
-    return run_headless_smoke_mode(
+    let frames_presented = u64::from(perf_log_enabled);
+    let res = run_headless_smoke_mode(
       startup_session,
       source,
       session_path,
@@ -6909,6 +6959,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       renderer_watchdog_timeout,
       perf_log_writer.clone(),
     );
+    if res.is_ok() {
+      emit_run_end(frames_presented, 0, 0, None);
+    }
+    return res;
   }
 
   if cli.js_enabled {
@@ -10363,7 +10417,10 @@ fn run_headless_smoke_mode(
   // requiring a windowed winit/wgpu stack.
   if let Some(writer) = perf_log_writer.as_ref() {
     let now = Instant::now();
-    let t_ms = writer.borrow().ms_since_start(now);
+    let t_ms = {
+      let writer = writer.borrow();
+      writer.ms_since_start(now)
+    };
     let event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms,
@@ -10376,7 +10433,10 @@ fn run_headless_smoke_mode(
       window_minimized: false,
       breakdown: perf_log::UiFrameBreakdownMs::default(),
     };
-    writer.borrow_mut().emit(&event);
+    if let Ok(mut writer) = writer.try_borrow_mut() {
+      writer.emit(&event);
+      writer.flush();
+    }
   }
 
   Ok(())
