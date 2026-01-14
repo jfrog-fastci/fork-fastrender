@@ -295,3 +295,74 @@ fn generator_for_in_var_decl_object_destructuring_computed_key_from_yield_resump
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_computed_key_survives_gc_between_yield_and_resume() {
+  let mut rt = new_runtime();
+
+  rt
+    .exec_script(
+      r#"
+        function* g() {
+          var o = {m: 1};
+          var x;
+          ({[yield 0]: x} = o);
+          return x;
+        }
+        globalThis.it = g();
+        globalThis.r1 = it.next();
+        r1.done === false && r1.value === 0
+      "#,
+    )
+    .unwrap();
+
+  // Force GC while the generator is suspended inside the destructuring pattern.
+  for _ in 0..5 {
+    rt.heap.collect_garbage();
+  }
+
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next("m");
+        r2.done === true && r2.value === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_assignment_default_survives_gc_between_yield_and_resume() {
+  let mut rt = new_runtime();
+
+  rt
+    .exec_script(
+      r#"
+        function* g() {
+          var x;
+          ({a: x = yield 0} = {});
+          return x;
+        }
+        globalThis.it = g();
+        globalThis.r1 = it.next();
+        r1.done === false && r1.value === 0
+      "#,
+    )
+    .unwrap();
+
+  // Force GC while the generator is suspended inside the destructuring pattern.
+  for _ in 0..5 {
+    rt.heap.collect_garbage();
+  }
+
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(7);
+        r2.done === true && r2.value === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
