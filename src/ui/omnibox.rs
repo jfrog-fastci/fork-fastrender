@@ -325,9 +325,6 @@ impl OmniboxProvider for VisitedProvider {
     let matches = ctx.visited.search(input, VISITED_LIMIT);
     let mut out = Vec::with_capacity(matches.len());
     for record in matches {
-      if record.url.trim().is_empty() {
-        continue;
-      }
       let title = record
         .title
         .as_ref()
@@ -737,7 +734,7 @@ fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
   }
 
   // Strip userinfo (`user:pass@`).
-  let hostport = match authority.rfind('@') {
+  let hostport = match memrchr(b'@', authority.as_bytes()) {
     Some(at) => &authority[at + 1..],
     None => authority,
   };
@@ -751,7 +748,7 @@ fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
     //
     // Note: `url::Url::host_str()` returns the bracketed form (`[::1]`), so we keep the brackets
     // here for scoring parity.
-    let close = hostport.find(']')?;
+    let close = memchr(b']', hostport.as_bytes())?;
     if close <= 1 {
       return None;
     }
@@ -768,7 +765,7 @@ fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
 
     &hostport[..(close + 1)]
   } else {
-    match hostport.find(':') {
+    match memchr(b':', hostport.as_bytes()) {
       Some(colon) => {
         let host = &hostport[..colon];
         let port = &hostport[colon + 1..];
