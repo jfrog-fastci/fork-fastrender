@@ -98,3 +98,56 @@ fn select_multiple_arrow_down_preserves_other_selections() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn select_multiple_arrow_up_preserves_other_selections() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <select multiple size="4">
+          <option selected>Option 0</option>
+          <option>Option 1</option>
+          <option selected>Option 2</option>
+          <option>Option 3</option>
+        </select>
+      </body>
+    </html>
+  "#;
+
+  let options = RenderOptions::new().with_viewport(200, 200);
+  let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
+  doc.render_frame_with_scroll_state()?;
+
+  let mut engine = InteractionEngine::new();
+  let after_up = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+    let mut changed = false;
+
+    let select_id = find_first_select_node_id(dom);
+    let (focus_changed, _action) = engine.focus_node_id(dom, Some(select_id), true);
+    changed |= focus_changed;
+
+    assert_eq!(selected_option_indices(dom), vec![0, 2]);
+
+    changed |= engine.key_action_with_box_tree(dom, Some(box_tree), KeyAction::ArrowUp);
+    let after_up = selected_option_indices(dom);
+
+    (changed, after_up)
+  })?;
+
+  assert!(
+    after_up.contains(&0),
+    "expected ArrowUp in <select multiple> to preserve unrelated selections (option 0)"
+  );
+  assert_eq!(
+    after_up,
+    vec![0, 1],
+    "expected ArrowUp in <select multiple> to move the active selection (last selected option) \
+     up without clearing other selections"
+  );
+
+  Ok(())
+}
