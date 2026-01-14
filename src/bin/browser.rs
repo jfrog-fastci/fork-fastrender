@@ -20941,7 +20941,12 @@ impl App {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = open_file_with_os_default(&path) {
-              self.show_chrome_toast_kind(fastrender::ui::ToastKind::Error, err);
+              let kind = if fastrender::ui::downloads::missing_path_toast_message(&path).is_some() {
+                fastrender::ui::ToastKind::Warning
+              } else {
+                fastrender::ui::ToastKind::Error
+              };
+              self.show_chrome_toast_kind(kind, err);
             }
           }
           Err(toast_text) => {
@@ -20965,7 +20970,12 @@ impl App {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = reveal_file_in_os_file_manager(&path) {
-              self.show_chrome_toast_kind(fastrender::ui::ToastKind::Error, err);
+              let kind = if fastrender::ui::downloads::missing_path_toast_message(&path).is_some() {
+                fastrender::ui::ToastKind::Warning
+              } else {
+                fastrender::ui::ToastKind::Error
+              };
+              self.show_chrome_toast_kind(kind, err);
             }
           }
           Err(toast_text) => {
