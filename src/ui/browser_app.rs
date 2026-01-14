@@ -891,7 +891,6 @@ impl BrowserTabState {
       tab_close_a11y_label_cache: std::cell::RefCell::new(
         crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
       ),
-      ),
       #[cfg(any(test, feature = "browser_ui"))]
       tab_search_row_a11y_label_cache:
         crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache::default(),
