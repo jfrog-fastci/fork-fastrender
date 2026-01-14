@@ -1271,6 +1271,13 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
           || expr_is_object_destructuring_assignment_with_supported_await(expr)
       }
 
+      // `export default await <expr>;`
+      //
+      // Only support the direct-`await` form for now.
+      Stmt::ExportDefaultExpr(export_default) => {
+        expr_is_direct_await_without_nested_await(&export_default.stx.expression)
+      }
+
       // `throw await <expr>;` as a standalone statement item.
       Stmt::Throw(throw_stmt) => match &*throw_stmt.stx.value.stx {
         Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {

@@ -16455,6 +16455,8 @@ enum HirAsyncActive {
   DestructuringAssign(AsyncDestructuringAssignState),
   /// Suspended at a direct `await <expr>;` expression statement.
   AwaitExprStmt { next_stmt_index: usize },
+  /// Suspended at an `export default await <expr>;` statement.
+  AwaitExportDefaultExpr { next_stmt_index: usize },
   /// Suspended at an assignment expression statement whose RHS was a direct `await <expr>`
   /// (`x = await <expr>;` / `x += await <expr>;`).
   AwaitAssignmentStmt {
@@ -16489,6 +16491,7 @@ impl HirAsyncActive {
       HirAsyncActive::TryStmt(state) => state.teardown(heap),
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
+      | HirAsyncActive::AwaitExportDefaultExpr { .. }
       | HirAsyncActive::AwaitAssignmentStmt { pending_assign: None, .. }
       | HirAsyncActive::AwaitDestructuringAssignStmt { .. }
       | HirAsyncActive::AwaitReturn
@@ -17269,6 +17272,86 @@ impl HirAsyncState {
                   scope,
                   evaluator.script.source.as_ref(),
                   await_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+
+          HirAsyncActive::AwaitExportDefaultExpr { next_stmt_index } => {
+            let next_stmt_index = *next_stmt_index;
+            let await_offset = self.await_stmt_offset;
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "hir async export default await missing resume value",
+              ));
+            };
+            self.active = None;
+
+            let await_stmt_index = next_stmt_index.saturating_sub(1);
+            let stmt_offset = match &self.body_kind {
+              HirAsyncBodyKind::Block { stmts } => stmts
+                .get(await_stmt_index)
+                .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                .map(|stmt| stmt.span.start)
+                .unwrap_or(0),
+              HirAsyncBodyKind::Expr { .. } => 0,
+            };
+
+            // Promise rejection becomes a throw at the await site.
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  await_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            };
+
+            let export_res: Result<(), VmError> = (|| {
+              let mut export_scope = scope.reborrow();
+              export_scope.push_root(resumed_value)?;
+
+              let binding_name = "*default*";
+              let env = evaluator.env.lexical_env();
+              if !export_scope.heap().env_has_binding(env, binding_name)? {
+                return Err(VmError::InvariantViolation(
+                  "export default expression missing *default* binding",
+                ));
+              }
+              export_scope
+                .heap_mut()
+                .env_initialize_binding(env, binding_name, resumed_value)?;
+              Ok(())
+            })();
+
+            match export_res {
+              Ok(()) => {
+                self.next_stmt_index = next_stmt_index;
+                continue;
+              }
+              Err(err) => {
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
                   err,
                 );
                 match err {
@@ -18277,9 +18360,52 @@ impl HirAsyncState {
       // Note: this only supports *direct* awaits at the statement level (not nested `await` in
       // arbitrary expressions). This is sufficient to cover common patterns like:
       // - `await expr;`
+      // - `export default await expr;`
       // - `return await expr;`
       // - `throw await expr;`
       // - `const/let/var x = await expr;`
+
+      // `export default await <expr>;`
+      if let hir_js::StmtKind::ExportDefaultExpr(expr_id) = &stmt.kind {
+        let expr = evaluator.get_expr(body, *expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          for _ in 0..label_tick_count {
+            evaluator.vm.tick()?;
+          }
+
+          // Budget once for the statement and once for the await expression itself.
+          evaluator.vm.tick()?;
+          evaluator.vm.tick()?;
+
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                stmt_offset,
+                err,
+              );
+              return match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => Err(other),
+              };
+            }
+          };
+
+          self.active = Some(HirAsyncActive::AwaitExportDefaultExpr {
+            next_stmt_index: self.next_stmt_index.saturating_add(1),
+          });
+          self.await_stmt_offset = stmt_offset;
+          return Ok(HirAsyncResult::Await {
+            kind: crate::exec::AsyncSuspendKind::Await,
+            await_value,
+          });
+        }
+      }
 
       // `await <expr>;`
       if let hir_js::StmtKind::Expr(expr_id) = &stmt.kind {

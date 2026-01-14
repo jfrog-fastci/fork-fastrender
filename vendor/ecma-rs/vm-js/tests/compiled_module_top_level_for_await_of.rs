@@ -1335,3 +1335,83 @@ fn compiled_module_top_level_nested_labeled_object_destructuring_assignment_with
   hooks.teardown(&mut rt);
   result
 }
+
+#[test]
+fn compiled_module_top_level_export_default_await_expr_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        export default await Promise.resolve("i");
+      "#,
+    )?;
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "export default with a direct await expression should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    record.compiled = Some(compiled);
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let (promise, module) = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(vm, heap, global_object, realm_id, m, &mut host, &mut hooks) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+      (promise, m)
+    };
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        return Ok(());
+      }
+    }
+
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns = modules.get_module_namespace(module, vm, &mut scope)?;
+    let Value::String(default) = ns_get(vm, &mut host, &mut hooks, &mut scope, ns, "default")? else {
+      panic!("expected module export 'default' to be a string");
+    };
+    assert_eq!(scope.heap().get_string(default)?.to_utf8_lossy(), "i");
+    Ok(())
+  })();
+
+  hooks.teardown(&mut rt);
+  result
+}
