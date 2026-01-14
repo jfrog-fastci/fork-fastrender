@@ -182,6 +182,49 @@ struct BookmarksListCache {
   rows: Vec<BookmarkRow>,
 }
 
+fn rebuild_list_cache(
+  ctx: &egui::Context,
+  store: &BookmarkStore,
+  query: &str,
+  prev_cache: Option<BookmarksListCache>,
+  cache_revision: u64,
+  folder_open_revision: u64,
+) -> BookmarksListCache {
+  BookmarksListCache {
+    cache_revision,
+    search_query: query.to_string(),
+    folder_open_revision,
+    rows: build_visible_rows(ctx, store, query, prev_cache),
+  }
+}
+
+fn take_or_rebuild_list_cache(
+  ctx: &egui::Context,
+  store: &BookmarkStore,
+  query: &str,
+  prev_cache: Option<BookmarksListCache>,
+  needs_rebuild: bool,
+  cache_revision: u64,
+  folder_open_revision: u64,
+) -> BookmarksListCache {
+  if needs_rebuild {
+    rebuild_list_cache(
+      ctx,
+      store,
+      query,
+      prev_cache,
+      cache_revision,
+      folder_open_revision,
+    )
+  } else {
+    prev_cache.unwrap_or_else(|| {
+      // Defensive: if the cache was cleared between the `needs_rebuild` check and
+      // `take()`, recompute it instead of panicking.
+      rebuild_list_cache(ctx, store, query, None, cache_revision, folder_open_revision)
+    })
+  }
+}
+
 #[derive(Debug, Clone)]
 struct BookmarksFolderCache {
   folder_revision: u64,
@@ -1015,17 +1058,16 @@ fn bookmarks_list(
 
     // Move the cache out temporarily so row rendering can mutably borrow `state` without fighting
     // Rust's borrow checker.
-    let mut prev_cache = state.list_cache.take();
-    let mut cache = if needs_rebuild {
-      BookmarksListCache {
-        cache_revision,
-        search_query: query.to_string(),
-        folder_open_revision: open_rev,
-        rows: build_visible_rows(ui.ctx(), store, query, prev_cache.take()),
-      }
-    } else {
-      prev_cache.expect("list cache present when not rebuilding") // fastrender-allow-unwrap
-    };
+    let prev_cache = state.list_cache.take();
+    let mut cache = take_or_rebuild_list_cache(
+      ui.ctx(),
+      store,
+      query,
+      prev_cache,
+      needs_rebuild,
+      cache_revision,
+      open_rev,
+    );
 
     if !query.is_empty() && cache.rows.is_empty() {
       let empty = panel_empty_state(
@@ -2344,5 +2386,35 @@ mod tests {
       .unwrap()
       .contains("Failed to import bookmarks"));
     assert_eq!(state.import_json, "not valid json");
+  }
+
+  #[test]
+  fn list_cache_rebuilds_instead_of_panicking_when_missing() {
+    let ctx = egui::Context::default();
+    let mut store = BookmarkStore::default();
+    let _ = store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        None,
+      )
+      .expect("bookmark add should succeed");
+
+    let cache_revision = store.structure_revision();
+    let cache = super::take_or_rebuild_list_cache(
+      &ctx,
+      &store,
+      "",
+      None,
+      false,
+      cache_revision,
+      0,
+    );
+
+    assert_eq!(cache.cache_revision, cache_revision);
+    assert_eq!(cache.search_query, "");
+    assert_eq!(cache.folder_open_revision, 0);
+    assert_eq!(cache.rows.len(), 1);
+    assert_eq!(cache.rows[0].kind, super::BookmarkRowKind::Bookmark);
   }
 }

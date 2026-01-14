@@ -20,6 +20,13 @@ pub struct PanelHeaderOutput {
   pub close_response: egui::Response,
 }
 
+fn close_response_or_placeholder(
+  ui: &mut egui::Ui,
+  close_response: Option<egui::Response>,
+) -> egui::Response {
+  close_response.unwrap_or_else(|| ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()))
+}
+
 /// Standard side-panel header: leading icon + title, with a trailing close button.
 ///
 /// Callers own the close behavior via `on_close` so the widget can be reused by multiple panels.
@@ -63,10 +70,24 @@ pub fn panel_header_with_actions(
   });
 
   PanelHeaderOutput {
-    close_response: close_response.unwrap_or_else(|| {
-      // Defensive: the close button should always be rendered in the header layout.
-      ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-    }),
+    close_response: close_response_or_placeholder(ui, close_response),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn close_response_placeholder_is_zero_sized_and_non_clickable() {
+    let ctx = egui::Context::default();
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+      egui::CentralPanel::default().show(ctx, |ui| {
+        let resp = close_response_or_placeholder(ui, None);
+        assert_eq!(resp.rect.size(), egui::Vec2::ZERO);
+        assert!(!resp.clicked());
+      });
+    });
   }
 }
 

@@ -902,7 +902,11 @@ impl BookmarkStore {
         entry.title = new_title;
         (old_url, entry.url.clone())
       }
-      BookmarkNode::Folder(_) => unreachable!("validated above"),
+      BookmarkNode::Folder(_) => {
+        return Err(BookmarkError::InvalidStore(
+          "update: id is a folder".to_string(),
+        ));
+      }
     };
 
     if old_url != new_url_for_index {
@@ -1261,7 +1265,7 @@ impl BookmarkStore {
           let legacy: LegacyUrls = serde_json::from_value(serde_json::Value::Object(map))
             .map_err(|err| BookmarkError::InvalidStore(err.to_string()))?;
           Ok((
-            Self::from_legacy_urls(legacy.urls),
+            Self::from_legacy_urls(legacy.urls)?,
             BookmarkStoreMigration::FromLegacyUrls,
           ))
         } else {
@@ -1280,16 +1284,22 @@ impl BookmarkStore {
     }
   }
 
-  fn from_legacy_urls(urls: BTreeSet<String>) -> Self {
+  fn from_legacy_urls(urls: BTreeSet<String>) -> Result<Self, BookmarkError> {
+    Self::from_legacy_urls_with_next_id(urls, default_next_id())
+  }
+
+  fn from_legacy_urls_with_next_id(
+    urls: BTreeSet<String>,
+    next_id: BookmarkId,
+  ) -> Result<Self, BookmarkError> {
     let mut store = Self::default();
+    store.next_id = next_id;
     for url in urls {
       // Deterministic migration: preserve the BTreeSet iteration order and use `0` for unknown
       // timestamps.
-      store
-        .add_with_timestamp(url.clone(), Some(url), None, 0)
-        .expect("alloc id should not fail during migration");
+      store.add_with_timestamp(url.clone(), Some(url), None, 0)?;
     }
-    store
+    Ok(store)
   }
 
   fn from_legacy_headless_array(entries: Vec<serde_json::Value>) -> Result<Self, BookmarkError> {
@@ -1391,17 +1401,16 @@ impl BookmarkStore {
     }
 
     // Capture cheap metadata about the node before moving `node` into `self.nodes`.
-    let is_folder = matches!(&node, BookmarkNode::Folder(_));
-    let is_bookmark = !is_folder;
+    let (is_folder, bookmark_url) = match &node {
+      BookmarkNode::Folder(_) => (true, None),
+      BookmarkNode::Bookmark(entry) => (false, Some(entry.url.clone())),
+    };
+    let is_bookmark = bookmark_url.is_some();
 
     self.nodes.insert(id, node);
     match self.attach_to_parent_list(id, parent) {
       Ok(()) => {
-        if is_bookmark {
-          let url = match self.nodes.get(&id) {
-            Some(BookmarkNode::Bookmark(entry)) => entry.url.clone(),
-            _ => unreachable!("inserted bookmark node should remain a bookmark"),
-          };
+        if let Some(url) = bookmark_url {
           self.url_index_inc(url.as_str());
         }
         if is_folder {
@@ -2933,6 +2942,16 @@ mod tests {
     assert_eq!(b.url, "https://b.example/");
     assert_eq!(b.title.as_deref(), Some("https://b.example/"));
     assert_eq!(b.added_at_ms, 0);
+  }
+
+  #[test]
+  fn migrate_from_legacy_urls_aborts_on_id_exhaustion() {
+    let mut urls = BTreeSet::new();
+    urls.insert("https://example.com/".to_string());
+
+    let err = BookmarkStore::from_legacy_urls_with_next_id(urls, BookmarkId(u64::MAX))
+      .expect_err("expected id exhaustion");
+    assert!(matches!(err, BookmarkError::IdExhausted));
   }
 
   #[test]

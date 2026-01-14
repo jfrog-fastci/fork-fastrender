@@ -1,5 +1,8 @@
 use std::ffi::OsStr;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+
+use rustc_hash::FxHasher;
 
 /// Environment variable to override the browser download directory.
 pub const ENV_BROWSER_DOWNLOAD_DIR: &str = "FASTR_BROWSER_DOWNLOAD_DIR";
@@ -170,16 +173,47 @@ fn split_stem_ext(name: &str) -> (&str, Option<&str>) {
   (&name[..dot_idx], Some(&name[dot_idx + 1..]))
 }
 
+const MAX_NUMERIC_SUFFIX: u32 = 10_000;
+const MAX_HASH_SUFFIX_ATTEMPTS: u32 = 1_024;
+
+fn candidate_available(download_dir: &Path, candidate: &str) -> Option<PathBuf> {
+  let final_path = download_dir.join(candidate);
+  let part_path = part_path_for_final(&final_path);
+
+  if !final_path.exists() && !part_path.exists() {
+    Some(final_path)
+  } else {
+    None
+  }
+}
+
+fn hash_suffix_token(stem: &str, ext: Option<&str>, attempt: u32) -> String {
+  let mut hasher = FxHasher::default();
+  stem.hash(&mut hasher);
+  ext.hash(&mut hasher);
+  attempt.hash(&mut hasher);
+  format!("{:016x}", hasher.finish())
+}
+
 /// Choose a deterministic non-colliding path in `download_dir` for `requested_name`.
 ///
 /// If `foo.ext` exists, we try `foo (1).ext`, `foo (2).ext`, ... (Chrome-like). The suffix is added
 /// before the last extension; for extensionless names it is appended at the end.
 pub fn choose_unique_download_path(download_dir: &Path, requested_name: &str) -> PathBuf {
+  choose_unique_download_path_with_max_suffix(download_dir, requested_name, MAX_NUMERIC_SUFFIX)
+}
+
+fn choose_unique_download_path_with_max_suffix(
+  download_dir: &Path,
+  requested_name: &str,
+  max_numeric_suffix: u32,
+) -> PathBuf {
   let sanitized = sanitize_download_filename(requested_name);
   let (stem, ext) = split_stem_ext(&sanitized);
   let stem = if stem.is_empty() { "download" } else { stem };
 
-  for idx in 0u32.. {
+  let mut idx = 0u32;
+  loop {
     let candidate = if idx == 0 {
       sanitized.clone()
     } else if let Some(ext) = ext {
@@ -188,20 +222,43 @@ pub fn choose_unique_download_path(download_dir: &Path, requested_name: &str) ->
       format!("{stem} ({idx})")
     };
 
-    let final_path = download_dir.join(&candidate);
-    let part_path = part_path_for_final(&final_path);
+    if let Some(path) = candidate_available(download_dir, &candidate) {
+      return path;
+    }
 
-    if !final_path.exists() && !part_path.exists() {
-      return final_path;
+    if idx >= max_numeric_suffix {
+      break;
+    }
+
+    // `idx` is bounded by `max_numeric_suffix`, which is a `u32` passed in by the caller. Use a
+    // checked add anyway to avoid debug-build overflow panics if the limit is ever changed.
+    idx = match idx.checked_add(1) {
+      Some(next) => next,
+      None => break,
+    };
+  }
+
+  // If all numeric suffixes were exhausted (or we hit the configured cap), fall back to a hashed
+  // suffix. This avoids a panic from iterator overflow (`0u32..`) and guarantees termination.
+  for attempt in 0..MAX_HASH_SUFFIX_ATTEMPTS {
+    let token = hash_suffix_token(stem, ext, attempt);
+    let candidate = if let Some(ext) = ext {
+      format!("{stem} ({token}).{ext}")
+    } else {
+      format!("{stem} ({token})")
+    };
+    if let Some(path) = candidate_available(download_dir, &candidate) {
+      return path;
     }
   }
 
-  // Defensive: all u32 suffixes were exhausted. Fall back to a larger numeric suffix.
-  let overflow_idx = u64::from(u32::MAX) + 1;
+  // As a last resort, return the final attempt's candidate even if it collides; the caller should
+  // still use create-new semantics when opening the file.
+  let token = hash_suffix_token(stem, ext, MAX_HASH_SUFFIX_ATTEMPTS);
   let candidate = if let Some(ext) = ext {
-    format!("{stem} ({overflow_idx}).{ext}")
+    format!("{stem} ({token}).{ext}")
   } else {
-    format!("{stem} ({overflow_idx})")
+    format!("{stem} ({token})")
   };
   download_dir.join(candidate)
 }
@@ -413,5 +470,26 @@ mod tests {
       ),
       os
     );
+  }
+
+  #[test]
+  fn choose_unique_download_path_falls_back_to_hashed_suffix_when_numeric_exhausted() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+
+    // Exhaust the numeric candidates for a low suffix cap:
+    // - `foo.txt` exists
+    // - `foo (1).txt.part` exists (in-progress download)
+    std::fs::write(dir.path().join("foo.txt"), b"existing").expect("write base file");
+    let colliding = dir.path().join("foo (1).txt");
+    std::fs::write(part_path_for_final(&colliding), b"partial").expect("write part file");
+
+    let chosen = choose_unique_download_path_with_max_suffix(dir.path(), "foo.txt", 1);
+    let chosen_again = choose_unique_download_path_with_max_suffix(dir.path(), "foo.txt", 1);
+
+    assert_eq!(chosen, chosen_again, "expected deterministic fallback path");
+    assert!(!chosen.exists(), "expected chosen path to not exist yet");
+    assert_ne!(chosen.file_name(), Some(OsStr::new("foo.txt")));
+    assert_ne!(chosen.file_name(), Some(OsStr::new("foo (1).txt")));
+    assert_eq!(chosen.extension(), Some(OsStr::new("txt")));
   }
 }
