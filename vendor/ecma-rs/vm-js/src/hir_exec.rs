@@ -216,11 +216,14 @@ fn compiled_constructor_body_construct(
           )?),
         }
       }
-      // ECMA-262: derived constructors that return a non-object *other than `undefined`* must throw
-      // a TypeError rather than falling back to `this`.
-      _ => Err(VmError::TypeError(
+
+      // ECMA-262: if a derived constructor returns a non-object value other than `undefined`,
+      // `new` must throw a TypeError (even if `super()` was never called).
+      _ => Err(throw_type_error(
+        vm,
+        &mut scope,
         "Derived constructors may only return an object or undefined",
-      )),
+      )?),
     }
   }
 }

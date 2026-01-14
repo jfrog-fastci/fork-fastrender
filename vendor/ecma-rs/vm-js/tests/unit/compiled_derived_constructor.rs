@@ -84,3 +84,53 @@ fn compiled_derived_constructor_super_called_twice_throws_reference_error() -> R
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
+
+#[test]
+fn compiled_derived_constructor_returning_primitive_throws_type_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Catchable in JS: derived constructors returning a primitive must throw TypeError (not fall back
+  // to `this`, and not throw ReferenceError due to missing `super()`).
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      (() => {
+        class B {}
+        class D extends B {
+          constructor() {
+            return 1;
+          }
+        }
+        try { new D(); return "no"; } catch (e) { return e.name; }
+      })()
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+
+  // Uncaught errors should surface to the host as a ThrowWithStack with at least one frame.
+  let err = exec_compiled(
+    &mut rt,
+    r#"
+      (() => {
+        class B {}
+        class D extends B {
+          constructor() {
+            return 1;
+          }
+        }
+        new D();
+      })()
+    "#,
+  )
+  .unwrap_err();
+  match err {
+    VmError::ThrowWithStack { stack, .. } => {
+      assert!(!stack.is_empty(), "expected ThrowWithStack frames");
+    }
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+
+  Ok(())
+}
