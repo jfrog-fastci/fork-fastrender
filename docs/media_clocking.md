@@ -59,6 +59,32 @@ Compile-only check for developers (does not open an audio device; runs a tiny un
 bash scripts/cargo_agent.sh test --features audio_cpal --lib audio_cpal_feature_compiles -- --exact
 ```
 
+## Audio engine configuration (`FASTR_AUDIO_*`)
+
+FastRender’s audio output pipeline is configured by `AudioEngineConfig` (`src/media/audio/config.rs`).
+Values are read once from `FASTR_AUDIO_*` environment variables and clamped to hard limits (see
+`src/media/audio/limits.rs`). Unit tests can override the process-global config via
+`crate::media::audio::set_audio_engine_config(...)`.
+
+Important: this config is read directly from the process environment (not via `RuntimeToggles`).
+
+Key knobs:
+
+- `FASTR_AUDIO_STREAM_MAX_BUFFER_MS` — per-sink buffered audio limit (default 2000ms; hard cap 5000ms).
+- `FASTR_AUDIO_MAX_STREAMS` — global cap on concurrently active audio sinks (default 32).
+- `FASTR_AUDIO_BUFFER_BUDGET` — global buffered-audio budget across all sinks (default 32 MiB;
+  accepts `kb`/`mb`/`gb`/`kib`/`mib`/`gib` suffixes and `_` separators).
+
+When the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op sink (push
+accepts 0 samples). The effective limit is:
+
+```text
+min(FASTR_AUDIO_MAX_STREAMS, FASTR_AUDIO_BUFFER_BUDGET / bytes_per_sink)
+```
+
+…where `bytes_per_sink` is derived from the output format (sample rate/channels) and
+`FASTR_AUDIO_STREAM_MAX_BUFFER_MS`.
+
 ---
 
 ## Key definitions (terminology)

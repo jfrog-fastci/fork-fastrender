@@ -15,9 +15,10 @@ The rendering pipeline parses most `FASTR_*` environment variables once into a t
 [`RuntimeToggles`](../src/debug/runtime.rs) structure. Library callers can override those values
 without mutating the process environment by constructing a `RuntimeToggles` instance and supplying
 it via `FastRender::builder().runtime_toggles(...)` or `RenderOptions::with_runtime_toggles(...)`.
-+
-Some knobs are intentionally **not** part of `RuntimeToggles` (for example, `FASTRENDER_AVSYNC_*` in
-`src/media/av_sync.rs`) and are read directly from the process environment (`std::env`).
+
+Some knobs are intentionally read directly from the process environment (`std::env`) instead of via
+`RuntimeToggles` (for example, `FASTRENDER_AVSYNC_*` in `src/media/av_sync.rs` and the audio engine
+`FASTR_AUDIO_*` configuration in `src/media/audio/config.rs`).
 
 Pageset/profiling runners typically invoke FastRender in `--release` mode, so `FASTR_*` toggles are the primary way to run controlled compatibility experiments (A/B against Chrome/pageset fixtures) without rebuilding.
 
@@ -91,6 +92,14 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `FASTR_VP9_DECODE_THREADS=<N>` – override the number of threads used by the bundled libvpx VP9
     decoder (used by `src/media/decoder.rs`).
   - Defaults to `min(available_parallelism(), 4)` and is clamped to at least 1.
+- Media playback (audio output / `FASTR_AUDIO_*`):
+  - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS=<ms>` – per-sink buffered audio limit (default 2000ms; clamped
+    to a hard cap; see `src/media/audio/config.rs`).
+  - `FASTR_AUDIO_MAX_STREAMS=<N>` – global cap on concurrently active audio sinks (default 32).
+  - `FASTR_AUDIO_BUFFER_BUDGET=<bytes>` – global buffered-audio memory budget (default 32 MiB).
+    - Accepts `kb`/`mb`/`gb`/`kib`/`mib`/`gib` suffixes and `_` separators.
+  - When the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op sink
+    (push accepts 0 samples) to bound memory usage.
 - `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
   - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
   - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.

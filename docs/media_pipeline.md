@@ -27,7 +27,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | MP4 demux (`Mp4ParseDemuxer`) | ✅ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (feature: `media_mp4`/`media`; used by [`NativeBackend`](../src/media/backends/native.rs) via [`MediaDemuxer`](../src/media/demuxer.rs); H.264/VP9 video + AAC audio; rejects encrypted/protected tracks; mp4parse sample-table DTS/PTS/duration; seek-by-PTS threshold (no keyframe backtracking yet)) |
 | MP4 demux + packetizer (`Mp4PacketDemuxer`, mp4 crate) | ⚠️ (in-tree; not used by `NativeBackend`) | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; `mp4` crate + mp4parse metadata; yields packets ordered by DTS (decode order) with best-effort DTS/PTS/duration + keyframe seek; sample-table caps; falls back to mp4 crate timestamps when mp4parse tables are unavailable) |
 | MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ (not wired) | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently used by `NativeBackend`/`MediaDecodePipeline`) |
-| MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4ParseDemuxer`/`Mp4PacketDemuxer`) |
+| MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; safety caps on sample-table sizes + per-sample bytes; currently separate from `Mp4ParseDemuxer`/`Mp4PacketDemuxer`) |
 | AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
 | Opus decoder | ✅ | [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`/`media`; `opus` crate / libopus; mapping family 0 mono/stereo only today) |
 | H.264 decoder | ✅ | [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `codec_h264_openh264`/`media`; OpenH264; MP4 length-prefixed NALs → Annex B) |
@@ -387,6 +387,12 @@ Useful runtime toggles while debugging:
     `FASTRENDER_AVSYNC_*` vars are read directly from the process environment.
 - VP9 decode threading (libvpx, used by `src/media/decoder.rs::create_video_decoder`):
   - `FASTR_VP9_DECODE_THREADS=<N>` (defaults to `min(available_parallelism(), 4)`).
+- Audio output limits (used by `src/media/audio/config.rs` + `src/media/audio/engine.rs`):
+  - `FASTR_AUDIO_STREAM_MAX_BUFFER_MS`
+  - `FASTR_AUDIO_MAX_STREAMS`
+  - `FASTR_AUDIO_BUFFER_BUDGET`
+  - Note: when the effective sink limit is reached, `AudioEngine::create_sink*` returns a no-op
+    sink (push accepts 0 samples).
 
 Note: full end-to-end decode→paint→DOM integration is still in progress. Today these pages are
 primarily a smoke test for `<video>/<audio>` layout and for future playback wiring.
