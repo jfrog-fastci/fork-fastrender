@@ -2840,6 +2840,7 @@ mod tests {
   mod effective_scroll_state_test;
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
+  mod scroll_anchoring_depends_on_scroll_offset_test;
   mod scroll_anchoring_missing_anchor_test;
   mod scroll_anchoring_scroll_padding_test;
   mod scroll_anchoring_writing_mode_test;
