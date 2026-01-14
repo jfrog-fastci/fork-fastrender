@@ -295,6 +295,146 @@ impl FindInPageMatchLabelCache {
   }
 }
 
+#[derive(Debug, Clone, Default)]
+struct DownloadsUiLabelCache {
+  hover_active_count: usize,
+  hover_received_bytes: u64,
+  hover_total_bytes: Option<u64>,
+  hover_panel_open: bool,
+  hover_label: String,
+  badge_active_count: usize,
+  badge_label: String,
+  progress_received_bytes: u64,
+  progress_total_bytes: Option<u64>,
+  progress_label: String,
+}
+
+impl DownloadsUiLabelCache {
+  fn update(
+    &mut self,
+    active_count: usize,
+    received_bytes: u64,
+    total_bytes: Option<u64>,
+    downloads_panel_open: bool,
+  ) {
+    if active_count > 0 {
+      self.update_hover_label(active_count, received_bytes, total_bytes, downloads_panel_open);
+      self.update_badge_label(active_count);
+      self.update_progress_label(received_bytes, total_bytes.filter(|t| *t > 0));
+    }
+  }
+
+  fn update_hover_label(
+    &mut self,
+    active_count: usize,
+    received_bytes: u64,
+    total_bytes: Option<u64>,
+    downloads_panel_open: bool,
+  ) {
+    if self.hover_active_count == active_count
+      && self.hover_received_bytes == received_bytes
+      && self.hover_total_bytes == total_bytes
+      && self.hover_panel_open == downloads_panel_open
+      && !self.hover_label.is_empty()
+    {
+      return;
+    }
+
+    let toggle_label = if downloads_panel_open {
+      "Hide downloads"
+    } else {
+      "Show downloads"
+    };
+
+    // "Show downloads: Downloading… (2) 1.2 MiB / 4.0 MiB"
+    self.hover_label.clear();
+    // 96 bytes is enough for typical
+    // `Show downloads: Downloading… (123) 123.4 MiB / 567.8 MiB` strings.
+    if self.hover_label.capacity() < 96 {
+      self.hover_label.reserve(96 - self.hover_label.capacity());
+    }
+    self.hover_label.push_str(toggle_label);
+    self.hover_label.push_str(": Downloading…");
+    if active_count > 1 {
+      let _ = write!(&mut self.hover_label, " ({active_count})");
+    }
+    self.hover_label.push(' ');
+    write_bytes(&mut self.hover_label, received_bytes);
+    if let Some(total) = total_bytes {
+      self.hover_label.push_str(" / ");
+      write_bytes(&mut self.hover_label, total);
+    }
+
+    self.hover_active_count = active_count;
+    self.hover_received_bytes = received_bytes;
+    self.hover_total_bytes = total_bytes;
+    self.hover_panel_open = downloads_panel_open;
+  }
+
+  fn update_progress_label(&mut self, received_bytes: u64, total_bytes: Option<u64>) {
+    if self.progress_received_bytes == received_bytes
+      && self.progress_total_bytes == total_bytes
+      && !self.progress_label.is_empty()
+    {
+      return;
+    }
+
+    self.progress_label.clear();
+    if self.progress_label.capacity() < 64 {
+      self.progress_label
+        .reserve(64 - self.progress_label.capacity());
+    }
+
+    if let Some(total) = total_bytes {
+      self.progress_label.push_str("Downloads progress: ");
+      write_bytes(&mut self.progress_label, received_bytes);
+      self.progress_label.push_str(" of ");
+      write_bytes(&mut self.progress_label, total);
+    } else if received_bytes > 0 {
+      self.progress_label.push_str("Downloads progress: ");
+      write_bytes(&mut self.progress_label, received_bytes);
+    } else {
+      self.progress_label.push_str("Downloads progress");
+    }
+
+    self.progress_received_bytes = received_bytes;
+    self.progress_total_bytes = total_bytes;
+  }
+
+  fn update_badge_label(&mut self, active_count: usize) {
+    if self.badge_active_count == active_count && !self.badge_label.is_empty() {
+      return;
+    }
+
+    if self.badge_label.capacity() < 4 {
+      self.badge_label.reserve(4 - self.badge_label.capacity());
+    }
+    self.badge_label.clear();
+    if active_count > 99 {
+      self.badge_label.push_str("99+");
+    } else {
+      let _ = write!(&mut self.badge_label, "{active_count}");
+    }
+    self.badge_active_count = active_count;
+  }
+}
+
+fn write_bytes(out: &mut String, bytes: u64) {
+  const KB: f64 = 1024.0;
+  const MB: f64 = KB * 1024.0;
+  const GB: f64 = MB * 1024.0;
+  let b = bytes as f64;
+  if b >= GB {
+    let _ = write!(out, "{:.1} GiB", b / GB);
+  } else if b >= MB {
+    let _ = write!(out, "{:.1} MiB", b / MB);
+  } else if b >= KB {
+    let _ = write!(out, "{:.1} KiB", b / KB);
+  } else {
+    let _ = write!(out, "{bytes} B");
+  }
+}
+
 mod tab_strip;
 
 fn show_menu_bar_env_override() -> Option<bool> {
@@ -1483,36 +1623,6 @@ pub fn chrome_ui_with_bookmarks(
       let warning = active_tab.and_then(|t| t.warning.as_deref());
 
       let downloads = app.downloads.aggregate_progress();
-      let downloads_panel_open = app.chrome.downloads_panel_open;
-      let downloads_toggle_label = if downloads_panel_open {
-        "Hide downloads"
-      } else {
-        "Show downloads"
-      };
-      let downloads_hover = if downloads.active_count == 0 {
-        std::borrow::Cow::Borrowed(downloads_toggle_label)
-      } else if let Some(total) = downloads.total_bytes {
-        let count = if downloads.active_count > 1 {
-          format!(" ({})", downloads.active_count)
-        } else {
-          String::new()
-        };
-        std::borrow::Cow::Owned(format!(
-          "{downloads_toggle_label}: Downloading…{count} {} / {}",
-          format_bytes(downloads.received_bytes),
-          format_bytes(total)
-        ))
-      } else {
-        let count = if downloads.active_count > 1 {
-          format!(" ({})", downloads.active_count)
-        } else {
-          String::new()
-        };
-        std::borrow::Cow::Owned(format!(
-          "{downloads_toggle_label}: Downloading…{count} {}",
-          format_bytes(downloads.received_bytes)
-        ))
-      };
 
       let back_tooltip = if cfg!(target_os = "macos") {
         "Back (Cmd+[)"
@@ -2029,155 +2139,164 @@ pub fn chrome_ui_with_bookmarks(
 
         ui.allocate_ui_at_rect(right_rect, |ui| {
           ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            // Downloads progress indicator (optional; shown to the left of the icon).
-            if downloads.active_count > 0 {
-              let (resp, a11y_label) = if let Some(total) = downloads.total_bytes.filter(|t| *t > 0)
-              {
-                let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-                let label = format!(
-                  "Downloads progress: {} of {}",
-                  format_bytes(downloads.received_bytes),
-                  format_bytes(total)
-                );
-                let resp = ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
-                (resp, label)
+            let downloads_panel_open = app.chrome.downloads_panel_open;
+            let downloads_label_cache_id = address_bar_id.with("downloads_label_cache");
+            let mut downloads_label_cache: DownloadsUiLabelCache = ctx.data_mut(|d| {
+              std::mem::take(
+                d.get_temp_mut_or_default::<DownloadsUiLabelCache>(downloads_label_cache_id),
+              )
+            });
+            downloads_label_cache.update(
+              downloads.active_count,
+              downloads.received_bytes,
+              downloads.total_bytes,
+              downloads_panel_open,
+            );
+
+            {
+              let downloads_toggle_label = if downloads_panel_open {
+                "Hide downloads"
               } else {
-                let label = if downloads.received_bytes > 0 {
-                  format!(
-                    "Downloads progress: {}",
-                    format_bytes(downloads.received_bytes)
-                  )
-                } else {
-                  "Downloads progress".to_string()
-                };
-                let resp = ui.add(
-                  egui::ProgressBar::new(0.0)
-                    .desired_width(50.0)
-                    .animate(motion.enabled)
-                    .text(""),
-                );
-                (resp, label)
+                "Show downloads"
               };
-              resp.widget_info({
-                let label = a11y_label.clone();
-                move || {
-                  // `egui` 0.23 does not have a dedicated progress widget type, so label the widget
-                  // with a descriptive `Label` for screen readers.
-                  egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+              let downloads_hover = if downloads.active_count == 0 {
+                downloads_toggle_label
+              } else {
+                downloads_label_cache.hover_label.as_str()
+              };
+              let downloads_progress_a11y_label = downloads_label_cache.progress_label.as_str();
+
+              // Downloads progress indicator (optional; shown to the left of the icon).
+              if downloads.active_count > 0 {
+                let resp = if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
+                  let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                  ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""))
+                } else {
+                  ui.add(
+                    egui::ProgressBar::new(0.0)
+                      .desired_width(50.0)
+                      .animate(motion.enabled)
+                      .text(""),
+                  )
+                };
+                resp.widget_info({
+                  let label = downloads_progress_a11y_label;
+                  move || {
+                    // `egui` 0.23 does not have a dedicated progress widget type, so label the widget
+                    // with a descriptive `Label` for screen readers.
+                    egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                  }
+                });
+              }
+
+              // Downloads button.
+              let (_id, downloads_rect) = ui.allocate_space(egui::vec2(button_side, button_side));
+              let downloads_id = address_bar_id.with("downloads");
+              let downloads_resp = ui.interact(downloads_rect, downloads_id, egui::Sense::click());
+              #[cfg(test)]
+              store_test_id(ctx, "chrome_downloads_button_id", downloads_resp.id);
+              show_tooltip_on_hover_or_focus(ui, &downloads_resp, downloads_hover);
+              downloads_resp.widget_info({
+                let label = downloads_hover;
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+              });
+
+              // Expose the button as an expanded/collapsed control so screen readers can announce
+              // whether the downloads side panel is open.
+              let _ = ctx.accesskit_node_builder(downloads_resp.id, |builder| {
+                builder.set_expanded(downloads_panel_open);
+                if downloads_panel_open {
+                  builder.add_action(accesskit::Action::Collapse);
+                  builder.remove_action(accesskit::Action::Expand);
+                } else {
+                  builder.add_action(accesskit::Action::Expand);
+                  builder.remove_action(accesskit::Action::Collapse);
                 }
               });
-            }
 
-            // Downloads button.
-            let (_id, downloads_rect) = ui.allocate_space(egui::vec2(button_side, button_side));
-            let downloads_id = address_bar_id.with("downloads");
-            let downloads_resp = ui.interact(downloads_rect, downloads_id, egui::Sense::click());
-            #[cfg(test)]
-            store_test_id(ctx, "chrome_downloads_button_id", downloads_resp.id);
-            show_tooltip_on_hover_or_focus(ui, &downloads_resp, downloads_hover.as_ref());
-            downloads_resp.widget_info({
-              let label = downloads_hover.as_ref();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
-            });
+              // AccessKit may request explicit expand/collapse actions when the node exposes an
+              // expanded state.
+              let expand_requested = ui.input(|i| {
+                i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Expand)
+              });
+              let collapse_requested = ui.input(|i| {
+                i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Collapse)
+              });
 
-            // Expose the button as an expanded/collapsed control so screen readers can announce
-            // whether the downloads side panel is open.
-            let downloads_panel_open = app.chrome.downloads_panel_open;
-            let _ = ctx.accesskit_node_builder(downloads_resp.id, |builder| {
-              builder.set_expanded(downloads_panel_open);
-              if downloads_panel_open {
-                builder.add_action(accesskit::Action::Collapse);
-                builder.remove_action(accesskit::Action::Expand);
-              } else {
-                builder.add_action(accesskit::Action::Expand);
-                builder.remove_action(accesskit::Action::Collapse);
+              // Micro-interaction: fade a subtle hover fill in/out.
+              let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
+              let hover_t = motion.animate_bool(
+                ui.ctx(),
+                downloads_id.with("hover"),
+                highlight,
+                motion.durations.hover_fade,
+              );
+              if hover_t > 0.0 {
+                let rounding = egui::Rounding::same(
+                  (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
+                );
+                ui.painter().rect_filled(
+                  downloads_rect,
+                  rounding,
+                  with_alpha(
+                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85),
+                    hover_t,
+                  ),
+                );
               }
-            });
 
-            // AccessKit may request explicit expand/collapse actions when the node exposes an
-            // expanded state.
-            let expand_requested = ui.input(|i| {
-              i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Expand)
-            });
-            let collapse_requested = ui.input(|i| {
-              i.has_accesskit_action_request(downloads_resp.id, accesskit::Action::Collapse)
-            });
-
-            // Micro-interaction: fade a subtle hover fill in/out.
-            let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
-            let hover_t = motion.animate_bool(
-              ui.ctx(),
-              downloads_id.with("hover"),
-              highlight,
-              motion.durations.hover_fade,
-            );
-            if hover_t > 0.0 {
-              let rounding = egui::Rounding::same(
-                (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
-              );
-              ui.painter().rect_filled(
+              let downloads_icon_color = if downloads.active_count > 0 || highlight {
+                ui.visuals().text_color()
+              } else {
+                ui.visuals().weak_text_color()
+              };
+              paint_icon_in_rect(
+                ui,
                 downloads_rect,
-                rounding,
-                with_alpha(
-                  ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85),
-                  hover_t,
-                ),
+                BrowserIcon::Download,
+                ui.spacing().icon_width,
+                downloads_icon_color,
               );
+
+              if downloads.active_count > 0 {
+                // Render a small count badge on the icon so multiple downloads are visible at a glance.
+                let count_text = downloads_label_cache.badge_label.as_str();
+                let badge_fill = ui.visuals().selection.stroke.color;
+                let [r, g, b, _] = badge_fill.to_array();
+                let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+                let badge_text_color = if luma > 150 {
+                  egui::Color32::BLACK
+                } else {
+                  egui::Color32::WHITE
+                };
+
+                let radius = (downloads_rect.height() * 0.23).clamp(6.0, 9.0);
+                let center = egui::pos2(
+                  downloads_rect.right() - radius,
+                  downloads_rect.top() + radius,
+                );
+                ui.painter().circle_filled(center, radius, badge_fill);
+                ui.painter().text(
+                  center,
+                  egui::Align2::CENTER_CENTER,
+                  count_text,
+                  egui::FontId::proportional((radius * 1.3).clamp(9.0, 12.0)),
+                  badge_text_color,
+                );
+              }
+
+              paint_focus_ring(ui, &downloads_resp, focus_ring);
+
+              if (expand_requested && !downloads_panel_open)
+                || (collapse_requested && downloads_panel_open)
+                || downloads_resp.clicked()
+                || keyboard_activate(ui, &downloads_resp)
+              {
+                actions.push(ChromeAction::ToggleDownloadsPanel);
+              }
             }
 
-            let downloads_icon_color = if downloads.active_count > 0 || highlight {
-              ui.visuals().text_color()
-            } else {
-              ui.visuals().weak_text_color()
-            };
-            paint_icon_in_rect(
-              ui,
-              downloads_rect,
-              BrowserIcon::Download,
-              ui.spacing().icon_width,
-              downloads_icon_color,
-            );
-
-            if downloads.active_count > 0 {
-              // Render a small count badge on the icon so multiple downloads are visible at a glance.
-              let count_text = if downloads.active_count > 99 {
-                "99+".to_string()
-              } else {
-                downloads.active_count.to_string()
-              };
-              let badge_fill = ui.visuals().selection.stroke.color;
-              let [r, g, b, _] = badge_fill.to_array();
-              let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
-              let badge_text_color = if luma > 150 {
-                egui::Color32::BLACK
-              } else {
-                egui::Color32::WHITE
-              };
-
-              let radius = (downloads_rect.height() * 0.23).clamp(6.0, 9.0);
-              let center = egui::pos2(
-                downloads_rect.right() - radius,
-                downloads_rect.top() + radius,
-              );
-              ui.painter().circle_filled(center, radius, badge_fill);
-              ui.painter().text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                count_text,
-                egui::FontId::proportional((radius * 1.3).clamp(9.0, 12.0)),
-                badge_text_color,
-              );
-            }
-
-            paint_focus_ring(ui, &downloads_resp, focus_ring);
-
-            if (expand_requested && !downloads_panel_open)
-              || (collapse_requested && downloads_panel_open)
-              || downloads_resp.clicked()
-              || keyboard_activate(ui, &downloads_resp)
-            {
-              actions.push(ChromeAction::ToggleDownloadsPanel);
-            }
+            ctx.data_mut(|d| d.insert_temp(downloads_label_cache_id, downloads_label_cache));
 
             // Loading status (optional; shown to the right of downloads).
             if loading && !is_compact {
