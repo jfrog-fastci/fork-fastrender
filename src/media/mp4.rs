@@ -13,7 +13,12 @@ use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
 
+use crate::error::{RenderError, RenderStage};
+use crate::render_control::{check_root, check_root_periodic};
+
 use super::{MediaData, MediaError, MediaPacket, MediaResult, MediaTrackType};
+
+const MP4_PARSE_DEADLINE_STRIDE: usize = 1024;
 
 // Hard cap on per-track sample tables (used for both full demuxing and seek-only indexing).
 //
@@ -32,6 +37,8 @@ pub enum Mp4Error {
   UnexpectedEof,
   #[error("invalid mp4 box size")]
   InvalidBoxSize,
+  #[error("render error: {0}")]
+  Render(#[from] RenderError),
   #[error("invalid mp4: {0}")]
   Invalid(&'static str),
   #[error(
@@ -165,6 +172,7 @@ impl Mp4Demuxer {
   }
 
   pub fn from_arc(bytes: Arc<[u8]>) -> Result<Self> {
+    check_root(RenderStage::Paint)?;
     let moov =
       find_top_level_box(bytes.as_ref(), fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
 
@@ -262,6 +270,7 @@ pub struct Mp4SeekIndex {
 
 impl Mp4SeekIndex {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    check_root(RenderStage::Paint)?;
     let moov = find_top_level_box(bytes, fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
 
     let tracks = parse_moov_seek(bytes, moov)?
@@ -463,8 +472,14 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   let mut samples = Vec::with_capacity(sample_count);
   let mut sample_idx = 0usize;
   let mut stsc_idx = 0usize;
+  let mut deadline_counter = 0usize;
 
   for (chunk_idx0, &chunk_base) in chunk_offsets.iter().enumerate() {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     if sample_idx >= sample_count {
       break;
     }
@@ -477,6 +492,11 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
     let mut offset = chunk_base;
     for _ in 0..samples_per_chunk {
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4_PARSE_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       if sample_idx >= sample_count {
         break;
       }
@@ -523,8 +543,14 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
   let mut dts_ticks: i64 = 0;
   let mut min_pts_ticks: i64 = i64::MAX;
+  let mut deadline_counter = 0usize;
 
   for sample in &mut samples {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let dur = stts_iter
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
@@ -555,7 +581,13 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
   let mut dts_ticks: i64 = 0;
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
+  let mut deadline_counter = 0usize;
   for sample in &samples {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let ctts_off = ctts_iter
       .next_i64()
       .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?;
@@ -584,7 +616,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   let pts_index = if pts_is_monotonic {
     PtsIndex::Monotonic
   } else {
-    build_sorted_pts_index(&pts_ns_by_sample)
+    build_sorted_pts_index(&pts_ns_by_sample)?
   };
 
   Ok(Mp4Track {
@@ -670,8 +702,14 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
   let mut pts_is_monotonic = true;
   let mut prev_pts_ns = 0_u64;
   let mut saw_prev_pts = false;
+  let mut deadline_counter = 0usize;
 
   for _ in 0..sample_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let dur = stts_iter
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
@@ -703,7 +741,7 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
   let pts_index = if pts_is_monotonic {
     PtsIndex::Monotonic
   } else {
-    build_sorted_pts_index(&pts_ns_by_sample)
+    build_sorted_pts_index(&pts_ns_by_sample)?
   };
 
   Ok(Mp4SeekTrack {
@@ -714,24 +752,43 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
   })
 }
 
-fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
+fn build_pts_index(pts_ns_by_sample: &[u64]) -> Result<PtsIndex> {
   // Helper used in tests; production code does the monotonic check while building the table.
   if pts_ns_by_sample.windows(2).all(|pair| pair[0] <= pair[1]) {
-    return PtsIndex::Monotonic;
+    return Ok(PtsIndex::Monotonic);
   }
   build_sorted_pts_index(pts_ns_by_sample)
 }
 
-fn build_sorted_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
+fn build_sorted_pts_index(pts_ns_by_sample: &[u64]) -> Result<PtsIndex> {
   // Non-monotonic (e.g. B-frames / CTTS reordering). Build a sorted index.
+  if pts_ns_by_sample.len() > u32::MAX as usize {
+    return Err(Mp4Error::Invalid("pts index sample table too large"));
+  }
+  let mut deadline_counter = 0usize;
   let mut sample_indices_by_pts = Vec::with_capacity(pts_ns_by_sample.len());
   for i in 0..pts_ns_by_sample.len() {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     // `stsz.sample_count` is a u32, so sample tables should always fit.
     sample_indices_by_pts.push(i as u32);
   }
   // We don't require stable ordering because we include the sample index as a tiebreaker (unique
   // key), so `sort_unstable_by_key` avoids the extra scratch allocations of the stable sort.
+  check_root_periodic(
+    &mut deadline_counter,
+    MP4_PARSE_DEADLINE_STRIDE,
+    RenderStage::Paint,
+  )?;
   sample_indices_by_pts.sort_unstable_by_key(|&i| (pts_ns_by_sample[i as usize], i));
+  check_root_periodic(
+    &mut deadline_counter,
+    MP4_PARSE_DEADLINE_STRIDE,
+    RenderStage::Paint,
+  )?;
 
   // Precompute suffix minima so seeking can return the first decode-order sample index with PTS >=
   // target without scanning the remainder of the list.
@@ -742,14 +799,19 @@ fn build_sorted_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
     .rev()
     .zip(sample_indices_by_pts.iter().rev())
   {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     min = min.min(idx);
     *dst = min;
   }
 
-  PtsIndex::Sorted {
+  Ok(PtsIndex::Sorted {
     sample_indices_by_pts,
     min_sample_index_from_pos,
-  }
+  })
 }
 
 fn ticks_to_ns(ticks: i64, timescale: u32) -> u64 {
@@ -903,39 +965,46 @@ impl<'a> Cursor<'a> {
   }
 
   fn read_u8(&mut self, end: usize) -> Result<u8> {
-    if self.pos + 1 > end {
+    let end_pos = self.pos.checked_add(1).ok_or(Mp4Error::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let v = self.data[self.pos];
-    self.pos += 1;
+    let v = *self.data.get(self.pos).ok_or(Mp4Error::UnexpectedEof)?;
+    self.pos = end_pos;
     Ok(v)
   }
 
   fn read_u16(&mut self, end: usize) -> Result<u16> {
-    if self.pos + 2 > end {
+    let end_pos = self.pos.checked_add(2).ok_or(Mp4Error::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let v = u16::from_be_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
-    self.pos += 2;
-    Ok(v)
+    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let arr: [u8; 2] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u16::from_be_bytes(arr))
   }
 
   fn read_u32(&mut self, end: usize) -> Result<u32> {
-    if self.pos + 4 > end {
+    let end_pos = self.pos.checked_add(4).ok_or(Mp4Error::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let v = u32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
-    self.pos += 4;
-    Ok(v)
+    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u32::from_be_bytes(arr))
   }
 
   fn read_u64(&mut self, end: usize) -> Result<u64> {
-    if self.pos + 8 > end {
+    let end_pos = self.pos.checked_add(8).ok_or(Mp4Error::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    let v = u64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
-    self.pos += 8;
-    Ok(v)
+    let bytes = self.data.get(self.pos..end_pos).ok_or(Mp4Error::UnexpectedEof)?;
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| Mp4Error::UnexpectedEof)?;
+    self.pos = end_pos;
+    Ok(u64::from_be_bytes(arr))
   }
 
   fn read_i32(&mut self, end: usize) -> Result<i32> {
@@ -944,10 +1013,11 @@ impl<'a> Cursor<'a> {
   }
 
   fn skip(&mut self, end: usize, len: usize) -> Result<()> {
-    if self.pos + len > end {
+    let end_pos = self.pos.checked_add(len).ok_or(Mp4Error::UnexpectedEof)?;
+    if end_pos > end || end_pos > self.data.len() {
       return Err(Mp4Error::UnexpectedEof);
     }
-    self.pos += len;
+    self.pos = end_pos;
     Ok(())
   }
 }
@@ -991,14 +1061,15 @@ fn next_box(cur: &mut Cursor<'_>, end: usize) -> Result<Option<BoxRef>> {
     return Err(Mp4Error::InvalidBoxSize);
   }
 
-  let box_end = start
-    .checked_add(size as usize)
-    .ok_or(Mp4Error::InvalidBoxSize)?;
+  let size_usize = usize::try_from(size).map_err(|_| Mp4Error::InvalidBoxSize)?;
+  let box_end = start.checked_add(size_usize).ok_or(Mp4Error::InvalidBoxSize)?;
   if box_end > end {
     return Err(Mp4Error::InvalidBoxSize);
   }
 
-  let content_start = start + header_len;
+  let content_start = start
+    .checked_add(header_len)
+    .ok_or(Mp4Error::InvalidBoxSize)?;
   let content_end = box_end;
 
   Ok(Some(BoxRef {
@@ -1011,7 +1082,13 @@ fn next_box(cur: &mut Cursor<'_>, end: usize) -> Result<Option<BoxRef>> {
 fn find_top_level_box(bytes: &[u8], typ: u32) -> Result<Option<Range<usize>>> {
   let mut cur = Cursor::new(bytes, 0);
   let end = bytes.len();
+  let mut deadline_counter = 0usize;
   while let Some(b) = next_box(&mut cur, end)? {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     if b.typ == typ {
       return Ok(Some(b.content));
     }
@@ -1023,8 +1100,14 @@ fn find_top_level_box(bytes: &[u8], typ: u32) -> Result<Option<Range<usize>>> {
 fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
   let mut cur = Cursor::new(bytes, moov.start);
   let mut tracks = Vec::new();
+  let mut deadline_counter = 0usize;
 
   while cur.pos < moov.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, moov.end)? else {
       break;
     };
@@ -1040,8 +1123,14 @@ fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
 fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxes>> {
   let mut cur = Cursor::new(bytes, moov.start);
   let mut tracks = Vec::new();
+  let mut deadline_counter = 0usize;
 
   while cur.pos < moov.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, moov.end)? else {
       break;
     };
@@ -1057,8 +1146,14 @@ fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxe
 fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
   let mut cur = Cursor::new(bytes, trak.start);
   let mut t = TrackBoxes::default();
+  let mut deadline_counter = 0usize;
 
   while cur.pos < trak.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, trak.end)? else {
       break;
     };
@@ -1080,8 +1175,14 @@ fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
 fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
   let mut cur = Cursor::new(bytes, trak.start);
   let mut t = SeekTrackBoxes::default();
+  let mut deadline_counter = 0usize;
 
   while cur.pos < trak.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, trak.end)? else {
       break;
     };
@@ -1102,7 +1203,13 @@ fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
 
 fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, mdia.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < mdia.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, mdia.end)? else {
       break;
     };
@@ -1122,7 +1229,13 @@ fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()
 
 fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, mdia.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < mdia.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, mdia.end)? else {
       break;
     };
@@ -1142,7 +1255,13 @@ fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> 
 
 fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, minf.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < minf.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, minf.end)? else {
       break;
     };
@@ -1156,7 +1275,13 @@ fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()
 
 fn parse_minf_seek(bytes: &[u8], minf: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, minf.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < minf.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, minf.end)? else {
       break;
     };
@@ -1170,7 +1295,13 @@ fn parse_minf_seek(bytes: &[u8], minf: Range<usize>, t: &mut SeekTrackBoxes) -> 
 
 fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, stbl.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < stbl.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, stbl.end)? else {
       break;
     };
@@ -1208,7 +1339,13 @@ fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()
 
 fn parse_stbl_seek(bytes: &[u8], stbl: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
   let mut cur = Cursor::new(bytes, stbl.start);
+  let mut deadline_counter = 0usize;
   while cur.pos < stbl.end {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let Some(b) = next_box(&mut cur, stbl.end)? else {
       break;
     };
@@ -1294,7 +1431,13 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
 
   let entry_count = cur.read_u32(stts.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let sample_count = cur.read_u32(stts.end)?;
     let sample_delta = cur.read_u32(stts.end)?;
     out.push(SttsEntry {
@@ -1317,7 +1460,13 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
 
   let entry_count = cur.read_u32(ctts.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let sample_count = cur.read_u32(ctts.end)?;
     let sample_offset = if version == 0 {
       i64::from(cur.read_u32(ctts.end)?)
@@ -1344,7 +1493,13 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
 
   let entry_count = cur.read_u32(stsc.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     let first_chunk = cur.read_u32(stsc.end)?;
     let samples_per_chunk = cur.read_u32(stsc.end)?;
     let _sample_desc = cur.read_u32(stsc.end)?;
@@ -1375,7 +1530,13 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
   let mut sample_sizes = Vec::new();
   if sample_size == 0 {
     sample_sizes = Vec::with_capacity(sample_count as usize);
+    let mut deadline_counter = 0usize;
     for _ in 0..sample_count {
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4_PARSE_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )?;
       sample_sizes.push(cur.read_u32(stsz.end)?);
     }
   }
@@ -1399,7 +1560,13 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
 
   let entry_count = cur.read_u32(stco.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(u64::from(cur.read_u32(stco.end)?));
   }
   Ok(out)
@@ -1417,7 +1584,13 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
 
   let entry_count = cur.read_u32(co64.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(cur.read_u64(co64.end)?);
   }
   Ok(out)
@@ -1435,7 +1608,13 @@ fn parse_stss(bytes: &[u8], stss: Range<usize>) -> Result<Vec<u32>> {
 
   let entry_count = cur.read_u32(stss.end)? as usize;
   let mut out = Vec::with_capacity(entry_count);
+  let mut deadline_counter = 0usize;
   for _ in 0..entry_count {
+    check_root_periodic(
+      &mut deadline_counter,
+      MP4_PARSE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )?;
     out.push(cur.read_u32(stss.end)?);
   }
   Ok(out)
@@ -1549,7 +1728,7 @@ mod tests {
     // Decode order sample indices: 0, 1, 2
     // PTS order: 0ns (0), 1000ns (2), 2000ns (1)
     let pts_ns_by_sample = vec![0_u64, 2_000, 1_000];
-    let pts_index = build_pts_index(&pts_ns_by_sample);
+    let pts_index = build_pts_index(&pts_ns_by_sample).unwrap();
     assert!(
       matches!(pts_index, PtsIndex::Sorted { .. }),
       "non-monotonic PTS must build a sorted seek index"
@@ -1796,6 +1975,35 @@ mod tests {
   }
 
   #[test]
+  fn mp4_parser_does_not_panic_on_truncated_buffers() {
+    // These intentionally truncated buffers historically exercised unchecked slice reads in the
+    // MP4 cursor helpers.
+    for bytes in [
+      &b""[..],
+      &b"\0"[..],
+      &b"\0\0\0\0"[..],
+      // Incomplete box header (< 8 bytes).
+      &b"\0\0\0\0\0\0\0"[..],
+      // A header that claims a larger size than the available bytes.
+      &b"\0\0\0\x10moov\0\0\0\0"[..],
+      // Extended size marker (size32 == 1) without enough bytes for the 64-bit size.
+      &b"\0\0\0\x01moov\0\0\0\0"[..],
+    ] {
+      let demux = std::panic::catch_unwind(|| Mp4Demuxer::new(bytes));
+      assert!(demux.is_ok(), "Mp4Demuxer::new panicked for len={}", bytes.len());
+      assert!(demux.unwrap().is_err());
+
+      let index = std::panic::catch_unwind(|| Mp4SeekIndex::from_bytes(bytes));
+      assert!(
+        index.is_ok(),
+        "Mp4SeekIndex::from_bytes panicked for len={}",
+        bytes.len()
+      );
+      assert!(index.unwrap().is_err());
+    }
+  }
+
+  #[test]
   fn seek_track_rejects_excessive_sample_counts() {
     let stts = vec![SttsEntry {
       sample_count: (MAX_SAMPLES_PER_TRACK as u32) + 1,
@@ -1814,5 +2022,29 @@ mod tests {
       }
       other => panic!("expected TooManySamples error, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn cursor_reads_are_bounds_checked_against_buffer_length() {
+    // Simulate a truncated buffer where the caller's `end` exceeds the available bytes.
+    let data = [0_u8];
+
+    let r = std::panic::catch_unwind(|| {
+      let mut cur = Cursor::new(&data, 0);
+      cur.read_u16(2)
+    });
+    assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+
+    let r = std::panic::catch_unwind(|| {
+      let mut cur = Cursor::new(&data, 0);
+      cur.read_u32(4)
+    });
+    assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+
+    let r = std::panic::catch_unwind(|| {
+      let mut cur = Cursor::new(&data, 0);
+      cur.read_u64(8)
+    });
+    assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
   }
 }
