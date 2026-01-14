@@ -218,8 +218,11 @@ impl AudioStreamHandle {
     if rate == 1.0 && in_rate_hz == out_rate_hz {
       let produced = decoded_samples.len();
       let accepted = self.inner.sink.push_interleaved_f32(decoded_samples);
-      if accepted < produced && self.inner.trace.is_enabled() {
-        let mut span = self.inner.trace.span("audio.sink.drop", "audio");
+      if accepted < produced {
+        let Some(mut span) = self.inner.trace.try_span("audio.sink.drop", "audio") else {
+          return Ok(accepted);
+        };
+        span.ensure_args_capacity(8);
         span.arg_u64("produced_samples", produced as u64);
         span.arg_u64("accepted_samples", accepted as u64);
         span.arg_u64("dropped_samples", produced.saturating_sub(accepted) as u64);
@@ -247,9 +250,9 @@ impl AudioStreamHandle {
       (((input_frames - 1) as f64) / step).floor().max(0.0) as usize + 1
     };
 
-    let trace_enabled = self.inner.trace.is_enabled();
-    let mut resample_span = if trace_enabled {
-      let mut span = self.inner.trace.span("audio.resample", "audio");
+    let mut resample_span = self.inner.trace.try_span("audio.resample", "audio");
+    if let Some(span) = resample_span.as_mut() {
+      span.ensure_args_capacity(12);
       span.arg_u64("input_frames", input_frames as u64);
       span.arg_u64("output_frames", output_frames as u64);
       span.arg_u64("channels", channels as u64);
@@ -260,10 +263,7 @@ impl AudioStreamHandle {
       if rate_milli.is_finite() && rate_milli >= 0.0 {
         span.arg_u64("playback_rate_milli", rate_milli as u64);
       }
-      Some(span)
-    } else {
-      None
-    };
+    }
 
     // Avoid allocating a new output buffer on every call by reusing a per-stream scratch buffer.
     // Resampling is driven by the decoder thread (not RT callback), so a mutex is acceptable here.
@@ -567,9 +567,7 @@ mod tests {
     let stream =
       AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::ZERO).expect("stream");
 
-    stream
-      .push_interleaved_f32(&[1.0, 2.0, 3.0])
-      .expect("push");
+    stream.push_interleaved_f32(&[1.0, 2.0, 3.0]).expect("push");
 
     stream.seek(Duration::from_secs(1));
     assert_eq!(stream.current_time(), Duration::from_secs(1));
@@ -591,13 +589,8 @@ mod tests {
     let device_clock: Arc<AudioDeviceClock> = Arc::new(backend.clock());
 
     let decoded_cfg = AudioStreamConfig::new(10, 1);
-    let stream = AudioStreamHandle::new(
-      decoded_cfg,
-      sink,
-      device_clock,
-      Duration::from_secs(5),
-    )
-    .expect("stream");
+    let stream = AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::from_secs(5))
+      .expect("stream");
 
     // Advance the device clock so we can detect accidental clock resets.
     backend.render(2); // 200ms at 10Hz.
@@ -626,9 +619,7 @@ mod tests {
     let stream =
       AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::ZERO).expect("stream");
 
-    stream
-      .push_interleaved_f32(&[1.0, 2.0, 3.0])
-      .expect("push");
+    stream.push_interleaved_f32(&[1.0, 2.0, 3.0]).expect("push");
 
     stream.pause();
     let t0 = stream.current_time();

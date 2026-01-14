@@ -77,7 +77,7 @@ impl TraceArgs {
   fn new() -> Self {
     // Most events only record a handful of args; pre-allocate a small fixed size to avoid repeated
     // growth reallocations in hot paths (including audio callbacks).
-    Self::with_capacity(8)
+    Self::with_capacity(4)
   }
 
   #[inline]
