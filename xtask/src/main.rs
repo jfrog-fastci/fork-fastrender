@@ -2533,7 +2533,30 @@ fn run_render_page(args: RenderPageArgs) -> Result<()> {
 
 fn run_browser(args: BrowserArgs) -> Result<()> {
   let repo_root = repo_root();
-  if let Some(path) = args.perf_log_out.as_ref() {
+  let BrowserArgs {
+    url,
+    release,
+    hud,
+    no_hud,
+    perf_log,
+    perf_log_out,
+    trace_out,
+    mem_limit_mb,
+    headless_smoke,
+  } = args;
+
+  let resolve_path = |path: PathBuf| {
+    if path.is_absolute() {
+      path
+    } else {
+      repo_root.join(path)
+    }
+  };
+
+  let perf_log_out = perf_log_out.map(resolve_path);
+  let trace_out = trace_out.map(resolve_path);
+
+  if let Some(path) = perf_log_out.as_ref() {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
       fs::create_dir_all(parent).with_context(|| {
         format!(
@@ -2543,7 +2566,7 @@ fn run_browser(args: BrowserArgs) -> Result<()> {
       })?;
     }
   }
-  if let Some(path) = args.trace_out.as_ref() {
+  if let Some(path) = trace_out.as_ref() {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
       fs::create_dir_all(parent).with_context(|| {
         format!(
@@ -2556,20 +2579,20 @@ fn run_browser(args: BrowserArgs) -> Result<()> {
   let cmd = xtask::browser::build_browser_command(
     &repo_root,
     &xtask::browser::BrowserCommandArgs {
-      url: args.url,
-      release: args.release,
-      hud: if args.hud {
+      url,
+      release,
+      hud: if hud {
         Some(true)
-      } else if args.no_hud {
+      } else if no_hud {
         Some(false)
       } else {
         None
       },
-      perf_log: args.perf_log || args.perf_log_out.is_some(),
-      perf_log_out: args.perf_log_out,
-      trace_out: args.trace_out,
-      mem_limit_mb: args.mem_limit_mb,
-      headless_smoke: args.headless_smoke,
+      perf_log: perf_log || perf_log_out.is_some(),
+      perf_log_out,
+      trace_out,
+      mem_limit_mb,
+      headless_smoke,
     },
   );
   println!("Running browser UI...");
