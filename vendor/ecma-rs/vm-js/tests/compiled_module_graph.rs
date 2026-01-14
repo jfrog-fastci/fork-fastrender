@@ -238,6 +238,16 @@ fn compiled_module_supports_anonymous_default_export_function_decls() -> Result<
     )?;
     graph.link_all_by_specifier();
 
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), a) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
+
     let promise = match graph.evaluate(
       &mut vm,
       &mut heap,
@@ -321,7 +331,7 @@ fn compiled_module_supports_anonymous_default_export_class_static_fields() -> Re
     record_a.compiled = Some(script_a);
     // Drop the AST so module evaluation must use the compiled HIR path.
     record_a.ast = None;
-    graph.add_module_with_specifier("a", record_a)?;
+    let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
       "b",
@@ -335,6 +345,16 @@ fn compiled_module_supports_anonymous_default_export_class_static_fields() -> Re
       )?,
     )?;
     graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
 
     let promise = match graph.evaluate(
       &mut vm,
@@ -416,6 +436,16 @@ fn compiled_module_rejection_error_object_has_throw_site_stack() -> Result<(), V
     record.ast = None;
     let m = graph.add_module_with_specifier("m.js", record)?;
     graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(m).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
 
     let promise = match graph.evaluate(
       &mut vm,
@@ -519,7 +549,7 @@ fn compiled_module_supports_anonymous_default_export_class_decls() -> Result<(),
     let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     record_a.ast = None;
-    graph.add_module_with_specifier("a", record_a)?;
+    let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
       "b",
@@ -533,6 +563,16 @@ fn compiled_module_supports_anonymous_default_export_class_decls() -> Result<(),
       )?,
     )?;
     graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
 
     let promise = match graph.evaluate(
       &mut vm,
@@ -616,7 +656,7 @@ fn compiled_module_export_default_expr_respects_statement_order() -> Result<(), 
     let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     record_a.ast = None;
-    graph.add_module_with_specifier("a", record_a)?;
+    let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
       "b",
@@ -629,6 +669,16 @@ fn compiled_module_export_default_expr_respects_statement_order() -> Result<(), 
       )?,
     )?;
     graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
 
     let promise = match graph.evaluate(
       &mut vm,
@@ -813,7 +863,7 @@ fn compiled_module_export_default_class_expr_constructs_and_applies_set_function
     let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     record_a.ast = None;
-    graph.add_module_with_specifier("a", record_a)?;
+    let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
       "b",
@@ -826,6 +876,16 @@ fn compiled_module_export_default_class_expr_constructs_and_applies_set_function
       )?,
     )?;
     graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
 
     let promise = match graph.evaluate(
       &mut vm,
