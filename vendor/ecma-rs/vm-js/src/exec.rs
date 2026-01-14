@@ -20195,6 +20195,39 @@ fn async_handle_body_result(
 
       Ok(Value::Undefined)
     }
+    Err(err) if err.is_throw_completion() => {
+      // A throw completion escaping resumed async evaluation must reject the async function promise,
+      // not throw from the `Await` reaction job callback (`async_resume_call`).
+      //
+      // This ensures `await` continuations are robust against unexpected throw-completion errors
+      // produced while resuming (e.g. internal helper errors or mis-propagated JS exceptions).
+      let mut call_scope = scope.reborrow();
+      let (source, offset) = source_offset_for_async_frames_best_effort(&cont.env, &cont.frames);
+      let err =
+        finalize_throw_with_stack_at_source_offset_best_effort(vm, &mut call_scope, source.as_ref(), offset, err);
+      let reason = match err {
+        VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
+        other => {
+          async_teardown_continuation(&mut call_scope, cont);
+          return Err(other);
+        }
+      };
+
+      if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+        async_teardown_continuation(&mut call_scope, cont);
+        return Err(err);
+      }
+      let res = vm.call_with_host_and_hooks(
+        host,
+        &mut call_scope,
+        hooks,
+        reject,
+        Value::Undefined,
+        &[reason],
+      );
+      async_teardown_continuation(&mut call_scope, cont);
+      res.map(|_| Value::Undefined)
+    }
     Err(err) => {
       // Fatal error during resumption: clean up roots/env to avoid leaks.
       async_teardown_continuation(scope, cont);
