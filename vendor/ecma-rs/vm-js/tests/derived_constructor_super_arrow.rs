@@ -368,3 +368,49 @@ fn derived_constructor_async_arrow_super_computed_proxy_receiver_is_instance_acr
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_calls_before_super_throw_before_await() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      async function run() {
+        let log = '';
+        class B {
+          m(v) {
+            this._x = (this._x || 0) + v;
+            return this._x;
+          }
+        }
+
+        class C extends B {
+          constructor() {
+            let keyThenable = { get then() { log += 'K'; return (resolve) => resolve('m'); } };
+            let argThenable = { get then() { log += 'A'; return (resolve) => resolve(1); } };
+
+            // Before `super()`: both calls must throw a ReferenceError *before* evaluating the
+            // awaited key/argument expressions (so the thenables must not run).
+            let p1 = (async () => {
+              try { return super.m(await argThenable); } catch (e) { return e.name; }
+            })();
+            let p2 = (async () => {
+              try { return super[await keyThenable](await argThenable); } catch (e) { return e.name; }
+            })();
+
+            super();
+            this.p1 = p1;
+            this.p2 = p2;
+          }
+        }
+
+        let o = new C();
+        let r1 = await o.p1;
+        let r2 = await o.p2;
+        return r1 + ',' + r2 + ':' + log;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "ReferenceError,ReferenceError:",
+  )?;
+  Ok(())
+}
