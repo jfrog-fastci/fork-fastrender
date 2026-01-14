@@ -6428,6 +6428,11 @@ impl WindowRectPx {
     let (bx1, by1, bx2, by2) = other.edges();
     ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1
   }
+
+  fn contains_point(self, x: i64, y: i64) -> bool {
+    let (x1, y1, x2, y2) = self.edges();
+    x >= x1 && x < x2 && y >= y1 && y < y2
+  }
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -6515,9 +6520,70 @@ fn adjust_offscreen_window_rect(
   }
 }
 
+/// When restoring a persisted window position without a size (e.g. older session versions or
+/// partially corrupted JSON), we still want to avoid restoring fully off-screen. Treat the stored
+/// `x`/`y` as a point: if that point is outside all monitor rects, move it onto the primary monitor
+/// (or nearest monitor when the primary is unavailable).
+#[cfg(any(test, feature = "browser_ui"))]
+fn adjust_offscreen_window_pos(
+  pos: (i64, i64),
+  monitors: &[WindowRectPx],
+  primary_monitor: Option<WindowRectPx>,
+) -> (i64, i64) {
+  if monitors.is_empty() && primary_monitor.is_none() {
+    return pos;
+  }
+
+  let (x, y) = pos;
+  let is_visible = monitors.iter().any(|m| m.contains_point(x, y))
+    || primary_monitor.is_some_and(|m| m.contains_point(x, y));
+  if is_visible {
+    return pos;
+  }
+
+  let point_rect = WindowRectPx {
+    x,
+    y,
+    width: 0,
+    height: 0,
+  };
+  let target_monitor = primary_monitor.or_else(|| {
+    monitors
+      .iter()
+      .copied()
+      .min_by_key(|m| rect_distance_sq(point_rect, *m))
+  });
+  let Some(target_monitor) = target_monitor else {
+    return pos;
+  };
+
+  let monitor_width = target_monitor.width.max(0);
+  let monitor_height = target_monitor.height.max(0);
+  if monitor_width == 0 || monitor_height == 0 {
+    return pos;
+  }
+
+  // Mirror `adjust_offscreen_window_rect` behavior: keep restored windows slightly away from the
+  // monitor edges to avoid hugging menu bars/panels.
+  const PADDING_PX: i64 = 32;
+  let x = {
+    let max_x = target_monitor
+      .x
+      .saturating_add(monitor_width.saturating_sub(1));
+    target_monitor.x.saturating_add(PADDING_PX).min(max_x)
+  };
+  let y = {
+    let max_y = target_monitor
+      .y
+      .saturating_add(monitor_height.saturating_sub(1));
+    target_monitor.y.saturating_add(PADDING_PX).min(max_y)
+  };
+  (x, y)
+}
+
 #[cfg(test)]
 mod window_restore_rect_tests {
-  use super::{adjust_offscreen_window_rect, WindowRectPx};
+  use super::{adjust_offscreen_window_pos, adjust_offscreen_window_rect, WindowRectPx};
 
   #[test]
   fn window_inside_monitor_is_unchanged() {
@@ -6603,6 +6669,40 @@ mod window_restore_rect_tests {
     assert!(adjusted.intersects(primary));
     assert_eq!(adjusted.width, primary.width);
     assert_eq!(adjusted.height, primary.height);
+  }
+
+  #[test]
+  fn offscreen_point_is_moved_onto_primary_monitor() {
+    let primary = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let pos = (999_999, 999_999);
+    let adjusted = adjust_offscreen_window_pos(pos, &[primary], Some(primary));
+    assert!(primary.contains_point(adjusted.0, adjusted.1));
+    assert_eq!(adjusted, (32, 32));
+  }
+
+  #[test]
+  fn offscreen_point_chooses_nearest_monitor_when_primary_missing() {
+    let left = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1000,
+      height: 800,
+    };
+    let right = WindowRectPx {
+      x: 2000,
+      y: 0,
+      width: 1000,
+      height: 800,
+    };
+    let pos = (1600, 10);
+    let adjusted = adjust_offscreen_window_pos(pos, &[left, right], None);
+    assert!(right.contains_point(adjusted.0, adjusted.1));
+    assert_eq!(adjusted, (2032, 32));
   }
 }
 
@@ -7444,7 +7544,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       // If the persisted window rect is fully outside the current monitor layout (e.g. a monitor was
       // unplugged since the session was saved), move it back onto the primary monitor so the window
       // always appears on-screen.
-      if let (Some((x, y)), Some((width, height))) = (persisted_pos, persisted_size) {
+      if let Some((x, y)) = persisted_pos {
         let monitors = target
           .available_monitors()
           .map(|monitor| {
@@ -7469,18 +7569,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         });
 
-        let adjusted = adjust_offscreen_window_rect(
-          WindowRectPx {
-            x,
-            y,
-            width,
-            height,
-          },
-          &monitors,
-          primary_monitor,
-        );
-        persisted_pos = Some((adjusted.x, adjusted.y));
-        persisted_size = Some((adjusted.width, adjusted.height));
+        if let Some((width, height)) = persisted_size {
+          let adjusted = adjust_offscreen_window_rect(
+            WindowRectPx {
+              x,
+              y,
+              width,
+              height,
+            },
+            &monitors,
+            primary_monitor,
+          );
+          persisted_pos = Some((adjusted.x, adjusted.y));
+          persisted_size = Some((adjusted.width, adjusted.height));
+        } else {
+          persisted_pos = Some(adjust_offscreen_window_pos((x, y), &monitors, primary_monitor));
+        }
       }
 
       if let Some((width, height)) = persisted_size {
