@@ -3,9 +3,10 @@
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 #
 # This suite intentionally stays small/fast while still exercising real module
-# semantics (static import/export, `import.meta`, and module instantiation-time
-# bindings). It focuses on tests that have `flags: [module]` (primarily under
-# `language/module-code/`) so contributors can start tracking module conformance.
+# semantics (static import/export, `import.meta`, top-level await, dynamic
+# `import()`, and JSON modules via import attributes). It focuses on tests that
+# have `flags: [module]` (primarily under `language/module-code/`) so
+# contributors can start tracking module conformance.
 tests = [
   # Stable baseline module early error.
   "language/module-code/early-export-unresolvable.js",
