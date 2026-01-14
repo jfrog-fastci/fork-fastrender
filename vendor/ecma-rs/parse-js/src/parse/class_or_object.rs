@@ -288,7 +288,7 @@ impl<'a> Parser<'a> {
                 // - `return` statements are never permitted (handled above via `in_function = 0`).
                 await_allowed: false,
                 yield_allowed: !is_module,
-                await_expr_allowed: ctx.rules.await_expr_allowed,
+                await_expr_allowed: false,
                 yield_expr_allowed: false,
               });
               let body =

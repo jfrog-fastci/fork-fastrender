@@ -1,6 +1,5 @@
 use crate::lex::Lexer;
 use crate::parse::Parser;
-use crate::operator::OperatorName;
 use crate::{Dialect, ParseOptions, SourceType};
 
 #[test]
