@@ -1153,9 +1153,9 @@ fn tab_search_overlay_ui(
                 let tab = &mut app.tabs[m.tab_index];
                 let is_selected = idx == selected;
 
-                let title = tab.display_title();
-                let secondary = tab_search_secondary_text(tab);
-                let a11y_label = tab.tab_search_row_accessible_label(title, secondary);
+                let title = tab.display_title().to_string();
+                let secondary = tab_search_secondary_text(tab).to_string();
+                let a11y_label = tab.tab_search_row_accessible_label(&title, &secondary);
 
                 // Use an explicit per-tab widget id so the AccessKit node id remains stable even if
                 // the filtered matches list reorders while the overlay is open.
@@ -1986,10 +1986,10 @@ pub fn chrome_ui_with_bookmarks(
           let url_generation = cache.active_url_generation();
           active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
           // Only rebuild the cached loading text when it will be visible.
-          let loading_text = if loading {
-            cache.loading_text(stage)
+          let loading_text: String = if loading {
+            cache.loading_text(stage).to_string()
           } else {
-            ""
+            String::new()
           };
           let indicator = cache.security_indicator();
           let formatted_url = cache.formatted_url();
@@ -2484,7 +2484,7 @@ pub fn chrome_ui_with_bookmarks(
             // Loading status (optional; shown to the right of downloads).
             if loading && !is_compact {
               let resp = ui.add(
-                egui::Label::new(egui::RichText::new(loading_text).small())
+                egui::Label::new(egui::RichText::new(loading_text.as_str()).small())
                   .wrap(false)
                   .truncate(true),
               );
@@ -2496,8 +2496,8 @@ pub fn chrome_ui_with_bookmarks(
               // In compact mode the spinner may be the only visible loading affordance, so expose the
               // full loading text to screen readers (hover text is not sufficient).
               resp.widget_info({
-                let label = loading_text;
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label)
+                let label = loading_text.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
               });
             }
 
@@ -4500,8 +4500,9 @@ pub fn chrome_ui_with_bookmarks(
         });
 
         if !popup_focus_ids.is_empty() {
+          let popup_focus_ids_for_temp = popup_focus_ids.clone();
           ctx.data_mut(|d| {
-            d.insert_temp(menu_focus_ids_id, popup_focus_ids);
+            d.insert_temp(menu_focus_ids_id, popup_focus_ids_for_temp);
           });
         }
 

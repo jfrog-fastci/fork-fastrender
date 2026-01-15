@@ -215,6 +215,19 @@ pub struct TabGroupState {
 }
 
 impl TabGroupState {
+  /// Create a new tab group state with the given parameters.
+  #[cfg(any(test, feature = "browser_ui"))]
+  pub fn new(id: TabGroupId, title: String, color: TabGroupColor, collapsed: bool) -> Self {
+    Self {
+      id,
+      title,
+      color,
+      collapsed,
+      tab_group_chip_a11y_label_cache:
+        crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
+    }
+  }
+
   #[cfg(any(test, feature = "browser_ui"))]
   pub(crate) fn tab_group_chip_accessible_label(&mut self) -> std::sync::Arc<str> {
     let title = if self.title.trim().is_empty() {

@@ -72,14 +72,6 @@ impl ClockMediaClock {
   }
 }
 
-impl std::fmt::Debug for ClockMediaClock {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("ClockMediaClock")
-      .field("clock", &"<dyn Clock>")
-      .finish()
-  }
-}
-
 impl MediaClock for ClockMediaClock {
   fn now(&self) -> Duration {
     self.clock.now()
@@ -312,13 +304,6 @@ impl MediaClock for AudioStreamClock {
   fn now(&self) -> Duration {
     Duration::from_nanos(self.compute_now_nanos())
   }
-}
-
-/// Whether a [`PlaybackClock`] timeline is currently advancing (`Playing`) or frozen (`Paused`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackState {
-  Playing,
-  Paused,
 }
 
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media

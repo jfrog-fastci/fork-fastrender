@@ -7261,7 +7261,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   impl BrowserWindow {
-    fn shutdown(self, shutdown_join_tracker: &mut fastrender::ui::ShutdownJoinTracker) {
+    fn shutdown(mut self, shutdown_join_tracker: &mut fastrender::ui::ShutdownJoinTracker) {
       self.app.shutdown(shutdown_join_tracker);
     }
 
@@ -8284,12 +8284,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       return;
     }
 
-    let mut autosave_requested_this_event = false;
-    let mut request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
-                                window_order: &[WindowId],
-                                active_window_id: Option<WindowId>,
-                                download_dir: &std::path::PathBuf| {
-      autosave_requested_this_event = true;
+    let autosave_requested_this_event = std::cell::Cell::new(false);
+    let request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
+                            window_order: &[WindowId],
+                            active_window_id: Option<WindowId>,
+                            download_dir: &std::path::PathBuf,
+                            appearance: &fastrender::ui::appearance::AppearanceSettings,
+                            home_url: &String| {
+      autosave_requested_this_event.set(true);
       let active_window_index = active_window_id
         .and_then(|id| window_order.iter().position(|other| *other == id))
         .unwrap_or(0)
@@ -8310,15 +8312,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let appearance = global_appearance.clone();
-      let home_url = global_home_url.clone();
-
       let mut session = fastrender::ui::BrowserSession::from_windows(
         session_windows,
         active_window_index,
-        appearance,
+        appearance.clone(),
       );
-      session.home_url = home_url;
+      session.home_url = home_url.clone();
       session.download_dir = Some(download_dir.clone());
       session.did_exit_cleanly = false;
       session_autosave.request_save(session);
@@ -8872,10 +8871,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
-        if profile_autosave_tx.is_some() && !history_autosave_full_sync_pending {
-          pending_history_autosave_deltas.extend(history_deltas);
-        }
-
         // Re-arm the global wake coalescer now that we've drained the worker message queues.
         //
         // We intentionally clear the global "pending" bit *after* draining so that worker threads
@@ -9026,7 +9021,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           |win| win.shutdown(&mut shutdown_join_tracker),
         );
 
-        request_autosave(&windows, &window_order, active_window_id, &download_dir);
+        request_autosave(&windows, &window_order, active_window_id, &download_dir, &global_appearance, &global_home_url);
       }
       Event::UserEvent(UserEvent::RequestPickDownloadDirectory(from_id)) => {
         // Best-effort: show a native folder picker using `rfd` so the user can update their
@@ -9072,7 +9067,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.window.request_redraw();
         }
 
-        request_autosave(&windows, &window_order, active_window_id, &download_dir);
+        request_autosave(&windows, &window_order, active_window_id, &download_dir, &global_appearance, &global_home_url);
       }
       Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
         let report_new_window_error =
@@ -10269,7 +10264,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       // immediately clone+save again.
       pending_window_state_autosave_deadline = None;
       window_state_autosave_due = false;
-      request_autosave(&windows, &window_order, active_window_id);
+      request_autosave(&windows, &window_order, active_window_id, &download_dir, &global_appearance, &global_home_url);
     }
 
     // Poll for session autosave write failures and surface them to the user as a non-blocking toast.
@@ -10310,13 +10305,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    if scroll_autosave_due && !autosave_requested_this_event {
+    if scroll_autosave_due && !autosave_requested_this_event.get() {
       // We're about to persist the latest session snapshot; clear any pending debounces so we don't
       // immediately clone+save again.
       pending_window_state_autosave_deadline = None;
       window_state_autosave_due = false;
       let _ = session_save_scheduler.take_pending();
-      request_autosave(&windows, &window_order, active_window_id);
+      request_autosave(&windows, &window_order, active_window_id, &download_dir, &global_appearance, &global_home_url);
     }
 
     // Process-wide CPU usage sampling (1Hz) for idle CPU diagnostics.
@@ -10897,12 +10892,12 @@ fn run_headless_smoke_mode(
           reason: RepaintReason::Scroll,
         })?;
 
-        let mut observed_scroll: Option<(f32, f32)> = None;
-        let mut frames_seen_after_scroll: u32 = 0;
+        let observed_scroll: std::cell::Cell<Option<(f32, f32)>> = std::cell::Cell::new(None);
+        let frames_seen_after_scroll: std::cell::Cell<u32> = std::cell::Cell::new(0);
 
-        let mut handle_scroll_msg = |msg: WorkerToUi| match msg {
+        let handle_scroll_msg = |msg: WorkerToUi| match msg {
           WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == active_tab_id => {
-            frames_seen_after_scroll = frames_seen_after_scroll.saturating_add(1);
+            frames_seen_after_scroll.set(frames_seen_after_scroll.get().saturating_add(1));
             let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
             if frame.viewport_css != VIEWPORT_CSS
               || (frame.dpr - DPR).abs() > 0.01
@@ -10913,7 +10908,7 @@ fn run_headless_smoke_mode(
 
             let pos_css = (frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
             if (pos_css.1 - scroll_to_y_css).abs() <= 2.0 {
-              observed_scroll = Some(pos_css);
+              observed_scroll.set(Some(pos_css));
             }
           }
           WorkerToUi::Stage { tab_id, stage } => {
@@ -10925,7 +10920,7 @@ fn run_headless_smoke_mode(
         match renderer_watchdog_timeout {
           Some(timeout) => {
             let deadline = Instant::now() + timeout;
-            while Instant::now() < deadline && observed_scroll.is_none() {
+            while Instant::now() < deadline && observed_scroll.get().is_none() {
               let remaining = deadline.saturating_duration_since(Instant::now());
               match renderer_backend.recv_timeout(
                 remaining.min(std::time::Duration::from_millis(200)),
@@ -10939,7 +10934,7 @@ fn run_headless_smoke_mode(
             }
           }
           None => {
-            while observed_scroll.is_none() {
+            while observed_scroll.get().is_none() {
               match renderer_backend.recv() {
                 Ok(msg) => handle_scroll_msg(msg),
                 Err(_) => {
@@ -10950,10 +10945,11 @@ fn run_headless_smoke_mode(
           }
         }
 
-        let Some(observed_scroll) = observed_scroll else {
+        let Some(observed_scroll_val) = observed_scroll.get() else {
+          let frames_seen = frames_seen_after_scroll.get();
           return Err(
             format!(
-              "timed out waiting for FrameReady with scroll_state.viewport.y ~= {scroll_to_y_css} (saw {frames_seen_after_scroll} frames after ScrollTo)"
+              "timed out waiting for FrameReady with scroll_state.viewport.y ~= {scroll_to_y_css} (saw {frames_seen} frames after ScrollTo)"
             )
             .into(),
           );
@@ -10964,7 +10960,7 @@ fn run_headless_smoke_mode(
           .get_mut(active_window_idx)
           .and_then(|window| window.tabs.get_mut(active_idx))
         {
-          tab.scroll_css = Some(observed_scroll);
+          tab.scroll_css = Some(observed_scroll_val);
         }
 
         renderer_backend.shutdown();
@@ -12539,7 +12535,6 @@ fn format_worker_wake_perf_log_line(line: &WorkerWakePerfLogLine) -> serde_json:
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug)]
 struct WorkerWakePerfLogger {
   window_id: String,
   counters: std::sync::Arc<WorkerWakeHudCounters>,
@@ -12558,6 +12553,29 @@ struct WorkerWakePerfLogger {
   followup_wakes_since_report: u64,
   last_drain: u64,
   max_drain_since_report: u64,
+}
+
+#[cfg(feature = "browser_ui")]
+impl std::fmt::Debug for WorkerWakePerfLogger {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WorkerWakePerfLogger")
+      .field("window_id", &self.window_id)
+      .field("counters", &self.counters)
+      .field("perf_log_writer", &"<perf log writer>")
+      .field("start_time", &self.start_time)
+      .field("last_report_at", &self.last_report_at)
+      .field("next_report_at", &self.next_report_at)
+      .field("prev_wake_events_sent", &self.prev_wake_events_sent)
+      .field("prev_wake_events_coalesced", &self.prev_wake_events_coalesced)
+      .field("drained_total", &self.drained_total)
+      .field("drained_since_report", &self.drained_since_report)
+      .field("wakes_since_report", &self.wakes_since_report)
+      .field("empty_wakes_since_report", &self.empty_wakes_since_report)
+      .field("followup_wakes_since_report", &self.followup_wakes_since_report)
+      .field("last_drain", &self.last_drain)
+      .field("max_drain_since_report", &self.max_drain_since_report)
+      .finish()
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -12772,7 +12790,6 @@ fn classify_idle_repaint_frame_activity(
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug)]
 struct IdleRepaintMonitor {
   /// Whether at least one frame has been presented already.
   ///
@@ -12796,6 +12813,25 @@ struct IdleRepaintMonitor {
       std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
     >,
   >,
+}
+
+#[cfg(feature = "browser_ui")]
+impl std::fmt::Debug for IdleRepaintMonitor {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("IdleRepaintMonitor")
+      .field("has_presented_once", &self.has_presented_once)
+      .field("had_winit_input_since_present", &self.had_winit_input_since_present)
+      .field("had_resize_since_present", &self.had_resize_since_present)
+      .field("had_worker_activity_since_present", &self.had_worker_activity_since_present)
+      .field("had_egui_repaint_request_since_present", &self.had_egui_repaint_request_since_present)
+      .field("idle_frames_total", &self.idle_frames_total)
+      .field("idle_frame_times", &self.idle_frame_times)
+      .field("idle_frames_per_sec", &self.idle_frames_per_sec)
+      .field("window_id", &self.window_id)
+      .field("last_perf_log", &self.last_perf_log)
+      .field("perf_log_writer", &self.perf_log_writer.as_ref().map(|_| "<perf log writer>"))
+      .finish()
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -12922,7 +12958,6 @@ impl IdleRepaintMonitor {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug)]
 struct ProcessCpuSampler {
   enabled: bool,
   perf_log_writer: Option<
@@ -12936,6 +12971,22 @@ struct ProcessCpuSampler {
   next_sample_deadline: Option<std::time::Instant>,
   cpu_time_ms_total: Option<u64>,
   cpu_percent_recent: Option<f64>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl std::fmt::Debug for ProcessCpuSampler {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ProcessCpuSampler")
+      .field("enabled", &self.enabled)
+      .field("perf_log_writer", &self.perf_log_writer.as_ref().map(|_| "<perf log writer>"))
+      .field("start_cpu_time", &self.start_cpu_time)
+      .field("last_sample_wall", &self.last_sample_wall)
+      .field("last_sample_cpu", &self.last_sample_cpu)
+      .field("next_sample_deadline", &self.next_sample_deadline)
+      .field("cpu_time_ms_total", &self.cpu_time_ms_total)
+      .field("cpu_percent_recent", &self.cpu_percent_recent)
+      .finish()
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -13117,7 +13168,6 @@ fn duration_to_ms(duration: std::time::Duration) -> f64 {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug)]
 struct ProcessRssSampler {
   enabled: bool,
   perf_log_writer: Option<
@@ -13127,6 +13177,18 @@ struct ProcessRssSampler {
   >,
   next_sample_deadline: Option<std::time::Instant>,
   rss_bytes: Option<u64>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl std::fmt::Debug for ProcessRssSampler {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ProcessRssSampler")
+      .field("enabled", &self.enabled)
+      .field("perf_log_writer", &self.perf_log_writer.as_ref().map(|_| "<perf log writer>"))
+      .field("next_sample_deadline", &self.next_sample_deadline)
+      .field("rss_bytes", &self.rss_bytes)
+      .finish()
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -13522,6 +13584,8 @@ impl PerfWindowLog {
       perf_log::InputKind::MouseWheel => self.pending_mouse_wheel.record(at),
       perf_log::InputKind::PointerMove => self.pending_pointer_move.record(at),
       perf_log::InputKind::Button => self.pending_button.record(at),
+      perf_log::InputKind::Mouse => self.pending_pointer_move.record(at),
+      perf_log::InputKind::Unknown => {}
     }
   }
 
@@ -13775,13 +13839,26 @@ fn _assert_send_page_subtree_accesskit_update() {
 }
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct TrustedAboutPrepared {
   url: String,
   viewport_css: (u32, u32),
   dpr: f32,
   prepared: fastrender::PreparedDocument,
   scroll_bounds: fastrender::scroll::ScrollBounds,
+}
+
+#[cfg(feature = "browser_ui")]
+impl std::fmt::Debug for TrustedAboutPrepared {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TrustedAboutPrepared")
+      .field("url", &self.url)
+      .field("viewport_css", &self.viewport_css)
+      .field("dpr", &self.dpr)
+      .field("prepared", &"<PreparedDocument>")
+      .field("scroll_bounds", &self.scroll_bounds)
+      .finish()
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -14241,6 +14318,17 @@ impl App {
     std::time::Duration::from_millis(1000);
   const MULTI_CLICK_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
   const MULTI_CLICK_MAX_DIST_POINTS: f32 = 4.0;
+
+  /// Returns whether media shortcuts (like 'm' for mute, 'f' for fullscreen) should be consumed
+  /// by a focused media element rather than being forwarded to the page as regular key input.
+  ///
+  /// This requires tracking whether a media element (video/audio) currently has focus, which is
+  /// not yet implemented. Without focus tracking, we fall back to forwarding all keys to the page
+  /// via the normal keyboard handling path, where the page's JavaScript can handle media shortcuts.
+  fn should_consume_media_shortcuts(&self) -> bool {
+    // Media focus tracking is not implemented. Forward keys to page normally.
+    false
+  }
 
   fn perf_record_input(&mut self, kind: perf_log::InputKind) {
     let Some(perf) = self.perf_log.as_mut() else {
@@ -15236,12 +15324,7 @@ impl App {
       runtime_groups.push(id);
       self.browser_state.tab_groups.insert(
         id,
-        fastrender::ui::TabGroupState {
-          id,
-          title: group.title,
-          color: group.color,
-          collapsed: group.collapsed,
-        },
+        fastrender::ui::TabGroupState::new(id, group.title, group.color, group.collapsed),
       );
     }
 
@@ -16370,7 +16453,12 @@ impl App {
       | UiToWorker::FindStop { tab_id }
       | UiToWorker::RequestRepaint { tab_id, .. }
       | UiToWorker::StartDownload { tab_id, .. }
-      | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
+      | UiToWorker::CancelDownload { tab_id, .. }
+      | UiToWorker::AccessKitActionRequest { tab_id, .. }
+      | UiToWorker::A11ySetValue { tab_id, .. }
+      | UiToWorker::A11ySetExpanded { tab_id, .. }
+      | UiToWorker::PageExport { tab_id, .. }
+      | UiToWorker::TestQueryJsDomAttribute { tab_id, .. } => Some(*tab_id),
     };
 
     // Flush buffered text input at a message boundary so the worker observes typed text before
@@ -16528,7 +16616,12 @@ impl App {
           | UiToWorker::Copy { .. }
           | UiToWorker::SelectAll { .. }
           | UiToWorker::StartDownload { .. }
-          | UiToWorker::CancelDownload { .. } => {}
+          | UiToWorker::CancelDownload { .. }
+          | UiToWorker::AccessKitActionRequest { .. }
+          | UiToWorker::A11ySetValue { .. }
+          | UiToWorker::A11ySetExpanded { .. }
+          | UiToWorker::PageExport { .. }
+          | UiToWorker::TestQueryJsDomAttribute { .. } => {}
         }
       }
     }
@@ -16696,19 +16789,20 @@ impl App {
   ) {
     use fastrender::ui::messages::{ScrollMetrics, WorkerToUi};
 
-    let Some(renderer) = self.ensure_trusted_about_renderer() else {
-      return;
-    };
-
-    // Keep relative URL resolution consistent with the worker's about-page handling.
-    renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
-
+    // Check if we need to reprepare before borrowing the renderer.
     let should_reprepare = match self.trusted_about_prepared.get(&tab_id) {
       Some(cached) => {
         cached.url != url || cached.viewport_css != viewport_css || (cached.dpr - dpr).abs() > 0.01
       }
       None => true,
     };
+
+    let Some(renderer) = self.ensure_trusted_about_renderer() else {
+      return;
+    };
+
+    // Keep relative URL resolution consistent with the worker's about-page handling.
+    renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
 
     if should_reprepare {
       let html = fastrender::ui::about_pages::html_for_about_url(url).unwrap_or_else(|| {
@@ -18299,7 +18393,10 @@ impl App {
         group: None,
       }],
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
+      downloads: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
       show_menu_bar: self.browser_state.chrome.show_menu_bar,
       window_state: None,
     };
@@ -18574,6 +18671,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: true,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
       fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id, request } => {
@@ -18610,6 +18708,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: true,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
       #[cfg(feature = "browser_ui")]
@@ -18632,6 +18731,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: true,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
       msg => msg,
@@ -23461,7 +23561,7 @@ impl App {
     self.open_download_dir_picker_rect = Some(popup.response.rect);
 
     match popup.inner {
-      Some(Action::Choose(raw)) => {
+      Some(Some(Action::Choose(raw))) => {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
           if let Some(dialog) = self.open_download_dir_picker.as_mut() {
@@ -23488,11 +23588,11 @@ impl App {
         self.close_download_dir_picker();
         self.window.request_redraw();
       }
-      Some(Action::Cancel) => {
+      Some(Some(Action::Cancel)) => {
         self.close_download_dir_picker();
         self.window.request_redraw();
       }
-      None => {}
+      Some(None) | None => {}
     }
   }
 
@@ -28634,7 +28734,8 @@ impl App {
               self.open_set_home_page_dialog();
             }
             fastrender::ui::MenuCommand::Quit => {
-              self.shutdown();
+              // Exit the event loop. Cleanup happens via drop, consistent with how
+              // single-window close is handled (see WindowEvent::CloseRequested).
               *control_flow = winit::event_loop::ControlFlow::Exit;
               return session_dirty;
             }
@@ -28851,7 +28952,7 @@ impl App {
       .is_some_and(|tab| tab.find.open);
 
     if self.browser_state.chrome.bookmarks_manager_open && !close_bookmarks_panel {
-      let output = fastrender::ui::panels::bookmarks_manager_side_panel(
+      let mut output = fastrender::ui::panels::bookmarks_manager_side_panel(
         &ctx,
         fastrender::ui::panels::BookmarksManagerInput {
           state: &mut self.bookmarks_manager,
@@ -30296,7 +30397,8 @@ impl App {
         }
         Err(wgpu::SurfaceError::OutOfMemory) => {
           eprintln!("wgpu surface out of memory; exiting");
-          self.shutdown();
+          // Exit the event loop. Cleanup happens via drop, consistent with how
+          // single-window close is handled (see WindowEvent::CloseRequested).
           *control_flow = winit::event_loop::ControlFlow::Exit;
           return session_dirty;
         }

@@ -152,54 +152,6 @@ impl DomIdLookupExt for super::dom_index::DomIndex {
 ///
 /// `HitTestContext` is intended to be created per message/frame when multiple hit tests are needed
 /// against the same immutable DOM + layout artifacts (e.g. pointer move dispatch + UI hover
-/// tracking, `elementsFromPoint` implementations, etc).
-///
-/// # Safety
-/// Internally, the indices store raw pointers into `dom`/`box_tree`. The context therefore **must
-/// not** outlive those trees and must not be used after structural DOM edits. This is enforced by
-/// borrowing the trees for the lifetime of the context.
-pub struct HitTestContext<'a> {
-  dom: &'a DomNode,
-  box_tree: &'a BoxTree,
-  fragment_tree: &'a FragmentTree,
-  box_index: BoxIndex<'a>,
-  dom_index: DomIndex<'a>,
-}
-
-impl<'a> HitTestContext<'a> {
-  pub fn new(dom: &'a DomNode, box_tree: &'a BoxTree, fragment_tree: &'a FragmentTree) -> Self {
-    Self {
-      dom,
-      box_tree,
-      fragment_tree,
-      box_index: BoxIndex::new(box_tree),
-      dom_index: DomIndex::new(dom),
-    }
-  }
-
-  /// Hit-test `point` (page/CSS coordinates) and return the topmost semantic target.
-  pub fn hit_test(&self, point: Point) -> Option<HitTestResult> {
-    hit_test_dom_with_indices(
-      self.dom,
-      &self.dom_index,
-      &self.box_index,
-      self.fragment_tree,
-      point,
-    )
-  }
-
-  /// Like [`HitTestContext::hit_test`], but returns *all* hit targets (topmost first).
-  pub fn hit_test_all(&self, point: Point) -> Vec<HitTestResult> {
-    hit_test_dom_all_with_indices(
-      self.dom,
-      &self.dom_index,
-      &self.box_index,
-      self.fragment_tree,
-      point,
-    )
-  }
-}
-
 pub(crate) struct BoxIndex<'a> {
   id_to_ptr: Vec<*const BoxNode>,
   parent: Vec<usize>,
@@ -930,7 +882,9 @@ pub fn hit_test_dom(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Option<HitTestResult> {
-  HitTestContext::new(dom, box_tree, fragment_tree).hit_test(point)
+  let dom_index = DomIndex::new(dom);
+  let box_index = BoxIndex::new(box_tree);
+  hit_test_dom_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
 }
 
 /// Like [`hit_test_dom`], but returns *all* hit targets (topmost first).
@@ -943,7 +897,9 @@ pub fn hit_test_dom_all(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Vec<HitTestResult> {
-  HitTestContext::new(dom, box_tree, fragment_tree).hit_test_all(point)
+  let dom_index = DomIndex::new(dom);
+  let box_index = BoxIndex::new(box_tree);
+  hit_test_dom_all_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
 }
 
 pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> Option<usize> {
@@ -1961,24 +1917,24 @@ mod dom_hit_testing_tests {
   #[test]
   fn hit_test_context_reuses_indices_and_matches_legacy_helpers() {
     let (dom, box_tree, fragment_tree, ..) = image_map_fixture();
-    let ctx = HitTestContext::new(&dom, &box_tree, &fragment_tree);
+    let ctx = HitTestContext::new(&dom, &box_tree);
 
     let p1 = Point::new(65.0, 65.0);
     let p2 = Point::new(85.0, 85.0);
 
     // Multiple calls against the same context should not panic and should match `hit_test_dom`.
-    let ctx_1a = ctx.hit_test(p1);
-    let ctx_1b = ctx.hit_test(p1);
+    let ctx_1a = ctx.hit_test_dom(&fragment_tree, p1);
+    let ctx_1b = ctx.hit_test_dom(&fragment_tree, p1);
     let fn_1 = hit_test_dom(&dom, &box_tree, &fragment_tree, p1);
     assert_eq!(ctx_1a, fn_1);
     assert_eq!(ctx_1b, fn_1);
 
-    let ctx_2 = ctx.hit_test(p2);
+    let ctx_2 = ctx.hit_test_dom(&fragment_tree, p2);
     let fn_2 = hit_test_dom(&dom, &box_tree, &fragment_tree, p2);
     assert_eq!(ctx_2, fn_2);
 
     assert_eq!(
-      ctx.hit_test_all(p1),
+      ctx.hit_test_dom_all(&fragment_tree, p1),
       hit_test_dom_all(&dom, &box_tree, &fragment_tree, p1)
     );
   }
