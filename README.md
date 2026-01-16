@@ -1,6 +1,6 @@
 # FastRender
 
-An experimental browser engine written in Rust, developed through collaborative parallel AI coding agents. Currently under development.
+An experimental browser engine written in Rust, developed as part of [research into collaborative parallel AI coding agents](https://cursor.com/blog/scaling-agents). Currently under development.
 
 ## Goals
 
