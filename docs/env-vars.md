@@ -244,6 +244,28 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_BROWSER_RESIZE_DPR_SCALE=<ratio>` – during interactive window resize drags, multiply the computed page DPR by this scale to reduce pixmap allocation + GPU upload work (helps keep the UI responsive).
   - Default: `0.5`.
   - Values are clamped to `0.25..=1.0` (set to `1.0` to disable DPR downscaling).
+- `FASTR_BROWSER_VIEWPORT_MAX_HZ=<hz>` – rate-limit `ViewportChanged` updates sent from the windowed UI to the render worker during normal (non-resize) viewport changes.
+  - Default: `30`.
+  - Values are clamped to `>= 1`; invalid/empty values are ignored. `_` separators are accepted.
+  - Tradeoff: lower values reduce layout/paint churn during rapid viewport changes but increase visible lag; higher values improve responsiveness at the cost of more worker load.
+- `FASTR_BROWSER_VIEWPORT_DEBOUNCE_MS=<ms>` – trailing-edge debounce window for normal viewport changes (emit the latest pending viewport after no new updates arrive for this duration).
+  - Default: `80ms`.
+  - Values are clamped to `0..=2000` (0 disables the debounce). `_` separators are accepted.
+  - Tradeoff: larger values suppress intermediate renders but delay the final viewport update.
+- `FASTR_BROWSER_VIEWPORT_RESIZE_MAX_HZ=<hz>` – override `FASTR_BROWSER_VIEWPORT_MAX_HZ` during interactive window resize drags.
+  - Default: `12` (interactive resize mode).
+  - Values are clamped to `>= 1`; invalid/empty values are ignored. `_` separators are accepted.
+  - If unset, the resize throttle inherits the normal `FASTR_BROWSER_VIEWPORT_*` settings.
+  - Tradeoff: lower values reduce resize churn but can make the UI feel sluggish; higher values keep resize responsive but increase CPU/GPU work.
+- `FASTR_BROWSER_VIEWPORT_RESIZE_DEBOUNCE_MS=<ms>` – override `FASTR_BROWSER_VIEWPORT_DEBOUNCE_MS` during interactive window resize drags.
+  - Default: `140ms` (interactive resize mode).
+  - Values are clamped to `0..=2000` (0 disables the debounce). `_` separators are accepted.
+  - If unset, the resize throttle inherits the normal `FASTR_BROWSER_VIEWPORT_*` settings.
+  - Tradeoff: larger values reduce intermediate renders but delay the final resize update.
+- `FASTR_BROWSER_PAGE_TEXTURE_BUCKET_PX=<px>` – allocation bucket size for page pixmap textures (rounds up wgpu texture allocations so resize bursts reuse the same GPU texture).
+  - Default: `64` px.
+  - Values are clamped to `1..=512`; invalid/empty values fall back to the default. `_` separators are accepted.
+  - Tradeoff: larger buckets reduce reallocations during resize but waste more GPU memory; smaller buckets reduce memory overhead but may trigger more frequent texture recreations/uploads.
 - `FASTR_BROWSER_WGPU_FALLBACK=1` – force `wgpu` to use a fallback (software) adapter when creating the windowed UI.
   - CLI equivalent: `browser --force-fallback-adapter` (alias: `browser --wgpu-fallback`).
   - This can help in environments without a discrete GPU, under remote desktop, or when GPU driver setup is incomplete.
@@ -369,6 +391,12 @@ see
   - Tip: to smoke-test audio tracing in the browser UI, set `FASTR_AUDIO_TEST_TONE=1` (plays a short
     startup tone; requires the `audio_cpal` build).
   - Legacy alias: `FASTR_PERF_TRACE_OUT=/path/to/trace.json`.
+- `FASTR_LOG_SCROLL_BLIT=0|1` – log scroll-blit fast-path decisions in the windowed browser UI.
+  - When enabled, the UI worker logs when the scroll blit optimization is used and, when it falls
+    back to a full repaint, the fallback reason (e.g. fixed/sticky content, scroll snap, scroll-driven
+    animations, non-integer device-pixel deltas, or find-in-page overlays).
+  - Default: disabled; any non-empty value other than `0`/`false`/`no`/`off` enables logging.
+  - Tradeoff: verbose per-scroll logging adds overhead/noise, so keep this off for normal runs.
 
 ### Appearance / accessibility / debugging (browser UX)
 

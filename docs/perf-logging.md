@@ -280,6 +280,7 @@ in [Perfetto UI](https://ui.perfetto.dev):
 
 - `FASTR_RENDER_TIMINGS=1` — prints high-level timing for parse/cascade/box_tree/layout/paint per page in the render binaries.
 - `FASTR_LOG_INTERACTION_INVALIDATION=1` — log which invalidation path `BrowserDocument` chose for each render (paint-only vs restyle vs relayout). Useful when validating hover/focus performance in renderer-chrome dogfooding.
+- `FASTR_LOG_SCROLL_BLIT=1` — log scroll-blit fast-path decisions in the windowed browser UI (including fallback reasons like fixed/sticky content or scroll snap). Useful for diagnosing scroll jank or missing scroll-blit coverage.
 - `FASTR_LAYOUT_PROFILE=1` — enables layout-context profiling (block/inline/flex/grid/table/absolute) with call counts and inclusive times.
 - `FASTR_GRID_MEASURE_CACHE_PROFILE=1` — enables grid item measurement cache counters (thread-local/shared hits + misses, including style-override key breakdown). Pair with `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES=1` to experiment with sharing override-key measurements across rayon threads.
 - `FASTR_FLEX_PROFILE=1` — flex-specific profiling (measure/compute/convert stats, cache hits). Optional helpers:
