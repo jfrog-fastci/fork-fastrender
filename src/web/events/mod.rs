@@ -621,6 +621,18 @@ impl EventListenerRegistry {
       .is_some_and(|listeners| !listeners.is_empty())
   }
 
+  /// Returns `true` if there is at least one listener registered for `type_` on ANY target.
+  ///
+  /// This is a fast check for scroll performance: if no `wheel` listeners exist anywhere,
+  /// we can skip the expensive per-scroll dispatch overhead entirely.
+  pub fn has_any_listeners_for_type(&self, type_: &str) -> bool {
+    self.listeners.borrow().values().any(|by_type| {
+      by_type
+        .get(type_)
+        .is_some_and(|listeners| !listeners.is_empty())
+    })
+  }
+
   /// Returns `true` if an exact listener registration exists.
   ///
   /// This is a lightweight query helper used by integrations that need to detect whether a listener

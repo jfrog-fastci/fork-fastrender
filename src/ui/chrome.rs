@@ -85,9 +85,8 @@ impl LoadingTextWidthCache {
     self.font_id = Some(font_id.clone());
     self.stage = stage;
     self.width = ui.fonts(|f| {
-      f.layout_no_wrap(text.to_owned(), font_id.clone(), ui.visuals().text_color())
-        .size()
-        .x
+      let galley = f.layout_no_wrap(text.to_owned(), font_id.clone(), ui.visuals().text_color());
+      galley.size().x
     });
     self.width
   }
@@ -1729,7 +1728,19 @@ pub fn chrome_ui_with_bookmarks(
   );
   let mut appearance_button_rect: Option<egui::Rect> = None;
   let mut appearance_opened_now = false;
-  egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
+  // Use a clean frame for the chrome panel: solid bottom border without inset shadows.
+  // This avoids the default egui panel styling which can look uneven at certain sizes.
+  let chrome_frame = egui::Frame {
+    inner_margin: egui::Margin::symmetric(8.0, 4.0),
+    outer_margin: egui::Margin::ZERO,
+    rounding: egui::Rounding::ZERO,
+    shadow: egui::epaint::Shadow::NONE,
+    fill: ctx.style().visuals.panel_fill,
+    stroke: egui::Stroke::new(1.0, ctx.style().visuals.widgets.noninteractive.bg_stroke.color),
+  };
+  egui::TopBottomPanel::top("chrome")
+    .frame(chrome_frame)
+    .show(ctx, |ui| {
     // Ensure icon-only chrome buttons meet the minimum hit target size.
     let interact_size = ui.spacing().interact_size;
     ui.spacing_mut().interact_size = egui::vec2(
@@ -1748,7 +1759,9 @@ pub fn chrome_ui_with_bookmarks(
     ui.separator();
 
     // Navigation + address bar row.
-    ui.horizontal(|ui| {
+    // Use `horizontal_centered` so all items (buttons, address bar) are vertically centered
+    // within the row height. Plain `horizontal` uses top alignment which causes misalignment.
+    ui.horizontal_centered(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
       // Avoid holding immutable borrows of the active tab across the full chrome UI: we mutate
       // various `BrowserAppState` fields in response to user actions.
@@ -2006,7 +2019,11 @@ pub fn chrome_ui_with_bookmarks(
       let button_side = ui.spacing().interact_size.y;
       let spacing_x = ui.spacing().item_spacing.x;
       // Reserve space for the right-side menu + appearance buttons (+ spacing between them).
-      let reserved_right = button_side * 2.0 + spacing_x * 2.0;
+      // egui automatically adds `spacing_x` between allocations in a horizontal layout.
+      // We want a slightly larger gap between the address bar pill and the menu button for
+      // visual clarity, so we add extra padding (8pt minimum total gap).
+      let extra_gap = (8.0 - spacing_x).max(0.0);
+      let reserved_right = button_side * 2.0 + spacing_x * 2.0 + extra_gap;
       let (_id, bar_rect) = ui.allocate_space(egui::vec2(
         (ui.available_width() - reserved_right).max(0.0),
         bar_height,
@@ -2147,8 +2164,10 @@ pub fn chrome_ui_with_bookmarks(
 
         let full_rect = ui.max_rect();
         let item_spacing = ui.spacing().item_spacing.x;
-        let button_side = ui.spacing().interact_size.y;
-        let icon_side = ui.spacing().icon_width;
+        // Use the inner_rect height for sizing elements, not interact_size.y which is larger.
+        // This ensures buttons and icons fit properly within the address bar's padded interior.
+        let button_side = full_rect.height();
+        let icon_side = ui.spacing().icon_width.min(full_rect.height());
         let badge_side = icon_side + badge_margin.left + badge_margin.right;
         let try_http_button_width = if show_try_http {
           let font_id = egui::TextStyle::Small.resolve(ui.style());

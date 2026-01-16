@@ -207,7 +207,7 @@ fn recv_msg_inner(
     msg_iov: &mut iov,
     msg_iovlen: 1,
     msg_control: control_ptr,
-    msg_controllen: control_buf_len,
+    msg_controllen: control_buf_len as _,
     msg_flags: 0,
   };
 
@@ -218,7 +218,7 @@ fn recv_msg_inner(
   #[cfg(any(target_os = "linux", target_os = "android"))]
   let read_len = loop {
     // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
-    hdr.msg_controllen = control_buf_len;
+    hdr.msg_controllen = control_buf_len as _;
     hdr.msg_flags = 0;
 
     // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
@@ -235,7 +235,7 @@ fn recv_msg_inner(
       need_manual_cloexec = true;
       // Retry without MSG_CMSG_CLOEXEC.
       let rc2 = loop {
-        hdr.msg_controllen = control_buf_len;
+        hdr.msg_controllen = control_buf_len as _;
         hdr.msg_flags = 0;
         let rc2 = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
         if rc2 >= 0 {
@@ -254,7 +254,7 @@ fn recv_msg_inner(
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
   let read_len = loop {
     need_manual_cloexec = true;
-    hdr.msg_controllen = control_buf_len;
+    hdr.msg_controllen = control_buf_len as _;
     hdr.msg_flags = 0;
     // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
     // for the duration of the call.

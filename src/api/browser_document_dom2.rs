@@ -1336,6 +1336,15 @@ impl BrowserDocumentDom2 {
     )
   }
 
+  /// Returns the current viewport scroll position without cloning element scroll offsets.
+  ///
+  /// This is a lightweight alternative to `scroll_state()` for code paths that only need
+  /// the viewport position (e.g., scroll delta calculations).
+  #[inline]
+  pub fn viewport_scroll(&self) -> Point {
+    Point::new(self.options.scroll_x, self.options.scroll_y)
+  }
+
   /// Applies a scroll wheel delta at a point in viewport coordinates.
   ///
   /// This updates both viewport scroll and element scroll container offsets (e.g. `<select size>`

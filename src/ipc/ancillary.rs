@@ -59,7 +59,7 @@ pub fn send_fd(sock: &UnixStream, fd: BorrowedFd<'_>) -> io::Result<()> {
   msg.msg_iov = std::ptr::addr_of_mut!(iov);
   msg.msg_iovlen = 1;
   msg.msg_control = unsafe { control.buf.as_mut_ptr() as *mut libc::c_void };
-  msg.msg_controllen = CONTROL_LEN;
+  msg.msg_controllen = CONTROL_LEN as _;
 
   // SAFETY: `msg.msg_control` points at `control.buf` which is aligned for `cmsghdr` due to the
   // union. The buffer is large enough for one `SCM_RIGHTS` cmsg with a single FD.
@@ -126,7 +126,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   msg.msg_iov = std::ptr::addr_of_mut!(iov);
   msg.msg_iovlen = 1;
   msg.msg_control = unsafe { control.buf.as_mut_ptr() as *mut libc::c_void };
-  msg.msg_controllen = CONTROL_LEN;
+  msg.msg_controllen = CONTROL_LEN as _;
 
   #[cfg(any(target_os = "linux", target_os = "android"))]
   let mut recv_flags = libc::MSG_CMSG_CLOEXEC;
@@ -137,7 +137,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   let mut need_manual_cloexec = false;
   let read_len = 'recvmsg: loop {
     // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
-    msg.msg_controllen = CONTROL_LEN;
+    msg.msg_controllen = CONTROL_LEN as _;
     msg.msg_flags = 0;
     let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, recv_flags) };
     if rc >= 0 {
@@ -149,13 +149,13 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     }
     // Some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. Retry without
     // the flag and set FD_CLOEXEC manually on the received fd.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     if err.raw_os_error() == Some(libc::EINVAL) && (recv_flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
       recv_flags &= !libc::MSG_CMSG_CLOEXEC;
       continue 'recvmsg;
-    } else {
-      return Err(err);
     }
+    return Err(err);
   };
 
   // Parse and wrap any SCM_RIGHTS fds *before* checking MSG_CTRUNC/MSG_TRUNC so we reliably close

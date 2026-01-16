@@ -7622,18 +7622,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let window = window_builder.build(target)?;
 
-    #[cfg(target_os = "macos")]
-    {
-      use winit::platform::macos::WindowExtMacOS;
-
-      // Ensure the titlebar settings are applied on the native window as well.
-      //
-      // NOTE: These are best-effort; on older macOS versions some settings may be ignored.
-      window.set_title_hidden(true);
-      window.set_titlebar_transparent(true);
-      window.set_fullsize_content_view(true);
-    }
-
     Ok(window)
   };
 
@@ -8058,7 +8046,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
   }
+  let mut event_count: u64 = 0;
   event_loop.run(move |event, event_loop_target, control_flow| {
+    event_count += 1;
+    if event_count <= 10 || event_count % 100 == 0 {
+    }
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
     // Keep the event loop idle when there is no work to do.
@@ -28382,9 +28374,11 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
+    eprintln!("[render_frame] start");
     let _frame_span = self.trace.span("ui.frame", "ui.frame");
     let breakdown_enabled = self.frame_breakdown_enabled();
     let frame_start = std::time::Instant::now();
+    eprintln!("[render_frame] frame_start set");
     let perf_frame_start = if self.perf_log.is_some() {
       Some(frame_start)
     } else {
@@ -28409,6 +28403,7 @@ impl App {
 
     // Upload any newly received page pixmaps now (coalesced). We do this right before drawing so
     // multiple `FrameReady` messages received between redraws result in a single GPU upload.
+    eprintln!("[render_frame] flushing pending frame uploads...");
     if breakdown_enabled {
       let start = std::time::Instant::now();
       self.flush_pending_frame_uploads();
@@ -28416,6 +28411,7 @@ impl App {
     } else {
       self.flush_pending_frame_uploads();
     }
+    eprintln!("[render_frame] frame uploads flushed");
     // Flush any buffered `ReceivedCharacter` text input once per UI frame so rapid typing doesn't
     // generate one worker message per character.
     self.flush_pending_text_input();
@@ -28441,17 +28437,22 @@ impl App {
     }
     let mut session_dirty = false;
     let egui_timer_start = breakdown_enabled.then(std::time::Instant::now);
+    eprintln!("[render_frame] starting egui input handling...");
     {
       let _span = self.trace.span("egui.begin_frame", "ui.frame");
       let raw_input = {
+        eprintln!("[render_frame] taking egui input...");
         let mut raw = self.egui_state.take_egui_input(&self.window);
+        eprintln!("[render_frame] egui input taken");
         raw.pixels_per_point = Some(self.pixels_per_point);
+        eprintln!("[render_frame] draining accesskit action requests...");
 
         // Intercept AccessKit action requests that target page nodes (document accessibility) so they
         // can be forwarded to the render worker. Requests targeting egui chrome widgets are retained
         // so `has_accesskit_action_request` continues to work for UI affordances like expand/collapse.
         let page_accesskit_action_requests =
           fastrender::ui::page_accesskit::drain_page_accesskit_action_requests(&mut raw);
+        eprintln!("[render_frame] accesskit drained, processing events...");
 
         // Prevent focus bounce: if assistive tech focuses a chrome widget, clear the page focus
         // flag before we render the page image (which would otherwise call `request_focus()`).
@@ -28616,18 +28617,24 @@ impl App {
 
       // Defensive: make sure AccessKit stays enabled even if something toggles egui options at
       // runtime. This is cheap and guarantees every frame has an update carrier for merged page a11y.
+      eprintln!("[render_frame] enabling accesskit...");
       self.egui_ctx.enable_accesskit();
+      eprintln!("[render_frame] calling egui begin_frame...");
       self.egui_ctx.begin_frame(raw_input);
+      eprintln!("[render_frame] egui begin_frame done");
     }
 
+    eprintln!("[render_frame] cloning ctx and setting up motion...");
     let ctx = self.egui_ctx.clone();
     fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
       &ctx,
       self.browser_state.appearance.reduced_motion,
     );
+    eprintln!("[render_frame] refreshing chrome text focus...");
     // Seed the cached focus model early in the frame so chrome UI (menu bar, panels, etc) can make
     // routing decisions without calling `egui::Context::wants_keyboard_input()` directly.
     self.refresh_chrome_text_focus_from_egui(&ctx);
+    eprintln!("[render_frame] chrome text focus refreshed");
 
     // Treat modal dialogs as modal: while they're open, the rendered page should never take
     // keyboard focus (e.g. via `response.request_focus()` on the central page image).
@@ -28639,6 +28646,7 @@ impl App {
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
     // the top chrome is drawn into the titlebar area. Reserve a left inset so the system traffic
     // lights remain visible and clickable.
+    eprintln!("[render_frame] setting up macos titlebar insets...");
     #[cfg(target_os = "macos")]
     let original_style = (*ctx.style()).clone();
     #[cfg(target_os = "macos")]
@@ -28646,17 +28654,24 @@ impl App {
       // Rough sizing (in egui points) for the traffic-light region: 3 × 12px buttons + padding.
       // This doesn't need to be pixel-perfect; it just needs to ensure we never place tab widgets
       // directly under the buttons.
+      eprintln!("[render_frame] getting traffic_lights_left_inset_points...");
       let traffic_lights_left_inset_points =
         fastrender::ui::titlebar_insets::traffic_lights_left_inset_points();
+      eprintln!("[render_frame] traffic_lights_left_inset_points: {}", traffic_lights_left_inset_points);
       let mut style = original_style.clone();
       style.spacing.window_margin.left = style
         .spacing
         .window_margin
         .left
         .max(traffic_lights_left_inset_points);
+      eprintln!("[render_frame] setting ctx style...");
       ctx.set_style(style);
+      eprintln!("[render_frame] ctx style set");
     }
+    eprintln!("[render_frame] getting zoom_before...");
     let zoom_before = self.browser_state.active_tab().map(|t| t.zoom);
+    eprintln!("[render_frame] checking menu bar...");
+    eprintln!("[render_frame] effective_show_menu_bar: {}", self.effective_show_menu_bar());
     // -----------------------------------------------------------------------------
     // Top menu bar (browser-style)
     // -----------------------------------------------------------------------------
@@ -28843,13 +28858,18 @@ impl App {
       }
     }
 
+    eprintln!("[render_frame] menu bar done, starting chrome_ui...");
     let appearance_before = self.browser_state.appearance.clone();
+    eprintln!("[render_frame] renderer_chrome_enabled: {}", self.renderer_chrome_enabled);
     let chrome_actions = if self.renderer_chrome_enabled {
       // Renderer-chrome (FastRender HTML/CSS chrome). This is intentionally incremental: only the
       // tab strip is rendered today, and interactions are hosted in Rust (no JS).
+      eprintln!("[render_frame] calling renderer_chrome_tab_strip_ui...");
       session_dirty |= self.renderer_chrome_tab_strip_ui(&ctx);
+      eprintln!("[render_frame] renderer_chrome_tab_strip_ui done");
       Vec::new()
     } else {
+      eprintln!("[render_frame] calling chrome_ui_with_bookmarks...");
       fastrender::ui::chrome_ui_with_bookmarks(
         &ctx,
         &mut self.browser_state,
@@ -28869,6 +28889,7 @@ impl App {
         },
       )
     };
+    eprintln!("[render_frame] chrome_ui done");
 
     // Fetch the current omnibox dropdown overlay bounds (if any) from egui temp data populated by
     // `chrome_ui_with_bookmarks`. We use this in the winit input path to treat the dropdown as a

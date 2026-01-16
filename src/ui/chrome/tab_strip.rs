@@ -29,7 +29,7 @@ const TAB_MIN_WIDTH: f32 = 140.0;
 const TAB_MAX_WIDTH: f32 = 240.0;
 const PINNED_TAB_WIDTH: f32 = 44.0;
 const TAB_GAP: f32 = 6.0;
-const TAB_PADDING_X: f32 = 10.0;
+const TAB_PADDING_X: f32 = 12.0;
 const GROUP_CHIP_MIN_WIDTH: f32 = 90.0;
 const GROUP_CHIP_MAX_WIDTH: f32 = 180.0;
 const GROUP_CHIP_PADDING_X: f32 = 10.0;
@@ -37,7 +37,9 @@ const GROUP_CHIP_ICON_SIZE: f32 = 10.0;
 const GROUP_CHIP_ICON_GAP: f32 = 6.0;
 const CONTROL_BUTTON_SIZE: f32 = 28.0;
 const ICON_SIZE: f32 = 16.0;
-const ICON_GAP: f32 = 8.0;
+// Gap between favicon and title, and between title and close button.
+// Use a slightly larger gap (10pt) for better visual breathing room.
+const ICON_GAP: f32 = 10.0;
 const CLOSE_BUTTON_SIZE: f32 = 28.0;
 const ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
 const DRAG_PREVIEW_LIFT_Y: f32 = 6.0;
@@ -2376,8 +2378,11 @@ pub(super) fn tab_strip_ui(
     Vec2::splat(button_size),
   );
   let tabs_viewport_max_x = (button_rect.min.x - 8.0).max(strip_rect.min.x);
+  // On macOS, reserve left space for the native traffic-light window controls (close/minimize/zoom)
+  // which overlap the tab strip when using a unified titlebar.
+  let traffic_lights_inset = crate::ui::titlebar_insets::traffic_lights_left_inset_points();
   let tabs_rect = Rect::from_min_max(
-    strip_rect.min,
+    Pos2::new(strip_rect.min.x + traffic_lights_inset, strip_rect.min.y),
     Pos2::new(tabs_viewport_max_x, strip_rect.max.y),
   );
   let tabs_viewport_width = tabs_rect.width().max(0.0);

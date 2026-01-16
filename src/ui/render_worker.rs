@@ -1155,6 +1155,12 @@ struct TabState {
   last_cursor: CursorKind,
   datalist_open_input: Option<usize>,
 
+  /// Cached flag: does the page have any wheel event listeners?
+  /// This is checked on the first scroll event after navigation/script execution and cached
+  /// to avoid expensive listener lookups on every scroll frame.
+  /// Reset to `None` when JS executes (which could add/remove listeners).
+  has_wheel_listeners_cache: Option<bool>,
+
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
   force_repaint: bool,
@@ -1244,6 +1250,7 @@ impl TabState {
       last_tooltip: None,
       last_cursor: CursorKind::Default,
       datalist_open_input: None,
+      has_wheel_listeners_cache: None,
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
@@ -4412,20 +4419,36 @@ struct BrowserRuntime {
 
           // Dispatch a cancelable `wheel` event *before* applying wheel deltas. If a listener calls
           // `preventDefault()`, the scroll gesture should be ignored.
-            if let Some(pointer_css) = pointer_pos_css {
-              if let Some(js_tab) = tab.js_tab.as_mut() {
+          //
+          // Optimization: check a cached flag first to avoid expensive DOM lookups and listener
+          // checks on every scroll frame when the page has no wheel listeners. The cache is
+          // invalidated when JS executes (which could add/remove listeners).
+          if let Some(pointer_css) = pointer_pos_css {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              // Fast path: if we know there are no wheel listeners, skip the expensive dispatch.
+              let has_any_wheel_listeners = match tab.has_wheel_listeners_cache {
+                Some(cached) => cached,
+                None => {
+                  // Cache miss: compute and cache whether any wheel listeners exist.
+                  let has_any = js_tab.dom().events().has_any_listeners_for_type("wheel");
+                  tab.has_wheel_listeners_cache = Some(has_any);
+                  has_any
+                }
+              };
+
+              if has_any_wheel_listeners {
                 let hovered_preorder_id = tab.last_hovered_dom_node_id;
                 let hovered_element_id = tab.last_hovered_dom_element_id.clone();
                 let target_node = hovered_preorder_id.and_then(|preorder_id| {
                   js_dom_node_for_preorder_id_with_log(
-                  &self.ui_tx,
-                  tab_id,
-                  js_tab,
-                  preorder_id,
-                  hovered_element_id.as_deref(),
-                  &mut tab.js_dom_mapping_generation,
-                  &mut tab.js_dom_mapping,
-                  &mut tab.js_dom_mapping_miss_log_last,
+                    &self.ui_tx,
+                    tab_id,
+                    js_tab,
+                    preorder_id,
+                    hovered_element_id.as_deref(),
+                    &mut tab.js_dom_mapping_generation,
+                    &mut tab.js_dom_mapping,
+                    &mut tab.js_dom_mapping_miss_log_last,
                     "wheel",
                   )
                 });
@@ -4433,45 +4456,46 @@ struct BrowserRuntime {
                   .map(|id| web_events::EventTargetId::Node(id).normalize())
                   .unwrap_or(web_events::EventTargetId::Window);
 
-              let dom = js_tab.dom();
-              let has_listeners = dom.events().has_listeners_for_dispatch(
-                target,
-                "wheel",
-                dom,
-                /* bubbles */ true,
-                /* composed */ false,
-              );
-
-              if has_listeners {
-                let mouse = web_events::MouseEvent {
-                  client_x: mouse_client_coord(pointer_css.0),
-                  client_y: mouse_client_coord(pointer_css.1),
-                  button: 0,
-                  buttons: tab.pointer_buttons,
-                  detail: 0,
-                  ctrl_key: false,
-                  shift_key: false,
-                  alt_key: false,
-                  meta_key: false,
-                  related_target: None,
-                };
-
-                let mut event = web_events::Event::new(
+                let dom = js_tab.dom();
+                let has_listeners = dom.events().has_listeners_for_dispatch(
+                  target,
                   "wheel",
-                  web_events::EventInit {
-                    bubbles: true,
-                    cancelable: true,
-                    composed: false,
-                  },
+                  dom,
+                  /* bubbles */ true,
+                  /* composed */ false,
                 );
-                event.is_trusted = true;
-                event.mouse = Some(mouse);
 
-                // Best-effort: treat dispatch failures like uncaught exceptions in event handlers
-                // (report but do not block default actions).
-                let wheel_default_allowed = js_tab.dispatch_event(target, event).unwrap_or(true);
-                if !wheel_default_allowed {
-                  return;
+                if has_listeners {
+                  let mouse = web_events::MouseEvent {
+                    client_x: mouse_client_coord(pointer_css.0),
+                    client_y: mouse_client_coord(pointer_css.1),
+                    button: 0,
+                    buttons: tab.pointer_buttons,
+                    detail: 0,
+                    ctrl_key: false,
+                    shift_key: false,
+                    alt_key: false,
+                    meta_key: false,
+                    related_target: None,
+                  };
+
+                  let mut event = web_events::Event::new(
+                    "wheel",
+                    web_events::EventInit {
+                      bubbles: true,
+                      cancelable: true,
+                      composed: false,
+                    },
+                  );
+                  event.is_trusted = true;
+                  event.mouse = Some(mouse);
+
+                  // Best-effort: treat dispatch failures like uncaught exceptions in event handlers
+                  // (report but do not block default actions).
+                  let wheel_default_allowed = js_tab.dispatch_event(target, event).unwrap_or(true);
+                  if !wheel_default_allowed {
+                    return;
+                  }
                 }
               }
             }
@@ -4480,18 +4504,23 @@ struct BrowserRuntime {
           let Some(doc) = tab.document.as_mut() else {
             // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
             // so it can be applied when the first frame is rendered.
-            let prev = tab.scroll_state.clone();
-            let mut next = prev.clone();
-            next.viewport.x = (next.viewport.x + delta_x).max(0.0);
-            next.viewport.y = (next.viewport.y + delta_y).max(0.0);
-            if next.viewport != prev.viewport {
-              next.update_deltas_from(&prev);
+            //
+            // Optimization: check if the scroll would change before cloning the scroll state.
+            let new_x = (tab.scroll_state.viewport.x + delta_x).max(0.0);
+            let new_y = (tab.scroll_state.viewport.y + delta_y).max(0.0);
+            if new_x != tab.scroll_state.viewport.x || new_y != tab.scroll_state.viewport.y {
+              let mut next = tab.scroll_state.clone();
+              let prev_viewport = next.viewport;
+              next.viewport.x = new_x;
+              next.viewport.y = new_y;
+              next.viewport_delta = Point::new(
+                next.viewport.x - prev_viewport.x,
+                next.viewport.y - prev_viewport.y,
+              );
               tab.scroll_state = next;
               TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
               if tab.loading {
-                tab
-                  .history
-                  .update_scroll_state(&tab.scroll_state);
+                tab.history.update_scroll_state(&tab.scroll_state);
               }
               Self::emit_scroll_state_updated(
                 &self.ui_tx,
@@ -6292,6 +6321,8 @@ struct BrowserRuntime {
         let generation_after = js_tab.dom().mutation_generation();
         if generation_before != prev_generation || generation_after != generation_before {
           tab.js_dom_dirty = true;
+          // Invalidate wheel listener cache: JS may have added/removed listeners.
+          tab.has_wheel_listeners_cache = None;
           tab.cancel.bump_paint();
           tab.request_non_scroll_repaint();
           tab.tick_coalesce = true;
@@ -6793,6 +6824,8 @@ struct BrowserRuntime {
       || generation_after_dispatch != generation_before_dispatch
     {
       tab.js_dom_dirty = true;
+      // Invalidate wheel listener cache: JS may have added/removed listeners.
+      tab.has_wheel_listeners_cache = None;
       tab.cancel.bump_paint();
       tab.request_non_scroll_repaint();
     }

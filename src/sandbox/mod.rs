@@ -127,7 +127,6 @@ mod linux_prelude;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
-#[cfg(target_os = "linux")]
 pub mod linux_namespaces;
 
 #[cfg(target_os = "linux")]
@@ -1357,7 +1356,7 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
     };
 
     match apply_result {
-      Ok(()) => Ok(MacosSandboxStatus::Applied { mode, source }),
+      Ok(_macos_status) => Ok(MacosSandboxStatus::Applied { mode, source }),
       Err(err) => Ok(MacosSandboxStatus::NotApplied {
         mode,
         source,
