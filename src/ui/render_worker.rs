@@ -5161,6 +5161,7 @@ struct BrowserRuntime {
       } => {
         self.handle_a11y_set_expanded(tab_id, node_id, expanded);
       }
+      #[cfg(feature = "browser_ui")]
       UiToWorker::AccessKitActionRequest { tab_id, request } => {
         // AccessKit action requests are dispatched to the tab's page accessibility handler.
         // For now, this is a no-op placeholder until full AccessKit integration is implemented.

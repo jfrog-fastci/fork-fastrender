@@ -7436,6 +7436,7 @@ dependencies = [
  "fastrender",
  "globset",
  "image",
+ "js-wpt-dom-runner",
  "libc",
  "pathdiff",
  "regex",

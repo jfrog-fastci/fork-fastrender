@@ -801,11 +801,10 @@ impl Heap {
         HeapObject::Object(obj) => {
           // Validate internal-slot-like references stored in `ObjectKind` variants.
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
-          let owner_kind = format_args!("Object(kind={:?})", obj.base.kind);
             match &obj.base.kind {
               ObjectKind::ModuleNamespace(ns) => {
                 self.debug_validate_heap_id_expected(
-                  owner_kind,
+                  format_args!("Object(kind={:?})", obj.base.kind),
                   owner_id,
                   format_args!("[[Exports]]"),
                   ns.exports.id(),
@@ -816,7 +815,7 @@ impl Heap {
               ObjectKind::Arguments(args) => {
                 if let Some(env) = args.parameter_env {
                   self.debug_validate_heap_id_expected(
-                    owner_kind,
+                    format_args!("Object(kind={:?})", obj.base.kind),
                     owner_id,
                     format_args!("[[ParameterEnv]]"),
                     env.0,
@@ -833,9 +832,8 @@ impl Heap {
           }
         HeapObject::TypedArray(arr) => {
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
-          let owner_kind = format_args!("TypedArray(kind={:?})", arr.kind);
           self.debug_validate_heap_id_expected(
-            owner_kind,
+            format_args!("TypedArray(kind={:?})", arr.kind),
             owner_id,
             format_args!("viewed_array_buffer"),
             arr.viewed_array_buffer.0,

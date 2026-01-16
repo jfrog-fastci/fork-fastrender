@@ -30,6 +30,7 @@ default = ["full"]
 full = [
   "dep:conformance-harness",
   "dep:fastrender",
+  "dep:js-wpt-dom-runner",
   "dep:webidl",
   "dep:globset",
   "dep:cssparser",
@@ -49,6 +50,7 @@ conformance-harness = { path = "../vendor/ecma-rs/conformance-harness", optional
 # stay as lightweight as possible. Avoid compiling optional heavy dependencies (e.g. AVIF via
 # `libaom-sys`) when building `xtask` and its integration tests.
 fastrender = { path = "..", default-features = false, optional = true }
+js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner", optional = true }
 webidl = { path = "../vendor/ecma-rs/webidl", optional = true }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
