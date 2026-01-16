@@ -2152,11 +2152,14 @@ pub fn chrome_ui_with_bookmarks(
         let badge_side = icon_side + badge_margin.left + badge_margin.right;
         let try_http_button_width = if show_try_http {
           let font_id = egui::TextStyle::Small.resolve(ui.style());
-          let text_width = ctx.data_mut(|d| {
-            let cache_id = address_bar_id.with("try_http_label_width_cache");
-            let cache = d.get_temp_mut_or_default::<TryHttpLabelWidthCache>(cache_id);
-            cache.text_width(ui, &font_id)
+          // IMPORTANT: Take the cache out FIRST, compute width OUTSIDE the lock, then put it back.
+          // Calling ui.fonts() inside ctx.data_mut() deadlocks.
+          let cache_id = address_bar_id.with("try_http_label_width_cache");
+          let mut cache: TryHttpLabelWidthCache = ctx.data_mut(|d| {
+            std::mem::take(d.get_temp_mut_or_default::<TryHttpLabelWidthCache>(cache_id))
           });
+          let text_width = cache.text_width(ui, &font_id);
+          ctx.data_mut(|d| d.insert_temp(cache_id, cache));
           // Account for egui's button padding.
           text_width + ui.spacing().button_padding.x * 2.0
         } else {
@@ -2175,11 +2178,14 @@ pub fn chrome_ui_with_bookmarks(
         if loading && !is_compact {
           let font_id = egui::TextStyle::Small.resolve(ui.style());
           let stage_key = stage.filter(|s| *s != StageHeartbeat::Done);
-          let label_width = ctx.data_mut(|d| {
-            let cache_id = address_bar_id.with("loading_text_width_cache");
-            let cache = d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id);
-            cache.width(ui, stage_key, &font_id, &loading_text)
+          // IMPORTANT: Take the cache out of ctx.data_mut FIRST, then compute width OUTSIDE
+          // the lock, then put it back. Calling ui.fonts() inside ctx.data_mut() deadlocks.
+          let cache_id = address_bar_id.with("loading_text_width_cache");
+          let mut cache: LoadingTextWidthCache = ctx.data_mut(|d| {
+            std::mem::take(d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id))
           });
+          let label_width = cache.width(ui, stage_key, &font_id, &loading_text);
+          ctx.data_mut(|d| d.insert_temp(cache_id, cache));
           right_sum += label_width;
           right_len += 1;
         }
@@ -2284,28 +2290,33 @@ pub fn chrome_ui_with_bookmarks(
               text_edit_response = Some(response);
             } else if active_url_trim.is_empty() {
               let max_width = ui.available_width().max(0.0);
-              let placeholder_galley = ctx.data_mut(|d| {
-                let cache_id = address_bar_id.with("placeholder_galley_cache");
-                let cache =
-                  d.get_temp_mut_or_default::<AddressBarPlaceholderGalleyCache>(cache_id);
-                cache.update(ui, max_width);
-                cache.galley()
+              // IMPORTANT: Take the cache out FIRST, update OUTSIDE the lock (because update()
+              // calls ui.fonts()), then put it back. Calling ui.fonts() inside ctx.data_mut() deadlocks.
+              let cache_id = address_bar_id.with("placeholder_galley_cache");
+              let mut cache: AddressBarPlaceholderGalleyCache = ctx.data_mut(|d| {
+                std::mem::take(d.get_temp_mut_or_default::<AddressBarPlaceholderGalleyCache>(cache_id))
               });
+              cache.update(ui, max_width);
+              let placeholder_galley = cache.galley();
+              ctx.data_mut(|d| d.insert_temp(cache_id, cache));
               ui.add(egui::Label::new(placeholder_galley));
             } else {
               let max_width = ui.available_width().max(0.0);
-              let galley = ctx.data_mut(|d| {
-                let cache_id = address_bar_id.with("display_galley_cache");
-                let cache = d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id);
-            cache.update(
-              ui,
-              formatted_url,
-              display_path_query_fragment,
-              max_width,
-              url_generation,
-            );
-                cache.galley()
+              // IMPORTANT: Take the cache out FIRST, update OUTSIDE the lock (because update()
+              // calls ui.fonts()), then put it back. Calling ui.fonts() inside ctx.data_mut() deadlocks.
+              let cache_id = address_bar_id.with("display_galley_cache");
+              let mut cache: AddressBarDisplayGalleyCache = ctx.data_mut(|d| {
+                std::mem::take(d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id))
               });
+              cache.update(
+                ui,
+                formatted_url,
+                display_path_query_fragment,
+                max_width,
+                url_generation,
+              );
+              let galley = cache.galley();
+              ctx.data_mut(|d| d.insert_temp(cache_id, cache));
               ui.add(egui::Label::new(galley));
             }
           });
