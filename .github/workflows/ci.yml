@@ -892,7 +892,7 @@ jobs:
   # MSRV Job - Verify minimum supported Rust version
   # ===========================================================================
   msrv:
-    name: MSRV (${{ env.MSRV }})
+    name: MSRV (1.70)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     env:
@@ -950,7 +950,7 @@ jobs:
   # MSRV Cross-Platform Compile Job - Ensure the GUI/browser binary builds on macOS/Windows
   # ===========================================================================
   msrv-cross:
-    name: MSRV (${{ env.MSRV }}) (${{ matrix.os }})
+    name: MSRV (1.70) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     if: github.event_name == 'pull_request'
     strategy:
