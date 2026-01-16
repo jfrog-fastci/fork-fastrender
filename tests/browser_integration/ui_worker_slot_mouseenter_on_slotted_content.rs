@@ -5,7 +5,7 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker_with_factory;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
@@ -42,6 +42,61 @@ fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -
 fn expect_pixel_rgba(frame: &RenderedFrame, x: u32, y: u32, expected: [u8; 4]) {
   let got = support::rgba_at(&frame.pixmap, x, y);
   assert_eq!(got, expected, "unexpected pixel at ({x},{y})");
+}
+
+fn recv_until_pixel_rgba(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  x: u32,
+  y: u32,
+  expected: [u8; 4],
+  deadline: Instant,
+) -> RenderedFrame {
+  loop {
+    let now = Instant::now();
+    if now >= deadline {
+      let msgs = support::drain_for(rx, Duration::from_millis(200));
+      panic!(
+        "timed out waiting for pixel ({x},{y}) to become {expected:?}; saw:\n{}",
+        support::format_messages(&msgs)
+      );
+    }
+    let remaining = deadline.saturating_duration_since(now);
+    let msg = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |msg| {
+        matches!(
+          msg,
+          WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+        )
+      },
+    );
+    if let Some(msg) = msg {
+      match msg {
+        WorkerToUi::FrameReady {
+          tab_id: got_tab,
+          frame,
+        } => {
+          assert_eq!(got_tab, tab_id);
+          if support::rgba_at(&frame.pixmap, x, y) == expected {
+            return frame;
+          }
+        }
+        WorkerToUi::NavigationFailed {
+          tab_id: got_tab,
+          url,
+          error,
+          ..
+        } => {
+          assert_eq!(got_tab, tab_id);
+          panic!("navigation failed for {url}: {error}");
+        }
+        other => panic!("unexpected WorkerToUi message: {other:?}"),
+      }
+    }
+  }
 }
 
 #[test]
@@ -124,7 +179,8 @@ fn ui_worker_slot_mouseenter_fires_when_hovering_slotted_light_dom_content() {
     .send(support::request_repaint(tab_id, RepaintReason::Explicit))
     .expect("repaint");
 
-  let frame = next_frame_ready(&ui_rx, tab_id);
+  let deadline = Instant::now() + TIMEOUT;
+  let frame = recv_until_pixel_rgba(&ui_rx, tab_id, 110, 10, [0, 255, 0, 255], deadline);
   expect_pixel_rgba(&frame, 110, 10, [0, 255, 0, 255]);
 
   drop(ui_tx);
