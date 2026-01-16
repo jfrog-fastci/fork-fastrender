@@ -381,6 +381,57 @@ pub struct StyleSheet {
   pub rules: Vec<CssRule>,
 }
 
+/// Bitflags describing which interaction pseudo-classes appear in selectors.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct InteractionPseudoClassFlags(u16);
+
+impl InteractionPseudoClassFlags {
+  pub const NONE: Self = Self(0);
+  pub const HOVER: Self = Self(1 << 0);
+  pub const FOCUS: Self = Self(1 << 1);
+  pub const FOCUS_WITHIN: Self = Self(1 << 2);
+  pub const FOCUS_VISIBLE: Self = Self(1 << 3);
+  pub const ACTIVE: Self = Self(1 << 4);
+  pub const VISITED: Self = Self(1 << 5);
+  pub const TARGET: Self = Self(1 << 6);
+  pub const TARGET_WITHIN: Self = Self(1 << 7);
+
+  #[inline]
+  pub const fn empty() -> Self {
+    Self::NONE
+  }
+
+  #[inline]
+  pub const fn is_empty(self) -> bool {
+    self.0 == 0
+  }
+
+  #[inline]
+  pub const fn contains(self, other: Self) -> bool {
+    self.0 & other.0 == other.0
+  }
+}
+
+impl Default for InteractionPseudoClassFlags {
+  fn default() -> Self {
+    Self::NONE
+  }
+}
+
+impl std::ops::BitOr for InteractionPseudoClassFlags {
+  type Output = Self;
+
+  fn bitor(self, rhs: Self) -> Self::Output {
+    Self(self.0 | rhs.0)
+  }
+}
+
+impl std::ops::BitOrAssign for InteractionPseudoClassFlags {
+  fn bitor_assign(&mut self, rhs: Self) {
+    self.0 |= rhs.0;
+  }
+}
+
 /// Aggregated information derived from walking a stylesheet rule tree.
 ///
 /// This is used to avoid multiple full traversals when callers need to collect
@@ -743,6 +794,15 @@ impl StyleSheet {
   /// `:where()`, `:nth-child(... of ...)`, etc).
   pub fn contains_has_selectors(&self) -> bool {
     stylesheet_rules_contain_has_selectors(&self.rules)
+  }
+
+  /// Returns which user-interaction pseudo-classes appear in this stylesheet.
+  ///
+  /// This walks all rules (including nested blocks like `@media`, `@supports`, `@layer`, `@scope`,
+  /// and style rule nesting blocks), and recursively inspects selector arguments (`:is()`,
+  /// `:not()`, `:where()`, `:has()`, `:nth-child(... of ...)`, etc).
+  pub fn interaction_pseudo_class_flags(&self) -> InteractionPseudoClassFlags {
+    stylesheet_rules_interaction_pseudo_class_flags(&self.rules)
   }
 
   /// Collects all @counter-style rules that apply to the current media context.
@@ -1274,6 +1334,109 @@ fn selector_contains_has_selectors(
     }
   }
   false
+}
+
+fn stylesheet_rules_interaction_pseudo_class_flags(
+  rules: &[CssRule],
+) -> InteractionPseudoClassFlags {
+  let mut flags = InteractionPseudoClassFlags::empty();
+  for rule in rules {
+    flags |= css_rule_interaction_pseudo_class_flags(rule);
+  }
+  flags
+}
+
+fn css_rule_interaction_pseudo_class_flags(rule: &CssRule) -> InteractionPseudoClassFlags {
+  match rule {
+    CssRule::Style(rule) => {
+      selector_list_interaction_pseudo_class_flags(&rule.selectors)
+        | stylesheet_rules_interaction_pseudo_class_flags(&rule.nested_rules)
+    }
+    CssRule::Media(rule) => stylesheet_rules_interaction_pseudo_class_flags(&rule.rules),
+    CssRule::Container(rule) => stylesheet_rules_interaction_pseudo_class_flags(&rule.rules),
+    CssRule::Supports(rule) => stylesheet_rules_interaction_pseudo_class_flags(&rule.rules),
+    CssRule::Layer(rule) => stylesheet_rules_interaction_pseudo_class_flags(&rule.rules),
+    CssRule::StartingStyle(rule) => stylesheet_rules_interaction_pseudo_class_flags(&rule.rules),
+    CssRule::Scope(rule) => {
+      let mut flags = InteractionPseudoClassFlags::empty();
+      if let Some(start) = &rule.start {
+        flags |= selector_list_interaction_pseudo_class_flags(start);
+      }
+      if let Some(end) = &rule.end {
+        flags |= selector_list_interaction_pseudo_class_flags(end);
+      }
+      flags | stylesheet_rules_interaction_pseudo_class_flags(&rule.rules)
+    }
+    _ => InteractionPseudoClassFlags::empty(),
+  }
+}
+
+fn selector_list_interaction_pseudo_class_flags(
+  list: &SelectorList<FastRenderSelectorImpl>,
+) -> InteractionPseudoClassFlags {
+  let mut flags = InteractionPseudoClassFlags::empty();
+  for selector in list.slice() {
+    flags |= selector_interaction_pseudo_class_flags(selector);
+  }
+  flags
+}
+
+fn selector_interaction_pseudo_class_flags(
+  selector: &selectors::parser::Selector<FastRenderSelectorImpl>,
+) -> InteractionPseudoClassFlags {
+  use selectors::parser::Component;
+
+  let mut flags = InteractionPseudoClassFlags::empty();
+  let mut stack: Vec<&selectors::parser::Selector<FastRenderSelectorImpl>> = vec![selector];
+  while let Some(selector) = stack.pop() {
+    for component in selector.iter_raw_match_order() {
+      match component {
+        Component::NonTSPseudoClass(pseudo) => {
+          flags |= interaction_pseudo_class_flags_for_pseudo_class(pseudo);
+          match pseudo {
+            PseudoClass::Has(relatives) => {
+              stack.extend(relatives.iter().map(|relative| &relative.selector));
+            }
+            PseudoClass::Host(Some(list)) => stack.extend(list.slice()),
+            PseudoClass::HostContext(list) => stack.extend(list.slice()),
+            PseudoClass::NthChild(_, _, Some(list)) | PseudoClass::NthLastChild(_, _, Some(list)) => {
+              stack.extend(list.slice());
+            }
+            _ => {}
+          }
+        }
+        Component::Has(relatives) => {
+          stack.extend(relatives.iter().map(|relative| &relative.selector));
+        }
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
+          stack.extend(list.slice());
+        }
+        Component::NthOf(data) => {
+          stack.extend(data.selectors());
+        }
+        Component::Slotted(inner) => stack.push(inner),
+        Component::Host(Some(inner)) => stack.push(inner),
+        _ => {}
+      }
+    }
+  }
+  flags
+}
+
+fn interaction_pseudo_class_flags_for_pseudo_class(
+  pseudo: &PseudoClass,
+) -> InteractionPseudoClassFlags {
+  match pseudo {
+    PseudoClass::Hover => InteractionPseudoClassFlags::HOVER,
+    PseudoClass::Focus => InteractionPseudoClassFlags::FOCUS,
+    PseudoClass::FocusWithin => InteractionPseudoClassFlags::FOCUS_WITHIN,
+    PseudoClass::FocusVisible => InteractionPseudoClassFlags::FOCUS_VISIBLE,
+    PseudoClass::Active => InteractionPseudoClassFlags::ACTIVE,
+    PseudoClass::Visited => InteractionPseudoClassFlags::VISITED,
+    PseudoClass::Target => InteractionPseudoClassFlags::TARGET,
+    PseudoClass::TargetWithin => InteractionPseudoClassFlags::TARGET_WITHIN,
+    _ => InteractionPseudoClassFlags::empty(),
+  }
 }
 
 /// Helper to recursively collect style rules from nested @media/@layer blocks
@@ -3282,6 +3445,54 @@ mod tests {
       }
     }
     false
+  }
+
+  fn interaction_flags(css: &str) -> InteractionPseudoClassFlags {
+    parse_stylesheet(css)
+      .expect("parse stylesheet")
+      .interaction_pseudo_class_flags()
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_detects_hover() {
+    let flags = interaction_flags("a:hover { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::HOVER));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_recurses_into_not() {
+    let flags = interaction_flags(".a:not(:hover) { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::HOVER));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_recurses_into_is_list() {
+    let flags = interaction_flags(".a:is(:hover, .b) { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::HOVER));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_recurses_into_host_args() {
+    let flags = interaction_flags(":host(:focus-within) { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::FOCUS_WITHIN));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_recurses_into_nth_child_of_list() {
+    let flags = interaction_flags(":nth-child(2 of :hover) { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::HOVER));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_recurses_into_has() {
+    let flags = interaction_flags("div:has(:focus-visible) { color: red; }");
+    assert!(flags.contains(InteractionPseudoClassFlags::FOCUS_VISIBLE));
+  }
+
+  #[test]
+  fn interaction_pseudo_class_flags_ignores_non_interaction_selectors() {
+    let flags = interaction_flags("div:empty { color: red; }");
+    assert!(flags.is_empty());
   }
 
   #[test]
