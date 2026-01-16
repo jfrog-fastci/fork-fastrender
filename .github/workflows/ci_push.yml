@@ -1,0 +1,66 @@
+name: CI (push)
+
+on:
+  push:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ===========================================================================
+  # Release Build - Full release build on every push
+  # ===========================================================================
+  release-build:
+    name: Release Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux GUI dependencies (winit/wgpu)
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-release-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-release-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build (release)
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-release-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
+      - name: Build release
+        run: cargo build --release --features browser_ui --bin browser

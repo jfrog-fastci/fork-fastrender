@@ -1,8 +1,6 @@
-name: CI
+name: CI (PR)
 
 on:
-  push:
-    branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
 
@@ -21,68 +19,11 @@ env:
 
 jobs:
   # ===========================================================================
-  # Release Build - Full release build on every push
-  # ===========================================================================
-  release-build:
-    name: Release Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Linux GUI dependencies (winit/wgpu)
-        run: bash scripts/ci_install_gui_deps_ubuntu.sh
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-release-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-release-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build (release)
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-release-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Init ecma-rs submodule
-        shell: bash
-        run: bash scripts/ci_init_ecma_rs_submodule.sh
-
-      - name: Assert ecma-rs is checked out
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
-            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
-            echo "Run: git submodule update --init vendor/ecma-rs" >&2
-            exit 1
-          fi
-
-      - name: "CI guardrails: no merge conflict markers (Rust sources)"
-        shell: bash
-        run: bash scripts/check_no_conflict_markers.sh
-
-      - name: Build release
-        run: cargo build --release --features browser_ui --bin browser
-
-  # ===========================================================================
   # Lockfile Job - Ensure Cargo.lock is present and up to date
   # ===========================================================================
   lockfile:
     name: Lockfile
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -122,7 +63,6 @@ jobs:
   ecma-rs-sanity:
     name: ecma-rs sanity
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -196,7 +136,6 @@ jobs:
   ecma-rs-webidl-tests:
     name: ecma-rs WebIDL tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -303,7 +242,6 @@ jobs:
   test:
     name: Test (${{ matrix.os }} / ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -446,7 +384,7 @@ jobs:
         continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: ci.yml
+          workflow: ci_pr.yml
           workflow_conclusion: success
           branch: main
           name: perf_smoke_pageset_guardrails
@@ -594,7 +532,6 @@ jobs:
   win-sandbox:
     name: win-sandbox crate tests
     runs-on: windows-latest
-    if: github.event_name == 'pull_request'
     timeout-minutes: 10
     env:
       # These tests manipulate global OS resources (AppContainer profiles, job objects, ...).
@@ -625,7 +562,6 @@ jobs:
   windows-sandbox:
     name: Windows sandbox tests
     runs-on: windows-latest
-    if: github.event_name == 'pull_request'
     timeout-minutes: 20
     env:
       # Keep sandbox tests deterministic; they often manipulate global OS resources.
@@ -681,7 +617,6 @@ jobs:
   macos-sandbox:
     name: macOS sandbox (Seatbelt)
     runs-on: macos-latest
-    if: github.event_name == 'pull_request'
     timeout-minutes: 15
     env:
       # macOS runners can be resource constrained; keep libtest thread count low to avoid flakiness.
@@ -769,7 +704,6 @@ jobs:
   browser_ui_headless_smoke:
     name: browser_ui (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'pull_request'
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -856,7 +790,6 @@ jobs:
   chrome_baseline_viewport:
     name: Chrome baseline viewport smoke
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -894,7 +827,6 @@ jobs:
   msrv:
     name: MSRV (1.70)
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     env:
       MSRV: "1.70"
     steps:
@@ -952,7 +884,6 @@ jobs:
   msrv-cross:
     name: MSRV (1.70) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -1005,7 +936,6 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1064,7 +994,6 @@ jobs:
   format:
     name: Format
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1104,7 +1033,6 @@ jobs:
   docs:
     name: Documentation
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1163,7 +1091,6 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1201,7 +1128,6 @@ jobs:
   fuzz-smoke:
     name: Fuzz Smoke
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     timeout-minutes: 25
     steps:
       - name: Checkout code
@@ -1345,7 +1271,6 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1402,12 +1327,11 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # ===========================================================================
-  # Benchmark Job - Run performance benchmarks (on main branch only)
+  # Benchmark Job - Run performance benchmarks
   # ===========================================================================
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -1466,40 +1390,28 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [release-build, lockfile, ecma-rs-sanity, ecma-rs-webidl-tests, test, win-sandbox, windows-sandbox, macos-sandbox, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, ecma-rs-sanity, ecma-rs-webidl-tests, test, win-sandbox, windows-sandbox, macos-sandbox, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
         run: |
-          # On push events, only release-build runs; other jobs are skipped.
-          # On pull_request events, all jobs run.
-          if [ "${{ github.event_name }}" = "push" ]; then
-            if [ "${{ needs.release-build.result }}" != "success" ]; then
-              echo "Release build failed"
-              exit 1
-            fi
-            echo "Release build passed!"
-          else
-            # Pull request: check all jobs
-            if [ "${{ needs.release-build.result }}" != "success" ] || \
-                [ "${{ needs.test.result }}" != "success" ] || \
-                [ "${{ needs.macos-sandbox.result }}" != "success" ] || \
-                [ "${{ needs.lockfile.result }}" != "success" ] || \
-                [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
-                [ "${{ needs.ecma-rs-webidl-tests.result }}" != "success" ] || \
-                [ "${{ needs.win-sandbox.result }}" != "success" ] || \
-                [ "${{ needs.windows-sandbox.result }}" != "success" ] || \
-                [ "${{ needs.browser_ui_headless_smoke.result }}" != "success" ] || \
-                [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
-                [ "${{ needs.msrv.result }}" != "success" ] || \
-                [ "${{ needs.msrv-cross.result }}" != "success" ] || \
-                [ "${{ needs.clippy.result }}" != "success" ] || \
-                [ "${{ needs.format.result }}" != "success" ] || \
-                [ "${{ needs.docs.result }}" != "success" ] || \
-                [ "${{ needs.audit.result }}" != "success" ] || \
-                [ "${{ needs.fuzz-smoke.result }}" != "success" ]; then
-              echo "One or more CI jobs failed"
-              exit 1
-            fi
-            echo "All CI jobs passed!"
+          if [ "${{ needs.test.result }}" != "success" ] || \
+              [ "${{ needs.macos-sandbox.result }}" != "success" ] || \
+              [ "${{ needs.lockfile.result }}" != "success" ] || \
+              [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
+              [ "${{ needs.ecma-rs-webidl-tests.result }}" != "success" ] || \
+              [ "${{ needs.win-sandbox.result }}" != "success" ] || \
+              [ "${{ needs.windows-sandbox.result }}" != "success" ] || \
+              [ "${{ needs.browser_ui_headless_smoke.result }}" != "success" ] || \
+              [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
+              [ "${{ needs.msrv.result }}" != "success" ] || \
+              [ "${{ needs.msrv-cross.result }}" != "success" ] || \
+              [ "${{ needs.clippy.result }}" != "success" ] || \
+              [ "${{ needs.format.result }}" != "success" ] || \
+              [ "${{ needs.docs.result }}" != "success" ] || \
+              [ "${{ needs.audit.result }}" != "success" ] || \
+              [ "${{ needs.fuzz-smoke.result }}" != "success" ]; then
+            echo "One or more CI jobs failed"
+            exit 1
           fi
+          echo "All CI jobs passed!"
