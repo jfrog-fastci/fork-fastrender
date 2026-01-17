@@ -11,6 +11,8 @@ An experimental browser engine written in Rust, developed as part of [research i
 
 ## Building
 
+Under heavy development and change, may not be in a stable state. Builds are currently focused on Linux x64 and macOS ARM64 only.
+
 ```bash
 cargo run --release --features browser_ui --bin browser
 ```
