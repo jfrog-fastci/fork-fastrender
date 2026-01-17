@@ -1,12 +1,6 @@
 name: ecma-rs native groundwork
 
 on:
-  pull_request:
-    paths:
-      - "vendor/ecma-rs/**"
-      - "scripts/run_limited.sh"
-      - "scripts/run_vm_js_generator_yield_tests.sh"
-      - ".github/workflows/ecma_rs_native.yml"
   # Keep the native runtime/reactor continuously validated even when only dependency
   # versions drift (the vendored ecma-rs workspace does not commit Cargo.lock).
   schedule:
@@ -21,8 +15,7 @@ jobs:
   ecma-rs-vm-js-check:
     name: ecma-rs vm-js compile check (Rust 1.92.0)
     runs-on: ubuntu-latest
-    # Keep scheduled runs focused on the macOS reactor backend; this job exists primarily to fail
-    # fast on PRs that touch the vendored ecma-rs workspace.
+    # Run on workflow_dispatch; scheduled runs focus on the macOS reactor backend.
     if: github.event_name != 'schedule'
     defaults:
       run:
@@ -133,7 +126,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          # Share cache keys with the PR job so scheduled runs reuse warmed artifacts.
           key: ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-

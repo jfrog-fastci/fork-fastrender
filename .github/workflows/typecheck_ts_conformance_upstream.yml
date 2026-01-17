@@ -5,12 +5,6 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
-    paths:
-      - ".gitmodules"
-      - "vendor/ecma-rs/**"
-      - "scripts/ci_init_ecma_rs_submodule.sh"
-      - ".github/workflows/typecheck_ts_conformance_upstream.yml"
   # Full upstream conformance runs are heavy; keep them on a schedule + manual dispatch.
   schedule:
     - cron: "0 6 * * *"
@@ -32,17 +26,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
-  # Conformance is large; keep the PR signal lightweight and run the full shard
-  # set only on schedule/workflow_dispatch.
-  #
-  # - PR/push: runs a single shard (`0/N`) as a smoke test.
-  # - schedule/manual: runs all `0..N-1` shards.
-  #
+  # Conformance is large; runs all shards on schedule/workflow_dispatch.
   # Adjust `UPSTREAM_CONFORMANCE_SHARD_TOTAL` to change the full run size.
   UPSTREAM_CONFORMANCE_SHARD_TOTAL: "16"
   # For workflow_dispatch only: override the shard count without editing the workflow.
   UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shard_total || '' }}
-  UPSTREAM_CONFORMANCE_PR_SHARDS: "0"
   # For workflow_dispatch only: override which shards run (comma-separated indices).
   UPSTREAM_CONFORMANCE_SHARDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shards || '' }}
 
@@ -74,15 +62,9 @@ jobs:
             exit 0
           fi
 
-          echo "::warning::Upstream conformance expectations manifest is missing (${manifest})." >&2
-          echo "::warning::Skipping upstream conformance on PR/push; scheduled/manual runs require a checked-in manifest." >&2
-
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            echo "::error::Refusing to run scheduled/manual upstream conformance without a checked-in manifest." >&2
-            exit 1
-          fi
-
-          echo "run_enabled=false" >> "${GITHUB_OUTPUT}"
+          echo "::error::Upstream conformance expectations manifest is missing (${manifest})." >&2
+          echo "::error::Refusing to run upstream conformance without a checked-in manifest." >&2
+          exit 1
 
       - name: Compute matrix
         id: compute
@@ -111,16 +93,14 @@ jobs:
           PY
               )"
             fi
-          elif [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+          else
+            # schedule: run all shards
             shard_indices="$(python3 - <<PY
           import os
           n = int(os.environ["shard_total"])
           print(",".join(str(i) for i in range(n)))
           PY
             )"
-          else
-            # PR/push safety: only run a small shard set (see env docs above).
-            shard_indices="${UPSTREAM_CONFORMANCE_PR_SHARDS}"
           fi
 
           export shard_total shard_indices
@@ -173,7 +153,6 @@ jobs:
             echo "- Shard total (effective): ${{ steps.compute.outputs.shard_total }}"
             echo "- Shards (effective): ${{ steps.compute.outputs.shard_indices }}"
             echo "- Shards (default full run): ${UPSTREAM_CONFORMANCE_SHARD_TOTAL}"
-            echo "- Shards (default PR/push): ${UPSTREAM_CONFORMANCE_PR_SHARDS}"
             echo
             echo '```json'
             echo '${{ steps.compute.outputs.matrix }}'
