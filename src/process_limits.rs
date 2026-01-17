@@ -4,6 +4,7 @@
 //! The primary guardrail is `RLIMIT_AS` (virtual address space), which provides a hard ceiling
 //! that prevents runaway allocations from OOMing the host.
 
+use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressSpaceLimitStatus {

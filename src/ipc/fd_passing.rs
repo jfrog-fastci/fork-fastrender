@@ -353,7 +353,7 @@ pub fn recv_msg(sock_fd: RawFd, max_fds: usize) -> Result<RecvMsg, RecvMsgError>
     .saturating_add(EXTRA_FD_SLOP)
     .min(ABS_MAX_FDS_PER_MESSAGE)
     .max(1);
-  let control_len = cmsg_space(std::mem::size_of::<RawFd>() * cap_fds);
+  let mut control_len = cmsg_space(std::mem::size_of::<RawFd>() * cap_fds);
 
   // Linux `SO_PASSCRED` delivers an `SCM_CREDENTIALS` cmsg. Include space so that enabling it on a
   // test socket doesn't force a truncation error.

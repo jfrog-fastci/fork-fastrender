@@ -28,6 +28,7 @@
 //! fail. [`OwnedShm::seal_readonly`] returns a [`SealStatus`] so callers can decide whether a hard
 //! sealing guarantee is required for a particular protocol.
 
+use std::io;
 
 /// Hard global ceiling for shared-memory buffers.
 ///

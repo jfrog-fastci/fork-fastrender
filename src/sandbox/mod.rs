@@ -848,7 +848,7 @@ fn apply_renderer_sandbox_inner(
     return Ok((status, RendererSandboxReport::default()));
   }
 
-  let report = RendererSandboxReport::default();
+  let mut report = RendererSandboxReport::default();
 
   #[cfg(target_os = "linux")]
   {
@@ -942,7 +942,7 @@ pub fn apply_renderer_seccomp_denylist_with_report(
     return Ok((SandboxStatus::DisabledByConfig, RendererSandboxReport::default()));
   }
 
-  let report = RendererSandboxReport::default();
+  let mut report = RendererSandboxReport::default();
 
   #[cfg(target_os = "linux")]
   {
