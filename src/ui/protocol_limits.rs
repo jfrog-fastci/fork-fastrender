@@ -185,8 +185,8 @@ pub fn sanitize_worker_scroll_state(state: ScrollState) -> ScrollState {
 /// - Clamps values to ≥ 0.0.
 /// - Ensures `max_* >= min_*`.
 pub fn sanitize_worker_scroll_bounds(bounds: ScrollBounds) -> ScrollBounds {
-  let mut min_x = sanitize_f32_nonneg(bounds.min_x);
-  let mut min_y = sanitize_f32_nonneg(bounds.min_y);
+  let min_x = sanitize_f32_nonneg(bounds.min_x);
+  let min_y = sanitize_f32_nonneg(bounds.min_y);
   let mut max_x = sanitize_f32_nonneg(bounds.max_x);
   let mut max_y = sanitize_f32_nonneg(bounds.max_y);
 

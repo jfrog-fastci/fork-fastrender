@@ -313,7 +313,7 @@ fn render_iframe_out_of_process(
     return Err(OopifError::RendererUnavailable);
   };
 
-  let mut cmd = Command::new(bin);
+  let cmd = Command::new(bin);
 
   // Apply a minimal sandbox as early as possible in the child (after `fork`, before `exec`).
   //

@@ -2374,7 +2374,7 @@ impl FloatContext {
     let mut deque: VecDeque<usize> = VecDeque::new();
 
     // Helper to add a segment into the monotonic deque.
-    let mut push_segment = |idx: usize, cache: &FloatRangeCache, deque: &mut VecDeque<usize>| {
+    let push_segment = |idx: usize, cache: &FloatRangeCache, deque: &mut VecDeque<usize>| {
       let (left, _right, width) =
         segment_edges_in_span(&cache.segments[idx], containing_left, containing_right);
       while let Some(&back_idx) = deque.back() {

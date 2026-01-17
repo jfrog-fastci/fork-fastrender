@@ -2926,7 +2926,7 @@ impl Canvas {
       return false;
     }
 
-    let mut transform = self.current_state.transform;
+    let transform = self.current_state.transform;
     // Only support translation-only transforms (common case for pageset rendering and tiling).
     if (transform.sx - 1.0).abs() > 1e-6
       || (transform.sy - 1.0).abs() > 1e-6

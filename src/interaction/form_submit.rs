@@ -1129,7 +1129,7 @@ fn tree_root_boundary_dom2(dom: &dom2::Document, node: dom2::NodeId) -> Option<d
   None
 }
 
-fn find_ancestor_form_dom2(dom: &dom2::Document, mut node: dom2::NodeId) -> Option<dom2::NodeId> {
+fn find_ancestor_form_dom2(dom: &dom2::Document, node: dom2::NodeId) -> Option<dom2::NodeId> {
   let mut current = Some(node);
   let mut remaining = dom.nodes_len().saturating_add(1);
   while let Some(id) = current {

@@ -410,7 +410,7 @@ pub struct IpcResourceFetcher {
 
 impl IpcResourceFetcher {
   fn round_trip(&self, req: ipc::NetworkRequest) -> Result<ipc::NetworkResponse> {
-    let mut stream =
+    let stream =
       TcpStream::connect_timeout(&self.addr, self.connect_timeout).map_err(Error::Io)?;
     stream.set_nodelay(true).map_err(Error::Io)?;
     let mut conn = ipc::NetworkClient::new(stream);

@@ -1866,7 +1866,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a display list from a fragment tree root
-  pub fn build(mut self, root: &FragmentNode) -> DisplayList {
+  pub fn build(self, root: &FragmentNode) -> DisplayList {
     self
       .build_checked(root)
       .unwrap_or_else(|_| DisplayList::new())
@@ -1887,7 +1887,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a display list from a FragmentTree
-  pub fn build_tree(mut self, tree: &FragmentTree) -> DisplayList {
+  pub fn build_tree(self, tree: &FragmentTree) -> DisplayList {
     self
       .build_tree_checked(tree)
       .unwrap_or_else(|_| DisplayList::new())
@@ -1919,7 +1919,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a stacking-context-aware display list from a `FragmentTree`.
-  pub fn build_tree_with_stacking(mut self, tree: &FragmentTree) -> DisplayList {
+  pub fn build_tree_with_stacking(self, tree: &FragmentTree) -> DisplayList {
     self
       .build_tree_with_stacking_checked(tree)
       .unwrap_or_else(|_| DisplayList::new())
@@ -1980,7 +1980,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a display list from a stacking context tree (respecting z-order).
-  pub fn build_from_stacking(mut self, stacking: &StackingContext) -> DisplayList {
+  pub fn build_from_stacking(self, stacking: &StackingContext) -> DisplayList {
     self
       .build_from_stacking_checked(stacking)
       .unwrap_or_else(|_| DisplayList::new())
@@ -2016,7 +2016,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a display list by first constructing a stacking context tree from the fragment tree.
-  pub fn build_with_stacking_tree(mut self, root: &FragmentNode) -> DisplayList {
+  pub fn build_with_stacking_tree(self, root: &FragmentNode) -> DisplayList {
     self
       .build_with_stacking_tree_checked(root)
       .unwrap_or_else(|_| DisplayList::new())
@@ -2058,7 +2058,7 @@ impl DisplayListBuilder {
   /// Builds a display list by first constructing a stacking context tree from the fragment tree
   /// and applying an additional offset to all fragments.
   pub fn build_with_stacking_tree_offset(
-    mut self,
+    self,
     root: &FragmentNode,
     offset: Point,
   ) -> DisplayList {
@@ -2107,7 +2107,7 @@ impl DisplayListBuilder {
   }
 
   /// Builds a display list from multiple stacking context roots.
-  pub fn build_from_stacking_contexts(mut self, stackings: &[StackingContext]) -> DisplayList {
+  pub fn build_from_stacking_contexts(self, stackings: &[StackingContext]) -> DisplayList {
     self
       .build_from_stacking_contexts_checked(stackings)
       .unwrap_or_else(|_| DisplayList::new())
@@ -2186,7 +2186,7 @@ impl DisplayListBuilder {
   ///
   /// Fragments with box_ids in the `clips` set will have clipping applied.
   pub fn build_with_clips(
-    mut self,
+    self,
     root: &FragmentNode,
     clips: &HashSet<Option<usize>>,
   ) -> DisplayList {
@@ -15393,7 +15393,7 @@ impl DisplayListBuilder {
         let mut fill_kind_is_suboptimum = false;
         if let Some(optimum) = (*optimum).filter(|v| v.is_finite()) {
           let mut low_val = (*low).unwrap_or(*min).clamp(*min, *max);
-          let mut high_val = (*high).unwrap_or(*max).clamp(*min, *max);
+          let high_val = (*high).unwrap_or(*max).clamp(*min, *max);
           if low_val > high_val {
             low_val = high_val;
           }

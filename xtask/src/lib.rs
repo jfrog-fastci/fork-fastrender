@@ -1,4 +1,6 @@
 //! Shared helpers for the `xtask` developer workflow binary.
+#![allow(dead_code)]
+#![allow(unused_variables)]
 
 // The `xtask` crate has two build modes:
 // - `full` (default): the full developer workflow binary (`xtask`).

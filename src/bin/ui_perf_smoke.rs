@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clap::{ArgAction, Parser};
 use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
 use fastrender::error::{Error, ResourceError};
@@ -15,7 +17,7 @@ use fastrender::ui::WorkerToUiInbox;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;

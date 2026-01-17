@@ -15,7 +15,7 @@ use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
+fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
   let _ = stream.set_nodelay(true);
   let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
   let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));

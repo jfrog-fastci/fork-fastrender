@@ -60,7 +60,7 @@ pub fn build_stacking_tree(list: &DisplayList) -> Vec<NodeChild> {
   let mut stack: Vec<Frame> = Vec::new();
   let mut top_level_run: Vec<DisplayItem> = Vec::new();
 
-  let mut flush_run = |run: &mut Vec<DisplayItem>, target: &mut Vec<NodeChild>| {
+  let flush_run = |run: &mut Vec<DisplayItem>, target: &mut Vec<NodeChild>| {
     if run.is_empty() {
       return;
     }

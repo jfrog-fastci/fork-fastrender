@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use fastrender::cli_utils as common;
 
 use clap::Parser;

@@ -1104,7 +1104,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       }
       ModuleLoadOutcome::InFlight => {}
       ModuleLoadOutcome::StartFetch(key) => {
-        let mut complete_fetch_synchronously = |hooks: &mut VmJsEventLoopHooks<Host>,
+        let complete_fetch_synchronously = |hooks: &mut VmJsEventLoopHooks<Host>,
                                                  vm: &mut Vm,
                                                  scope: &mut Scope<'_>,
                                                  modules: &mut ModuleGraph,

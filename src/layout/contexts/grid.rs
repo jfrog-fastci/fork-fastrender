@@ -10876,7 +10876,7 @@ impl GridFormattingContext {
       PhysicalAxis::X
     };
 
-    let mut shrink_axis = |axis: PhysicalAxis,
+    let shrink_axis = |axis: PhysicalAxis,
                            start_line: u16,
                            end_line: u16,
                            offsets: &[f32],

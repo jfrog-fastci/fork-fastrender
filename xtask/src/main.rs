@@ -1,4 +1,6 @@
 #![recursion_limit = "256"]
+#![allow(dead_code)]
+#![allow(unused_variables)]
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};

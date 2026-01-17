@@ -1702,7 +1702,7 @@ fn svg_transform_style_declaration(style: &ComputedStyle) -> Option<String> {
   }
 
   let mut list = String::new();
-  let mut push_sep = |out: &mut String| {
+  let push_sep = |out: &mut String| {
     if !out.is_empty() {
       out.push(' ');
     }
@@ -1855,7 +1855,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   let mut out = String::new();
   let mut any = false;
 
-  let mut start_decl = |out: &mut String, any: &mut bool| {
+  let start_decl = |out: &mut String, any: &mut bool| {
     if *any {
       out.push_str("; ");
     } else {
@@ -1863,7 +1863,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_color_or_none =
+  let push_color_or_none =
     |out: &mut String, value: &ColorOrNone, current_color: Rgba| match value {
       ColorOrNone::None => out.push_str("none"),
       ColorOrNone::Color(color) => {
@@ -1902,7 +1902,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
+  let push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
     LengthOrNumber::Number(v) => {
       let _ = write!(out, "{}", v);
     }
@@ -1911,7 +1911,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   };
 
-  let mut push_svg_url_or_none = |out: &mut String, value: &SvgUrlOrNone| match value {
+  let push_svg_url_or_none = |out: &mut String, value: &SvgUrlOrNone| match value {
     SvgUrlOrNone::None => out.push_str("none"),
     SvgUrlOrNone::Url(url) => {
       out.push_str("url(");
@@ -2105,7 +2105,7 @@ fn svg_rendering_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) ->
   let mut out = String::new();
   let mut any = false;
 
-  let mut start_decl = |out: &mut String, any: &mut bool| {
+  let start_decl = |out: &mut String, any: &mut bool| {
     if *any {
       out.push_str("; ");
     } else {
@@ -2172,7 +2172,7 @@ fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opt
   let mut out = String::new();
   let mut any = false;
 
-  let mut start_decl = |out: &mut String, any: &mut bool| {
+  let start_decl = |out: &mut String, any: &mut bool| {
     if *any {
       out.push_str("; ");
     } else {
@@ -2334,7 +2334,7 @@ fn svg_text_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opti
   let mut out = String::new();
   let mut any = false;
 
-  let mut start_decl = |out: &mut String, any: &mut bool| {
+  let start_decl = |out: &mut String, any: &mut bool| {
     if *any {
       out.push_str("; ");
     } else {
@@ -7430,7 +7430,7 @@ fn create_form_control_replaced(
       .unwrap_or(min)
       .clamp(min, max);
     let mut low = parse_f32_attr(&styled.node, "low").map(|v| v.clamp(min, max));
-    let mut high = parse_f32_attr(&styled.node, "high").map(|v| v.clamp(min, max));
+    let high = parse_f32_attr(&styled.node, "high").map(|v| v.clamp(min, max));
     if let (Some(low_v), Some(high_v)) = (low, high) {
       if low_v > high_v {
         low = Some(high_v);

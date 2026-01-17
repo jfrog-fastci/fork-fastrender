@@ -243,7 +243,7 @@ pub fn discover_html_asset_urls_with_srcset_limit(
   let mut seen_documents: HashSet<String> = HashSet::new();
   let mut seen_media: HashSet<String> = HashSet::new();
 
-  let mut push_image = |out: &mut HtmlAssetUrls, seen_images: &mut HashSet<String>, raw: &str| {
+  let push_image = |out: &mut HtmlAssetUrls, seen_images: &mut HashSet<String>, raw: &str| {
     if out.images.len() >= MAX_DISCOVERED_IMAGES {
       return;
     }
@@ -253,7 +253,7 @@ pub fn discover_html_asset_urls_with_srcset_limit(
       }
     }
   };
-  let mut push_document =
+  let push_document =
     |out: &mut HtmlAssetUrls, seen_documents: &mut HashSet<String>, raw: &str| {
       if out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
         return;
@@ -264,7 +264,7 @@ pub fn discover_html_asset_urls_with_srcset_limit(
         }
       }
     };
-  let mut push_media = |out: &mut HtmlAssetUrls, seen_media: &mut HashSet<String>, raw: &str| {
+  let push_media = |out: &mut HtmlAssetUrls, seen_media: &mut HashSet<String>, raw: &str| {
     if out.media.len() >= MAX_DISCOVERED_MEDIA {
       return;
     }

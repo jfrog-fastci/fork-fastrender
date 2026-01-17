@@ -3,6 +3,8 @@
 //! This tool copies HTML/CSS/assets from a local WPT checkout into
 //! `tests/wpt/tests`, rewriting absolute URLs so everything is self-contained.
 //! It never touches the network.
+#![allow(dead_code)]
+
 use clap::Parser;
 use glob::glob;
 use regex::Regex;

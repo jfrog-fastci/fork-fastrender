@@ -213,7 +213,7 @@ impl SandboxedCommand {
       .stdin(Stdio::null())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped());
-    let mut child = self.spawn()?;
+    let child = self.spawn()?;
     child.wait_with_output()
   }
 }

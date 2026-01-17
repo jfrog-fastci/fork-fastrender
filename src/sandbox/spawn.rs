@@ -105,7 +105,7 @@ impl RendererSpawnCommand {
 /// Returns a [`RendererSpawnCommand`] wrapper so macOS can keep any `sandbox-exec` temp profile file
 /// alive until `spawn()`.
 pub fn configure_renderer_command(
-  mut cmd: Command,
+  cmd: Command,
   config: RendererSandboxConfig,
   extra_keep_fds: &[crate::sandbox::fd_sanitizer::RawFd],
 ) -> Result<RendererSpawnCommand, RendererSandboxError> {

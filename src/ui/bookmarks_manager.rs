@@ -1063,7 +1063,7 @@ fn bookmarks_list(
     // Move the cache out temporarily so row rendering can mutably borrow `state` without fighting
     // Rust's borrow checker.
     let prev_cache = state.list_cache.take();
-    let mut cache = take_or_rebuild_list_cache(
+    let cache = take_or_rebuild_list_cache(
       ui.ctx(),
       store,
       query,

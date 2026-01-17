@@ -1,5 +1,6 @@
 //! Capture and replay self-contained page bundles (HTML + assets).
 #![allow(clippy::too_many_lines)]
+#![allow(dead_code)]
 
 use fastrender::cli_utils as common;
 

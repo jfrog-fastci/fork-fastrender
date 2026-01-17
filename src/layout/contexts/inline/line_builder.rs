@@ -1764,7 +1764,7 @@ impl TextItem {
       }
 
       let mut prev_cluster: Option<ClusterLite> = None;
-      let mut apply_run = |runs: &mut [ShapedRun],
+      let apply_run = |runs: &mut [ShapedRun],
                            run_idx: usize,
                            prev_cluster: &mut Option<ClusterLite>| {
         let run_len = runs[run_idx].glyphs.len();
@@ -2621,7 +2621,7 @@ impl TextItem {
     let mut advances: Vec<ClusterBoundary> =
       Vec::with_capacity(estimated_glyphs.saturating_add(runs.len()));
     let mut cumulative = 0.0;
-    let mut process_run = |run_idx: usize, advances: &mut Vec<ClusterBoundary>, cumulative: &mut f32| {
+    let process_run = |run_idx: usize, advances: &mut Vec<ClusterBoundary>, cumulative: &mut f32| {
       let run = &runs[run_idx];
       let axis = run_inline_axis(run);
       if run.glyphs.is_empty() {

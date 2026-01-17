@@ -903,7 +903,7 @@ impl DisplayListOptimizer {
           });
         }
         DisplayItem::PopStackingContext => {
-          let Some(mut entry) = stack.pop() else {
+          let Some(entry) = stack.pop() else {
             continue;
           };
           if entry.contains_blend {

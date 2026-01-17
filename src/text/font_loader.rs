@@ -1090,7 +1090,7 @@ impl FontContext {
     let stretches = crate::text::pipeline::stretch_preference_order(FontStretch::Normal);
     let slopes = crate::text::pipeline::slope_preference_order(requested_style);
     let weights = crate::text::pipeline::weight_preference_order(weight);
-    let mut resolve_named_family = |family: &str| -> Option<LoadedFont> {
+    let resolve_named_family = |family: &str| -> Option<LoadedFont> {
       if let Some(font) = self.select_web_font(
         family,
         weight,
@@ -1212,7 +1212,7 @@ impl FontContext {
     } else {
       None
     };
-    let mut resolve_named_family = |family: &str| -> Option<LoadedFont> {
+    let resolve_named_family = |family: &str| -> Option<LoadedFont> {
       if let Some(font) =
         self.select_web_font(family, weight, style, stretch, requested_angle, None)
       {

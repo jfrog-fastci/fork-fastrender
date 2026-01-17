@@ -131,10 +131,10 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   #[cfg(any(target_os = "linux", target_os = "android"))]
   let mut recv_flags = libc::MSG_CMSG_CLOEXEC;
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
-  let mut recv_flags = 0;
+  let recv_flags = 0;
 
   // SAFETY: `recvmsg` writes into the provided iov/control buffers which are valid for the call.
-  let mut need_manual_cloexec = false;
+  let need_manual_cloexec = false;
   let read_len = 'recvmsg: loop {
     // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
     msg.msg_controllen = CONTROL_LEN as _;

@@ -5,6 +5,5 @@
 //! non-UI code too).
 
 pub(crate) use crate::string_match::{
-  contains_ascii_case_insensitive, find_ascii_case_insensitive,
-  find_ascii_case_insensitive_bytes_from, AsciiCaseInsensitive,
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitive,
 };

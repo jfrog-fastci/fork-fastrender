@@ -156,7 +156,7 @@ pub fn composite_tab_surface(mut root: Pixmap, frames: &[EmbeddedFrame<'_>]) -> 
       build_rounded_rect_clip_mask(root.width(), root.height(), dest_rect_device, radii_device)
     };
 
-    let mut paint = PixmapPaint::default();
+    let paint = PixmapPaint::default();
     // Use SourceOver blending (default), matching iframe image compositing.
     let transform = Transform::from_row(
       scale_x,

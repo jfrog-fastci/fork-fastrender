@@ -2,6 +2,9 @@
 //!
 //! Cargo treats each `tests/*.rs` file as its own integration test crate. This crate pulls the
 //! integration test module trees under `tests/` into a single binary so the suite links once.
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 
 mod common;
 mod accessibility;

@@ -8,6 +8,7 @@
 //! This is designed as a "ruthless triage" tool: cheap to run, safe against hangs, and
 //! produces committed, comparable metrics.
 #![allow(clippy::too_many_lines)]
+#![allow(dead_code)]
 #![allow(clippy::struct_excessive_bools)]
 
 use fastrender::cli_utils as common;

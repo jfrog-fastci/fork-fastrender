@@ -6,7 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -117,8 +117,6 @@ impl Drop for ChromeRlimitAsGuard {
   }
 }
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 
 /// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
 /// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~87px

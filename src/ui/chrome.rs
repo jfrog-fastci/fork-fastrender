@@ -2028,7 +2028,7 @@ pub fn chrome_ui_with_bookmarks(
         (ui.available_width() - reserved_right).max(0.0),
         bar_height,
       ));
-      let mut bar_response = ui.interact(
+      let bar_response = ui.interact(
         bar_rect,
         address_bar_display_id,
         if show_text_edit_initial {
@@ -2597,7 +2597,7 @@ pub fn chrome_ui_with_bookmarks(
               let err_fg = ui.visuals().error_fg_color;
               let try_http_id = address_bar_id.with("try_http");
               let (_id, rect) = ui.allocate_space(egui::vec2(try_http_button_width, button_side));
-              let mut resp = ui.interact(rect, try_http_id, egui::Sense::click());
+              let resp = ui.interact(rect, try_http_id, egui::Sense::click());
               #[cfg(test)]
               {
                 store_test_id(ctx, "chrome_try_http_button_id", resp.id);
@@ -2669,7 +2669,7 @@ pub fn chrome_ui_with_bookmarks(
               };
               let (_id, rect) = ui.allocate_space(egui::vec2(button_side, button_side));
               let icon_id = address_bar_id.with("bookmark");
-              let mut response = ui.interact(
+              let response = ui.interact(
                 rect,
                 icon_id,
                 if can_toggle {
@@ -3272,11 +3272,20 @@ pub fn chrome_ui_with_bookmarks(
       if menu_open || open_opacity > 0.0 {
         let mut close_menu = false;
         // Anchor the popup menu below the menu button.
-        let pos = egui::pos2(menu_button.rect.left(), menu_button.rect.bottom());
+        // If the menu would overflow the right edge, anchor from the right side of the button instead.
+        let menu_min_width = 220.0;
+        let screen_rect = ctx.screen_rect();
+        let anchor_x = if menu_button.rect.left() + menu_min_width > screen_rect.right() {
+          // Anchor from right side of button to prevent overflow
+          (menu_button.rect.right() - menu_min_width).max(screen_rect.left())
+        } else {
+          menu_button.rect.left()
+        };
+        let pos = egui::pos2(anchor_x, menu_button.rect.bottom());
         let area = egui::Area::new(menu_popup_id)
           .order(egui::Order::Foreground)
           .fixed_pos(pos)
-          .constrain_to(ctx.screen_rect())
+          .constrain_to(screen_rect)
           .interactable(menu_open && shortcuts_enabled);
         let inner = area.show(ctx, |ui| {
           ui.set_enabled(menu_open && shortcuts_enabled);
@@ -4136,7 +4145,7 @@ pub fn chrome_ui_with_bookmarks(
           let mut custom = current_accent
             .map(|c| c.to_color32())
             .unwrap_or(ui.visuals().hyperlink_color);
-          let mut resp = ui
+          let resp = ui
             .push_id("custom_accent_color_picker", |ui| {
               egui::color_picker::color_edit_button_srgba(
                 ui,

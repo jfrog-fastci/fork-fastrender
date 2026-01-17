@@ -479,7 +479,7 @@ impl egui::Widget for IconButton {
     let side_points = ui.spacing().interact_size.y;
     let tooltip = self.tooltip;
     let desired_size = egui::vec2(side_points, side_points);
-    let (rect, mut response) = if let Some(id) = self.id {
+    let (rect, response) = if let Some(id) = self.id {
       // `allocate_space` now returns `(Id, Rect)` (the auto-generated widget id plus the rect).
       // We provide our own explicit id for deterministic focus/shortcuts, so we only need the rect.
       let (_allocated_id, rect) = ui.allocate_space(desired_size);

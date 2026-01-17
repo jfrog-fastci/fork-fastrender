@@ -819,7 +819,7 @@ impl dyn AudioBackend {
       fallback_reason: None,
     };
 
-    let mut make_null = || {
+    let make_null = || {
       Box::new(NullAudioBackend::new_with_config_and_trace(cfg, trace.clone()))
         as Box<dyn AudioBackend>
     };

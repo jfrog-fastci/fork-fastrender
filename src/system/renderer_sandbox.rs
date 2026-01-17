@@ -33,17 +33,15 @@ pub struct RendererSandboxConfig {
 }
 
 impl RendererSandboxConfig {
-  /// Security-oriented defaults for an untrusted renderer process.
+  /// Defaults for renderer process - sandboxing is disabled.
   ///
-  /// - Sandbox is enabled by default.
-  /// - Linux-only layers (seccomp/landlock) default to enabled on Linux and disabled elsewhere.
-  /// - Closing file descriptors defaults to enabled on Unix and disabled on non-Unix platforms.
+  /// Sandboxing is not currently used in FastRender.
   pub const fn production_defaults() -> Self {
     Self {
-      enabled: true,
-      seccomp: cfg!(target_os = "linux"),
-      landlock: cfg!(target_os = "linux"),
-      close_fds: cfg!(unix),
+      enabled: false,
+      seccomp: false,
+      landlock: false,
+      close_fds: false,
     }
   }
 

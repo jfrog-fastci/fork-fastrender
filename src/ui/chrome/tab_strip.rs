@@ -742,24 +742,32 @@ fn unpinned_tab_preview_ui(
     );
   }
 
-  // Title.
+  // Title (left-aligned, truncated).
   let title_start_x = icon_rect.max.x + ICON_GAP;
   let title_end_x = close_rect
     .map(|r| r.min.x - ICON_GAP)
     .unwrap_or(tab_rect.max.x - TAB_PADDING_X);
-  if title_end_x > title_start_x + 4.0 {
+  let title_max_width = title_end_x - title_start_x;
+  if title_max_width > 4.0 {
     let title_rect = Rect::from_min_max(
       Pos2::new(title_start_x, tab_rect.min.y),
       Pos2::new(title_end_x, tab_rect.max.y),
     );
-    let label = {
-      let mut text = egui::RichText::new(title);
-      if is_active {
-        text = text.strong();
-      }
-      egui::Label::new(text).truncate(true).wrap(false)
-    };
-    let _ = ui.put(title_rect, label);
+    if ui.is_rect_visible(title_rect) {
+      let font_id = if is_active {
+        egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Button].size)
+      } else {
+        egui::TextStyle::Button.resolve(ui.style())
+      };
+      let galley = ui.painter().layout(
+        title.to_string(),
+        font_id,
+        visuals.text_color(),
+        title_max_width,
+      );
+      let text_pos = Pos2::new(title_start_x, tab_rect.center().y - galley.size().y * 0.5);
+      ui.painter().galley(text_pos, galley);
+    }
   }
 }
 
@@ -1269,7 +1277,7 @@ fn group_chip_ui(
   precomputed_width: Option<f32>,
 ) {
   let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
-  let (collapsed, mut response, chip_rect) = {
+  let (collapsed, response, chip_rect) = {
     let Some(group) = app.tab_groups.get_mut(&group_id) else {
       return;
     };
@@ -1283,7 +1291,7 @@ fn group_chip_ui(
       .map(|w| w.max(0.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH))
       .unwrap_or_else(|| group_chip_width(ui, title));
     let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
-    let mut response = ui.interact(chip_rect, id, Sense::click());
+    let response = ui.interact(chip_rect, id, Sense::click());
     super::show_tooltip_on_hover_or_focus(ui, &response, title);
 
     // AccessKit may request explicit expand/collapse actions when the node exposes an expanded state.
@@ -1406,21 +1414,27 @@ fn group_chip_ui(
       Stroke::NONE,
     ));
 
-    // Title.
+    // Title (left-aligned, truncated).
     let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
     let title_end_x = chip_rect.max.x - GROUP_CHIP_PADDING_X;
-  if title_end_x > title_start_x + 4.0 {
-    let title_rect = Rect::from_min_max(
-      Pos2::new(title_start_x, chip_rect.min.y),
-      Pos2::new(title_end_x, chip_rect.max.y),
-    );
-    if ui.is_rect_visible(title_rect) {
-      let label = egui::Label::new(egui::RichText::new(title).text_style(egui::TextStyle::Button))
-        .truncate(true)
-        .wrap(false);
-      let _ = ui.put(title_rect, label);
+    let title_max_width = title_end_x - title_start_x;
+    if title_max_width > 4.0 {
+      let title_rect = Rect::from_min_max(
+        Pos2::new(title_start_x, chip_rect.min.y),
+        Pos2::new(title_end_x, chip_rect.max.y),
+      );
+      if ui.is_rect_visible(title_rect) {
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let galley = ui.painter().layout(
+          title.to_string(),
+          font_id,
+          visuals.text_color(),
+          title_max_width,
+        );
+        let text_pos = Pos2::new(title_start_x, chip_rect.center().y - galley.size().y * 0.5);
+        ui.painter().galley(text_pos, galley);
+      }
     }
-  }
 
     (collapsed, response, chip_rect)
   };
@@ -1660,7 +1674,7 @@ fn tab_ui(
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title_owned = tab.display_title().to_string();
   let title = title_owned.as_str();
-  let mut response = ui.interact(
+  let response = ui.interact(
     tab_rect,
     tab_id,
     if interactive {
@@ -1960,28 +1974,38 @@ fn tab_ui(
     super::paint_focus_ring(ui, &close_resp, focus_ring);
   }
 
-  // Title.
+  // Title (left-aligned, truncated).
   let title_start_x = icon_rect.max.x + ICON_GAP;
   let title_end_x = close_rect
     .map(|r| r.min.x - ICON_GAP)
     .unwrap_or(tab_rect.max.x - TAB_PADDING_X);
-  if title_end_x > title_start_x + 4.0 {
+  let title_max_width = title_end_x - title_start_x;
+  if title_max_width > 4.0 {
     let title_rect = Rect::from_min_max(
       Pos2::new(title_start_x, tab_rect.min.y),
       Pos2::new(title_end_x, tab_rect.max.y),
     );
     if paint_ui.is_rect_visible(title_rect) {
-      let label = {
-        let mut text = egui::RichText::new(title);
-        if is_active {
-          text = text.strong();
-        }
-        if closing {
-          text = text.color(with_alpha(visuals.text_color(), close_opacity));
-        }
-        egui::Label::new(text).truncate(true).wrap(false)
+      let font_id = if is_active {
+        egui::FontId::proportional(ui.style().text_styles[&egui::TextStyle::Button].size)
+      } else {
+        egui::TextStyle::Button.resolve(ui.style())
       };
-      let _ = paint_ui.put(title_rect, label);
+      let text_color = if closing {
+        with_alpha(visuals.text_color(), close_opacity)
+      } else {
+        visuals.text_color()
+      };
+      // Truncate the title text to fit within the available width.
+      let galley = paint_ui.painter().layout(
+        title.to_string(),
+        font_id.clone(),
+        text_color,
+        title_max_width,
+      );
+      // Draw left-aligned, vertically centered.
+      let text_pos = Pos2::new(title_start_x, tab_rect.center().y - galley.size().y * 0.5);
+      paint_ui.painter().galley(text_pos, galley);
     }
   }
 
@@ -2082,7 +2106,7 @@ fn pinned_tab_ui(
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title_owned = tab.display_title().to_string();
   let title = title_owned.as_str();
-  let mut response = ui.interact(
+  let response = ui.interact(
     tab_rect,
     tab_id,
     if closing {
@@ -2412,7 +2436,7 @@ pub(super) fn tab_strip_ui(
   //
   // Instead, we *take* ownership of the previous snapshot from egui memory, reuse its
   // allocations, and store it back at the end of the frame.
-  let mut prev_snapshot: Option<TabStripLayoutSnapshot> = ctx.data_mut(|d| {
+  let prev_snapshot: Option<TabStripLayoutSnapshot> = ctx.data_mut(|d| {
     std::mem::take(d.get_temp_mut_or_default::<Option<TabStripLayoutSnapshot>>(snapshot_key))
   });
   let mut pin_anim: Option<TabPinAnim> =
@@ -3252,7 +3276,7 @@ pub(super) fn tab_strip_ui(
             // chip→next-item "pop" at the end of collapse while still shrinking intra-group gaps.
             let mut prev_gap_scale: Option<f32> = None;
 
-            let mut add_gap = |ui: &mut egui::Ui,
+            let add_gap = |ui: &mut egui::Ui,
                                first_item: &mut bool,
                                prev_kind: GapKind,
                                prev_gap_scale: Option<f32>,

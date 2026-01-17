@@ -691,6 +691,88 @@ fn link_click_emits_navigation_with_resolved_url() {
   assert!(!has_attr(&dom, "link", "data-fastr-visited"));
 }
 
+/// Clicking on a child element (e.g. `<span>`) inside an `<a>` should still navigate.
+/// The hit test returns the child element, but link activation should walk up to the
+/// nearest ancestor anchor.
+#[test]
+fn link_click_on_child_element_navigates() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", "bar")],
+        vec![el("span", vec![("id", "text")], vec![])],
+      )],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let text_dom_id = node_id(&dom, "text");
+
+  // Build box tree with both anchor and child span
+  let mut text_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  text_box.styled_node_id = Some(text_dom_id);
+  let mut link_box =
+    BoxNode::new_block(default_style(), FormattingContextType::Block, vec![text_box]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  // Hit test will return the child element (text_dom_id), not the anchor
+  let text_box_id = find_box_id_for_styled_node(&box_tree, text_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      text_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    true,
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert!(changed);
+  // The navigation should still occur, with the URL resolved from the ancestor anchor
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/base/bar".to_string()
+    },
+    "clicking on child element inside anchor should navigate"
+  );
+  // visited_candidate should be the anchor element, not the child
+  assert_eq!(
+    engine.take_last_visited_candidate(),
+    Some(link_dom_id),
+    "visited candidate should be the anchor element"
+  );
+}
+
 #[test]
 fn link_middle_click_opens_in_new_tab() {
   let mut dom = doc(vec![el(

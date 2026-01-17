@@ -70,7 +70,6 @@ use vm_js::{
   RootId, Scope, SourceText, SourceTextInput, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
   WeakGcObject,
 };
-use webidl_vm_js::bindings_runtime::to_uint32_f64;
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
 /// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
@@ -845,7 +844,7 @@ impl WindowRealm {
 
     let prev = self.webidl_bindings_host;
     self.webidl_bindings_host = Some(NonNull::from(host));
-    let mut guard = Guard { realm: self, prev };
+    let guard = Guard { realm: self, prev };
     f(&mut *guard.realm)
   }
 
@@ -11911,7 +11910,7 @@ fn maybe_adopt_node_into_document(
   // Resolve the source DOM pointer without calling `dom_mut()` on `BrowserDocumentDom2`, which would
   // conservatively mark the host document dirty even when adoption is non-render-affecting (e.g.
   // adopting a detached node like a fresh DocumentType).
-  let Some(mut src_dom_ptr) = dom_ptr_for_document_id_read(vm, host, node.document_id) else {
+  let Some(src_dom_ptr) = dom_ptr_for_document_id_read(vm, host, node.document_id) else {
     return Err(VmError::TypeError(
       "operation requires a DOM-backed source document",
     ));
@@ -14739,7 +14738,7 @@ fn dom_rect_to_json_native(
   let out = scope.alloc_object()?;
   scope.push_root(Value::Object(out))?;
 
-  let mut define = |scope: &mut Scope<'_>, name: &str, value: f64| -> Result<(), VmError> {
+  let define = |scope: &mut Scope<'_>, name: &str, value: f64| -> Result<(), VmError> {
     let key = alloc_key(scope, name)?;
     scope.define_property(
       out,
@@ -26923,7 +26922,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
 
     let prev = self.event_loop;
     self.event_loop = Some(NonNull::from(event_loop));
-    let mut guard = EventLoopSwapGuard {
+    let guard = EventLoopSwapGuard {
       invoker: self,
       prev,
     };
@@ -27033,7 +27032,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     self
       .dispatch_event_object_stack
       .push(ActiveDispatchEventObject { event_obj, root_id });
-    let mut guard = DispatchEventObjectGuard {
+    let guard = DispatchEventObjectGuard {
       invoker: self,
       root_id,
       event_obj,
@@ -30891,7 +30890,7 @@ fn node_insert_before_native(
   let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_handle.node_id)
     .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
 
-  let mut new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
+  let new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Node.insertBefore requires a node argument"))?;
   // SAFETY: pointers are valid for the duration of this native call.
@@ -31271,7 +31270,7 @@ fn node_replace_child_native(
 
   let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_handle.node_id)
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
-  let mut new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
+  let new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Node.replaceChild requires a node argument"))?;
   // SAFETY: pointers are valid for the duration of this native call.
@@ -37027,7 +37026,7 @@ fn static_range_constructor_construct_native(
     "StaticRangeInit.endOffset is required",
   )?;
 
-  let mut validate_container = |vm: &mut Vm, scope: &mut Scope<'_>, v: Value| -> Result<(), VmError> {
+  let validate_container = |vm: &mut Vm, scope: &mut Scope<'_>, v: Value| -> Result<(), VmError> {
     if matches!(v, Value::Null | Value::Undefined) {
       return Err(VmError::TypeError("StaticRangeInit container must be a Node"));
     }
@@ -41145,7 +41144,7 @@ fn run_iframe_src_attribute_changed_steps(
     .map(|res| String::from_utf8_lossy(&res.bytes).to_string())
     .unwrap_or_else(|_| "<!doctype html><html><head></head><body></body></html>".to_string());
 
-  let mut dom = dom2::parse_html_with_options(
+  let dom = dom2::parse_html_with_options(
     &html_source,
     crate::dom::DomParseOptions::with_scripting_enabled(false),
   )

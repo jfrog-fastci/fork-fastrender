@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(MediaType::Screen);
 
-  let (tree, mut json) = if args.include_bounds {
+  let (tree, json) = if args.include_bounds {
     let base_hint = resource.final_url.as_deref().unwrap_or("");
     if !base_hint.trim().is_empty() {
       renderer.set_base_url(base_hint.to_string());

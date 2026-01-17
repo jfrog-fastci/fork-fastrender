@@ -338,6 +338,7 @@ enum ShmemRegionBackend {
 impl ShmemRegion {
   /// Create a new shared-memory region using the requested backend.
   #[cfg(unix)]
+  #[allow(unreachable_patterns)]
   pub fn create(backend: ShmemBackend, len: usize) -> io::Result<(Self, ShmemHandle)> {
     match backend {
       #[cfg(unix)]
@@ -498,6 +499,7 @@ fn ensure_nonzero_len(len: usize) -> io::Result<()> {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn validate_fd_size_and_type(fd: RawFd, expected_len: usize) -> io::Result<()> {
   let mut st: libc::stat = unsafe { std::mem::zeroed() };
   // SAFETY: `fstat` writes to `st` when the pointer is valid.
@@ -542,6 +544,7 @@ fn map_file_mut(file: &File, len: usize) -> io::Result<MmapMut> {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn dup_fd_cloexec(fd: RawFd) -> io::Result<RawFd> {
   // SAFETY: `fcntl` duplicates the file descriptor. We set CLOEXEC on the duplicate so it won't
   // leak into unrelated execs.

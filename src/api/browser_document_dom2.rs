@@ -3486,7 +3486,7 @@ impl BrowserDocumentDom2 {
     }
 
     let mut undo_ops: Vec<UndoOp> = Vec::new();
-    let mut undo_all = |undo_ops: &mut Vec<UndoOp>| {
+    let undo_all = |undo_ops: &mut Vec<UndoOp>| {
       for op in undo_ops.drain(..).rev() {
         // Safety: undo pointers refer to nodes owned by `prepared.box_tree.root`, which remain valid
         // because we never move nodes during traversal.

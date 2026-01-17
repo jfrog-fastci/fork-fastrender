@@ -8189,7 +8189,7 @@ impl HttpFetcher {
           return Err(Error::Resource(err));
         }
 
-        let mut content_type = response
+        let content_type = response
           .headers()
           .get("content-type")
           .and_then(|h| h.to_str().ok())
@@ -8538,7 +8538,7 @@ impl HttpFetcher {
         }
 
         let mut network_timer = start_network_fetch_diagnostics();
-        let mut response = match request.send() {
+        let response = match request.send() {
           Ok(resp) => resp,
           Err(err) => {
             finish_network_fetch_diagnostics(network_timer.take());
@@ -8666,7 +8666,7 @@ impl HttpFetcher {
           return Err(Error::Resource(err));
         }
 
-        let mut content_type = response
+        let content_type = response
           .headers()
           .get("content-type")
           .and_then(|h| h.to_str().ok())

@@ -8816,7 +8816,7 @@ impl FormattingContext for TableFormattingContext {
         }
       }
 
-      let mut push_column_span_fragment = |fragments: &mut Vec<FragmentNode>,
+      let push_column_span_fragment = |fragments: &mut Vec<FragmentNode>,
                                            cache: &mut HashMap<usize, Arc<ComputedStyle>>,
                                            box_id: usize,
                                            style: Arc<ComputedStyle>,
@@ -9176,7 +9176,7 @@ impl FormattingContext for TableFormattingContext {
         laid_out_cells.into_iter().map(Some).collect();
 
       for idx in placement_order {
-        let Some(mut laid) = laid_out_cells.get_mut(idx).and_then(Option::take) else {
+        let Some(laid) = laid_out_cells.get_mut(idx).and_then(Option::take) else {
           continue;
         };
         let cell = &laid.cell;

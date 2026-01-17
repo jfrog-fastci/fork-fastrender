@@ -977,7 +977,7 @@ fn urlsp_init_from_iterable(
   limits: &UrlLimits,
   mut record: iterator::IteratorRecord,
 ) -> Result<UrlSearchParams, VmError> {
-  let mut params = UrlSearchParams::new(limits);
+  let params = UrlSearchParams::new(limits);
 
   let result = (|| -> Result<(), VmError> {
     while let Some(pair_value) = iterator::iterator_step_value(vm, host, hooks, scope, &mut record)?
@@ -1033,7 +1033,7 @@ fn urlsp_init_from_record(
   obj: GcObject,
 ) -> Result<UrlSearchParams, VmError> {
   let keys = scope.heap().own_property_keys(obj)?;
-  let mut params = UrlSearchParams::new(limits);
+  let params = UrlSearchParams::new(limits);
 
   for key in keys {
     let PropertyKey::String(name_key) = key else {

@@ -10829,7 +10829,7 @@ impl DisplayListRenderer {
   }
 
   /// Consumes the renderer and returns the painted pixmap.
-  pub fn render(mut self, list: &DisplayList) -> Result<Pixmap> {
+  pub fn render(self, list: &DisplayList) -> Result<Pixmap> {
     Ok(self.render_with_report(list)?.pixmap)
   }
 
@@ -12419,7 +12419,7 @@ impl DisplayListRenderer {
           // `filter` and `backdrop-filter` both allocate and rasterize intermediate surfaces.
           // Treat them similarly in the heuristics that decide whether parallel tiling is worth
           // the overhead, otherwise pages dominated by backdrop filters stay serial.
-          let mut add_filters = |filters: &[ResolvedFilter], total: &mut u64| {
+          let add_filters = |filters: &[ResolvedFilter], total: &mut u64| {
             if filters.is_empty() {
               return;
             }
@@ -15940,7 +15940,7 @@ impl DisplayListRenderer {
           .unwrap_or(perspective_base);
         self.perspective_stack.push(next_perspective);
 
-        let mut pending_backdrop = if has_backdrop {
+        let pending_backdrop = if has_backdrop {
           let backdrop_bounds = if let Some(projective_transform) = projective_transform.as_ref() {
             let projected_css = projective_transform.transform_rect(plane_css_bounds);
             let projected_device = self.ds_rect(projected_css);

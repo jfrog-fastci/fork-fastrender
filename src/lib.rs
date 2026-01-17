@@ -101,6 +101,19 @@
 #![allow(clippy::elidable_lifetime_names)]
 // Allow missing docs - documentation can be added incrementally
 #![allow(missing_docs)]
+// Allow dead code - this is a large crate with many features and WIP code paths
+#![allow(dead_code)]
+// Allow unreachable patterns - used in platform-specific cfg code
+#![allow(unreachable_patterns)]
+// Allow unused assignments, variables, and imports - common in WIP code with placeholders
+// and code that depends on feature flags
+#![allow(unused_assignments)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+// Allow private types in public interfaces - used for implementation details
+#![allow(private_interfaces)]
+// Allow deprecated API usage during migration
+#![allow(deprecated)]
 // Performance - strict
 #![deny(clippy::needless_collect)]
 // Correctness - strict

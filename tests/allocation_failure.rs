@@ -7,5 +7,8 @@
 //! Note: the test modules live under `tests/allocation_failure_tests/` and are pulled in via a
 //! normal Rust `mod` declaration. This keeps the `allocation_failure` test-binary name while
 //! avoiding forbidden `#[path = "..."]` shims.
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 
 mod allocation_failure_tests;

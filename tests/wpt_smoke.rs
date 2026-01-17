@@ -12,6 +12,9 @@
 //! ```
 //!
 //! (See `tests/wpt/mod.rs` for the harness entrypoint.)
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 
 mod common;
 mod wpt;

@@ -1,3 +1,8 @@
+// Allow dead code at the crate level - this is a library with many features that may not all be
+// used by every downstream consumer.
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
+
 //! JavaScript runtime/VM scaffolding for `ecma-rs`.
 //!
 //! This crate is the foundation for browser-grade JavaScript execution. It provides:

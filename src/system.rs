@@ -9,7 +9,6 @@ pub mod macos_sandbox_exec;
 pub mod process_supervisor;
 pub mod renderer_sandbox;
 
-use std::path::Path;
 use std::sync::OnceLock;
 
 /// Default stack size for threads that execute the full render pipeline.
@@ -30,7 +29,7 @@ pub const DEFAULT_RENDER_STACK_SIZE: usize = 128 * 1024 * 1024; // 128MiB
 pub fn cpu_budget() -> usize {
   static CPU_BUDGET: OnceLock<usize> = OnceLock::new();
   *CPU_BUDGET.get_or_init(|| {
-    let mut cpus = std::thread::available_parallelism()
+    let cpus = std::thread::available_parallelism()
       .map_or(1, |n| n.get())
       .max(1);
     #[cfg(target_os = "linux")]

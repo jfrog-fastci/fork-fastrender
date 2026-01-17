@@ -207,7 +207,7 @@ fn network_main(cmd_rx: mpsc::Receiver<RendererToNetwork>, event_tx: mpsc::SyncS
   // commands (best-effort; avoids surprising latency spikes on first connect).
   let _ = websocket_io_runtime();
 
-  let mut shutdown_all = |sockets: &mut HashMap<u64, SocketEntry>| {
+  let shutdown_all = |sockets: &mut HashMap<u64, SocketEntry>| {
     for (_conn_id, entry) in sockets.iter_mut() {
       if let Some(cmd_tx) = entry.cmd_tx.as_ref() {
         let _ = cmd_tx.try_send(WsCommand::Shutdown);

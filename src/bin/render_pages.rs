@@ -3,6 +3,8 @@
 //! Renders all HTML files in fetches/html/ to fetches/renders/ (override with `--out-dir`)
 //! Logs per-page to fetches/renders/{name}.log
 //! Summary to fetches/renders/_summary.log
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
 
 use fastrender::cli_utils as common;
 
@@ -897,7 +899,7 @@ fn build_render_shared(
   // Create shared caching fetcher
   let http = build_base_fetcher(args, fetch_timeout_secs);
   let honor_http_freshness = cfg!(feature = "disk_cache") && !args.no_http_freshness;
-  let mut memory_config = CachingFetcherConfig {
+  let memory_config = CachingFetcherConfig {
     honor_http_cache_freshness: honor_http_freshness,
     ..CachingFetcherConfig::default()
   };

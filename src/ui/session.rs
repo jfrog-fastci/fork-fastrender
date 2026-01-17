@@ -1036,7 +1036,7 @@ impl BrowserSession {
       let mut merged: Vec<BrowserSessionDownload> = Vec::new();
       let mut seen: HashSet<(PathBuf, String, String)> = HashSet::new();
 
-      let mut drain_window =
+      let drain_window =
         |idx: usize,
          windows: &mut [BrowserSessionWindow],
          merged: &mut Vec<BrowserSessionDownload>,

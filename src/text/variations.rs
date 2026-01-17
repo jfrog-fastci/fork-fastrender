@@ -111,7 +111,7 @@ pub(crate) fn collect_variations_for_face(
     .map(|axis| (axis.tag, (axis.min_value, axis.max_value)))
     .collect();
 
-  let mut push_variation = |variations: &mut Vec<Variation>, tag: Tag, value: f32| {
+  let push_variation = |variations: &mut Vec<Variation>, tag: Tag, value: f32| {
     let Some((min, max)) = axis_bounds.get(&tag).copied() else {
       return;
     };

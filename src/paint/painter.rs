@@ -4126,7 +4126,7 @@ impl Painter {
         }
 
         self.gradient_stats.merge(&base_painter.gradient_stats);
-        let mut layer_pixmap = base_painter.pixmap;
+        let layer_pixmap = base_painter.pixmap;
 
         let combined_transform = transform_3d
           .unwrap_or_else(Transform3D::identity)
@@ -4197,7 +4197,7 @@ impl Painter {
         let composite_start = profile_enabled.then(Instant::now);
         let fallback_blend = map_blend_mode(blend_mode);
         if let Some(affine) = affine_2d {
-          let mut final_transform = self
+          let final_transform = self
             .device_transform(Some(transform2d_to_skia(affine)))
             .unwrap_or_else(Transform::identity);
           if is_hsl_blend(blend_mode) {
@@ -12377,7 +12377,7 @@ impl Painter {
         let mut fill_kind_is_suboptimum = false;
         if let Some(optimum) = (*optimum).filter(|v| v.is_finite()) {
           let mut low_val = (*low).unwrap_or(*min).clamp(*min, *max);
-          let mut high_val = (*high).unwrap_or(*max).clamp(*min, *max);
+          let high_val = (*high).unwrap_or(*max).clamp(*min, *max);
           if low_val > high_val {
             low_val = high_val;
           }
@@ -20703,7 +20703,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
       Ok(display_list)
     }
   };
-  let mut display_list = match display_list_result {
+  let display_list = match display_list_result {
     Ok(list) => list,
     Err(err) => {
       // The display-list pipeline is faster for most pages, but builder/stacking-tree construction

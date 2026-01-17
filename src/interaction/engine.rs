@@ -3707,6 +3707,19 @@ fn nearest_details_summary(index: &DomIndexMut, mut node_id: usize) -> Option<(u
   None
 }
 
+/// Walk up the ancestor chain (including `start`) to find the nearest anchor element with an href.
+///
+/// Returns the `anchor_id` when found.
+fn nearest_anchor_with_href(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    if index.node(node_id).is_some_and(is_anchor_with_href) {
+      return Some(node_id);
+    }
+    node_id = index.parent.get(node_id).copied().unwrap_or(0);
+  }
+  None
+}
+
 fn toggle_details_open(index: &mut DomIndexMut, details_id: usize) -> bool {
   let Some(node_mut) = index.node_mut(details_id) else {
     return false;
@@ -3940,7 +3953,7 @@ fn read_file_bytes_bounded(path: &std::path::Path, max_bytes: u64) -> std::io::R
   let max_bytes = max_bytes.min(usize::MAX as u64);
   let max_plus_one = max_bytes.saturating_add(1);
 
-  let mut file = std::fs::File::open(path)?;
+  let file = std::fs::File::open(path)?;
   let mut limited = file.take(max_plus_one);
   let mut buf = Vec::new();
   limited.read_to_end(&mut buf)?;
@@ -10419,11 +10432,14 @@ impl InteractionEngine {
           }
 
           if allow_link_activation {
-            if let Some(href) = index
-              .node(target_id)
-              .filter(|node| is_anchor_with_href(node))
+            // Walk up the ancestor chain to find the nearest anchor element with an href.
+            // This handles clicks on text nodes or nested elements inside `<a>` elements.
+            let anchor_id = nearest_anchor_with_href(&index, target_id);
+            if let Some(href) = anchor_id
+              .and_then(|id| index.node(id))
               .and_then(|node| node.get_attribute_ref("href"))
             {
+              let anchor_id = anchor_id.unwrap(); // Safe: we just matched Some above
               let mut href_for_resolution = trim_ascii_whitespace(href).to_string();
 
               // Server-side image maps: `<img ismap>` inside `<a href>` appends `?x,y` to the anchor
@@ -10433,7 +10449,7 @@ impl InteractionEngine {
               // click target becomes the `<area>` (not the `<a>`), so we only apply `ismap` when the
               // semantic target is an `<a>`.
               let target_is_a = index
-                .node(target_id)
+                .node(anchor_id)
                 .and_then(|node| node.tag_name())
                 .is_some_and(|tag| tag.eq_ignore_ascii_case("a"));
 
@@ -10450,7 +10466,7 @@ impl InteractionEngine {
                     });
 
                   if let Some(img_id) = event_target.filter(|_| event_target_is_img_ismap) {
-                    if is_ancestor_or_self(&index, target_id, img_id) {
+                    if is_ancestor_or_self(&index, anchor_id, img_id) {
                       let img_fragment = fragment_tree
                         .hit_test(page_point)
                         .into_iter()
@@ -10473,10 +10489,10 @@ impl InteractionEngine {
               }
 
               if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
-                self.last_visited_candidate = Some(target_id);
+                self.last_visited_candidate = Some(anchor_id);
 
                 let download_attr = index
-                  .node(target_id)
+                  .node(anchor_id)
                   .and_then(|node| node.get_attribute_ref("download"));
                 let is_download = download_attr.is_some();
                 let download_name = download_attr
@@ -10485,7 +10501,7 @@ impl InteractionEngine {
                   .map(|v| v.to_string());
 
                 let target_blank = index
-                  .node(target_id)
+                  .node(anchor_id)
                   .and_then(|node| node.get_attribute_ref("target"))
                   .is_some_and(|target| {
                     trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank")

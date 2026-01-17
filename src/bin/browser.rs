@@ -1,3 +1,11 @@
+// Allow warnings in the browser binary - it has many WIP features
+#![allow(dead_code)]
+#![allow(unused_mut)]
+#![allow(unreachable_patterns)]
+#![allow(unused_assignments)]
+#![allow(unused_variables)]
+#![allow(unused_must_use)]
+
 #[cfg(not(feature = "browser_ui"))]
 fn main() {
   eprintln!(
@@ -4234,8 +4242,6 @@ mod profile_update_redraw_tests {
   }
 }
 #[cfg(feature = "browser_ui")]
-use arboard::Clipboard;
-#[cfg(feature = "browser_ui")]
 use clap::Parser;
 #[cfg(feature = "browser_ui")]
 use fastrender::ui::compositor_accessibility as compositor_a11y;
@@ -7503,7 +7509,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       force_fallback_adapter: wgpu_options.force_fallback_adapter,
     }
   };
-  let mut home_url = startup_session.home_url.clone();
+  let home_url = startup_session.home_url.clone();
   let startup_active_window_index = startup_session.active_window_index;
   let startup_windows = startup_session.windows;
   let window_count = startup_windows.len();
@@ -8484,7 +8490,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           let mut request_redraw = false;
           let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
           let mut downloads_changed = false;
-          let mut needs_follow_up_wake = false;
+          let needs_follow_up_wake = false;
 
           if let Some(win) = windows.get_mut(&window_id) {
             // Skip windows with no pending worker work. The worker's wake callback sets this flag
@@ -9711,7 +9717,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       flush_requested |= flush;
 
       let apply_outcome = global_bookmarks.apply_deltas(&deltas);
-      let mut force_full_sync = apply_outcome.is_err() || dirty_bookmark_windows.len() > 1;
+      let force_full_sync = apply_outcome.is_err() || dirty_bookmark_windows.len() > 1;
       if let Err(err) = apply_outcome {
         eprintln!(
           "failed to apply bookmark deltas to global store ({source_window_id:?}): {err:?}"
@@ -10756,7 +10762,7 @@ fn run_headless_smoke_mode(
       let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
       let mut frames_seen: u32 = 0;
 
-      let mut maybe_log_stage = |tab_id: TabId, stage: fastrender::render_control::StageHeartbeat| {
+      let maybe_log_stage = |tab_id: TabId, stage: fastrender::render_control::StageHeartbeat| {
         if let Some(writer) = perf_log_writer.as_ref() {
           if let Ok(mut writer) = writer.try_borrow_mut() {
             let event = perf_log::PerfEvent::Stage {
@@ -11749,7 +11755,7 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
   let mut exts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-  let mut push_all = |exts: &mut std::collections::BTreeSet<String>, values: &[&str]| {
+  let push_all = |exts: &mut std::collections::BTreeSet<String>, values: &[&str]| {
     for ext in values {
       let ext = ext.trim().trim_start_matches('.');
       if ext.is_empty() {
@@ -18731,7 +18737,7 @@ impl App {
 
     // The render worker can send large/hostile payloads for picker/dropdown overlays. Sanitize them
     // before any UI code (including our own pre-reducer side effects) clones/uses the data.
-    let Some(mut msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
+    let Some(msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
       return WorkerMessageResult {
         request_redraw: false,
         history_deltas: Vec::new(),
@@ -21754,7 +21760,7 @@ impl App {
     );
 
     let mut session_dirty = false;
-    let mut open_tabs_snapshot_dirty = false;
+    let open_tabs_snapshot_dirty = false;
     let (
       tab_id,
       pos_css,
@@ -24611,7 +24617,7 @@ impl App {
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
     use winit::event::Ime;
-    use winit::event::TouchPhase;
+    
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
@@ -30242,7 +30248,7 @@ impl App {
     if let Some(text) = self.pending_clipboard_text.take() {
       self.egui_ctx.output_mut(|o| o.copied_text = text);
     }
-    let mut full_output = {
+    let full_output = {
       let _span = self.trace.span("egui.end_frame", "ui.frame");
       self.egui_ctx.end_frame()
     };

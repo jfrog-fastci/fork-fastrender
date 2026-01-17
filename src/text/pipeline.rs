@@ -2101,7 +2101,7 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
   let mut current_direction: Option<Direction> = None;
   let mut current_level: Option<u8> = None;
 
-  let mut flush_run = |end: usize,
+  let flush_run = |end: usize,
                        runs: &mut Vec<ItemizedRun>,
                        current_start: usize,
                        current_script: Option<Script>,

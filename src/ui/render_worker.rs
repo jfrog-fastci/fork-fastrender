@@ -7792,7 +7792,7 @@ struct BrowserRuntime {
     if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       // Right-click/etc: no default interaction engine actions, but still dispatch a DOM `mouseup`
       // event so JS can observe non-primary buttons.
-      let Some(mut doc) = tab.document.as_mut() else {
+      let Some(doc) = tab.document.as_mut() else {
         return;
       };
       let scroll_snapshot = tab.scroll_state.clone();
@@ -10667,7 +10667,7 @@ struct BrowserRuntime {
         .as_deref()
         .unwrap_or(about_pages::ABOUT_BASE_URL);
 
-      let Some(mut doc) = tab.document.as_mut() else {
+      let Some(doc) = tab.document.as_mut() else {
         return;
       };
 
@@ -11134,7 +11134,7 @@ struct BrowserRuntime {
 
       // Release the mutable borrow of the renderer document before pumping the JS event loop (which
       // needs mutable access to `tab`).
-      drop(doc);
+      let _ = doc;
 
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {

@@ -9,7 +9,6 @@ use crate::interaction::{
 };
 use crate::scroll::ScrollState;
 use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
-use crate::style::color::Rgba;
 use crate::ui::about_pages;
 use crate::ui::clipboard;
 use crate::ui::find_in_page::{apply_find_highlight_overlay, FindIndex, FindMatch, FindOptions};

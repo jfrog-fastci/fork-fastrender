@@ -7849,7 +7849,7 @@ impl InlineFormattingContext {
     let root_font_metrics = self.factory.root_font_metrics();
 
     let Line {
-      items: mut items,
+      mut items,
       width: line_width,
       height: line_height,
       baseline: line_baseline,

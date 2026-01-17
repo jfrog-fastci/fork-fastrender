@@ -1,8 +1,10 @@
 #[cfg(feature = "codec_h264_openh264")]
 use super::yuv::yuv420p_to_rgba;
+#[cfg(feature = "codec_h264_openh264")]
+use super::MediaLimits;
 use super::{
   DecodedAudioChunk, DecodedVideoFrame, MediaCodec, MediaError, MediaPacket, MediaResult,
-  MediaLimits, MediaTrackInfo,
+  MediaTrackInfo,
 };
 #[cfg(feature = "codec_h264_openh264")]
 use openh264::formats::YUVSource;

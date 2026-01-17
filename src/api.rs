@@ -7719,7 +7719,7 @@ fn paint_fragment_tree_with_state(
     crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let cached_list = {
-      let mut cache = display_list_cache.borrow_mut();
+      let cache = display_list_cache.borrow_mut();
       let cached = cache.entry.as_ref().and_then(|entry| {
         if entry.key == cache_key {
           Some(Arc::clone(&entry.display_list))

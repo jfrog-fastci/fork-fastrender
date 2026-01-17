@@ -785,7 +785,7 @@ pub struct BrowserTabHost {
 
 impl BrowserTabHost {
   fn new(
-    mut document: BrowserDocumentDom2,
+    document: BrowserDocumentDom2,
     mut executor: Box<dyn BrowserTabJsExecutor>,
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
@@ -3146,7 +3146,7 @@ impl BrowserTabHost {
         )?;
       }
 
-      let mut dispatch = |host: &mut BrowserTabHost,
+      let dispatch = |host: &mut BrowserTabHost,
                            event_loop: &mut EventLoop<BrowserTabHost>,
                            type_: &'static str|
        -> Result<()> {
@@ -6669,7 +6669,7 @@ impl BrowserTab {
     html: &str,
     options: RenderOptions,
     executor: E,
-    mut event_loop: EventLoop<BrowserTabHost>,
+    event_loop: EventLoop<BrowserTabHost>,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self>
   where

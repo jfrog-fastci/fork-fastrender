@@ -130,7 +130,7 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
   pub fn pump(&mut self) -> Result<Html5everPump<Sink::Handle, Sink::Output>> {
     let mut deadline_counter = HTML5EVER_PUMP_DEADLINE_STRIDE - 1;
     loop {
-      let Some(mut parser) = self.parser.take() else {
+      let Some(parser) = self.parser.take() else {
         return Ok(Html5everPump::NeedMoreInput);
       };
 
@@ -185,7 +185,7 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
         return Err(Error::Render(err));
       }
 
-      let mut chunk = BufferQueue::default();
+      let chunk = BufferQueue::default();
       let initial_len = next_input.len();
       chunk.push_back(next_input);
 
