@@ -1,17 +1,9 @@
 name: ecma-rs native groundwork
 
 on:
-  push:
-    paths:
-      - "vendor/ecma-rs/**"
-      - "scripts/cargo_agent.sh"
-      - "scripts/run_limited.sh"
-      - "scripts/run_vm_js_generator_yield_tests.sh"
-      - ".github/workflows/ecma_rs_native.yml"
   pull_request:
     paths:
       - "vendor/ecma-rs/**"
-      - "scripts/cargo_agent.sh"
       - "scripts/run_limited.sh"
       - "scripts/run_vm_js_generator_yield_tests.sh"
       - ".github/workflows/ecma_rs_native.yml"

@@ -5,18 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    paths:
-      - ".gitmodules"
-      - "vendor/ecma-rs/**"
-      - "scripts/cargo_agent.sh"
-      - "scripts/ci_init_ecma_rs_submodule.sh"
-      - ".github/workflows/typecheck_ts_conformance_upstream.yml"
   pull_request:
     paths:
       - ".gitmodules"
       - "vendor/ecma-rs/**"
-      - "scripts/cargo_agent.sh"
       - "scripts/ci_init_ecma_rs_submodule.sh"
       - ".github/workflows/typecheck_ts_conformance_upstream.yml"
   # Full upstream conformance runs are heavy; keep them on a schedule + manual dispatch.
