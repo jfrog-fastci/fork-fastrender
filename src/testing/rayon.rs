@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::sync::Once;
 
 /// Initialize the Rayon global pool with a conservative thread count for tests.

@@ -1,10 +1,11 @@
-//! Guard against `crates/` accumulating new parallel infrastructure crates.
+//! Guardrail for changes to the top-level `crates/` directory.
 //!
-//! See `instructions/webidl_consolidation.md`.
+//! The repository intentionally keeps multiple workspace crates under `crates/` (IPC, sandboxing,
+//! codec shims, test runners, etc). Adding a new crate directory is a workspace-shape change that
+//! should be explicit.
 //!
-//! WebIDL stack consolidation is complete: shared JS/WebIDL infrastructure should live in the
-//! vendored `vendor/ecma-rs/` workspace; `crates/` should be reserved for FastRender-specific
-//! tooling (currently just `crates/js-wpt-dom-runner/`).
+//! Note: Generic JS/WebIDL infrastructure belongs in the vendored `vendor/ecma-rs/` workspace; do
+//! not add new `webidl-*` crates under `crates/`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -14,7 +15,15 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding any new crate under `crates/` must be an explicit decision: update this allowlist and
 /// justify why it doesn't belong under `vendor/ecma-rs/`.
-const ALLOWED_CRATE_DIRS: &[&str] = &["js-wpt-dom-runner"];
+const ALLOWED_CRATE_DIRS: &[&str] = &[
+  "fastrender-ipc",
+  "fastrender-renderer",
+  "fastrender-shmem",
+  "fastrender-yuv",
+  "js-wpt-dom-runner",
+  "libvpx-sys-bundled",
+  "win-sandbox",
+];
 
 fn list_crate_dirs(crates_dir: &Path) -> BTreeSet<String> {
   let mut dirs = BTreeSet::new();

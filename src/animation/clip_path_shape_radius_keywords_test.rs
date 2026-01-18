@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::runtime::RuntimeToggles;
 use crate::style::types::{BasicShape, ClipPath, ShapeRadius};
 use crate::{BoxNode, FastRender, FontConfig, FragmentNode, FragmentTree, RenderOptions, ResourcePolicy};

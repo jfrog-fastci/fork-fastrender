@@ -1,9 +1,8 @@
 //! OOPIF crash isolation integration test.
 
-use fastrender::debug::runtime::{set_runtime_toggles, RuntimeToggles};
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::FastRender;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
   let width = pixmap.width();
@@ -23,11 +22,12 @@ fn crashed_cross_origin_iframe_renderer_is_isolated_and_shows_placeholder() {
     "FASTR_OOPIF_RENDERER_BIN".to_string(),
     env!("CARGO_BIN_EXE_iframe_renderer").to_string(),
   );
-  let _toggles_guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(raw)));
+  let toggles = RuntimeToggles::from_map(raw);
 
   // Root document is HTTPS; iframe uses a different scheme/origin (`crash://`).
   let mut renderer = FastRender::builder()
     .base_url("https://parent.test/")
+    .runtime_toggles(toggles)
     .build()
     .expect("build renderer");
 

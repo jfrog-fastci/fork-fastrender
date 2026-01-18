@@ -262,6 +262,22 @@ pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
   .expect("build deterministic factory")
 }
 
+/// Create a deterministic `FastRenderFactory` with an explicit runtime toggles set.
+///
+/// This is useful for browser UI worker tests that need to validate runtime-toggle precedence
+/// without mutating process-global state.
+pub fn deterministic_factory_with_runtime_toggles(
+  runtime_toggles: fastrender::debug::runtime::RuntimeToggles,
+) -> fastrender::api::FastRenderFactory {
+  let renderer_config = fastrender::api::FastRenderConfig::default()
+    .with_font_sources(deterministic_font_config())
+    .with_runtime_toggles(runtime_toggles);
+  fastrender::api::FastRenderFactory::with_config(
+    fastrender::api::FastRenderPoolConfig::new().with_renderer_config(renderer_config),
+  )
+  .expect("build deterministic factory")
+}
+
 pub fn deterministic_factory_with_fetcher(
   fetcher: std::sync::Arc<dyn fastrender::resource::ResourceFetcher>,
 ) -> Result<fastrender::api::FastRenderFactory> {

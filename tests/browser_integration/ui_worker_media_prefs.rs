@@ -394,64 +394,57 @@ fn ui_worker_media_preferences_do_not_override_explicit_renderer_env() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
-  use fastrender::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use std::collections::HashMap;
-  use std::sync::Arc;
+  use fastrender::debug::runtime::RuntimeToggles;
 
-  with_runtime_toggles(
-    Arc::new(RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_PREFERS_COLOR_SCHEME".to_string(),
-      "light".to_string(),
-    )]))),
-    || {
-      let (_site, url) = media_fixture();
-      let handle =
-        spawn_ui_worker("ui_worker_media_prefs_env_precedence").expect("spawn ui worker");
-      let (ui_tx, ui_rx, join) = handle.split();
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PREFERS_COLOR_SCHEME".to_string(),
+    "light".to_string(),
+  )]));
+  let factory = support::deterministic_factory_with_runtime_toggles(toggles);
 
-      let tab_id = TabId::new();
-      ui_tx
-        .send(support::create_tab_msg(tab_id, None))
-        .expect("CreateTab");
-      ui_tx
-        .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
-        .expect("ViewportChanged");
-      ui_tx
-        .send(support::navigate_msg(
-          tab_id,
-          url,
-          NavigationReason::TypedUrl,
-        ))
-        .expect("Navigate");
+  let (_site, url) = media_fixture();
+  let handle = spawn_ui_worker_with_factory("ui_worker_media_prefs_env_precedence", factory)
+    .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
 
-      let frame0 = wait_for_frame(&ui_rx, tab_id);
-      assert_eq!(
-        support::rgba_at(&frame0.pixmap, 1, 1),
-        [255, 255, 255, 255],
-        "expected env override to force light prefers-color-scheme"
-      );
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
 
-      let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
-
-      ui_tx
-        .send(UiToWorker::SetMediaPreferences {
-          prefs: BrowserMediaPreferences {
-            prefers_color_scheme: ColorScheme::Dark,
-            prefers_contrast: ContrastPreference::NoPreference,
-            prefers_reduced_motion: false,
-          },
-        })
-        .expect("SetMediaPreferences");
-
-      let frame1 = wait_for_frame(&ui_rx, tab_id);
-      assert_eq!(
-        support::rgba_at(&frame1.pixmap, 1, 1),
-        [255, 255, 255, 255],
-        "expected renderer env override to take precedence over UI defaults"
-      );
-
-      drop(ui_tx);
-      join.join().expect("join ui worker thread");
-    },
+  let frame0 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 1, 1),
+    [255, 255, 255, 255],
+    "expected runtime-toggle override to force light prefers-color-scheme"
   );
+
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
+
+  ui_tx
+    .send(UiToWorker::SetMediaPreferences {
+      prefs: BrowserMediaPreferences {
+        prefers_color_scheme: ColorScheme::Dark,
+        prefers_contrast: ContrastPreference::NoPreference,
+        prefers_reduced_motion: false,
+      },
+    })
+    .expect("SetMediaPreferences");
+
+  let frame1 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame1.pixmap, 1, 1),
+    [255, 255, 255, 255],
+    "expected runtime-toggle override to take precedence over UI defaults"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
 }

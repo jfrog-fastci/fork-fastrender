@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 /// Default stack size used by [`run_with_large_stack`].
 pub(crate) const LARGE_STACK_BYTES: usize = 8 * 1024 * 1024;
 

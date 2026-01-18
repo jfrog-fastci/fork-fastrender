@@ -10,6 +10,7 @@ mod common;
 mod accessibility;
 mod animation;
 mod api;
+mod backdrop;
 #[cfg(feature = "browser_ui")]
 mod browser_integration;
 mod determinism;
@@ -25,6 +26,7 @@ mod js;
 mod layout;
 mod media;
 mod misc;
+mod paint;
 mod progress;
 mod render;
 mod renderer_chrome;

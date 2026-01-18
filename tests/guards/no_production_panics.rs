@@ -61,6 +61,12 @@ fn no_production_panics_in_core_modules() {
     let parsed = syn::parse_file(&source)
       .unwrap_or_else(|err| panic!("failed to parse {}: {err}", rel.display()));
 
+    // Skip files that are test-only via a file-level inner attribute (e.g. `#![cfg(test)]` or
+    // `#![cfg(all(test, feature = "..."))]`).
+    if attrs_have_cfg_test(&parsed.attrs) {
+      continue;
+    }
+
     let mut visitor = PanicVisitor::default();
     visitor.visit_file(&parsed);
     if !visitor.panics.is_empty() {

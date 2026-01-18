@@ -33,8 +33,8 @@ repo) when the canonical implementation lives in:
 This creates maintenance burden, sync overhead, and divergence. Every line in a parallel crate is
 technical debt.
 
-Note: a transitional workspace-local copy of the legacy heap-only runtime previously existed at
-`crates/webidl-js-runtime/`, but it has been removed. Do not re-introduce it; modify
+Note: a transitional workspace-local copy of the legacy heap-only runtime previously existed as a
+`webidl-js-runtime` crate under `crates/`, but it has been removed. Do not re-introduce it; modify
 `vendor/ecma-rs/webidl-runtime/` directly.
 ### ❌ "Workspace isolation" as justification
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::io;
 use std::net::TcpListener;
 use std::sync::{Mutex, MutexGuard, OnceLock};

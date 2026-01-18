@@ -511,13 +511,11 @@ required-features = ["direct_websocket"]
 name = "browser"
 path = "src/bin/browser.rs"
 test = false
-required-features = ["browser_ui"]
 
 [[bin]]
 name = "dump_accesskit"
 path = "src/bin/dump_accesskit.rs"
 test = false
-required-features = ["browser_ui"]
 
 [[bench]]
 name = "selector_bloom_bench"

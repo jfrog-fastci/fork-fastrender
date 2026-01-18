@@ -10085,26 +10085,79 @@ fn select_control_option_items_track_dom_node_ids() {
   );
 }
 
-fn contains_tag(node: &BoxNode, tag: &str) -> bool {
-  if let Some(info) = &node.debug_info {
-    if info.tag_name.as_deref() == Some(tag) {
+fn contains_tag_for_styled_tree(styled: &StyledNode, box_root: &BoxNode, tag: &str) -> bool {
+  fn collect_styled_node_ids_for_tag(node: &StyledNode, tag: &str, out: &mut Vec<usize>) {
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|name| name.eq_ignore_ascii_case(tag))
+    {
+      out.push(node.node_id);
+    }
+    for child in node.children.iter() {
+      collect_styled_node_ids_for_tag(child, tag, out);
+    }
+  }
+
+  fn box_tree_contains_any_styled_node_id(node: &BoxNode, styled_node_ids: &[usize]) -> bool {
+    if node
+      .styled_node_id
+      .is_some_and(|id| styled_node_ids.contains(&id))
+    {
       return true;
     }
+    node
+      .children
+      .iter()
+      .any(|child| box_tree_contains_any_styled_node_id(child, styled_node_ids))
   }
 
-  node.children.iter().any(|child| contains_tag(child, tag))
+  let mut styled_node_ids = Vec::new();
+  collect_styled_node_ids_for_tag(styled, tag, &mut styled_node_ids);
+  assert!(
+    !styled_node_ids.is_empty(),
+    "expected styled tree to contain <{tag}> nodes"
+  );
+  box_tree_contains_any_styled_node_id(box_root, &styled_node_ids)
 }
 
-fn collect_replaced_tag_names(node: &BoxNode, out: &mut Vec<String>) {
-  if let BoxType::Replaced(_) = &node.box_type {
-    if let Some(tag) = node.debug_info.as_ref().and_then(|info| info.tag_name.clone()) {
-      out.push(tag);
+fn collect_replaced_tag_names(styled: &StyledNode, node: &BoxNode, out: &mut Vec<String>) {
+  fn collect_styled_tag_names(node: &StyledNode, out: &mut std::collections::HashMap<usize, String>) {
+    if let Some(tag) = node.node.tag_name() {
+      out.insert(node.node_id, tag.to_ascii_lowercase());
+    }
+    for child in node.children.iter() {
+      collect_styled_tag_names(child, out);
     }
   }
 
-  for child in node.children.iter() {
-    collect_replaced_tag_names(child, out);
+  fn collect_replaced_styled_node_ids(node: &BoxNode, out: &mut Vec<usize>) {
+    if let BoxType::Replaced(_) = &node.box_type {
+      if let Some(id) = node.styled_node_id {
+        out.push(id);
+      }
+    }
+    for child in node.children.iter() {
+      collect_replaced_styled_node_ids(child, out);
+    }
   }
+
+  let mut tag_by_id = std::collections::HashMap::new();
+  collect_styled_tag_names(styled, &mut tag_by_id);
+
+  let mut replaced_ids = Vec::new();
+  collect_replaced_styled_node_ids(node, &mut replaced_ids);
+
+  out.extend(
+    replaced_ids
+      .into_iter()
+      .map(|id| {
+        tag_by_id
+          .get(&id)
+          .cloned()
+          .unwrap_or_else(|| format!("<unknown styled_node_id {id}>"))
+      }),
+  );
 }
 
 #[test]
@@ -10117,9 +10170,9 @@ fn option_like_elements_outside_select_do_not_generate_boxes() {
   let styled = apply_styles(&dom, &StyleSheet::new());
   let box_tree = generate_box_tree(&styled);
 
-  assert!(contains_tag(&box_tree.root, "html"));
-  assert!(!contains_tag(&box_tree.root, "option"));
-  assert!(!contains_tag(&box_tree.root, "optgroup"));
+  assert!(contains_tag_for_styled_tree(&styled, &box_tree.root, "html"));
+  assert!(!contains_tag_for_styled_tree(&styled, &box_tree.root, "option"));
+  assert!(!contains_tag_for_styled_tree(&styled, &box_tree.root, "optgroup"));
 }
 
 #[test]
@@ -10132,12 +10185,12 @@ fn select_generates_single_replaced_box_without_option_children() {
   let styled = apply_styles(&dom, &StyleSheet::new());
   let box_tree = generate_box_tree(&styled);
 
-  assert!(contains_tag(&box_tree.root, "select"));
-  assert!(!contains_tag(&box_tree.root, "option"));
-  assert!(!contains_tag(&box_tree.root, "optgroup"));
+  assert!(contains_tag_for_styled_tree(&styled, &box_tree.root, "select"));
+  assert!(!contains_tag_for_styled_tree(&styled, &box_tree.root, "option"));
+  assert!(!contains_tag_for_styled_tree(&styled, &box_tree.root, "optgroup"));
 
   let mut replaced_tags = Vec::new();
-  collect_replaced_tag_names(&box_tree.root, &mut replaced_tags);
+  collect_replaced_tag_names(&styled, &box_tree.root, &mut replaced_tags);
   assert_eq!(replaced_tags, vec!["select".to_string()]);
 }
 

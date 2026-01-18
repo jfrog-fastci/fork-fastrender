@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::image_compare::{compare_images as compare_rgba_images, CompareConfig, ImageDiff};
 use image::RgbaImage;
 use tiny_skia::Pixmap;

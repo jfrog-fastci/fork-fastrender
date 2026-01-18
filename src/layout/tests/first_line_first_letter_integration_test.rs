@@ -10,18 +10,28 @@ use crate::FragmentContent;
 use crate::FragmentNode;
 use crate::Rgba;
 
-fn find_first<'a>(node: &'a BoxNode, tag: &str) -> Option<&'a BoxNode> {
-  if let Some(name) = node.debug_info.as_ref().and_then(|d| d.tag_name.as_ref()) {
-    if name.eq_ignore_ascii_case(tag) {
-      return Some(node);
-    }
+fn find_first_styled_node_id(node: &crate::style::cascade::StyledNode, tag: &str) -> Option<usize> {
+  if node
+    .node
+    .tag_name()
+    .is_some_and(|name| name.eq_ignore_ascii_case(tag))
+  {
+    return Some(node.node_id);
   }
-  for child in node.children.iter() {
-    if let Some(found) = find_first(child, tag) {
-      return Some(found);
-    }
+  node
+    .children
+    .iter()
+    .find_map(|child| find_first_styled_node_id(child, tag))
+}
+
+fn find_box_for_styled_node_id<'a>(node: &'a BoxNode, styled_node_id: usize) -> Option<&'a BoxNode> {
+  if node.styled_node_id == Some(styled_node_id) {
+    return Some(node);
   }
-  None
+  node
+    .children
+    .iter()
+    .find_map(|child| find_box_for_styled_node_id(child, styled_node_id))
 }
 
 fn collect_texts<'a>(fragment: &'a FragmentNode, out: &mut Vec<(&'a str, Rgba)>) {
@@ -53,7 +63,9 @@ fn first_line_and_first_letter_styles_flow_through_pipeline() {
   let styled = apply_styles(&dom, &stylesheet);
   let box_tree = generate_box_tree(&styled).expect("box tree");
 
-  let paragraph = find_first(&box_tree.root, "p").expect("paragraph box");
+  let p_node_id = find_first_styled_node_id(&styled, "p").expect("find <p> in styled tree");
+  let paragraph =
+    find_box_for_styled_node_id(&box_tree.root, p_node_id).expect("paragraph box");
 
   let ifc = InlineFormattingContext::new();
   let fragment = ifc
