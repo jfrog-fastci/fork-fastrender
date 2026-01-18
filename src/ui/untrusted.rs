@@ -96,18 +96,16 @@ pub fn sanitize_untrusted_text(s: &str, max_bytes: usize) -> String {
       continue;
     }
 
-    if pending_space && !out.is_empty() {
-      if out.len() + 1 > max_bytes {
-        break;
-      }
+    let ch_len = ch.len_utf8();
+    let needs_space = pending_space && !out.is_empty();
+    let extra_len = if needs_space { 1 } else { 0 };
+    if out.len() + extra_len + ch_len > max_bytes {
+      break;
+    }
+    if needs_space {
       out.push(' ');
     }
     pending_space = false;
-
-    let ch_len = ch.len_utf8();
-    if out.len() + ch_len > max_bytes {
-      break;
-    }
     out.push(ch);
   }
 

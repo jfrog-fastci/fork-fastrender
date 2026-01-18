@@ -4005,7 +4005,7 @@ mod browser_app_tests {
   }
 
   #[test]
-  fn downloads_state_clear_completed_removes_only_completed_entries() {
+  fn downloads_state_clear_completed_removes_non_in_progress_entries() {
     let mut state = DownloadsState {
       downloads: vec![
         download_entry(
@@ -4028,19 +4028,19 @@ mod browser_app_tests {
     };
 
     let removed = state.clear_completed();
-    assert_eq!(removed, 2);
+    assert_eq!(removed, 4);
     assert_eq!(
       state
         .downloads
         .iter()
         .map(|d| d.download_id)
         .collect::<Vec<_>>(),
-      vec![DownloadId(1), DownloadId(2), DownloadId(4)]
+      vec![DownloadId(1)]
     );
   }
 
   #[test]
-  fn downloads_state_clear_completed_is_noop_when_no_completed_entries() {
+  fn downloads_state_clear_completed_removes_cancelled_and_failed_entries() {
     let mut state = DownloadsState {
       downloads: vec![
         download_entry(
@@ -4060,10 +4060,16 @@ mod browser_app_tests {
       ],
     };
 
-    let before = state.downloads.clone();
     let removed = state.clear_completed();
-    assert_eq!(removed, 0);
-    assert_eq!(state.downloads, before);
+    assert_eq!(removed, 2);
+    assert_eq!(
+      state
+        .downloads
+        .iter()
+        .map(|d| d.download_id)
+        .collect::<Vec<_>>(),
+      vec![DownloadId(1)]
+    );
   }
 
   #[test]
