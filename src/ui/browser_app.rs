@@ -3820,7 +3820,7 @@ impl BrowserAppState {
 }
 
 #[cfg(test)]
-mod downloads_state_tests {
+mod downloads_state_apply_worker_msg_tests {
   use super::*;
   use crate::ui::messages::{DownloadId, DownloadOutcome, TabId, WorkerToUi};
   use std::path::PathBuf;

@@ -578,7 +578,6 @@ impl SessionAutosave {
       None,
       save_fn,
       &spawner,
-      &spawner,
     )
   }
 
@@ -1932,7 +1931,7 @@ mod tests {
 
     let save_fn: SaveSessionFn = Arc::new(|_path, _session| Err("disk full".to_string()));
     let autosave =
-      SessionAutosave::new_with_debounce_and_saver(path, Duration::from_millis(10), save_fn);
+      SessionAutosave::new_with_debounce_and_saver(path.clone(), Duration::from_millis(10), save_fn);
 
     autosave.request_save(BrowserSession::single("about:blank".to_string()));
     assert!(autosave.flush(Duration::from_secs(2)).is_err());

@@ -295,12 +295,12 @@ mod tests {
   }
 
   #[test]
-  fn ascii_case_insensitive_str_constructor_is_usable() {
+  fn ascii_case_insensitive_constructor_is_usable() {
     use std::collections::HashSet;
 
-    let mut set: HashSet<AsciiCaseInsensitiveStr<'_>> = HashSet::new();
-    assert!(set.insert(AsciiCaseInsensitiveStr("Hello")));
-    assert!(!set.insert(AsciiCaseInsensitiveStr("hELLo")));
+    let mut set: HashSet<AsciiCaseInsensitive<'_>> = HashSet::new();
+    assert!(set.insert(AsciiCaseInsensitive("Hello")));
+    assert!(!set.insert(AsciiCaseInsensitive("hELLo")));
     assert_eq!(set.len(), 1);
   }
 }
