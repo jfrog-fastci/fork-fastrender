@@ -482,7 +482,6 @@ required-features = ["vmjs"]
 name = "compare_diff_reports"
 path = "src/bin/compare_diff_reports.rs"
 test = false
-required-features = ["vmjs"]
 
 [[bin]]
 name = "bundle_page"

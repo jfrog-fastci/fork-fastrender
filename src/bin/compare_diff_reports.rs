@@ -1,75 +1,19 @@
+use fastrender::cli_utils as common;
+
 use clap::Parser;
-use pathdiff::diff_paths;
+use common::report::{
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image,
+  path_for_report,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use fastrender::ui::html_escape::escape_html;
 
 const SCHEMA_VERSION: u32 = 2;
 const METRIC_EPS: f64 = 1e-9;
 const TOP_N: usize = 20;
-
-/// Produce a path relative to the HTML/JSON output (falls back to absolute).
-fn path_for_report(base: &Path, target: &Path) -> String {
-  let path = diff_paths(target, base).unwrap_or_else(|| target.to_path_buf());
-  let rendered = path.display().to_string();
-  if cfg!(windows) {
-    rendered.replace('\\', "/")
-  } else {
-    rendered
-  }
-}
-
-/// Canonicalize for display while tolerating missing paths.
-fn display_path(path: &Path) -> String {
-  fs::canonicalize(path)
-    .unwrap_or_else(|_| path.to_path_buf())
-    .display()
-    .to_string()
-}
-
-/// Ensure the parent directory for a file exists.
-fn ensure_parent_dir(path: &Path) -> Result<(), String> {
-  if let Some(parent) = path.parent() {
-    if !parent.as_os_str().is_empty() {
-      fs::create_dir_all(parent).map_err(|e| {
-        format!(
-          "failed to create parent directory {}: {e}",
-          parent.display()
-        )
-      })?;
-    }
-  }
-  Ok(())
-}
-
-/// Produce a stable HTML anchor ID for a report entry name.
-///
-/// We hash the name (FNV-1a 64-bit) so that:
-/// - anchors remain stable across runs,
-/// - we don't have to worry about unsafe characters in IDs,
-/// - links are compact and copy/paste friendly.
-fn entry_anchor_id(name: &str) -> String {
-  let mut hash: u64 = 14695981039346656037;
-  for byte in name.as_bytes() {
-    hash ^= u64::from(*byte);
-    hash = hash.wrapping_mul(1099511628211);
-  }
-  format!("entry-{hash:016x}")
-}
-
-/// Render a small thumbnail block for an image path that links to the full-size asset.
-fn format_linked_image(label: &str, path: &str) -> String {
-  let escaped = escape_html(path);
-  let label = escape_html(label);
-  format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
-    p = escaped,
-    l = label
-  )
-}
 
 #[derive(Parser, Debug)]
 #[command(
