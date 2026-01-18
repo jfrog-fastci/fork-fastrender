@@ -1544,6 +1544,16 @@ fn parse_property_value_in_context_internal(
     None => {
       if skip_var_guard {
         None
+      } else if matches!(
+        property,
+        // These properties rely on strict parsing (returning `None` for invalid values) so tests and
+        // feature queries can distinguish unsupported values from generic keywords.
+        //
+        // Most other properties fall back to preserving the raw token stream as a Keyword so the
+        // cascade can ignore unsupported values without clobbering previously applied declarations.
+        "text-shadow" | "translate" | "rotate" | "scale" | "dynamic-range-limit"
+      ) {
+        None
       } else {
         Some(PropertyValue::Keyword(trimmed.to_string()))
       }
@@ -3124,11 +3134,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       // with a responsive variant behind `@supports not (display:-ms-grid)`. If we consider
       // `-ms-grid` supported, the override is skipped and the layout overflows the viewport.
       let trimmed = raw_value.trim();
-      if trimmed.eq_ignore_ascii_case("-ms-grid")
-        || trimmed.eq_ignore_ascii_case("-ms-inline-grid")
-        || trimmed.eq_ignore_ascii_case("-ms-flexbox")
-        || trimmed.eq_ignore_ascii_case("-ms-inline-flexbox")
-      {
+      if trimmed.eq_ignore_ascii_case("-ms-grid") || trimmed.eq_ignore_ascii_case("-ms-inline-grid") {
         return false;
       }
       return keyword_parse(parsed, |kw| Display::parse(kw).ok());
