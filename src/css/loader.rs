@@ -309,6 +309,30 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
                   }
                 }
 
+                // JavaScript strings can contain unpaired surrogates, but Rust `char` values cannot.
+                //
+                // When we encounter a surrogate that we cannot merge into a valid pair, preserve it
+                // (and any immediately following `\uXXXX` escape) verbatim. This avoids partially
+                // decoding UTF-16 escape sequences into a mixed "escape + decoded char" string.
+                if (0xD800..=0xDBFF).contains(&code) {
+                  out.push_str(&input[i..i + 6]);
+                  i += 6;
+                  if i + 5 < bytes.len()
+                    && bytes[i] == b'\\'
+                    && matches!(bytes[i + 1], b'u' | b'U')
+                    && u16::from_str_radix(&input[i + 2..i + 6], 16).is_ok()
+                  {
+                    out.push_str(&input[i..i + 6]);
+                    i += 6;
+                  }
+                  continue;
+                }
+                if (0xDC00..=0xDFFF).contains(&code) {
+                  out.push_str(&input[i..i + 6]);
+                  i += 6;
+                  continue;
+                }
+
                 if let Some(ch) = char::from_u32(code as u32) {
                   out.push(ch);
                   i += 6;
@@ -5960,6 +5984,13 @@ mod tests {
     let input = r"\u{1F60D}"; // U+1F60D (😍)
     let unescaped = unescape_js_escapes(input);
     assert_eq!(unescaped, "\u{1F60D}");
+  }
+
+  #[test]
+  fn unescape_js_preserves_unpaired_surrogates() {
+    let input = r"\uD800\u0061";
+    let unescaped = unescape_js_escapes(input);
+    assert_eq!(unescaped, input);
   }
 
   #[test]

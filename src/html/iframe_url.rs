@@ -52,6 +52,24 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
 
       if i + 5 < bytes.len() && (bytes[i + 1] == b'u' || bytes[i + 1] == b'U') {
         if let Ok(code) = u16::from_str_radix(&input[i + 2..i + 6], 16) {
+          if (0xD800..=0xDBFF).contains(&code) {
+            out.push_str(&input[i..i + 6]);
+            i += 6;
+            if i + 5 < bytes.len()
+              && bytes[i] == b'\\'
+              && matches!(bytes[i + 1], b'u' | b'U')
+              && u16::from_str_radix(&input[i + 2..i + 6], 16).is_ok()
+            {
+              out.push_str(&input[i..i + 6]);
+              i += 6;
+            }
+            continue;
+          }
+          if (0xDC00..=0xDFFF).contains(&code) {
+            out.push_str(&input[i..i + 6]);
+            i += 6;
+            continue;
+          }
           if let Some(ch) = char::from_u32(code as u32) {
             out.push(ch);
             i += 6;
@@ -140,7 +158,7 @@ pub fn iframe_navigation_from_src(raw_src: Option<&str>, base_url: &str) -> Ifra
 
 #[cfg(test)]
 mod tests {
-  use super::{iframe_navigation_from_src, IframeNavigation};
+  use super::{iframe_navigation_from_src, unescape_js_escapes, IframeNavigation};
 
   #[test]
   fn iframe_navigation_whitespace_only_is_none() {
@@ -192,5 +210,12 @@ mod tests {
       nav,
       IframeNavigation::Url("https://example.com/foo%C2%A0".to_string())
     );
+  }
+
+  #[test]
+  fn unescape_js_escapes_preserves_unpaired_surrogates() {
+    let input = r"\uD800\u0061";
+    let out = unescape_js_escapes(input);
+    assert_eq!(out, input);
   }
 }
