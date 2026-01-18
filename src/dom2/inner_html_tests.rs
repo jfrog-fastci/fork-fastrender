@@ -90,6 +90,31 @@ fn inner_html_round_trip_basic() {
 }
 
 #[test]
+fn inner_html_self_closing_slash_is_ignored_for_non_void_elements() {
+  let root = parse_html("<!doctype html><html><body><div id=host></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let host = find_element_by_id(&doc, "host");
+
+  doc
+    .set_inner_html(host, r#"<div id="a"/><span id="b"></span>"#)
+    .unwrap();
+
+  let div = find_element_by_id(&doc, "a");
+  let span = find_element_by_id(&doc, "b");
+
+  assert_eq!(
+    doc.node(host).children.as_slice(),
+    &[div],
+    "expected <div id=a/> to behave like <div> and remain open for the following <span>"
+  );
+  assert_eq!(
+    doc.node(div).children.as_slice(),
+    &[span],
+    "expected <span id=b> to be inserted as a child of <div id=a>"
+  );
+}
+
+#[test]
 fn inner_html_escapes_text() {
   let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
   let mut doc = Document::from_renderer_dom(&root);
