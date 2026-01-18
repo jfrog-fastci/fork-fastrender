@@ -259,7 +259,6 @@ impl Runner {
     if let Err(err) = backend.init_realm(
       BackendInit {
         test_url: test_url.clone(),
-        fs: self.fs.clone(),
         timeout,
         max_tasks: self.config.max_tasks,
         max_microtasks: self.config.max_microtasks,
@@ -401,7 +400,6 @@ impl Runner {
     if let Err(err) = backend.init_realm(
       BackendInit {
         test_url: test_url.clone(),
-        fs: self.fs.clone(),
         timeout,
         max_tasks: self.config.max_tasks,
         max_microtasks: self.config.max_microtasks,
@@ -610,9 +608,8 @@ impl Runner {
       .checked_add(timeout)
       .unwrap_or_else(std::time::Instant::now);
 
-    let mut last_outcome: Option<RunUntilIdleOutcome> = None;
     let mut idle_streak: u8 = 0;
-    loop {
+    let last_outcome = loop {
       if let Some(payload) = take_report_from_dom(&tab) {
         let report = parse_report_from_payload(&payload)?;
         let outcome = outcome_from_report(&report);
@@ -649,7 +646,6 @@ impl Runner {
           return Err(RunError::Js(msg));
         }
       };
-      last_outcome = Some(outcome);
 
       match outcome {
         RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. }) => {
@@ -692,10 +688,9 @@ impl Runner {
         }
 
         RunUntilIdleOutcome::Stopped(_) => {
-          idle_streak = 0;
           if uses_testharness {
             // Harness tests: surface as a harness-level error below (missing report payload).
-            break;
+            break outcome;
           }
 
           // Helper pages: treat as a timeout (hit max tasks/microtasks before becoming idle).
@@ -705,10 +700,9 @@ impl Runner {
           });
         }
       }
-    }
+    };
 
     let diagnostics = tab.diagnostics_snapshot();
-    let other = last_outcome.unwrap_or(RunUntilIdleOutcome::Idle);
     let msg = match diagnostics {
       Some(diag)
         if !diag.js_exceptions.is_empty()
@@ -717,14 +711,14 @@ impl Runner {
           || !diag.blocked_fetch_errors.is_empty() =>
       {
         format!(
-          "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?} fetch_errors={:?} blocked_fetch_errors={:?}",
+          "HTML test produced no WPT report payload (event loop outcome={last_outcome:?}); js_exceptions={:?} console_messages={:?} fetch_errors={:?} blocked_fetch_errors={:?}",
           diag.js_exceptions,
           diag.console_messages,
           diag.fetch_errors,
           diag.blocked_fetch_errors
         )
       }
-      _ => format!("HTML test produced no WPT report payload (event loop outcome={other:?})"),
+      _ => format!("HTML test produced no WPT report payload (event loop outcome={last_outcome:?})"),
     };
     Ok(RunResult {
       outcome: RunOutcome::Error(msg),

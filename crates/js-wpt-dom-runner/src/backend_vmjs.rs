@@ -773,7 +773,6 @@ mod tests {
 
     let init = BackendInit {
       test_url: "https://web-platform.test/wpt_dom_web_storage_reset.html".to_string(),
-      fs: fs.clone(),
       timeout: Duration::from_millis(50),
       max_tasks: 10,
       max_microtasks: 100,

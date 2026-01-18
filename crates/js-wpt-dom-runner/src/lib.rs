@@ -40,10 +40,7 @@ mod runner;
 mod suite;
 #[cfg(feature = "quickjs")]
 mod url_shims;
-#[cfg_attr(
-  not(any(feature = "vmjs", feature = "quickjs")),
-  allow(dead_code, unused_imports)
-)]
+#[cfg(feature = "quickjs")]
 mod window_or_worker_global_scope;
 pub mod wpt_fs;
 #[cfg(feature = "vmjs")]
