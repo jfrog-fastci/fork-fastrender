@@ -98,10 +98,10 @@ impl PromiseRejectionTracker {
   ///
   /// The returned batch keeps the promises alive until the host calls
   /// [`AboutToBeNotifiedBatch::teardown`].
-  pub fn drain_about_to_be_notified(&mut self, heap: &mut Heap) -> AboutToBeNotifiedBatch {
+  pub fn drain_about_to_be_notified(&mut self, _heap: &mut Heap) -> AboutToBeNotifiedBatch {
     #[cfg(debug_assertions)]
     {
-      let heap_ref: &Heap = &*heap;
+      let heap_ref: &Heap = &*_heap;
       for entry in &self.about_to_be_notified {
         debug_assert_eq!(
           heap_ref.get_root(entry.root),
