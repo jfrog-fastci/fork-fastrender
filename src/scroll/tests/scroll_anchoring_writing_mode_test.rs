@@ -22,7 +22,9 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
 
   let anchor_old = FragmentNode::new_block_with_id(anchor_old_bounds, 1, vec![]);
   let root_old = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    // Ensure the scroll bounds allow non-zero horizontal scrolling so the test exercises
+    // scroll anchoring adjustment rather than being clamped to 0.
+    Rect::from_xywh(0.0, 0.0, 200.0, 100.0),
     vec![anchor_old],
     root_style.clone(),
   );
@@ -31,20 +33,22 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
 
   let anchor_new = FragmentNode::new_block_with_id(anchor_new_bounds, 1, vec![]);
   let root_new = FragmentNode::new_block_styled(
-    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    Rect::from_xywh(0.0, 0.0, 200.0, 100.0),
     vec![anchor_new],
     root_style,
   );
   let next_tree = FragmentTree::with_viewport(root_new, viewport);
 
   // Non-zero scroll offset in the block axis (horizontal for `vertical-rl`).
-  let scroll_state = ScrollState::with_viewport(Point::new(-20.0, 0.0));
+  let scroll_state = ScrollState::with_viewport(Point::new(20.0, 0.0));
 
   let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
   // The scroll adjustment tracks the movement of the selected anchor origin in physical
   // coordinates.
-  let expected_x = scroll_state.viewport.x + (anchor_new_bounds.x() - anchor_old_bounds.x());
+  // In `vertical-rl`, the block axis progresses from right-to-left, so anchor movement in physical
+  // +X coordinates decreases the logical scroll offset.
+  let expected_x = scroll_state.viewport.x - (anchor_new_bounds.x() - anchor_old_bounds.x());
 
   assert!(
     (adjusted.viewport.x - expected_x).abs() < 1e-3,

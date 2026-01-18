@@ -91,6 +91,13 @@ fn rect_is_finite(rect: Rect) -> bool {
   point_is_finite(rect.origin) && rect.size.width.is_finite() && rect.size.height.is_finite()
 }
 
+fn rect_overlaps(a: Rect, b: Rect) -> bool {
+  a.min_x() < b.max_x()
+    && a.max_x() > b.min_x()
+    && a.min_y() < b.max_y()
+    && a.max_y() > b.min_y()
+}
+
 fn checked_point_add(a: Point, b: Point) -> Option<Point> {
   let x = a.x + b.x;
   let y = a.y + b.y;
@@ -216,7 +223,7 @@ fn select_anchor_in_subtree(
     if frame.next_child == 0 {
       if frame.consider && !frame.excluded && fragment_is_anchor_candidate(frame.node) {
         if let Some(rect) = checked_rect_for_node(frame.origin, frame.node) {
-          if rect.intersects(scrollport) {
+          if rect_overlaps(rect, scrollport) {
             if let Some(box_id) = frame.node.box_id() {
               return Some(ScrollAnchor {
                 box_id,
@@ -456,12 +463,12 @@ fn best_anchor_for_box_id_in_subtree(
         None
       };
 
-      if let Some((candidate, candidate_origin)) = promoted {
-        if let Some(rect) = checked_rect_for_node(candidate_origin, candidate) {
-          if rect.intersects(scrollport) {
-            let score = target_point.map_or(0.0, |p| {
-              score_origin_relative_to_point(candidate_origin, rect, p)
-            });
+        if let Some((candidate, candidate_origin)) = promoted {
+          if let Some(rect) = checked_rect_for_node(candidate_origin, candidate) {
+            if rect_overlaps(rect, scrollport) {
+              let score = target_point.map_or(0.0, |p| {
+                score_origin_relative_to_point(candidate_origin, rect, p)
+              });
             if !score.is_finite() {
               // Ignore non-finite scores rather than letting NaN poison comparisons.
               // This can happen when upstream layout produces non-finite geometry.
@@ -1116,39 +1123,141 @@ fn select_anchor_box_id(
   container: ScrollAnchorContainer,
   scrollport: Rect,
 ) -> Option<usize> {
-  let point = anchor_selection_point(scrollport)?;
-  let (root, path) = tree.hit_test_path(point)?;
-  let nodes = path_nodes(tree, root, &path)?;
-
-  // Respect `overflow-anchor:none`: once an excluded node appears on the hit-test path, everything
-  // below it is part of an excluded subtree. Select the deepest candidate *above* the excluded node.
-  let eligible_end = nodes
-    .iter()
-    .position(|node| fragment_excludes_scroll_anchoring(node))
-    .unwrap_or(nodes.len());
-
-  let start = match container {
-    ScrollAnchorContainer::Viewport => 0,
-    ScrollAnchorContainer::Element(container_id) => {
-      let pos = nodes.iter().rposition(|node| node.box_id() == Some(container_id))?;
-      pos.saturating_add(1)
-    }
-  };
-
-  if eligible_end <= start {
+  if !rect_is_finite(scrollport) {
     return None;
   }
 
-  nodes
-    .iter()
-    .take(eligible_end)
-    .skip(start)
-    .rev()
-    .filter_map(|node| node.box_id())
-    .find(|&id| match container {
-      ScrollAnchorContainer::Viewport => true,
-      ScrollAnchorContainer::Element(container_id) => id != container_id,
-    })
+  fn contains_rect(outer: Rect, inner: Rect) -> bool {
+    inner.min_x() >= outer.min_x()
+      && inner.max_x() <= outer.max_x()
+      && inner.min_y() >= outer.min_y()
+      && inner.max_y() <= outer.max_y()
+  }
+
+  // Anchor selection uses the same "candidate examination" ordering as `scroll::select_scroll_anchoring_anchor_box_id`:
+  // - Skip excluded subtrees (`overflow-anchor:none`, `display:none`, viewport-fixed content).
+  // - If a candidate box is fully contained within the scrollport, it wins immediately.
+  // - Otherwise, examine descendants first; if none qualify, fall back to the current box.
+  //
+  // This ordering avoids selecting container boxes that fully cover the scrollport (like the root
+  // element), while still producing deterministic anchors and correctly skipping excluded subtrees
+  // (e.g. when the top of the scrollport is inside an excluded region).
+  fn select_candidate_box_id_in_subtree(
+    root: &FragmentNode,
+    scrollport: Rect,
+    start_origin: Point,
+    include_root: bool,
+  ) -> Option<usize> {
+    if !point_is_finite(start_origin) || !rect_is_finite(scrollport) {
+      return None;
+    }
+
+    #[derive(Clone, Copy)]
+    struct Frame<'a> {
+      node: &'a FragmentNode,
+      origin: Point,
+      next_child: usize,
+      consider: bool,
+      excluded: bool,
+      deferred: Option<usize>,
+    }
+
+    let mut stack = vec![Frame {
+      node: root,
+      origin: start_origin,
+      next_child: 0,
+      consider: include_root,
+      excluded: fragment_excludes_scroll_anchoring(root),
+      deferred: None,
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+      if frame.next_child == 0 {
+        if frame.excluded {
+          stack.pop();
+          continue;
+        }
+
+        let Some(rect) = checked_rect_for_node(frame.origin, frame.node) else {
+          stack.pop();
+          continue;
+        };
+
+        // CSS Scroll Anchoring: fully clipped nodes (and their descendants) cannot be anchors.
+        if !rect_overlaps(rect, scrollport) {
+          stack.pop();
+          continue;
+        }
+
+        if frame.consider && fragment_is_anchor_candidate(frame.node) {
+          let box_id = frame.node.box_id();
+          if contains_rect(scrollport, rect) {
+            return box_id;
+          }
+          frame.deferred = box_id;
+        }
+      }
+
+      if frame.next_child < frame.node.children.len() {
+        let idx = frame.next_child;
+        frame.next_child += 1;
+        let child = &frame.node.children[idx];
+        let Some(origin) =
+          checked_translate(frame.origin, Point::new(child.bounds.x(), child.bounds.y()))
+        else {
+          continue;
+        };
+        stack.push(Frame {
+          node: child,
+          origin,
+          next_child: 0,
+          consider: true,
+          excluded: fragment_excludes_scroll_anchoring(child),
+          deferred: None,
+        });
+      } else {
+        let deferred = frame.deferred;
+        stack.pop();
+        if deferred.is_some() {
+          return deferred;
+        }
+      }
+    }
+
+    None
+  }
+
+  match container {
+    ScrollAnchorContainer::Viewport => {
+      let root_origin = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
+      for child in &tree.root.children {
+        let origin = Point::new(root_origin.x + child.bounds.x(), root_origin.y + child.bounds.y());
+        if let Some(box_id) = select_candidate_box_id_in_subtree(child, scrollport, origin, true) {
+          return Some(box_id);
+        }
+      }
+      None
+    }
+    ScrollAnchorContainer::Element(container_id) => {
+      let (container_node, container_origin) =
+        find_fragment_with_box_id_and_origin(tree, container_id)?;
+      if fragment_excludes_scroll_anchoring(container_node) {
+        return None;
+      }
+      for child in &container_node.children {
+        let Some(origin) = checked_translate(
+          container_origin,
+          Point::new(child.bounds.x(), child.bounds.y()),
+        ) else {
+          continue;
+        };
+        if let Some(box_id) = select_candidate_box_id_in_subtree(child, scrollport, origin, true) {
+          return Some(box_id);
+        }
+      }
+      None
+    }
+  }
 }
 
 fn find_fragment_rect_for_box_id_in_scrollport(
@@ -1174,7 +1283,7 @@ fn find_fragment_rect_for_box_id_in_scrollport(
   while let Some((node, origin)) = stack.pop() {
     if node.box_id() == Some(box_id) && !fragment_excludes_scroll_anchoring(node) {
       if let Some(rect) = checked_rect_for_node(origin, node) {
-        if rect.intersects(scrollport) {
+        if rect_overlaps(rect, scrollport) {
           let key_y = rect.min_y().max(scrollport.min_y());
           let key_x = rect.min_x().max(scrollport.min_x());
           let key = (key_y, key_x);
