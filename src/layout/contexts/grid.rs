@@ -5549,21 +5549,32 @@ impl GridFormattingContext {
       return Ok(());
     };
 
-    // Percentage widths resolve against the containing block's width. For horizontal writing modes
-    // we additionally thread a stable `inline_percentage_base` even when `available_width` is
-    // intrinsic/indefinite so percentages do not fall back to the viewport.
-    let cb_width = constraints
-      .width()
-      .filter(|w| w.is_finite() && *w >= 0.0)
-      .or_else(|| {
-        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    // Percentage widths (and edge properties like padding/margin) resolve against the containing
+    // block's *physical* width.
+    //
+    // `LayoutConstraints::{width,height}` are expressed in CSS logical axes (inline/block for
+    // horizontal-tb). When the inline axis is vertical, the containing block's physical width is
+    // the *block* axis, so use `height`/`block_percentage_base` as the percentage base.
+    let cb_width = if inline_axis_is_horizontal {
+      constraints
+        .width()
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .or_else(|| {
           constraints
             .inline_percentage_base
             .filter(|w| w.is_finite() && *w >= 0.0)
-        } else {
-          None
-        }
-      });
+        })
+    } else {
+      constraints
+        .height()
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .or_else(|| {
+          constraints
+            .block_percentage_base
+            .filter(|w| w.is_finite() && *w >= 0.0)
+        })
+    };
     // Percentage block sizes resolve against a *definite* containing block size (CSS2.1 §10.5).
     // `LayoutConstraints::block_percentage_base` captures that definiteness without accidentally
     // using a viewport-derived available height.
@@ -5863,18 +5874,29 @@ impl GridFormattingContext {
       return Ok(());
     };
 
-    let cb_width = constraints
-      .width()
-      .filter(|w| w.is_finite() && *w >= 0.0)
-      .or_else(|| {
-        if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    // Track sizing percentages resolve against the grid container's definite content-box size in
+    // the relevant axis. When the inline axis is vertical, the containing block's physical width is
+    // the block axis, so use the constraints' block-axis base.
+    let cb_width = if inline_axis_is_horizontal {
+      constraints
+        .width()
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .or_else(|| {
           constraints
             .inline_percentage_base
             .filter(|w| w.is_finite() && *w >= 0.0)
-        } else {
-          None
-        }
-      });
+        })
+    } else {
+      constraints
+        .height()
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .or_else(|| {
+          constraints
+            .block_percentage_base
+            .filter(|w| w.is_finite() && *w >= 0.0)
+        })
+    };
     let cb_height = constraints.height().filter(|h| h.is_finite() && *h >= 0.0);
 
     let border_box_width = constraints

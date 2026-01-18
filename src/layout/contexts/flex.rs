@@ -1147,10 +1147,13 @@ impl FormattingContext for FlexFormattingContext {
           Some(&constraints),
           &mut override_style,
         );
-        let root_percentage_base = constraints
-          .inline_percentage_base
-          .or_else(|| constraints.width())
-          .filter(|b| b.is_finite());
+        let root_percentage_base = if crate::style::inline_axis_is_horizontal(style_override.writing_mode)
+        {
+          constraints.inline_percentage_base.or_else(|| constraints.width())
+        } else {
+          constraints.block_percentage_base.or_else(|| constraints.height())
+        }
+        .filter(|b| b.is_finite() && *b >= 0.0);
         self.apply_calc_percentage_padding_and_margin(
           style_override,
           root_percentage_base,
@@ -7110,10 +7113,13 @@ impl FlexFormattingContext {
         } else {
           container_inner_size.width
         };
-        let root_percentage_base = constraints
-          .inline_percentage_base
-          .or_else(|| constraints.width())
-          .filter(|b| b.is_finite());
+        let root_percentage_base =
+          if crate::style::inline_axis_is_horizontal(root_style.writing_mode) {
+            constraints.inline_percentage_base.or_else(|| constraints.width())
+          } else {
+            constraints.block_percentage_base.or_else(|| constraints.height())
+          }
+          .filter(|b| b.is_finite() && *b >= 0.0);
 
         for (idx, child) in root_children.iter().enumerate() {
           check_layout_deadline(&mut deadline_counter)?;
@@ -7334,10 +7340,12 @@ impl FlexFormattingContext {
     } else {
       container_inner_size.width
     };
-    let root_percentage_base = constraints
-      .inline_percentage_base
-      .or_else(|| constraints.width())
-      .filter(|b| b.is_finite());
+    let root_percentage_base = if crate::style::inline_axis_is_horizontal(root_style.writing_mode) {
+      constraints.inline_percentage_base.or_else(|| constraints.width())
+    } else {
+      constraints.block_percentage_base.or_else(|| constraints.height())
+    }
+    .filter(|b| b.is_finite() && *b >= 0.0);
     let mut taffy_children = Vec::with_capacity(root_children.len());
     for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
       check_layout_deadline(&mut deadline_counter)?;
