@@ -138,6 +138,13 @@ const MAX_MEASURED_KEYS_PER_NODE: usize = 32;
 const GRID_DEADLINE_CHECK_STRIDE: usize = 64;
 const GRID_CONTENT_VISIBILITY_AUTO_MAX_PASSES: usize = 4;
 
+fn attach_fragment_style_for_box(fragment: &mut FragmentNode, box_node: &BoxNode) {
+  let style_override = style_override_for(box_node.id);
+  let effective_style = style_override.unwrap_or_else(|| box_node.style.clone());
+  fragment.style = Some(effective_style);
+  fragment.starting_style = box_node.starting_style.clone();
+}
+
 struct StyleOverrideStack {
   guards: Vec<StyleOverrideGuard>,
 }
@@ -6840,14 +6847,16 @@ impl GridFormattingContext {
       };
       child_skipped[idx] = skip_contents;
       if skip_contents {
-        reused_fragments[idx] = Some(FragmentNode::new_with_style(
+        let mut fragment = FragmentNode::new_with_style(
           bounds,
           FragmentContent::Block {
             box_id: Some(child.id),
           },
           vec![],
           child.style.clone(),
-        ));
+        );
+        attach_fragment_style_for_box(&mut fragment, child);
+        reused_fragments[idx] = Some(fragment);
         continue;
       }
     }
@@ -6984,6 +6993,8 @@ impl GridFormattingContext {
           if let Err(err) = translate_fragment_tree(&mut reused, delta, &mut deadline_counter) {
             return Some(Err(err));
           }
+          let child = in_flow_children[idx];
+          attach_fragment_style_for_box(&mut reused, child);
           reused_fragments[idx] = Some(reused);
         }
       }
@@ -7220,7 +7231,7 @@ impl GridFormattingContext {
                 box_id: Some(child.id),
               },
             };
-            laid_out.style = Some(child.style.clone());
+            attach_fragment_style_for_box(&mut laid_out, child);
             Ok((idx, laid_out))
           })
         })
@@ -7388,7 +7399,7 @@ impl GridFormattingContext {
                 box_id: Some(child.id),
               },
             };
-            laid_out.style = Some(child.style.clone());
+            attach_fragment_style_for_box(&mut laid_out, child);
             Ok((idx, laid_out))
           })
         })
@@ -7469,6 +7480,7 @@ impl GridFormattingContext {
       child_fragments,
       box_node.style.clone(),
     );
+    attach_fragment_style_for_box(&mut fragment, box_node);
     let has_in_flow_children = !fragment.children.is_empty();
 
     if is_grid_style {
@@ -7946,6 +7958,7 @@ impl GridFormattingContext {
           child_fragments,
           box_node.style.clone(),
         );
+        attach_fragment_style_for_box(&mut fragment, box_node);
         let has_in_flow_children = !fragment.children.is_empty();
         if is_grid_style {
           self.apply_grid_baseline_alignment(
@@ -8092,14 +8105,16 @@ impl GridFormattingContext {
         crate::style::types::ContentVisibility::Visible => false,
       };
       if skip_contents {
-        return Ok(FragmentNode::new_with_style(
+        let mut fragment = FragmentNode::new_with_style(
           bounds,
           FragmentContent::Block {
             box_id: Some(box_node.id),
           },
           vec![],
           box_node.style.clone(),
-        ));
+        );
+        attach_fragment_style_for_box(&mut fragment, box_node);
+        return Ok(fragment);
       }
 
       let fragment_block_axis = fragmentainer_axes_hint()
@@ -8305,12 +8320,16 @@ impl GridFormattingContext {
               external_fixed_cb,
               deadline_counter,
             )?;
+            attach_fragment_style_for_box(&mut reused, box_node);
             let percentage_base = constraints
               .inline_percentage_base
               .filter(|base| base.is_finite())
               .unwrap_or(bounds.width());
-            let content_size =
-              self.content_box_size(&reused, box_node.style.as_ref(), percentage_base);
+            let content_size = self.content_box_size(
+              &reused,
+              reused.get_style().unwrap_or_else(|| box_node.style.as_ref()),
+              percentage_base,
+            );
             remembered_size_cache_store(box_node, content_size);
             return Ok(reused);
           }
@@ -8508,7 +8527,7 @@ impl GridFormattingContext {
           box_id: Some(box_node.id),
         },
       };
-      laid_out.style = Some(box_node.style.clone());
+      attach_fragment_style_for_box(&mut laid_out, box_node);
       let percentage_base = constraints
         .inline_percentage_base
         .filter(|base| base.is_finite())
@@ -12458,7 +12477,7 @@ impl GridFormattingContext {
           box_id: Some(box_node.id),
         },
       };
-      fragment.style = Some(box_node.style.clone());
+      attach_fragment_style_for_box(&mut fragment, box_node);
       let mut content_size = Self::content_box_size_for_taffy_style(
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
         taffy_style,
@@ -13183,7 +13202,7 @@ impl GridFormattingContext {
       fragment.content = FragmentContent::Block {
         box_id: Some(box_node.id),
       };
-      fragment.style = Some(box_node.style.clone());
+      attach_fragment_style_for_box(&mut fragment, box_node);
       let content_size = Self::content_box_size_for_taffy_style(
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
         taffy_style,
@@ -13677,7 +13696,7 @@ impl GridFormattingContext {
         box_id: Some(box_node.id),
       },
     };
-    fragment.style = Some(box_node.style.clone());
+    attach_fragment_style_for_box(&mut fragment, box_node);
     let mut content_size = Self::content_box_size_for_taffy_style(
       Size::new(fragment.bounds.width(), fragment.bounds.height()),
       taffy_style,
@@ -19301,6 +19320,74 @@ mod tests {
       .expect("layout with style override");
 
     assert_eq!(fragment.bounds.width(), 100.0);
+  }
+
+  #[test]
+  fn grid_fragments_attach_style_overrides_for_child_boxes() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let child_id = 2usize;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = CssDisplay::Block;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.width_keyword = None;
+    child_style.height_keyword = None;
+    let child_style = Arc::new(child_style);
+
+    let mut child = BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    child.id = child_id;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(10.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
+
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Grid,
+      vec![child],
+    );
+    container.id = 1usize;
+
+    let constraints = LayoutConstraints::definite(100.0, 10.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+    let child_fragment = find_block_fragment(&fragment, child_id);
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &child_style),
+      "expected fragment.style to use the BoxNode style when no override is active"
+    );
+
+    let mut override_style = child_style.as_ref().clone();
+    override_style.width = Some(Length::px(20.0));
+    override_style.width_keyword = None;
+    let override_style = Arc::new(override_style);
+
+    let fragment = crate::layout::style_override::with_style_override(
+      child_id,
+      override_style.clone(),
+      || fc.layout(&container, &constraints),
+    )
+    .expect("layout with style override");
+
+    let child_fragment = find_block_fragment(&fragment, child_id);
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &override_style),
+      "expected fragment.style to use the active style override"
+    );
+
+    let fragment = fc.layout(&container, &constraints).expect("layout after override");
+    let child_fragment = find_block_fragment(&fragment, child_id);
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &child_style),
+      "expected style override to be scoped to the guard"
+    );
   }
 
   #[test]
