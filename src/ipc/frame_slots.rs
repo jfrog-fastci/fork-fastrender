@@ -125,7 +125,7 @@ impl UnixSeqpacket {
       )
     };
 
-    let mut hdr = libc::msghdr {
+    let hdr = libc::msghdr {
       msg_name: ptr::null_mut(),
       msg_namelen: 0,
       msg_iov: &mut iov as *mut libc::iovec,

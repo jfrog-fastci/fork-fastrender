@@ -197,7 +197,7 @@ mod tests {
   use super::decode_js_string_literal_to_utf16;
 
   #[test]
-  fn decodes_uXXXX_escape() {
+  fn decodes_u_xxxx_escape() {
     let out = decode_js_string_literal_to_utf16("\"\\u0041\"").unwrap();
     assert_eq!(out, vec![0x0041]);
   }
@@ -209,7 +209,7 @@ mod tests {
   }
 
   #[test]
-  fn decodes_xXX_escape() {
+  fn decodes_x_xx_escape() {
     let out = decode_js_string_literal_to_utf16("\"\\x41\"").unwrap();
     assert_eq!(out, vec![0x0041]);
   }

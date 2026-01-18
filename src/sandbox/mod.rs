@@ -1269,7 +1269,14 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
   };
   let sandbox_env_set = sandbox_env.is_some();
   let seatbelt_profile_env_set = seatbelt_profile_env.is_some();
+  #[cfg(target_os = "macos")]
   let mut source = if sandbox_env_set || seatbelt_profile_env_set {
+    MacosSandboxSource::EnvVar
+  } else {
+    MacosSandboxSource::Default
+  };
+  #[cfg(not(target_os = "macos"))]
+  let source = if sandbox_env_set || seatbelt_profile_env_set {
     MacosSandboxSource::EnvVar
   } else {
     MacosSandboxSource::Default
@@ -1285,7 +1292,19 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
 
   let config = config::RendererSandboxEnvConfig::from_env_map(&env, default_enabled)?;
 
+  #[cfg(target_os = "macos")]
   let mut mode = if !config.enabled {
+    MacosSandboxMode::Off
+  } else if matches!(
+    config.macos_seatbelt_profile,
+    config::MacosSeatbeltProfileSelection::PureComputation
+  ) {
+    MacosSandboxMode::Strict
+  } else {
+    MacosSandboxMode::Relaxed
+  };
+  #[cfg(not(target_os = "macos"))]
+  let mode = if !config.enabled {
     MacosSandboxMode::Off
   } else if matches!(
     config.macos_seatbelt_profile,
