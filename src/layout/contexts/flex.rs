@@ -119,6 +119,13 @@ use std::sync::OnceLock;
 
 static LOG_CHILD_IDS: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
 
+fn attach_fragment_style_for_box(fragment: &mut FragmentNode, box_node: &BoxNode) {
+  let style_override = crate::layout::style_override::style_override_for(box_node.id);
+  let effective_style = style_override.unwrap_or_else(|| box_node.style.clone());
+  fragment.style = Some(effective_style);
+  fragment.starting_style = box_node.starting_style.clone();
+}
+
 thread_local! {
   /// Memoized results for flexbox's content-based automatic minimum size computation.
   ///
@@ -1006,11 +1013,17 @@ impl FormattingContext for FlexFormattingContext {
       // Do not cache flex containers that contain running elements: running anchors are synthesized
       // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
       let toggles = crate::debug::runtime::runtime_toggles();
+      let has_descendant_style_override =
+        crate::layout::style_override::has_style_override_other_than(box_node.id);
       // Avoid short-circuiting flex layout with higher-level fragment caches when collecting Taffy
       // usage stats; we want to observe the underlying template reuse behavior.
       let disable_global_layout_cache = toggles.truthy("FASTR_DISABLE_FLEX_CACHE")
         || has_running_children
-        || taffy_counters_enabled();
+        || taffy_counters_enabled()
+        // When style overrides are active for descendant boxes, flex layout can change even when
+        // the container's own style is unchanged. The global layout cache only keys off the root's
+        // effective style, so bypass it in this situation to avoid returning stale fragments.
+        || has_descendant_style_override;
       if !disable_global_layout_cache {
         if let Some(cached) = layout_cache_lookup(
           box_node,
@@ -11786,14 +11799,16 @@ impl FlexFormattingContext {
             Point::new(child_loc_x, child_loc_y),
             Size::new(layout_width, layout_height),
           );
-          final_fragment = Some(FragmentNode::new_with_style(
+          let mut fragment = FragmentNode::new_with_style(
             bounds,
             FragmentContent::Block {
               box_id: Some(child_box.id),
             },
             vec![],
             child_box.style.clone(),
-          ));
+          );
+          attach_fragment_style_for_box(&mut fragment, child_box);
+          final_fragment = Some(fragment);
         }
         ChildPlan::Reuse {
           stored_size,
@@ -12047,7 +12062,9 @@ impl FlexFormattingContext {
             Point::new(origin_x, origin_y),
             Size::new(resolved_width, resolved_height),
           );
-          final_fragment = Some(template.place(bounds).materialize());
+          let mut fragment = template.place(bounds).materialize();
+          attach_fragment_style_for_box(&mut fragment, child_box);
+          final_fragment = Some(fragment);
         }
         ChildPlan::Replaced => {
           store_remembered_size = true;
@@ -12065,6 +12082,7 @@ impl FlexFormattingContext {
               vec![],
               child_box.style.clone(),
             );
+            attach_fragment_style_for_box(&mut fragment, child_box);
             // Replaced boxes are usually treated as leaves, but form controls can have generated
             // ::before/::after pseudo-element children. Only out-of-flow pseudos are generated, so
             // lay them out here.
@@ -12313,12 +12331,14 @@ impl FlexFormattingContext {
             ));
           };
           let mut child_fragment = output.fragment;
+          attach_fragment_style_for_box(&mut child_fragment, child_box);
           let intrinsic_size = output.intrinsic_size;
 
           if (main_axis_is_row && layout_width <= eps)
             || (!main_axis_is_row && layout_height <= eps)
           {
             if let Some((mut mc_fragment, mc_size)) = output.max_content {
+              attach_fragment_style_for_box(&mut mc_fragment, child_box);
               let (child_loc_x, child_loc_y) =
                 if main_axis_is_row && layout_width <= eps && mc_size.width > eps {
                   (
@@ -16267,6 +16287,75 @@ mod tests {
     .expect("layout with style override should succeed");
 
     assert_eq!(fragment.bounds.width(), 100.0);
+  }
+
+  #[test]
+  fn flex_fragments_attach_style_overrides_for_child_boxes() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let child_id = 2usize;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.width_keyword = None;
+    child_style.height_keyword = None;
+    let child_style = Arc::new(child_style);
+
+    let mut child = BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![]);
+    child.id = child_id;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.width = Some(Length::px(100.0));
+    container_style.height = Some(Length::px(10.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
+
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![child],
+    );
+    container.id = 1usize;
+
+    let constraints = LayoutConstraints::definite(100.0, 10.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+    let child_fragment = find_fragment_by_box_id(&fragment, child_id).expect("child fragment");
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &child_style),
+      "expected fragment.style to use the BoxNode style when no override is active"
+    );
+
+    let mut override_style = child_style.as_ref().clone();
+    override_style.width = Some(Length::px(20.0));
+    override_style.width_keyword = None;
+    let override_style = Arc::new(override_style);
+
+    let fragment = crate::layout::style_override::with_style_override(
+      child_id,
+      override_style.clone(),
+      || fc.layout(&container, &constraints),
+    )
+    .expect("layout with style override should succeed");
+
+    let child_fragment = find_fragment_by_box_id(&fragment, child_id).expect("child fragment");
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &override_style),
+      "expected fragment.style to use the active style override"
+    );
+
+    let fragment = fc.layout(&container, &constraints).expect("layout after override");
+    let child_fragment = find_fragment_by_box_id(&fragment, child_id).expect("child fragment");
+    let attached = child_fragment.style.as_ref().expect("fragment style");
+    assert!(
+      Arc::ptr_eq(attached, &child_style),
+      "expected style override to be scoped to the guard"
+    );
   }
 
   #[test]

@@ -78,6 +78,17 @@ pub(crate) fn style_override_for(node_id: usize) -> Option<Arc<ComputedStyle>> {
   })
 }
 
+/// Returns `true` if any style override is currently active for a box id other than `node_id`.
+///
+/// Layout caches generally key off the formatting-context root id plus its own effective style.
+/// When callers override a descendant box's style (e.g. during intrinsic sizing probes) and then
+/// re-enter layout on an ancestor, those caches are no longer valid unless they incorporate the
+/// override stack. Flex/grid in particular may measure the same container under different child
+/// overrides, so use this helper to bypass caches when necessary.
+pub(crate) fn has_style_override_other_than(node_id: usize) -> bool {
+  STYLE_OVERRIDES.with(|stack| stack.borrow().iter().any(|entry| entry.node_id != node_id))
+}
+
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {
