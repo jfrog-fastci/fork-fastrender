@@ -94,6 +94,9 @@ pub enum MediaError {
   #[error("render error: {0}")]
   Render(#[from] RenderError),
 
+  #[error("media resource too large: {0}")]
+  ResourceTooLarge(String),
+
   #[error("unsupported: {0}")]
   Unsupported(Cow<'static, str>),
 
@@ -103,4 +106,3 @@ pub enum MediaError {
   #[error("decode error: {0}")]
   Decode(String),
 }
-
