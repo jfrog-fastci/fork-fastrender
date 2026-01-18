@@ -451,6 +451,42 @@ path = "src/bin/render_fixtures.rs"
 test = false
 
 [[bin]]
+name = "fetch_and_render"
+path = "src/bin/fetch_and_render.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
+name = "render_pages"
+path = "src/bin/render_pages.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
+name = "pageset_progress"
+path = "src/bin/pageset_progress.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
+name = "inspect_frag"
+path = "src/bin/inspect_frag.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
+name = "ui_perf_smoke"
+path = "src/bin/ui_perf_smoke.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
+name = "compare_diff_reports"
+path = "src/bin/compare_diff_reports.rs"
+test = false
+required-features = ["vmjs"]
+
+[[bin]]
 name = "bundle_page"
 path = "src/bin/bundle_page.rs"
 test = false
