@@ -15,6 +15,19 @@ pub struct CheckLibBuildsArgs {
   pub quiet: bool,
 }
 
+const CHECK_FASTRENDER_LIB: &[&str] = &["check", "-p", "fastrender", "--lib", "--locked"];
+
+const CHECK_FASTRENDER_MINIMAL_LIB: &[&str] = &[
+  "check",
+  "-p",
+  "fastrender",
+  "--no-default-features",
+  "--features",
+  "renderer_minimal",
+  "--lib",
+  "--locked",
+];
+
 fn run_cargo(repo_root: &Path, args: &[&str], quiet: bool) -> Result<()> {
   let mut cmd: Command = crate::cmd::cargo_agent_command(repo_root);
   cmd.current_dir(repo_root);
@@ -36,25 +49,29 @@ fn run_cargo(repo_root: &Path, args: &[&str], quiet: bool) -> Result<()> {
 }
 
 pub fn run_check_lib_builds(repo_root: &Path, args: CheckLibBuildsArgs) -> Result<()> {
-  println!("• cargo check -p fastrender --lib");
-  run_cargo(repo_root, &["check", "-p", "fastrender", "--lib"], args.quiet)?;
+  println!("• cargo check -p fastrender --lib --locked");
+  run_cargo(repo_root, CHECK_FASTRENDER_LIB, args.quiet)?;
 
-  println!("• cargo check -p fastrender --no-default-features --features renderer_minimal --lib");
-  run_cargo(
-    repo_root,
-    &[
-      "check",
-      "-p",
-      "fastrender",
-      "--no-default-features",
-      "--features",
-      "renderer_minimal",
-      "--lib",
-    ],
-    args.quiet,
-  )?;
+  println!("• cargo check -p fastrender --no-default-features --features renderer_minimal --lib --locked");
+  run_cargo(repo_root, CHECK_FASTRENDER_MINIMAL_LIB, args.quiet)?;
 
   println!("✓ check-lib-builds: ok");
   Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn check_lib_builds_uses_locked() {
+    assert!(
+      CHECK_FASTRENDER_LIB.contains(&"--locked"),
+      "default lib check should use --locked"
+    );
+    assert!(
+      CHECK_FASTRENDER_MINIMAL_LIB.contains(&"--locked"),
+      "minimal lib check should use --locked"
+    );
+  }
+}
