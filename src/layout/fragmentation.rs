@@ -5319,7 +5319,23 @@ fn collect_atomic_candidate_for_node(
 
   if matches!(style.display, Display::Grid | Display::InlineGrid) {
     if let Some(grid_tracks) = node.grid_tracks.as_deref() {
-      let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
+      // `GridTrackRanges` are stored in logical track order with mirrored coordinates for reversed
+      // directions. During fragmentation we need the tracks in *physical flow order* so gap
+      // absorption (assigning the inter-track gutter to the following track) and atomic candidate
+      // selection proceed monotonically along the fragmentation axis, even for orthogonal writing
+      // modes.
+      let mut tracks: Vec<(f32, f32)> = grid_tracks_in_fragmentation_axis(grid_tracks, axis).to_vec();
+      if node_block_size.is_finite() {
+        tracks.sort_by(|(a_start, a_end), (b_start, b_end)| {
+          let a_size = (a_end - a_start).max(0.0);
+          let b_size = (b_end - b_start).max(0.0);
+          let a_flow = axis.flow_offset(*a_start, a_size, node_block_size);
+          let b_flow = axis.flow_offset(*b_start, b_size, node_block_size);
+          a_flow
+            .partial_cmp(&b_flow)
+            .unwrap_or(std::cmp::Ordering::Equal)
+        });
+      }
 
       // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
       // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`

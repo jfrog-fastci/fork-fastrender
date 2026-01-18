@@ -1812,8 +1812,8 @@ impl CalcLength {
     root_font_size_px: f32,
     root_font_metrics: Option<RootFontMetrics>,
   ) -> Option<f32> {
-    if !viewport_width.is_finite()
-      || !viewport_height.is_finite()
+    let needs_viewport = self.has_viewport_relative();
+    if (needs_viewport && (!viewport_width.is_finite() || !viewport_height.is_finite()))
       || !font_size_px.is_finite()
       || !root_font_size_px.is_finite()
     {
@@ -1979,8 +1979,8 @@ impl CalcLength {
     inline_axis_is_horizontal: bool,
     root_font_metrics: Option<RootFontMetrics>,
   ) -> Option<f32> {
-    if !viewport_width.is_finite()
-      || !viewport_height.is_finite()
+    let needs_viewport = self.has_viewport_relative();
+    if (needs_viewport && (!viewport_width.is_finite() || !viewport_height.is_finite()))
       || !font_size_px.is_finite()
       || !root_font_size_px.is_finite()
     {
@@ -2406,6 +2406,51 @@ mod tests {
     let percent = Length::percent(50.0);
     assert_eq!(percent.resolve_against(200.0), Some(100.0));
     assert_eq!(percent.resolve_against(100.0), Some(50.0));
+  }
+
+  #[test]
+  fn percent_and_calc_percent_px_resolve_without_finite_viewport() {
+    let percent = Length::percent(50.0);
+    assert_eq!(
+      percent.resolve_with_context_for_writing_mode(
+        Some(200.0),
+        f32::INFINITY,
+        600.0,
+        16.0,
+        16.0,
+        crate::style::types::WritingMode::VerticalRl
+      ),
+      Some(100.0)
+    );
+
+    let calc = parse_length("calc(50% + 10px)").expect("expected calc length to parse");
+    assert_eq!(
+      calc.resolve_with_context_for_writing_mode(
+        Some(200.0),
+        f32::INFINITY,
+        f32::INFINITY,
+        16.0,
+        16.0,
+        crate::style::types::WritingMode::HorizontalTb
+      ),
+      Some(110.0)
+    );
+  }
+
+  #[test]
+  fn calc_with_viewport_units_still_requires_finite_viewport() {
+    let calc = parse_length("calc(50% + 10vw)").expect("expected calc length to parse");
+    assert_eq!(
+      calc.resolve_with_context_for_writing_mode(
+        Some(200.0),
+        f32::INFINITY,
+        600.0,
+        16.0,
+        16.0,
+        crate::style::types::WritingMode::HorizontalTb
+      ),
+      None
+    );
   }
 
   #[test]
@@ -3346,15 +3391,25 @@ impl Length {
     }
 
     let percentage_base = percentage_base.filter(|b| b.is_finite());
-    let vw = if viewport_width.is_finite() {
-      viewport_width
+    let needs_viewport =
+      self.unit.is_viewport_relative() || self.calc.is_some_and(|calc| calc.has_viewport_relative());
+    let (vw, vh) = if needs_viewport {
+      let vw = if viewport_width.is_finite() {
+        viewport_width
+      } else {
+        return None;
+      };
+      let vh = if viewport_height.is_finite() {
+        viewport_height
+      } else {
+        return None;
+      };
+      (vw, vh)
     } else {
-      return None;
-    };
-    let vh = if viewport_height.is_finite() {
-      viewport_height
-    } else {
-      return None;
+      // Viewport units are not present, but lower-level calc resolvers still expect finite
+      // viewport sizes. Provide dummy finite values so percent/calc(% + px) can resolve even in
+      // "indefinite viewport" contexts (e.g. intrinsic sizing passes).
+      (0.0, 0.0)
     };
     let font_px = if font_size_px.is_finite() {
       font_size_px
@@ -3447,15 +3502,25 @@ impl Length {
     }
 
     let percentage_base = percentage_base.filter(|b| b.is_finite());
-    let vw = if viewport_width.is_finite() {
-      viewport_width
+    let needs_viewport =
+      self.unit.is_viewport_relative() || self.calc.is_some_and(|calc| calc.has_viewport_relative());
+    let (vw, vh) = if needs_viewport {
+      let vw = if viewport_width.is_finite() {
+        viewport_width
+      } else {
+        return None;
+      };
+      let vh = if viewport_height.is_finite() {
+        viewport_height
+      } else {
+        return None;
+      };
+      (vw, vh)
     } else {
-      return None;
-    };
-    let vh = if viewport_height.is_finite() {
-      viewport_height
-    } else {
-      return None;
+      // Viewport units are not present, but lower-level calc resolvers still expect finite
+      // viewport sizes. Provide dummy finite values so percent/calc(% + px) can resolve even in
+      // "indefinite viewport" contexts (e.g. intrinsic sizing passes).
+      (0.0, 0.0)
     };
     let font_px = if font_size_px.is_finite() {
       font_size_px
