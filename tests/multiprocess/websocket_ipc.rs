@@ -131,7 +131,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
           let mut ws = tungstenite::accept(stream).expect("accept websocket");
           let read_deadline = Instant::now() + Duration::from_secs(5);
           let msg = loop {
-            match ws.read_message() {
+            match ws.read() {
               Ok(msg) => break msg,
               Err(tungstenite::Error::Io(ref err))
                 if matches!(
@@ -146,7 +146,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
               Err(err) => panic!("server read failed: {err}"),
             }
           };
-          ws.write_message(msg).expect("echo");
+          ws.send(msg).expect("echo");
           let _ = ws.close(None);
           break;
         }
@@ -238,7 +238,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
             WebSocketCommand::SendText { text } => {
               did_send_text = true;
               let len = text.as_bytes().len();
-              socket.write_message(Message::Text(text)).expect("write");
+              socket.send(Message::Text(text)).expect("write");
               event_tx
                 .send(WebSocketIpcEvent::WebSocket {
                   conn_id: ws_id,
@@ -282,9 +282,9 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
             #[allow(unreachable_patterns)]
             _ => {}
           }
-          let read_deadline = Instant::now() + Duration::from_secs(5);
-          let msg = loop {
-            match socket.read_message() {
+           let read_deadline = Instant::now() + Duration::from_secs(5);
+           let msg = loop {
+            match socket.read() {
               Ok(msg) => break msg,
               Err(tungstenite::Error::Io(ref err))
                 if matches!(
@@ -406,14 +406,14 @@ fn websocket_ipc_responds_to_ping_frames() -> Result<()> {
           let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
           let mut ws = tungstenite::accept(stream).expect("accept websocket");
 
-          ws.write_message(tungstenite::protocol::Message::Ping(
+          ws.send(tungstenite::protocol::Message::Ping(
             ping_payload_server.clone(),
           ))
             .expect("server ping write failed");
 
           let read_deadline = Instant::now() + Duration::from_secs(5);
           loop {
-            match ws.read_message() {
+            match ws.read() {
               Ok(tungstenite::protocol::Message::Pong(payload)) => {
                 assert_eq!(payload, ping_payload_server, "pong payload mismatch");
                 break;
@@ -525,10 +525,10 @@ fn websocket_ipc_responds_to_ping_frames() -> Result<()> {
         }
       }
 
-      match socket.read_message() {
+      match socket.read() {
         Ok(Message::Ping(payload)) => {
           // RFC 6455: reply to pings with a pong containing the same payload.
-          let _ = socket.write_message(Message::Pong(payload));
+          let _ = socket.send(Message::Pong(payload));
         }
         Ok(Message::Pong(_)) => {}
         Ok(Message::Close(frame)) => {
