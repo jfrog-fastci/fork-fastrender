@@ -13,7 +13,6 @@ use fastrender::debug::runtime::{self, RuntimeToggles};
 use fastrender::dom::DomNodeType;
 use fastrender::geometry::{Point, Rect};
 use fastrender::image_output::encode_image;
-use fastrender::pageset::{pageset_short_hash, pageset_stem};
 #[cfg(not(feature = "disk_cache"))]
 use fastrender::resource::CachingFetcher;
 #[cfg(feature = "disk_cache")]
@@ -38,7 +37,7 @@ use std::time::Duration;
 use tiny_skia::{Color, Paint, PathBuilder, Stroke, Transform};
 use url::Url;
 
-const DEFAULT_HTML_DIR: &str = fastrender::pageset::CACHE_HTML_DIR;
+const DEFAULT_HTML_DIR: &str = "fetches/html";
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -284,6 +283,60 @@ fn html_meta_path(html_path: &Path) -> PathBuf {
     meta_path.set_extension("meta");
   }
   meta_path
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn strip_collision_suffix(raw: &str) -> &str {
+  if let Some((candidate, suffix)) = raw.rsplit_once("--") {
+    if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+      return candidate;
+    }
+  }
+  raw
+}
+
+fn input_looks_like_url(value: &str) -> bool {
+  // `Url::parse` only succeeds for schemeful URLs; additionally treat common URL separator
+  // characters as "URL-ish" so we don't strip collision suffixes from inputs like
+  // `example.com/path--deadbeef`.
+  Url::parse(value).is_ok()
+    || value
+      .chars()
+      .any(|c| matches!(c, '/' | '?' | '#' | ':' | '\\'))
+}
+
+/// Canonical pageset stem for selecting cached HTML.
+///
+/// This intentionally matches `fastrender::pageset::pageset_stem` without pulling in the full
+/// pageset URL set (which is gated out by `renderer_tools`).
+fn pageset_stem(url_or_stem: &str) -> Option<String> {
+  let trimmed = trim_ascii_whitespace(url_or_stem);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Collision suffixes (`<stem>--deadbeef`) are only meaningful for already-normalized cache stems.
+  // If the caller provides a URL-ish input (schemeful URL, host+path, host+query, etc.), treat the
+  // `--<hash>` as part of the URL and let `normalize_page_name` handle sanitization.
+  let candidate = if input_looks_like_url(trimmed) {
+    trimmed
+  } else {
+    strip_collision_suffix(trimmed)
+  };
+  fastrender::resource::normalize_page_name(candidate)
+}
+
+/// Deterministic short hash used to disambiguate cache/progress stems for collisions.
+fn pageset_short_hash(input: &str) -> String {
+  let mut hash: u32 = 0x811c9dc5;
+  for byte in input.as_bytes() {
+    hash ^= u32::from(*byte);
+    hash = hash.wrapping_mul(0x01000193);
+  }
+  format!("{hash:08x}")
 }
 
 fn parse_collision_suffix(raw: &str) -> Option<(&str, &str)> {
@@ -1199,7 +1252,32 @@ fn validate_args(args: &Args) -> Result<(), DynError> {
   if args.filter_id.is_some() && args.filter_selector.is_some() {
     return Err(filter_mutual_exclusion_error().into());
   }
+  #[cfg(not(feature = "vmjs"))]
+  if args.dump_dom2_json.is_some() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "inspect_frag: --dump-dom2-json requires the `vmjs` cargo feature (rebuild with default features)",
+    )
+    .into());
+  }
   Ok(())
+}
+
+#[cfg(feature = "vmjs")]
+fn write_dom2_snapshot(dom: &fastrender::dom::DomNode, path: &Path) -> Result<(), DynError> {
+  let dom2_doc = fastrender::dom2::Document::from_renderer_dom(dom);
+  let dom2_snapshot = fastrender::debug::snapshot::snapshot_dom2(&dom2_doc);
+  write_pretty_json(path, &dom2_snapshot)?;
+  Ok(())
+}
+
+#[cfg(not(feature = "vmjs"))]
+fn write_dom2_snapshot(_dom: &fastrender::dom::DomNode, _path: &Path) -> Result<(), DynError> {
+  Err(io::Error::new(
+    io::ErrorKind::InvalidInput,
+    "inspect_frag: --dump-dom2-json requires the `vmjs` cargo feature (rebuild with default features)",
+  )
+  .into())
 }
 
 fn inspect_pipeline(
@@ -1478,9 +1556,7 @@ fn run(args: Args) -> Result<(), DynError> {
   }
 
   if let Some(path) = &args.dump_dom2_json {
-    let dom2_doc = fastrender::dom2::Document::from_renderer_dom(&output.dom);
-    let dom2_snapshot = fastrender::debug::snapshot::snapshot_dom2(&dom2_doc);
-    write_pretty_json(path, &dom2_snapshot)?;
+    write_dom2_snapshot(&output.dom, path)?;
   }
 
   if args.dump_snapshot {
