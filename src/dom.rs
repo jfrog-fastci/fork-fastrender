@@ -318,7 +318,7 @@ pub(crate) fn with_target_fragment<R, F: FnOnce() -> R>(target: Option<&str>, f:
     let previous = slot.borrow_mut().take();
     if let Some(t) = target {
       let without_hash = t.strip_prefix('#').unwrap_or(t);
-      let decoded = percent_encoding::percent_decode_str(without_hash)
+      let decoded = crate::percent::percent_decode_str(without_hash)
         .decode_utf8_lossy()
         .into_owned();
       if !decoded.is_empty() {

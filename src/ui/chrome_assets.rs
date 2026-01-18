@@ -1,6 +1,6 @@
 use crate::error::{Error, ResourceError, Result};
 use crate::resource::{FetchedResource, ResourceFetcher};
-use percent_encoding::percent_decode_str;
+use crate::percent::percent_decode_str;
 
 const CHROME_CSS: &str =
   include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.css"));

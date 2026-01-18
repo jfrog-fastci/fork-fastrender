@@ -52,7 +52,7 @@ use image::ImageFormat;
 use image::ImageReader;
 use image::RgbaImage;
 use lru::LruCache;
-use percent_encoding::percent_decode_str;
+use crate::percent::percent_decode_str;
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;

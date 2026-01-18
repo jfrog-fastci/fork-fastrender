@@ -311,6 +311,7 @@ pub(crate) mod svg_path;
 pub(crate) mod xml;
 pub mod system;
 pub(crate) mod thread_pool_cache;
+pub(crate) mod percent;
 pub(crate) mod url_normalize;
 #[cfg(feature = "vmjs")]
 pub mod web;

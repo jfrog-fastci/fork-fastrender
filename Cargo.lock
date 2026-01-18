@@ -1917,7 +1917,6 @@ dependencies = [
  "parking_lot",
  "parse-js",
  "pathdiff",
- "percent-encoding",
  "png 0.18.0",
  "pollster",
  "precomputed-hash",

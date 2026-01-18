@@ -3,7 +3,7 @@ use crate::geometry::{Point, Size};
 use crate::scroll::viewport_scroll_bounds;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use percent_encoding::percent_decode_str;
+use crate::percent::percent_decode_str;
 use rustc_hash::FxHashSet;
 
 use super::image_maps;

@@ -1262,7 +1262,6 @@ mod tests {
   use super::*;
   use crate::js::window_realm::DomBindingsBackend;
 
-  use crate::resource::HttpFetcher;
   use crate::resource::FetchedResource;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine as _;
