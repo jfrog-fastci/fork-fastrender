@@ -4638,7 +4638,24 @@ pub(crate) fn apply_dom_compatibility_mutations(
       return None;
     }
     if img_src_is_placeholder(trimmed) {
-      return None;
+      // For data attributes (e.g. `data-src`) we still want to accept `data:` URLs even when they
+      // *look* like placeholders (e.g. 1×1 PNGs used by some fixtures/lazyloaders). These values
+      // are still valid fetchable/decodable URLs and should be promoted into `src` so compatibility
+      // mode can mimic JS-driven lazyload bootstraps (and flip `.lazyload` → `.lazyloaded`).
+      //
+      // Keep rejecting other placeholder-like URL strings (fragments, about:blank, etc) so we don't
+      // promote obviously-non-resource candidates.
+      let is_data_url = trimmed
+        .as_bytes()
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case(b"data:"));
+      if !is_data_url {
+        return None;
+      }
+      // `data:image/png;base64` (no comma/payload) should still be treated as a placeholder.
+      if !trimmed.contains(',') {
+        return None;
+      }
     }
     Some(trimmed.to_string())
   }
@@ -4739,6 +4756,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
         .map(|(_, v)| v.split_ascii_whitespace().map(|s| s.to_string()).collect())
         .unwrap_or_default();
       let mut changed = false;
+      let mut source_lifted = false;
 
       if tag_name.eq_ignore_ascii_case("html") || tag_name.eq_ignore_ascii_case("body") {
         if classes.iter().any(|c| c == "no-js") {
@@ -4812,10 +4830,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
+                  source_lifted = true;
                 }
               }
               None => {
                 attributes.push(("src".to_string(), candidate));
+                source_lifted = true;
               }
             }
           }
@@ -4833,10 +4853,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
               Some(idx) => {
                 if srcset_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
+                  source_lifted = true;
                 }
               }
               None => {
                 attributes.push(("srcset".to_string(), candidate));
+                source_lifted = true;
               }
             }
           }
@@ -4966,10 +4988,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
+                  source_lifted = true;
                 }
               }
               None => {
                 attributes.push(("src".to_string(), candidate));
+                source_lifted = true;
               }
             }
           }
@@ -4992,10 +5016,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
+                  source_lifted = true;
                 }
               }
               None => {
                 attributes.push(("src".to_string(), candidate));
+                source_lifted = true;
               }
             }
           }
@@ -5037,10 +5063,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
+                  source_lifted = true;
                 }
               }
               None => {
                 attributes.push(("src".to_string(), candidate));
+                source_lifted = true;
               }
             }
           }
@@ -5075,7 +5103,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
             src.is_some_and(|value| !img_src_is_placeholder(value))
           };
 
-          if has_real_source {
+          if has_real_source || source_lifted {
             classes.retain(|c| c != "lazyload" && c != "lazyloading");
             if !classes.iter().any(|c| c == "lazyloaded") {
               classes.push("lazyloaded".to_string());

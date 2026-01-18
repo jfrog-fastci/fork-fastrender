@@ -818,8 +818,10 @@ pub(crate) fn render_iframe_srcdoc(
     }
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let mut pixmap = new_pixmap(device_width, device_height)?;
-    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
+    // When iframe nesting is exhausted we intentionally skip painting the nested browsing context.
+    // Return a fully transparent surface so the iframe element's own background/border (if any)
+    // remains visible without forcing an opaque placeholder over the parent content.
+    let pixmap = new_pixmap(device_width, device_height)?;
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
@@ -978,8 +980,10 @@ pub(crate) fn render_iframe_src(
     }
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let mut pixmap = new_pixmap(device_width, device_height)?;
-    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
+    // When iframe nesting is exhausted we intentionally skip painting the nested browsing context.
+    // Return a fully transparent surface so the iframe element's own background/border (if any)
+    // remains visible without forcing an opaque placeholder over the parent content.
+    let pixmap = new_pixmap(device_width, device_height)?;
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
@@ -995,8 +999,10 @@ pub(crate) fn render_iframe_src(
     // resource fetch so offline fixtures do not record spurious fetch errors.
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let mut pixmap = new_pixmap(device_width, device_height)?;
-    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
+    // Preserve legacy FastRender behavior: treat about:blank as an empty *transparent* browsing
+    // context so pages that use iframes as lazy-load placeholders do not get an opaque white box
+    // painted over their fallback content.
+    let pixmap = new_pixmap(device_width, device_height)?;
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
