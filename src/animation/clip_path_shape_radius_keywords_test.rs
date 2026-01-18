@@ -46,11 +46,11 @@ fn fragment_circle_radius_px(tree: &FragmentTree, box_id: usize) -> f32 {
     ClipPath::BasicShape(shape, _) => match shape.as_ref() {
       BasicShape::Circle { radius, .. } => match radius {
         ShapeRadius::Length(len) => len.to_px(),
-        other => panic!("expected resolved circle length radius, got {other:?}"),
+        other => unreachable!("expected resolved circle length radius, got {other:?}"),
       },
-      other => panic!("expected circle clip-path, got {other:?}"),
+      other => unreachable!("expected circle clip-path, got {other:?}"),
     },
-    other => panic!("expected basic shape clip-path, got {other:?}"),
+    other => unreachable!("expected basic shape clip-path, got {other:?}"),
   }
 }
 
@@ -92,4 +92,3 @@ fn transitions_interpolate_circle_keyword_radius_over_time() {
     "expected ~75px at t=500ms, got {radius_mid}"
   );
 }
-

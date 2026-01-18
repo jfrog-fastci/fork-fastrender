@@ -35,14 +35,16 @@ pub(crate) fn init_rayon_for_tests(num_threads: usize) {
             break;
           }
 
-          // If initialization fails due to OS thread-spawn limits (EAGAIN/WouldBlock), retry with a
-          // smaller pool size. This keeps unit tests stable under constrained CI.
-          if threads <= 1 {
-            panic!("failed to initialize Rayon global pool for tests: {err}");
-          }
-          threads = (threads / 2).max(1);
-        }
-      }
-    }
+           // If initialization fails due to OS thread-spawn limits (EAGAIN/WouldBlock), retry with a
+           // smaller pool size. This keeps unit tests stable under constrained CI.
+           if threads <= 1 {
+            std::panic::panic_any(format!(
+              "failed to initialize Rayon global pool for tests: {err}"
+            ));
+           }
+           threads = (threads / 2).max(1);
+         }
+       }
+     }
   });
 }

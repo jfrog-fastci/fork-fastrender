@@ -164,9 +164,34 @@ impl FrameTree {
       return existing;
     }
 
-    let parent_depth = self
-      .depth(parent)
-      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}")); // fastrender-allow-panic
+    let parent_depth = match self.depth(parent) {
+      Some(depth) => depth,
+      None => {
+        let message = format!(
+          "attempted to create child frame under unknown parent frame id={} token={}",
+          parent.raw(),
+          token.as_u64()
+        );
+        self.diagnostics.push(message);
+        debug_assert!(false, "unknown parent frame id {parent:?}");
+
+        let id = self.alloc_frame_id();
+        let node = FrameNode {
+          id,
+          parent: Some(parent),
+          token_in_parent: Some(token),
+          site,
+          initial_url,
+          embedding_geometry: None,
+          children: Vec::new(),
+          status: FrameNodeStatus::Active,
+          renderer_process: None,
+        };
+        self.nodes.insert(id, node);
+        self.by_parent_token.insert((parent, token), id);
+        return id;
+      }
+    };
     let requested_depth = parent_depth + 1;
 
     let status = if requested_depth > self.max_depth {
@@ -200,11 +225,18 @@ impl FrameTree {
     };
     self.nodes.insert(id, node);
     self.by_parent_token.insert((parent, token), id);
-    let parent_node = self
-      .nodes
-      .get_mut(&parent)
-      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}")); // fastrender-allow-panic
-    parent_node.children.push(id);
+    if let Some(parent_node) = self.nodes.get_mut(&parent) {
+      parent_node.children.push(id);
+    } else {
+      let message = format!(
+        "failed to attach child frame id={} to missing parent frame id={} token={}",
+        id.raw(),
+        parent.raw(),
+        token.as_u64()
+      );
+      self.diagnostics.push(message);
+      debug_assert!(false, "unknown parent frame id {parent:?}");
+    }
     id
   }
 

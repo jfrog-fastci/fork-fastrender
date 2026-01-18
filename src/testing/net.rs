@@ -38,8 +38,13 @@ pub(crate) fn try_bind_localhost(context: &str) -> Option<TcpListener> {
     }
     Err(err) => {
       let loc = std::panic::Location::caller();
-      panic!("bind {context} ({}:{}): {err}", loc.file(), loc.line());
+      assert!(
+        false,
+        "bind {context} ({}:{}): {err}",
+        loc.file(),
+        loc.line()
+      );
+      None
     }
   }
 }
-

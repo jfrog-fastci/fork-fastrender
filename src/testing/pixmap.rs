@@ -93,7 +93,7 @@ pub(crate) fn assert_pixmap_eq(label: &str, expected: &Pixmap, actual: &Pixmap, 
     ));
   }
 
-  panic!("{message}");
+  assert!(false, "{message}");
 }
 
 fn mismatch_bounding_box(
@@ -154,4 +154,3 @@ fn mismatch_bounding_box(
     None
   }
 }
-

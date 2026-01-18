@@ -15,7 +15,11 @@ where
   let handle = std::thread::Builder::new()
     .stack_size(bytes)
     .spawn(f)
-    .unwrap_or_else(|e| panic!("failed to spawn test thread with stack size {bytes}: {e}"));
+    .unwrap_or_else(|e| {
+      std::panic::panic_any(format!(
+        "failed to spawn test thread with stack size {bytes}: {e}"
+      ));
+    });
 
   match handle.join() {
     Ok(value) => value,
@@ -30,4 +34,3 @@ where
 {
   run_with_stack_size(LARGE_STACK_BYTES, f)
 }
-

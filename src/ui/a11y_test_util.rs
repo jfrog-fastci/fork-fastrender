@@ -77,7 +77,10 @@ pub fn assert_accesskit_update_has_no_orphans<'a, I>(
   }
   let pretty = serde_json::to_string_pretty(&snapshot)
     .expect("accesskit connectivity snapshot must serialize to JSON");
-  panic!("AccessKit update contains orphan nodes (unreachable from root):\n{pretty}");
+  assert!(
+    false,
+    "AccessKit update contains orphan nodes (unreachable from root):\n{pretty}"
+  );
 }
 
 /// Assertion helper that fails the test if `target` is not reachable from the tree root.
@@ -107,7 +110,8 @@ pub fn assert_accesskit_node_is_reachable<'a, I>(
   );
   let pretty = serde_json::to_string_pretty(&snapshot)
     .expect("accesskit connectivity snapshot must serialize to JSON");
-  panic!(
+  assert!(
+    false,
     "AccessKit node id {} is not reachable from root {}.\n{pretty}",
     target.0.get(),
     snapshot.root_id
@@ -308,7 +312,8 @@ impl AccessKitTestTree {
     if let Some((id, node)) = found {
       if !duplicates.is_empty() {
         duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
-        panic!(
+        assert!(
+          false,
           "multiple AccessKit nodes matched name {needle:?}: {duplicates:?}. \
           Use a more specific accessible name to disambiguate."
         );
@@ -354,7 +359,9 @@ impl AccessKitTestTree {
       }
 
       seen.sort();
-      panic!("expected AccessKit node named {needle:?}, got named nodes={seen:#?}");
+      std::panic::panic_any(format!(
+        "expected AccessKit node named {needle:?}, got named nodes={seen:#?}"
+      ));
     })
   }
 
@@ -440,7 +447,8 @@ impl AccessKitTestTree {
     if let Some((id, node)) = found {
       if !duplicates.is_empty() {
         duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
-        panic!(
+        assert!(
+          false,
           "multiple AccessKit nodes matched role={role:?} name {needle:?}: {duplicates:?}. \
           Use a more specific accessible name to disambiguate."
         );
@@ -495,7 +503,9 @@ impl AccessKitTestTree {
         }
 
         seen.sort();
-        panic!("expected AccessKit node with role={role:?} name {needle:?}, got nodes={seen:#?}");
+        std::panic::panic_any(format!(
+          "expected AccessKit node with role={role:?} name {needle:?}, got nodes={seen:#?}"
+        ));
       })
   }
 
@@ -581,10 +591,10 @@ impl AccessKitTestTree {
       }
 
       seen.sort();
-      panic!(
+      std::panic::panic_any(format!(
         "expected AccessKit focus to resolve to a non-empty name (focus_id={focus_id:?}), \
         got named nodes={seen:#?}"
-      );
+      ));
     })
   }
 
@@ -771,11 +781,11 @@ pub fn accesskit_reachable_node_ids(
     }
 
     let node = nodes_by_id.get(&id).unwrap_or_else(|| {
-      panic!(
+      std::panic::panic_any(format!(
         "AccessKit reachability traversal referenced node id {} but it was not present in the \
          provided node map",
         id.0.get()
-      )
+      ))
     });
 
     out.push(id);
@@ -1078,7 +1088,8 @@ pub fn accesskit_node_by_name<'a>(
   if let Some((id, node)) = found {
     if !duplicates.is_empty() {
       duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
-      panic!(
+      assert!(
+        false,
         "multiple AccessKit nodes matched name {needle:?}: {duplicates:?}. \
         Use a more specific accessible name to disambiguate."
       );
@@ -1107,7 +1118,9 @@ pub fn expect_accesskit_node_by_name<'a>(
       })
       .collect();
     seen.sort();
-    panic!("expected AccessKit node named {needle:?}, got named nodes={seen:#?}");
+    std::panic::panic_any(format!(
+      "expected AccessKit node named {needle:?}, got named nodes={seen:#?}"
+    ));
   })
 }
 
@@ -1143,7 +1156,8 @@ pub fn accesskit_node_by_role_and_name<'a>(
   if let Some((id, node)) = found {
     if !duplicates.is_empty() {
       duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
-      panic!(
+      assert!(
+        false,
         "multiple AccessKit nodes matched role={role:?} name {needle:?}: {duplicates:?}. \
         Use a more specific accessible name to disambiguate."
       );
@@ -1176,9 +1190,9 @@ pub fn expect_accesskit_node_by_role_and_name<'a>(
       })
       .collect();
     seen.sort();
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node with role={role:?} name {needle:?}, got matching nodes={seen:#?}"
-    );
+    ));
   })
 }
 
@@ -1275,10 +1289,10 @@ pub fn expect_accesskit_focus_name(update: &accesskit::TreeUpdate) -> String {
       })
       .collect();
     seen.sort();
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit focus to resolve to a non-empty name (focus_id={focus_id:?}), \
       got named nodes={seen:#?}"
-    );
+    ));
   })
 }
 
@@ -1310,11 +1324,11 @@ pub fn accesskit_node_expanded(node: &accesskit::Node) -> Option<bool> {
 
 pub fn expect_accesskit_node_expanded(node: &accesskit::Node) -> bool {
   node.is_expanded().unwrap_or_else(|| {
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node role={:?} name={:?} to expose expanded/collapsed state",
       node.role(),
       node.name().unwrap_or("").trim()
-    )
+    ))
   })
 }
 
@@ -1324,11 +1338,11 @@ pub fn accesskit_node_selected(node: &accesskit::Node) -> Option<bool> {
 
 pub fn expect_accesskit_node_selected(node: &accesskit::Node) -> bool {
   node.is_selected().unwrap_or_else(|| {
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node role={:?} name={:?} to expose selected state",
       node.role(),
       node.name().unwrap_or("").trim()
-    )
+    ))
   })
 }
 
@@ -1350,11 +1364,11 @@ pub fn accesskit_node_checked(node: &accesskit::Node) -> Option<accesskit::Check
 
 pub fn expect_accesskit_node_checked(node: &accesskit::Node) -> accesskit::CheckedState {
   accesskit_node_checked(node).unwrap_or_else(|| {
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node role={:?} name={:?} to expose checked state (checked_state)",
       node.role(),
       node.name().unwrap_or("").trim()
-    )
+    ))
   })
 }
 
@@ -1367,11 +1381,11 @@ pub fn accesskit_node_toggled(node: &accesskit::Node) -> Option<accesskit::Check
 
 pub fn expect_accesskit_node_toggled(node: &accesskit::Node) -> accesskit::CheckedState {
   accesskit_node_toggled(node).unwrap_or_else(|| {
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node role={:?} name={:?} to expose toggled state (checked_state for Role::Switch)",
       node.role(),
       node.name().unwrap_or("").trim()
-    )
+    ))
   })
 }
 
@@ -1384,11 +1398,11 @@ pub fn accesskit_node_pressed(node: &accesskit::Node) -> Option<accesskit::Check
 
 pub fn expect_accesskit_node_pressed(node: &accesskit::Node) -> accesskit::CheckedState {
   accesskit_node_pressed(node).unwrap_or_else(|| {
-    panic!(
+    std::panic::panic_any(format!(
       "expected AccessKit node role={:?} name={:?} to expose pressed state (checked_state for Role::ToggleButton)",
       node.role(),
       node.name().unwrap_or("").trim()
-    )
+    ))
   })
 }
 

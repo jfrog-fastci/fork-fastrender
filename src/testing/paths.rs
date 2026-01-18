@@ -26,7 +26,8 @@ pub(crate) fn fixture_path(rel: impl AsRef<Path>) -> PathBuf {
   for component in rel.components() {
     match component {
       Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-        panic!(
+        assert!(
+          false,
           "fixture_path expects a relative path without '..' components; got {}",
           rel.display()
         );

@@ -6263,7 +6263,7 @@ struct BrowserRuntime {
 
     if should_crash {
       // See `CRASH_URL_TOGGLE` for safety/usage notes.
-      panic!("deliberate UI worker crash requested via crash://panic"); // fastrender-allow-panic
+      std::panic::panic_any("deliberate UI worker crash requested via crash://panic"); // fastrender-allow-panic
     }
   }
 

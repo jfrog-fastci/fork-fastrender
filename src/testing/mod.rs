@@ -55,20 +55,21 @@ pub(crate) fn with_large_stack<R: Send + 'static>(
 /// Assert that two floats are approximately equal within `eps`.
 pub(crate) fn assert_approx_eq(actual: f32, expected: f32, eps: f32, context: &str) {
   let diff = (actual - expected).abs();
-  if !(diff <= eps) {
-    panic!("{context}: expected {expected} ± {eps}, got {actual} (diff: {diff})");
-  }
+  assert!(
+    diff <= eps,
+    "{context}: expected {expected} ± {eps}, got {actual} (diff: {diff})"
+  );
 }
 
 pub(crate) fn parse_dom(html: &str) -> crate::dom::DomNode {
   crate::dom::parse_html(html).unwrap_or_else(|err| {
-    panic!("parse_dom failed: {err:?}\n\nHTML:\n{html}");
+    std::panic::panic_any(format!("parse_dom failed: {err:?}\n\nHTML:\n{html}"));
   })
 }
 
 pub(crate) fn parse_css(css: &str) -> crate::css::types::StyleSheet {
   crate::css::parser::parse_stylesheet(css).unwrap_or_else(|err| {
-    panic!("parse_css failed: {err:?}\n\nCSS:\n{css}");
+    std::panic::panic_any(format!("parse_css failed: {err:?}\n\nCSS:\n{css}"));
   })
 }
 
