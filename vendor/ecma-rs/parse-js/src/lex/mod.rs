@@ -12,8 +12,6 @@ use crate::token::Token;
 use crate::token::TT;
 use crate::Dialect;
 use crate::SourceType;
-use ahash::HashMap;
-use ahash::HashMapExt;
 use aho_corasick::AhoCorasick;
 use aho_corasick::AhoCorasickBuilder;
 use aho_corasick::AhoCorasickKind;
@@ -25,6 +23,7 @@ use core::ops::Index;
 use memchr::memchr;
 use memchr::memchr3;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;
 

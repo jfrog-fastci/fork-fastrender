@@ -29,7 +29,6 @@ walkdir = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 types-ts-interned = { workspace = true }
-ahash = { workspace = true }
 dashmap = { workspace = true }
 indexmap = { workspace = true }
 ordered-float = { workspace = true }

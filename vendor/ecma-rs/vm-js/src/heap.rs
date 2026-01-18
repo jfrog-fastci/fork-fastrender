@@ -26,8 +26,7 @@ use core::num::NonZeroU32;
 use parse_js::ast::func::Func;
 use parse_js::ast::node::Node;
 use semantic_js::js::SymbolId;
-use rustc_hash::FxHashMap;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use crate::tick;
 use std::sync::Arc;
@@ -386,7 +385,7 @@ pub struct Heap {
   ///
   /// Entries are **not traced** during GC, so cached strings do not become immortal. Callers must
   /// validate cached handles with `Heap::is_valid_string` before reusing them.
-  interned_identifier_strings: FxHashMap<Box<str>, GcString>,
+  interned_identifier_strings: HashMap<Box<str>, GcString>,
 
   /// True if at least one `FinalizationRegistry` has pending cleanup work.
   ///
@@ -495,7 +494,7 @@ impl Heap {
       common_key_get: None,
       common_key_set: None,
       small_int_strings: vec![None; SMALL_INT_STRING_CACHE_SIZE],
-      interned_identifier_strings: FxHashMap::default(),
+      interned_identifier_strings: HashMap::new(),
       finalization_registry_cleanup_jobs_pending: false,
     }
   }

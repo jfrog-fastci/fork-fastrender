@@ -2,9 +2,8 @@ use crate::operator::Operator;
 use crate::operator::OperatorName;
 use crate::operator::OPERATORS;
 use crate::token::TT;
-use ahash::HashMap;
-use ahash::HashMapExt;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 
 #[rustfmt::skip]
 pub static MULTARY_OPERATOR_MAPPING: Lazy<HashMap<TT, &'static Operator>> = Lazy::new(|| {

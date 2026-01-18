@@ -12,7 +12,6 @@ version = "0.24.1"
 autobins = false
 
 [dependencies]
-ahash = { workspace = true }
 aho-corasick = { workspace = true }
 derive-visitor = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_into"] }
@@ -29,7 +28,6 @@ unicode-ident = { workspace = true }
 diagnostics = { workspace = true, features = ["parse-js"], optional = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
 

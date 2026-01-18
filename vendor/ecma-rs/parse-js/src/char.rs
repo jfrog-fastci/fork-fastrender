@@ -1,6 +1,6 @@
-use ahash::HashSet;
 use core::ops::RangeInclusive;
 use once_cell::sync::Lazy;
+use std::collections::HashSet;
 
 #[derive(Clone, Default)]
 pub struct CharFilter {

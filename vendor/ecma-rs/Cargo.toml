@@ -1,60 +1,23 @@
 [workspace]
 resolver = "2"
 members = [
-  "conformance-harness",
   "diagnostics",
-  "bench/minify-js",
-  "bench/typecheck-ts",
-  "megatest-harness",
-  "native-js",
-  "native-js-cli",
-  "stackmap",
-  "llvm-stackmaps",
-  "minify-js-cli",
-  "minify-js-nodejs",
-  "minify-js",
-  "native-oracle-harness",
-  "ts-erase",
-  "optimize-js-debugger",
-  "optimize-js",
-  "parse-js-cli",
   "parse-js",
-  "effect-model",
-  "knowledge-base",
-  "effect-js",
-  "effect-js-cli",
-  "emit-js",
-  "runtime-native",
-  "runtime-io-uring",
   "vm-js",
-  "runtime-js",
-  "stackmap-context",
-  "runtime-native-abi",
   "webidl",
   "webidl-vm-js",
   "webidl-runtime",
-  "types-ts-interned",
   "hir-js",
-  "typecheck-ts",
-  "test262",
-  "test262-semantic",
-  "typecheck-ts-harness",
   "semantic-js",
-  "typecheck-ts-cli",
 ]
 # Default workspace members are the core crates that do not require heavy system
 # deps (notably LLVM for `native-js`/`runtime-native`). Full coverage is still
 # available via `--workspace`.
 default-members = [
   "diagnostics",
-  "emit-js",
   "hir-js",
-  "minify-js",
   "parse-js",
-  "runtime-js",
   "semantic-js",
-  "typecheck-ts",
-  "types-ts-interned",
   "vm-js",
   "webidl",
   "webidl-vm-js",
@@ -100,16 +63,13 @@ stackmap-context = { path = "stackmap-context", version = "0.1.0" }
 
 # Shared third-party dependencies.
 addr2line = "0.25.1"
-ahash = "0.8.7"
 arc-swap = "1.7.1"
 aho-corasick = "1.1"
 anyhow = "1.0"
 assert_cmd = "2.0"
-axum = { version = "0.7.9", default-features = false }
 bitflags = "2"
 bumpalo = "3.14"
 clap = { version = "4.5.17", default-features = false, features = ["std", "help", "usage", "error-context"] }
-criterion = { version = "0.5.1", default-features = false }
 dashmap = "6.1.0"
 derive_more = "1.0.0"
 derive-visitor = "0.4.0"
@@ -155,8 +115,6 @@ tempfile = "3.12"
 thiserror = "1.0"
 tokio = { version = "1.42.0", default-features = false }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
-tower = "0.5.2"
-tower-http = { version = "0.6.2", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", default-features = false }
 unicode-ident = "1.0"

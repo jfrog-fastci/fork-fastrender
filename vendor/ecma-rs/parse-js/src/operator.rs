@@ -1,9 +1,8 @@
 use crate::operator::Arity::*;
 use crate::operator::Associativity::*;
 use crate::operator::OperatorName::*;
-use ahash::HashMap;
-use ahash::HashMapExt;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]

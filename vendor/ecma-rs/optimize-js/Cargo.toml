@@ -21,7 +21,6 @@ serde = [
   "dep:serde",
   "dep:serde_json",
   "dep:rmp-serde",
-  "ahash/serde",
   "dashmap/serde",
   "diagnostics/serde",
   "effect-model/serde",
@@ -33,7 +32,6 @@ serde = [
 ]
 
 [dependencies]
-ahash = { workspace = true }
 dashmap = { workspace = true }
 derive-visitor = { workspace = true }
 effect-model = { workspace = true }
@@ -57,7 +55,6 @@ vm-js = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-criterion = { workspace = true }
 
 [[bench]]
 name = "analysis"

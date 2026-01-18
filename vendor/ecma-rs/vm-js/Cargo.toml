@@ -18,7 +18,6 @@ fast-float = { workspace = true }
 icu_properties = { version = "2.1.2", features = ["compiled_data"] }
 icu_casemap = { version = "2.1.1", features = ["compiled_data"] }
 unicode-normalization = { workspace = true }
-rustc-hash = "2.1.1"
 
 [dev-dependencies]
 libc = { workspace = true }

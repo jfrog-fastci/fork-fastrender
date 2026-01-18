@@ -2,10 +2,8 @@ use crate::error::SyntaxError;
 use crate::error::SyntaxErrorType;
 use crate::lex::KEYWORDS_MAPPING;
 use crate::loc::Loc;
-use ahash::HashMap;
-use ahash::HashSet;
-use ahash::HashSetExt;
 use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]

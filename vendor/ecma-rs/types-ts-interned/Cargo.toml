@@ -18,7 +18,6 @@ strict-determinism = []
 
 [dependencies]
 hir-js = { workspace = true }
-ahash = { workspace = true }
 dashmap = { workspace = true }
 bitflags = { workspace = true }
 parking_lot = { workspace = true }
@@ -35,7 +34,6 @@ itoa = { workspace = true }
 [dev-dependencies]
 rand = { workspace = true }
 proptest = { workspace = true }
-criterion = { workspace = true }
 
 [[bench]]
 name = "canonicalization"

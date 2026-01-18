@@ -18,7 +18,6 @@ emit-minify = ["emit-js", "hir-js"]
 fuzzing = []
 
 [dependencies]
-ahash = { workspace = true }
 derive-visitor = { workspace = true }
 diagnostics = { workspace = true }
 emit-js = { workspace = true, optional = true }
