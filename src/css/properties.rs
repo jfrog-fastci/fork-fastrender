@@ -6704,8 +6704,13 @@ mod tests {
     assert_eq!(y, Length::percent(20.0));
     assert_eq!(z, Length::px(0.0));
 
-    assert!(parse_property_value("translate", "10px 20px 30%").is_none());
-    assert!(parse_property_value("translate", "10px 20px calc(1px + 30%)").is_none());
+    // `parse_property_value` preserves unknown/invalid values as raw keywords so the cascade can
+    // re-validate after `var()` resolution. Use the post-resolution entry point to assert strict
+    // validity for unsupported grammars.
+    assert!(parse_property_value_after_var_resolution("translate", "10px 20px 30%").is_none());
+    assert!(
+      parse_property_value_after_var_resolution("translate", "10px 20px calc(1px + 30%)").is_none()
+    );
 
     assert!(matches!(
       parse_property_value("scale", "none").expect("parsed"),
@@ -6719,8 +6724,8 @@ mod tests {
     assert!((x - 2.0).abs() < 1e-6);
     assert!((y - 3.0).abs() < 1e-6);
     assert!((z - 1.0).abs() < 1e-6);
-    assert!(parse_property_value("scale", "2px").is_none());
-    assert!(parse_property_value("scale", "0px").is_none());
+    assert!(parse_property_value_after_var_resolution("scale", "2px").is_none());
+    assert!(parse_property_value_after_var_resolution("scale", "0px").is_none());
 
     let PropertyValue::Scale(ScaleValue::Values { x, y, z }) =
       parse_property_value("scale", "50%").expect("parsed")
@@ -6810,14 +6815,14 @@ mod tests {
     assert!((angle - 90.0).abs() < 1e-6);
 
     // Unitless nonzero angles are invalid.
-    assert!(parse_property_value("rotate", "10").is_none());
+    assert!(parse_property_value_after_var_resolution("rotate", "10").is_none());
     // Unitless 0 is accepted for angles.
     assert!(parse_property_value("rotate", "0").is_some());
 
     // Axis-angle also requires a valid angle component (unitless nonzero is invalid).
-    assert!(parse_property_value("rotate", "0 0 1 10").is_none());
-    assert!(parse_property_value("rotate", "x 10").is_none());
-    assert!(parse_property_value("rotate", "x").is_none());
+    assert!(parse_property_value_after_var_resolution("rotate", "0 0 1 10").is_none());
+    assert!(parse_property_value_after_var_resolution("rotate", "x 10").is_none());
+    assert!(parse_property_value_after_var_resolution("rotate", "x").is_none());
   }
 
   #[test]

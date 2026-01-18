@@ -29229,10 +29229,10 @@ mod tests {
 
   #[test]
   fn rejects_invalid_text_shadow() {
-    use crate::css::properties::parse_property_value;
-    assert!(parse_property_value("text-shadow", "1px").is_none());
-    assert!(parse_property_value("text-shadow", ",").is_none());
-    assert!(parse_property_value("text-shadow", "1px 2px 3px 4px").is_none());
+    use crate::css::properties::parse_property_value_after_var_resolution;
+    assert!(parse_property_value_after_var_resolution("text-shadow", "1px").is_none());
+    assert!(parse_property_value_after_var_resolution("text-shadow", ",").is_none());
+    assert!(parse_property_value_after_var_resolution("text-shadow", "1px 2px 3px 4px").is_none());
   }
 
   #[test]

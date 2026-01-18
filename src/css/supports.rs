@@ -286,8 +286,11 @@ mod tests {
   fn supports_vendor_prefixed_flex_display_values() {
     assert!(supports_declaration("display", "-webkit-flex"));
     assert!(supports_declaration("display", "-webkit-inline-flex"));
-    assert!(supports_declaration("display", "-ms-flexbox"));
-    assert!(supports_declaration("display", "-ms-inline-flexbox"));
+    // Modern Chromium treats legacy IE/EdgeHTML display keywords as unsupported (even though our
+    // parser aliases them for autoprefixed stylesheets). Match that behavior so feature queries like
+    // `@supports not (display: -ms-flexbox)` behave consistently with browser baselines.
+    assert!(!supports_declaration("display", "-ms-flexbox"));
+    assert!(!supports_declaration("display", "-ms-inline-flexbox"));
   }
 
   #[test]
