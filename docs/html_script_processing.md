@@ -88,12 +88,10 @@ What exists today (in-tree):
 - **Host-side execution bookkeeping:**
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
      script block” (classic scripts).
-  - (Legacy) `src/js/legacy/quickjs_dom.rs`: QuickJS-backed DOM bindings that expose host-maintained
-     state like `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
-    `HtmlScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string
-    loads and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute
+     `HtmlScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string
+     loads and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute
     during parsing.
   - `src/api/browser_tab_vm_js_executor.rs`: `VmJsBrowserTabExecutor` implements
     `BrowserTabJsExecutor` using `vm-js` and provides the real window/document environment used by

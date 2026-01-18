@@ -9,9 +9,14 @@ It is intended to be run by FastRender's `xtask` harness:
 bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
 
-The underlying runner (`crates/js-wpt-dom-runner`) also supports an optional QuickJS backend. To run
-with QuickJS, build the `wpt_dom` binary with `--features quickjs` and select the backend via
-`--backend quickjs` (or `FASTERENDER_WPT_DOM_BACKEND=quickjs`).
+The underlying runner (`crates/js-wpt-dom-runner`) executes tests with the `vm-js` runtime.
+It supports two execution backends:
+
+- `vmjs` (default): `vm-js` executed against a lightweight window/document host (no renderer/layout).
+- `vmjs-rendered`: `vm-js` executed against a renderer-backed document so layout-sensitive tests can
+  observe real geometry.
+
+Select the backend via `--backend vmjs|vmjs-rendered` (or `FASTERENDER_WPT_DOM_BACKEND=...`).
 
 To exercise the WebIDL-generated DOM bindings backend end-to-end on the vm-js runner:
 
@@ -52,7 +57,7 @@ tests/wpt_dom/
     testharness.js
     testharnessreport.js
     fastrender_testharness_report.js
-    eventtarget_shim.js    # Legacy (unused): QuickJS DOM/Event shims are embedded in the runner
+    eventtarget_shim.js    # Legacy (unused) EventTarget/Event polyfill kept for historical reference
     LICENSE
   tests/                   # Served as /... in WPT
     smoke/                 # Tiny synthetic tests for harness bring-up
@@ -73,9 +78,7 @@ tests/wpt_dom/
       *.window.js
 ```
 
-Note: the optional QuickJS backend injects an inline DOM + Events polyfill via `DOM_SHIM` in
-[`crates/js-wpt-dom-runner/src/dom_shims.rs`](../../crates/js-wpt-dom-runner/src/dom_shims.rs).
-`resources/eventtarget_shim.js` is currently unused by the runner (kept only for historical reference).
+Note: `resources/eventtarget_shim.js` is currently unused by the runner (kept only for historical reference).
 
 ## Observers
 

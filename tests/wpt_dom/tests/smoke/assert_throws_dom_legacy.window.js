@@ -4,8 +4,8 @@
 
 test(() => {
   const err = assert_throws_dom("INVALID_NODE_TYPE_ERR", () => {
-    // Avoid depending on a full DOMException implementation so the test runs on
-    // the lightweight QuickJS backend too.
+    // Avoid depending on a full DOMException implementation; we only need a `.name` property to
+    // exercise `assert_throws_dom`'s legacy name mapping.
     throw { name: "InvalidNodeTypeError" };
   });
   assert_equals(err.name, "InvalidNodeTypeError", "returns the thrown exception");

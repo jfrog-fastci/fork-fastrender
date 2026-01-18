@@ -4,7 +4,7 @@
 # - Each `[[expectations]]` entry matches `id` (exact), `glob`, or `regex`.
 # - `status` can be: "pass" | "skip" | "xfail" | "flaky".
 # - `reason` is recommended for anything other than `pass`.
-# - `backend` (optional) limits an entry to a specific JS backend: "vmjs" | "vmjs-rendered" | "quickjs".
+# - `backend` (optional) limits an entry to a specific JS backend: "vmjs" | "vmjs-rendered".
 #
 # If this file is empty, all tests are treated as expected `pass`.
 
@@ -56,18 +56,6 @@ status = "xfail"
 reason = "HTML form controls are incomplete (constructors/collections and reflected value/checked/select/option semantics)."
 
 [[expectations]]
-id = "vmjs/time_determinism.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "Deterministic virtual time (Date.now/performance.now + idle_wait fast-forward) is vm-js-only; QuickJS timers are wall-clock based."
-
-[[expectations]]
-id = "vmjs/time_determinism_baseline.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
-
-[[expectations]]
 id = "dom/treewalker_methods.window.js"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
@@ -114,69 +102,6 @@ status = "xfail"
 reason = "TreeWalker navigation methods (firstChild/lastChild/nextNode/etc) are not implemented yet."
 
 [[expectations]]
-id = "events/document_eventtarget_path.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/eventtarget.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/eventtarget_dispatch_order.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/eventtarget_order.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/passive_listener.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/eventtarget_listener_options_get.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/event_spec_compliance.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "events/eventtarget_webidl_conversions.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
-
-[[expectations]]
-id = "dom/characterdata_delete_data.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses a minimal JS DOM shim and does not implement CharacterData.deleteData."
-
-[[expectations]]
-# QuickJS runs the curated corpus using lightweight JS shims rather than the full WebIDL-backed DOM
-# implementation. Keep the backend runnable by skipping strict Event/EventTarget spec tests that
-# intentionally assert WebIDL constructor / brand / InvalidStateError semantics.
-regex = "(?i)^events/(event|eventtarget).*?(strict|webidl|constructor|brand|invalid[_-]?state|callback|illegal|invocation|requires[_-]?new|call[_-]?as[_-]?function).*\\.(window\\.js|any\\.js|html|htm|xhtml)$"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
-
-[[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
 status = "skip"
 reason = "FormControlRange is not implemented yet."
@@ -201,12 +126,6 @@ id = "dom/ranges/Range-stringifier.html"
 backend = "vmjs"
 status = "pass"
 reason = "Range stringifier implemented (Range.prototype.toString + dom2 traversal)."
-
-[[expectations]]
-glob = "dom/ranges/*.html"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; the upstream `dom/ranges/*.html` suite requires full Range/StaticRange support."
 
 # vm-js backends: Range is largely implemented, but the upstream `dom/ranges/*.html` suite still has
 # remaining gaps (notably StaticRange + edge cases). Keep the suite xfailed for now while we bring
@@ -494,18 +413,6 @@ reason = "vmjs-rendered executes HTML tests via the script runner; classic scrip
 
 [[expectations]]
 glob = "observers_layout/**"
-backend = ["vmjs", "quickjs"]
+backend = "vmjs"
 status = "skip"
 reason = "Requires the renderer-backed backend (`vmjs-rendered`) so layout/geometry exist."
-
-[[expectations]]
-id = "dom/form_controls.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses lightweight JS DOM shims rather than the full WebIDL-backed HTML form control implementation used by vm-js."
-
-[[expectations]]
-id = "dom/html_element_interfaces.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTMLElement reflected attributes or full interface/prototype/brand semantics."

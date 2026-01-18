@@ -51,9 +51,12 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
   - If the value contains glob metacharacters (e.g. `dom/**`, `smoke/**`), it is treated as a glob.
   - Otherwise it is treated as a literal substring match (e.g. `mutation`).
   - Prefix with `re:` to force a regex, or `glob:` to force a glob.
-- `--backend <auto|vmjs>`
+- `--backend <auto|vmjs|vmjs-rendered>`
   - Choose which JS backend to execute with.
-  - Note: `xtask js wpt-dom` currently builds the runner with the `vmjs` backend only.
+  - `vmjs-rendered` executes scripts against a renderer-backed document so layout/geometry tests can
+    observe real values.
+  - Note: `xtask js wpt-dom` builds the runner with the `vmjs` backends only (`vmjs` +
+    `vmjs-rendered`).
 
 ## DOM bindings backend selection (vm-js)
 
@@ -80,24 +83,6 @@ When invoking `wpt_dom` directly, you can also use the CLI flag:
 ```bash
 timeout -k 10 600 bash scripts/cargo_agent.sh run -p js-wpt-dom-runner --features vmjs --bin wpt_dom -- \
   --backend vmjs --dom-bindings-backend webidl --filter 'dom/**'
-```
-
-## QuickJS backend (optional)
-
-`js-wpt-dom-runner` also supports an optional `quickjs` backend feature. This backend runs the corpus
-using a lightweight JS DOM/EventTarget shim embedded in:
-
-- `crates/js-wpt-dom-runner/src/dom_shims.rs` (`DOM_SHIM`)
-
-It is primarily useful for comparison/debugging; strict DOM/EventTarget semantics are validated on
-the `vmjs` backend.
-
-To run the corpus with QuickJS, invoke the `wpt_dom` binary directly and select the backend via
-`--backend quickjs` (or `FASTERENDER_WPT_DOM_BACKEND=quickjs`):
-
-```bash
-timeout -k 10 600 bash scripts/cargo_agent.sh run -p js-wpt-dom-runner --features quickjs --bin wpt_dom -- \
-  --backend quickjs --filter 'events/**'
 ```
 
 ## What gets executed

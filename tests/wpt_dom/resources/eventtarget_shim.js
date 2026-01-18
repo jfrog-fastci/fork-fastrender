@@ -1,9 +1,6 @@
 // Legacy (unused) EventTarget/Event polyfill for FastRender's offline WPT DOM corpus.
 //
 // IMPORTANT: This file is currently **not loaded by the runner**.
-// The QuickJS WPT DOM runner injects an inline DOM+Events shim from:
-//   `crates/js-wpt-dom-runner/src/dom_shims.rs` (see `DOM_SHIM`).
-//
 // This file is kept only for historical reference. Editing it will not affect test behavior.
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
