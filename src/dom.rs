@@ -20401,6 +20401,7 @@ mod tests {
     }
   }
 
+  #[cfg(feature = "vmjs")]
   #[test]
   fn dom2_parser_preserves_declarative_shadow_dom_snapshot_semantics() {
     let html = r#"

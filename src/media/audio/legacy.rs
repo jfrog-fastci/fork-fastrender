@@ -1246,12 +1246,12 @@ impl NullAudioBackend {
 
   /// Test helper: render the number of frames implied by a clock delta.
   ///
-  /// Callers advance a [`crate::js::VirtualClock`] and then call this with a mutable `last_time`
+  /// Callers advance a [`crate::clock::VirtualClock`] and then call this with a mutable `last_time`
   /// cursor. This makes audio drain behaviour deterministic without relying on wall-clock sleeps.
   #[cfg(test)]
   pub fn render_for_clock(
     &self,
-    clock: &crate::js::VirtualClock,
+    clock: &crate::clock::VirtualClock,
     last_time: &mut Duration,
   ) -> Vec<f32> {
     let now = clock.now();
@@ -1595,7 +1595,7 @@ mod tests {
 
   #[test]
   fn eos_drains_and_freezes_clock() {
-    use crate::js::VirtualClock;
+    use crate::clock::VirtualClock;
 
     let clock = VirtualClock::new();
     let backend = NullAudioBackend::new(48_000, 1);

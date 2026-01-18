@@ -308,7 +308,7 @@ impl AudioStreamHandle {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::media::audio::{AudioBackend, NullAudioBackend};
   use parking_lot::Mutex;
   use std::sync::atomic::{AtomicU64, Ordering};

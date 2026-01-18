@@ -1458,7 +1458,7 @@ pub fn snapshot_pipeline(
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vmjs"))]
 mod dom2_snapshot_tests {
   use super::*;
   use crate::dom2::Document as Dom2Document;

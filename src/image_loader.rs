@@ -13063,6 +13063,7 @@ mod tests_inline {
     assert_eq!(out, input);
   }
 
+  #[cfg(feature = "vmjs")]
   #[test]
   fn image_cache_invalidation_for_chrome_favicon_clears_raster_pixmap_cache() -> Result<()> {
     #[derive(Clone)]

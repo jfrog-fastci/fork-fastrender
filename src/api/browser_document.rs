@@ -3391,7 +3391,7 @@ mod tests {
     let mut document =
       BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
 
-    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    let clock = Arc::new(crate::clock::VirtualClock::new());
     document.set_animation_clock(clock.clone());
     document.set_realtime_animations_enabled(true);
 
