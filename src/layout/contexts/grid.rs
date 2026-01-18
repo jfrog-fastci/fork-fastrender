@@ -5002,22 +5002,47 @@ impl GridFormattingContext {
       // intrinsic sizes instead. These leaf items are re-laid out later via our own formatting
       // contexts; that layout pass still sees the authored percentage `width` and can resolve it
       // against the now-definite grid area width.
-      if !is_grid_node
+      let width_has_percentage = !is_grid_node
         && style
           .width
           .as_ref()
-          .is_some_and(crate::style::values::Length::has_percentage)
-        && taffy_style.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
-      {
-        taffy_style.size.width = Dimension::auto();
-        if matches!(
-          taffy_style.justify_self,
-          Some(taffy::style::AlignItems::Stretch)
-        ) {
-          // `stretch` only stretches auto-sized items. Since the authored size is non-auto (a
-          // percentage), fall back to `start` to match CSS behaviour.
-          taffy_style.justify_self =
-            Some(convert_item_alignment(AlignItems::Start, PhysicalAxis::X));
+          .is_some_and(crate::style::values::Length::has_percentage);
+      let height_has_percentage = !is_grid_node
+        && style
+          .height
+          .as_ref()
+          .is_some_and(crate::style::values::Length::has_percentage);
+      if width_has_percentage || height_has_percentage {
+        // CSS Grid treats percentage preferred sizes as non-auto (resolved later against the grid
+        // area size), but we often represent them as `auto` inside the cached Taffy style so that
+        // intrinsic track sizing doesn't eagerly resolve them against the full grid container.
+        //
+        // `stretch` alignment only stretches auto-sized items; when the authored size is a
+        // percentage, it must therefore behave like `start` even if we encode it as `auto` for
+        // track sizing.
+        if width_has_percentage && taffy_style.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          taffy_style.size.width = Dimension::auto();
+        }
+        if height_has_percentage
+          && taffy_style.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG
+        {
+          taffy_style.size.height = Dimension::auto();
+        }
+        if width_has_percentage
+          && matches!(
+            taffy_style.justify_self,
+            Some(taffy::style::AlignItems::Stretch)
+          )
+        {
+          taffy_style.justify_self = Some(convert_item_alignment(AlignItems::Start, PhysicalAxis::X));
+        }
+        if height_has_percentage
+          && matches!(
+            taffy_style.align_self,
+            Some(taffy::style::AlignItems::Stretch)
+          )
+        {
+          taffy_style.align_self = Some(convert_item_alignment(AlignItems::Start, PhysicalAxis::Y));
         }
       }
 
