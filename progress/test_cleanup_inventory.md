@@ -30,8 +30,44 @@ section in sync with `ls tests/*.rs`.
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
+| `tests/accesskit_dom2_node_ids.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/accesskit_scroll.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/accesskit_show_context_menu.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
 | `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure_tests/mod.rs`); must remain separate. | DONE |
+| `tests/appearance_none_form_control_ua_stripping.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/audio_groups.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/audio_wav_backend.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/chrome_action_url.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/chrome_command_queue.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/chrome_frame_document_ime.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/chrome_frame_dom_mutation.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/chrome_frame_geometry.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/dump_a11y_include_bounds.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/global_downloads_merge.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
+| `tests/ipc_framed_codec.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/media_aac_duration.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/media_opus.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/media_player.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/media_wake_scheduler.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/media_yuv.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/multiprocess_registry.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/network_process_smoke.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/networkless_fetcher.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/profile_downloads_persistence.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/public_media_module.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/range_detach_noop.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/renderer_sandbox_render_smoke.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/resource_fetch_destination.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/sandbox_diagnostics_smoke.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/sandbox_linux_prctl_dumpable.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/sandbox_linux_seccomp_fs_mutation.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/sandbox_smoke_render.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/site_isolation_sandbox_iframe.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/text_decoration_solid_snapping.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/webm_duration.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/websocket_ipc_framing.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
+| `tests/wpt_smoke.rs` | integration | `tests/integration.rs` | TODO: consolidate into the unified integration test harness. | TODO |
 
 ### Completed (top-level crate removed)
 
