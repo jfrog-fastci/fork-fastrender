@@ -812,6 +812,33 @@ fn unescape_js_literal(s: &str) -> String {
             }
             if code.len() == 4 {
               if let Ok(val) = u16::from_str_radix(&code, 16) {
+                // JavaScript strings can contain unpaired UTF-16 surrogate code units, but Rust
+                // `char` values cannot.
+                //
+                // Preserve surrogate escapes verbatim, and when we see an unpaired *high*
+                // surrogate followed by another `\uXXXX` escape, preserve that next escape too so
+                // we don't partially decode into a mixed "escape + decoded char" string.
+                if (0xD800..=0xDBFF).contains(&val) {
+                  out.push_str("\\u");
+                  out.push_str(&code);
+                  let rest = chars.as_str();
+                  if rest.len() >= 6
+                    && rest.as_bytes()[0] == b'\\'
+                    && matches!(rest.as_bytes()[1], b'u' | b'U')
+                    && u16::from_str_radix(&rest[2..6], 16).is_ok()
+                  {
+                    out.push_str(&rest[..6]);
+                    for _ in 0..6 {
+                      let _ = chars.next();
+                    }
+                  }
+                  continue;
+                }
+                if (0xDC00..=0xDFFF).contains(&val) {
+                  out.push_str("\\u");
+                  out.push_str(&code);
+                  continue;
+                }
                 if let Some(c) = char::from_u32(val as u32) {
                   out.push(c);
                   continue;
@@ -1241,6 +1268,12 @@ mod tests {
       super::unescape_js_literal("/encoded%2Fpath%20with"),
       "/encoded/path with"
     );
+  }
+
+  #[test]
+  fn unescape_js_literal_preserves_unpaired_surrogates() {
+    let input = r"\uD800\u0061";
+    assert_eq!(super::unescape_js_literal(input), input);
   }
 
   #[test]
