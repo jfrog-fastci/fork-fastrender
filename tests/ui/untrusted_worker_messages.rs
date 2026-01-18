@@ -79,6 +79,7 @@ fn hover_changed_rejects_disallowed_schemes() {
   app.apply_worker_msg(WorkerToUi::HoverChanged {
     tab_id,
     hovered_url: Some("javascript:alert(1)".to_string()),
+    tooltip: None,
     cursor: CursorKind::Pointer,
   });
   assert!(
@@ -89,6 +90,7 @@ fn hover_changed_rejects_disallowed_schemes() {
   app.apply_worker_msg(WorkerToUi::HoverChanged {
     tab_id,
     hovered_url: Some("data:text/plain,hello".to_string()),
+    tooltip: None,
     cursor: CursorKind::Pointer,
   });
   assert!(
