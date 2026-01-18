@@ -217,10 +217,7 @@ pub mod geometry;
 // Media playback/decoding is a large subsystem (tens of thousands of lines + optional codec
 // backends). Offline renderer tooling (fixture rendering/diffing) does not need to decode video
 // streams, so `renderer_tools` builds use a small stub module to keep compile times low.
-#[cfg(not(feature = "renderer_tools"))]
-pub mod media;
-#[cfg(feature = "renderer_tools")]
-#[path = "media_renderer_tools.rs"]
+#[cfg_attr(feature = "renderer_tools", path = "media_renderer_tools.rs")]
 pub mod media;
 pub mod pointer;
 pub(crate) mod document_ticks;
