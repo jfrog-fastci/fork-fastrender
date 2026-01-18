@@ -13,6 +13,7 @@ mod crates_directory_guard;
 mod debug_info_semantics_guard;
 mod docs_conformance_presence;
 mod docs_presence;
+mod no_quickjs_docs;
 mod ecma_rs_workspace_exclude_guard;
 mod fetch_and_render_exit_presence;
 mod js_runtime_consolidation_guard;
