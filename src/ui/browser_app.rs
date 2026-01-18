@@ -603,7 +603,7 @@ impl DownloadsState {
 }
 
 #[cfg(test)]
-mod downloads_state_tests {
+mod downloads_state_clear_completed_tests {
   use super::{DownloadEntry, DownloadId, DownloadStatus, DownloadsState, TabId};
 
   fn entry(id: u64, status: DownloadStatus) -> DownloadEntry {

@@ -142,6 +142,10 @@ pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AsciiCaseInsensitive<'a>(pub &'a str);
 
+// Some call sites (and tests) prefer the more explicit name; keep it as a rename so the tuple
+// struct constructor is also available (`AsciiCaseInsensitiveStr("...")`).
+pub(crate) use AsciiCaseInsensitive as AsciiCaseInsensitiveStr;
+
 impl PartialEq for AsciiCaseInsensitive<'_> {
   #[inline]
   fn eq(&self, other: &Self) -> bool {
