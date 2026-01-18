@@ -13,1148 +13,301 @@ pub(crate) struct EmojiRange {
 }
 
 pub(crate) const EMOJI_RANGES: &[EmojiRange] = &[
-  EmojiRange {
-    start: 0x0023,
-    end: 0x0023,
-  },
-  EmojiRange {
-    start: 0x002A,
-    end: 0x002A,
-  },
-  EmojiRange {
-    start: 0x0030,
-    end: 0x0039,
-  },
-  EmojiRange {
-    start: 0x00A9,
-    end: 0x00A9,
-  },
-  EmojiRange {
-    start: 0x00AE,
-    end: 0x00AE,
-  },
-  EmojiRange {
-    start: 0x203C,
-    end: 0x203C,
-  },
-  EmojiRange {
-    start: 0x2049,
-    end: 0x2049,
-  },
-  EmojiRange {
-    start: 0x2122,
-    end: 0x2122,
-  },
-  EmojiRange {
-    start: 0x2139,
-    end: 0x2139,
-  },
-  EmojiRange {
-    start: 0x2194,
-    end: 0x2199,
-  },
-  EmojiRange {
-    start: 0x21A9,
-    end: 0x21AA,
-  },
-  EmojiRange {
-    start: 0x231A,
-    end: 0x231B,
-  },
-  EmojiRange {
-    start: 0x2328,
-    end: 0x2328,
-  },
-  EmojiRange {
-    start: 0x23CF,
-    end: 0x23CF,
-  },
-  EmojiRange {
-    start: 0x23E9,
-    end: 0x23F3,
-  },
-  EmojiRange {
-    start: 0x23F8,
-    end: 0x23FA,
-  },
-  EmojiRange {
-    start: 0x24C2,
-    end: 0x24C2,
-  },
-  EmojiRange {
-    start: 0x25AA,
-    end: 0x25AB,
-  },
-  EmojiRange {
-    start: 0x25B6,
-    end: 0x25B6,
-  },
-  EmojiRange {
-    start: 0x25C0,
-    end: 0x25C0,
-  },
-  EmojiRange {
-    start: 0x25FB,
-    end: 0x25FE,
-  },
-  EmojiRange {
-    start: 0x2600,
-    end: 0x2604,
-  },
-  EmojiRange {
-    start: 0x260E,
-    end: 0x260E,
-  },
-  EmojiRange {
-    start: 0x2611,
-    end: 0x2611,
-  },
-  EmojiRange {
-    start: 0x2614,
-    end: 0x2615,
-  },
-  EmojiRange {
-    start: 0x2618,
-    end: 0x2618,
-  },
-  EmojiRange {
-    start: 0x261D,
-    end: 0x261D,
-  },
-  EmojiRange {
-    start: 0x2620,
-    end: 0x2620,
-  },
-  EmojiRange {
-    start: 0x2622,
-    end: 0x2623,
-  },
-  EmojiRange {
-    start: 0x2626,
-    end: 0x2626,
-  },
-  EmojiRange {
-    start: 0x262A,
-    end: 0x262A,
-  },
-  EmojiRange {
-    start: 0x262E,
-    end: 0x262F,
-  },
-  EmojiRange {
-    start: 0x2638,
-    end: 0x263A,
-  },
-  EmojiRange {
-    start: 0x2640,
-    end: 0x2640,
-  },
-  EmojiRange {
-    start: 0x2642,
-    end: 0x2642,
-  },
-  EmojiRange {
-    start: 0x2648,
-    end: 0x2653,
-  },
-  EmojiRange {
-    start: 0x265F,
-    end: 0x2660,
-  },
-  EmojiRange {
-    start: 0x2663,
-    end: 0x2663,
-  },
-  EmojiRange {
-    start: 0x2665,
-    end: 0x2666,
-  },
-  EmojiRange {
-    start: 0x2668,
-    end: 0x2668,
-  },
-  EmojiRange {
-    start: 0x267B,
-    end: 0x267B,
-  },
-  EmojiRange {
-    start: 0x267E,
-    end: 0x267F,
-  },
-  EmojiRange {
-    start: 0x2692,
-    end: 0x2697,
-  },
-  EmojiRange {
-    start: 0x2699,
-    end: 0x2699,
-  },
-  EmojiRange {
-    start: 0x269B,
-    end: 0x269C,
-  },
-  EmojiRange {
-    start: 0x26A0,
-    end: 0x26A1,
-  },
-  EmojiRange {
-    start: 0x26A7,
-    end: 0x26A7,
-  },
-  EmojiRange {
-    start: 0x26AA,
-    end: 0x26AB,
-  },
-  EmojiRange {
-    start: 0x26B0,
-    end: 0x26B1,
-  },
-  EmojiRange {
-    start: 0x26BD,
-    end: 0x26BE,
-  },
-  EmojiRange {
-    start: 0x26C4,
-    end: 0x26C5,
-  },
-  EmojiRange {
-    start: 0x26C8,
-    end: 0x26C8,
-  },
-  EmojiRange {
-    start: 0x26CE,
-    end: 0x26CF,
-  },
-  EmojiRange {
-    start: 0x26D1,
-    end: 0x26D1,
-  },
-  EmojiRange {
-    start: 0x26D3,
-    end: 0x26D4,
-  },
-  EmojiRange {
-    start: 0x26E9,
-    end: 0x26EA,
-  },
-  EmojiRange {
-    start: 0x26F0,
-    end: 0x26F5,
-  },
-  EmojiRange {
-    start: 0x26F7,
-    end: 0x26FA,
-  },
-  EmojiRange {
-    start: 0x26FD,
-    end: 0x26FD,
-  },
-  EmojiRange {
-    start: 0x2702,
-    end: 0x2702,
-  },
-  EmojiRange {
-    start: 0x2705,
-    end: 0x2705,
-  },
-  EmojiRange {
-    start: 0x2708,
-    end: 0x270D,
-  },
-  EmojiRange {
-    start: 0x270F,
-    end: 0x270F,
-  },
-  EmojiRange {
-    start: 0x2712,
-    end: 0x2712,
-  },
-  EmojiRange {
-    start: 0x2714,
-    end: 0x2714,
-  },
-  EmojiRange {
-    start: 0x2716,
-    end: 0x2716,
-  },
-  EmojiRange {
-    start: 0x271D,
-    end: 0x271D,
-  },
-  EmojiRange {
-    start: 0x2721,
-    end: 0x2721,
-  },
-  EmojiRange {
-    start: 0x2728,
-    end: 0x2728,
-  },
-  EmojiRange {
-    start: 0x2733,
-    end: 0x2734,
-  },
-  EmojiRange {
-    start: 0x2744,
-    end: 0x2744,
-  },
-  EmojiRange {
-    start: 0x2747,
-    end: 0x2747,
-  },
-  EmojiRange {
-    start: 0x274C,
-    end: 0x274C,
-  },
-  EmojiRange {
-    start: 0x274E,
-    end: 0x274E,
-  },
-  EmojiRange {
-    start: 0x2753,
-    end: 0x2755,
-  },
-  EmojiRange {
-    start: 0x2757,
-    end: 0x2757,
-  },
-  EmojiRange {
-    start: 0x2763,
-    end: 0x2764,
-  },
-  EmojiRange {
-    start: 0x2795,
-    end: 0x2797,
-  },
-  EmojiRange {
-    start: 0x27A1,
-    end: 0x27A1,
-  },
-  EmojiRange {
-    start: 0x27B0,
-    end: 0x27B0,
-  },
-  EmojiRange {
-    start: 0x27BF,
-    end: 0x27BF,
-  },
-  EmojiRange {
-    start: 0x2934,
-    end: 0x2935,
-  },
-  EmojiRange {
-    start: 0x2B05,
-    end: 0x2B07,
-  },
-  EmojiRange {
-    start: 0x2B1B,
-    end: 0x2B1C,
-  },
-  EmojiRange {
-    start: 0x2B50,
-    end: 0x2B50,
-  },
-  EmojiRange {
-    start: 0x2B55,
-    end: 0x2B55,
-  },
-  EmojiRange {
-    start: 0x3030,
-    end: 0x3030,
-  },
-  EmojiRange {
-    start: 0x303D,
-    end: 0x303D,
-  },
-  EmojiRange {
-    start: 0x3297,
-    end: 0x3297,
-  },
-  EmojiRange {
-    start: 0x3299,
-    end: 0x3299,
-  },
-  EmojiRange {
-    start: 0x1F004,
-    end: 0x1F004,
-  },
-  EmojiRange {
-    start: 0x1F0CF,
-    end: 0x1F0CF,
-  },
-  EmojiRange {
-    start: 0x1F170,
-    end: 0x1F171,
-  },
-  EmojiRange {
-    start: 0x1F17E,
-    end: 0x1F17F,
-  },
-  EmojiRange {
-    start: 0x1F18E,
-    end: 0x1F18E,
-  },
-  EmojiRange {
-    start: 0x1F191,
-    end: 0x1F19A,
-  },
-  EmojiRange {
-    start: 0x1F1E6,
-    end: 0x1F1FF,
-  },
-  EmojiRange {
-    start: 0x1F201,
-    end: 0x1F202,
-  },
-  EmojiRange {
-    start: 0x1F21A,
-    end: 0x1F21A,
-  },
-  EmojiRange {
-    start: 0x1F22F,
-    end: 0x1F22F,
-  },
-  EmojiRange {
-    start: 0x1F232,
-    end: 0x1F23A,
-  },
-  EmojiRange {
-    start: 0x1F250,
-    end: 0x1F251,
-  },
-  EmojiRange {
-    start: 0x1F300,
-    end: 0x1F321,
-  },
-  EmojiRange {
-    start: 0x1F324,
-    end: 0x1F393,
-  },
-  EmojiRange {
-    start: 0x1F396,
-    end: 0x1F397,
-  },
-  EmojiRange {
-    start: 0x1F399,
-    end: 0x1F39B,
-  },
-  EmojiRange {
-    start: 0x1F39E,
-    end: 0x1F3F0,
-  },
-  EmojiRange {
-    start: 0x1F3F3,
-    end: 0x1F3F5,
-  },
-  EmojiRange {
-    start: 0x1F3F7,
-    end: 0x1F4FD,
-  },
-  EmojiRange {
-    start: 0x1F4FF,
-    end: 0x1F53D,
-  },
-  EmojiRange {
-    start: 0x1F549,
-    end: 0x1F54E,
-  },
-  EmojiRange {
-    start: 0x1F550,
-    end: 0x1F567,
-  },
-  EmojiRange {
-    start: 0x1F56F,
-    end: 0x1F570,
-  },
-  EmojiRange {
-    start: 0x1F573,
-    end: 0x1F57A,
-  },
-  EmojiRange {
-    start: 0x1F587,
-    end: 0x1F587,
-  },
-  EmojiRange {
-    start: 0x1F58A,
-    end: 0x1F58D,
-  },
-  EmojiRange {
-    start: 0x1F590,
-    end: 0x1F590,
-  },
-  EmojiRange {
-    start: 0x1F595,
-    end: 0x1F596,
-  },
-  EmojiRange {
-    start: 0x1F5A4,
-    end: 0x1F5A5,
-  },
-  EmojiRange {
-    start: 0x1F5A8,
-    end: 0x1F5A8,
-  },
-  EmojiRange {
-    start: 0x1F5B1,
-    end: 0x1F5B2,
-  },
-  EmojiRange {
-    start: 0x1F5BC,
-    end: 0x1F5BC,
-  },
-  EmojiRange {
-    start: 0x1F5C2,
-    end: 0x1F5C4,
-  },
-  EmojiRange {
-    start: 0x1F5D1,
-    end: 0x1F5D3,
-  },
-  EmojiRange {
-    start: 0x1F5DC,
-    end: 0x1F5DE,
-  },
-  EmojiRange {
-    start: 0x1F5E1,
-    end: 0x1F5E1,
-  },
-  EmojiRange {
-    start: 0x1F5E3,
-    end: 0x1F5E3,
-  },
-  EmojiRange {
-    start: 0x1F5E8,
-    end: 0x1F5E8,
-  },
-  EmojiRange {
-    start: 0x1F5EF,
-    end: 0x1F5EF,
-  },
-  EmojiRange {
-    start: 0x1F5F3,
-    end: 0x1F5F3,
-  },
-  EmojiRange {
-    start: 0x1F5FA,
-    end: 0x1F64F,
-  },
-  EmojiRange {
-    start: 0x1F680,
-    end: 0x1F6C5,
-  },
-  EmojiRange {
-    start: 0x1F6CB,
-    end: 0x1F6D2,
-  },
-  EmojiRange {
-    start: 0x1F6D5,
-    end: 0x1F6D7,
-  },
-  EmojiRange {
-    start: 0x1F6DC,
-    end: 0x1F6E5,
-  },
-  EmojiRange {
-    start: 0x1F6E9,
-    end: 0x1F6E9,
-  },
-  EmojiRange {
-    start: 0x1F6EB,
-    end: 0x1F6EC,
-  },
-  EmojiRange {
-    start: 0x1F6F0,
-    end: 0x1F6F0,
-  },
-  EmojiRange {
-    start: 0x1F6F3,
-    end: 0x1F6FC,
-  },
-  EmojiRange {
-    start: 0x1F7E0,
-    end: 0x1F7EB,
-  },
-  EmojiRange {
-    start: 0x1F7F0,
-    end: 0x1F7F0,
-  },
-  EmojiRange {
-    start: 0x1F90C,
-    end: 0x1F93A,
-  },
-  EmojiRange {
-    start: 0x1F93C,
-    end: 0x1F945,
-  },
-  EmojiRange {
-    start: 0x1F947,
-    end: 0x1F9FF,
-  },
-  EmojiRange {
-    start: 0x1FA70,
-    end: 0x1FA7C,
-  },
-  EmojiRange {
-    start: 0x1FA80,
-    end: 0x1FA88,
-  },
-  EmojiRange {
-    start: 0x1FA90,
-    end: 0x1FABD,
-  },
-  EmojiRange {
-    start: 0x1FABF,
-    end: 0x1FAC5,
-  },
-  EmojiRange {
-    start: 0x1FACE,
-    end: 0x1FADB,
-  },
-  EmojiRange {
-    start: 0x1FAE0,
-    end: 0x1FAE8,
-  },
-  EmojiRange {
-    start: 0x1FAF0,
-    end: 0x1FAF8,
-  },
+  EmojiRange { start: 0x0023, end: 0x0023 },
+  EmojiRange { start: 0x002A, end: 0x002A },
+  EmojiRange { start: 0x0030, end: 0x0039 },
+  EmojiRange { start: 0x00A9, end: 0x00A9 },
+  EmojiRange { start: 0x00AE, end: 0x00AE },
+  EmojiRange { start: 0x203C, end: 0x203C },
+  EmojiRange { start: 0x2049, end: 0x2049 },
+  EmojiRange { start: 0x2122, end: 0x2122 },
+  EmojiRange { start: 0x2139, end: 0x2139 },
+  EmojiRange { start: 0x2194, end: 0x2199 },
+  EmojiRange { start: 0x21A9, end: 0x21AA },
+  EmojiRange { start: 0x231A, end: 0x231B },
+  EmojiRange { start: 0x2328, end: 0x2328 },
+  EmojiRange { start: 0x23CF, end: 0x23CF },
+  EmojiRange { start: 0x23E9, end: 0x23F3 },
+  EmojiRange { start: 0x23F8, end: 0x23FA },
+  EmojiRange { start: 0x24C2, end: 0x24C2 },
+  EmojiRange { start: 0x25AA, end: 0x25AB },
+  EmojiRange { start: 0x25B6, end: 0x25B6 },
+  EmojiRange { start: 0x25C0, end: 0x25C0 },
+  EmojiRange { start: 0x25FB, end: 0x25FE },
+  EmojiRange { start: 0x2600, end: 0x2604 },
+  EmojiRange { start: 0x260E, end: 0x260E },
+  EmojiRange { start: 0x2611, end: 0x2611 },
+  EmojiRange { start: 0x2614, end: 0x2615 },
+  EmojiRange { start: 0x2618, end: 0x2618 },
+  EmojiRange { start: 0x261D, end: 0x261D },
+  EmojiRange { start: 0x2620, end: 0x2620 },
+  EmojiRange { start: 0x2622, end: 0x2623 },
+  EmojiRange { start: 0x2626, end: 0x2626 },
+  EmojiRange { start: 0x262A, end: 0x262A },
+  EmojiRange { start: 0x262E, end: 0x262F },
+  EmojiRange { start: 0x2638, end: 0x263A },
+  EmojiRange { start: 0x2640, end: 0x2640 },
+  EmojiRange { start: 0x2642, end: 0x2642 },
+  EmojiRange { start: 0x2648, end: 0x2653 },
+  EmojiRange { start: 0x265F, end: 0x2660 },
+  EmojiRange { start: 0x2663, end: 0x2663 },
+  EmojiRange { start: 0x2665, end: 0x2666 },
+  EmojiRange { start: 0x2668, end: 0x2668 },
+  EmojiRange { start: 0x267B, end: 0x267B },
+  EmojiRange { start: 0x267E, end: 0x267F },
+  EmojiRange { start: 0x2692, end: 0x2697 },
+  EmojiRange { start: 0x2699, end: 0x2699 },
+  EmojiRange { start: 0x269B, end: 0x269C },
+  EmojiRange { start: 0x26A0, end: 0x26A1 },
+  EmojiRange { start: 0x26A7, end: 0x26A7 },
+  EmojiRange { start: 0x26AA, end: 0x26AB },
+  EmojiRange { start: 0x26B0, end: 0x26B1 },
+  EmojiRange { start: 0x26BD, end: 0x26BE },
+  EmojiRange { start: 0x26C4, end: 0x26C5 },
+  EmojiRange { start: 0x26C8, end: 0x26C8 },
+  EmojiRange { start: 0x26CE, end: 0x26CF },
+  EmojiRange { start: 0x26D1, end: 0x26D1 },
+  EmojiRange { start: 0x26D3, end: 0x26D4 },
+  EmojiRange { start: 0x26E9, end: 0x26EA },
+  EmojiRange { start: 0x26F0, end: 0x26F5 },
+  EmojiRange { start: 0x26F7, end: 0x26FA },
+  EmojiRange { start: 0x26FD, end: 0x26FD },
+  EmojiRange { start: 0x2702, end: 0x2702 },
+  EmojiRange { start: 0x2705, end: 0x2705 },
+  EmojiRange { start: 0x2708, end: 0x270D },
+  EmojiRange { start: 0x270F, end: 0x270F },
+  EmojiRange { start: 0x2712, end: 0x2712 },
+  EmojiRange { start: 0x2714, end: 0x2714 },
+  EmojiRange { start: 0x2716, end: 0x2716 },
+  EmojiRange { start: 0x271D, end: 0x271D },
+  EmojiRange { start: 0x2721, end: 0x2721 },
+  EmojiRange { start: 0x2728, end: 0x2728 },
+  EmojiRange { start: 0x2733, end: 0x2734 },
+  EmojiRange { start: 0x2744, end: 0x2744 },
+  EmojiRange { start: 0x2747, end: 0x2747 },
+  EmojiRange { start: 0x274C, end: 0x274C },
+  EmojiRange { start: 0x274E, end: 0x274E },
+  EmojiRange { start: 0x2753, end: 0x2755 },
+  EmojiRange { start: 0x2757, end: 0x2757 },
+  EmojiRange { start: 0x2763, end: 0x2764 },
+  EmojiRange { start: 0x2795, end: 0x2797 },
+  EmojiRange { start: 0x27A1, end: 0x27A1 },
+  EmojiRange { start: 0x27B0, end: 0x27B0 },
+  EmojiRange { start: 0x27BF, end: 0x27BF },
+  EmojiRange { start: 0x2934, end: 0x2935 },
+  EmojiRange { start: 0x2B05, end: 0x2B07 },
+  EmojiRange { start: 0x2B1B, end: 0x2B1C },
+  EmojiRange { start: 0x2B50, end: 0x2B50 },
+  EmojiRange { start: 0x2B55, end: 0x2B55 },
+  EmojiRange { start: 0x3030, end: 0x3030 },
+  EmojiRange { start: 0x303D, end: 0x303D },
+  EmojiRange { start: 0x3297, end: 0x3297 },
+  EmojiRange { start: 0x3299, end: 0x3299 },
+  EmojiRange { start: 0x1F004, end: 0x1F004 },
+  EmojiRange { start: 0x1F0CF, end: 0x1F0CF },
+  EmojiRange { start: 0x1F170, end: 0x1F171 },
+  EmojiRange { start: 0x1F17E, end: 0x1F17F },
+  EmojiRange { start: 0x1F18E, end: 0x1F18E },
+  EmojiRange { start: 0x1F191, end: 0x1F19A },
+  EmojiRange { start: 0x1F1E6, end: 0x1F1FF },
+  EmojiRange { start: 0x1F201, end: 0x1F202 },
+  EmojiRange { start: 0x1F21A, end: 0x1F21A },
+  EmojiRange { start: 0x1F22F, end: 0x1F22F },
+  EmojiRange { start: 0x1F232, end: 0x1F23A },
+  EmojiRange { start: 0x1F250, end: 0x1F251 },
+  EmojiRange { start: 0x1F300, end: 0x1F321 },
+  EmojiRange { start: 0x1F324, end: 0x1F393 },
+  EmojiRange { start: 0x1F396, end: 0x1F397 },
+  EmojiRange { start: 0x1F399, end: 0x1F39B },
+  EmojiRange { start: 0x1F39E, end: 0x1F3F0 },
+  EmojiRange { start: 0x1F3F3, end: 0x1F3F5 },
+  EmojiRange { start: 0x1F3F7, end: 0x1F4FD },
+  EmojiRange { start: 0x1F4FF, end: 0x1F53D },
+  EmojiRange { start: 0x1F549, end: 0x1F54E },
+  EmojiRange { start: 0x1F550, end: 0x1F567 },
+  EmojiRange { start: 0x1F56F, end: 0x1F570 },
+  EmojiRange { start: 0x1F573, end: 0x1F57A },
+  EmojiRange { start: 0x1F587, end: 0x1F587 },
+  EmojiRange { start: 0x1F58A, end: 0x1F58D },
+  EmojiRange { start: 0x1F590, end: 0x1F590 },
+  EmojiRange { start: 0x1F595, end: 0x1F596 },
+  EmojiRange { start: 0x1F5A4, end: 0x1F5A5 },
+  EmojiRange { start: 0x1F5A8, end: 0x1F5A8 },
+  EmojiRange { start: 0x1F5B1, end: 0x1F5B2 },
+  EmojiRange { start: 0x1F5BC, end: 0x1F5BC },
+  EmojiRange { start: 0x1F5C2, end: 0x1F5C4 },
+  EmojiRange { start: 0x1F5D1, end: 0x1F5D3 },
+  EmojiRange { start: 0x1F5DC, end: 0x1F5DE },
+  EmojiRange { start: 0x1F5E1, end: 0x1F5E1 },
+  EmojiRange { start: 0x1F5E3, end: 0x1F5E3 },
+  EmojiRange { start: 0x1F5E8, end: 0x1F5E8 },
+  EmojiRange { start: 0x1F5EF, end: 0x1F5EF },
+  EmojiRange { start: 0x1F5F3, end: 0x1F5F3 },
+  EmojiRange { start: 0x1F5FA, end: 0x1F64F },
+  EmojiRange { start: 0x1F680, end: 0x1F6C5 },
+  EmojiRange { start: 0x1F6CB, end: 0x1F6D2 },
+  EmojiRange { start: 0x1F6D5, end: 0x1F6D7 },
+  EmojiRange { start: 0x1F6DC, end: 0x1F6E5 },
+  EmojiRange { start: 0x1F6E9, end: 0x1F6E9 },
+  EmojiRange { start: 0x1F6EB, end: 0x1F6EC },
+  EmojiRange { start: 0x1F6F0, end: 0x1F6F0 },
+  EmojiRange { start: 0x1F6F3, end: 0x1F6FC },
+  EmojiRange { start: 0x1F7E0, end: 0x1F7EB },
+  EmojiRange { start: 0x1F7F0, end: 0x1F7F0 },
+  EmojiRange { start: 0x1F90C, end: 0x1F93A },
+  EmojiRange { start: 0x1F93C, end: 0x1F945 },
+  EmojiRange { start: 0x1F947, end: 0x1F9FF },
+  EmojiRange { start: 0x1FA70, end: 0x1FA7C },
+  EmojiRange { start: 0x1FA80, end: 0x1FA88 },
+  EmojiRange { start: 0x1FA90, end: 0x1FABD },
+  EmojiRange { start: 0x1FABF, end: 0x1FAC5 },
+  EmojiRange { start: 0x1FACE, end: 0x1FADB },
+  EmojiRange { start: 0x1FAE0, end: 0x1FAE8 },
+  EmojiRange { start: 0x1FAF0, end: 0x1FAF8 },
 ];
 
 pub(crate) const EMOJI_PRESENTATION_RANGES: &[EmojiRange] = &[
-  EmojiRange {
-    start: 0x231A,
-    end: 0x231B,
-  },
-  EmojiRange {
-    start: 0x23E9,
-    end: 0x23EC,
-  },
-  EmojiRange {
-    start: 0x23F0,
-    end: 0x23F0,
-  },
-  EmojiRange {
-    start: 0x23F3,
-    end: 0x23F3,
-  },
-  EmojiRange {
-    start: 0x25FD,
-    end: 0x25FE,
-  },
-  EmojiRange {
-    start: 0x2614,
-    end: 0x2615,
-  },
-  EmojiRange {
-    start: 0x2648,
-    end: 0x2653,
-  },
-  EmojiRange {
-    start: 0x267F,
-    end: 0x267F,
-  },
-  EmojiRange {
-    start: 0x2693,
-    end: 0x2693,
-  },
-  EmojiRange {
-    start: 0x26A1,
-    end: 0x26A1,
-  },
-  EmojiRange {
-    start: 0x26AA,
-    end: 0x26AB,
-  },
-  EmojiRange {
-    start: 0x26BD,
-    end: 0x26BE,
-  },
-  EmojiRange {
-    start: 0x26C4,
-    end: 0x26C5,
-  },
-  EmojiRange {
-    start: 0x26CE,
-    end: 0x26CE,
-  },
-  EmojiRange {
-    start: 0x26D4,
-    end: 0x26D4,
-  },
-  EmojiRange {
-    start: 0x26EA,
-    end: 0x26EA,
-  },
-  EmojiRange {
-    start: 0x26F2,
-    end: 0x26F3,
-  },
-  EmojiRange {
-    start: 0x26F5,
-    end: 0x26F5,
-  },
-  EmojiRange {
-    start: 0x26FA,
-    end: 0x26FA,
-  },
-  EmojiRange {
-    start: 0x26FD,
-    end: 0x26FD,
-  },
-  EmojiRange {
-    start: 0x2705,
-    end: 0x2705,
-  },
-  EmojiRange {
-    start: 0x270A,
-    end: 0x270B,
-  },
-  EmojiRange {
-    start: 0x2728,
-    end: 0x2728,
-  },
-  EmojiRange {
-    start: 0x274C,
-    end: 0x274C,
-  },
-  EmojiRange {
-    start: 0x274E,
-    end: 0x274E,
-  },
-  EmojiRange {
-    start: 0x2753,
-    end: 0x2755,
-  },
-  EmojiRange {
-    start: 0x2757,
-    end: 0x2757,
-  },
-  EmojiRange {
-    start: 0x2795,
-    end: 0x2797,
-  },
-  EmojiRange {
-    start: 0x27B0,
-    end: 0x27B0,
-  },
-  EmojiRange {
-    start: 0x27BF,
-    end: 0x27BF,
-  },
-  EmojiRange {
-    start: 0x2B1B,
-    end: 0x2B1C,
-  },
-  EmojiRange {
-    start: 0x2B50,
-    end: 0x2B50,
-  },
-  EmojiRange {
-    start: 0x2B55,
-    end: 0x2B55,
-  },
-  EmojiRange {
-    start: 0x1F004,
-    end: 0x1F004,
-  },
-  EmojiRange {
-    start: 0x1F0CF,
-    end: 0x1F0CF,
-  },
-  EmojiRange {
-    start: 0x1F18E,
-    end: 0x1F18E,
-  },
-  EmojiRange {
-    start: 0x1F191,
-    end: 0x1F19A,
-  },
-  EmojiRange {
-    start: 0x1F1E6,
-    end: 0x1F1FF,
-  },
-  EmojiRange {
-    start: 0x1F201,
-    end: 0x1F201,
-  },
-  EmojiRange {
-    start: 0x1F21A,
-    end: 0x1F21A,
-  },
-  EmojiRange {
-    start: 0x1F22F,
-    end: 0x1F22F,
-  },
-  EmojiRange {
-    start: 0x1F232,
-    end: 0x1F236,
-  },
-  EmojiRange {
-    start: 0x1F238,
-    end: 0x1F23A,
-  },
-  EmojiRange {
-    start: 0x1F250,
-    end: 0x1F251,
-  },
-  EmojiRange {
-    start: 0x1F300,
-    end: 0x1F320,
-  },
-  EmojiRange {
-    start: 0x1F32D,
-    end: 0x1F335,
-  },
-  EmojiRange {
-    start: 0x1F337,
-    end: 0x1F37C,
-  },
-  EmojiRange {
-    start: 0x1F37E,
-    end: 0x1F393,
-  },
-  EmojiRange {
-    start: 0x1F3A0,
-    end: 0x1F3CA,
-  },
-  EmojiRange {
-    start: 0x1F3CF,
-    end: 0x1F3D3,
-  },
-  EmojiRange {
-    start: 0x1F3E0,
-    end: 0x1F3F0,
-  },
-  EmojiRange {
-    start: 0x1F3F4,
-    end: 0x1F3F4,
-  },
-  EmojiRange {
-    start: 0x1F3F8,
-    end: 0x1F43E,
-  },
-  EmojiRange {
-    start: 0x1F440,
-    end: 0x1F440,
-  },
-  EmojiRange {
-    start: 0x1F442,
-    end: 0x1F4FC,
-  },
-  EmojiRange {
-    start: 0x1F4FF,
-    end: 0x1F53D,
-  },
-  EmojiRange {
-    start: 0x1F54B,
-    end: 0x1F54E,
-  },
-  EmojiRange {
-    start: 0x1F550,
-    end: 0x1F567,
-  },
-  EmojiRange {
-    start: 0x1F57A,
-    end: 0x1F57A,
-  },
-  EmojiRange {
-    start: 0x1F595,
-    end: 0x1F596,
-  },
-  EmojiRange {
-    start: 0x1F5A4,
-    end: 0x1F5A4,
-  },
-  EmojiRange {
-    start: 0x1F5FB,
-    end: 0x1F64F,
-  },
-  EmojiRange {
-    start: 0x1F680,
-    end: 0x1F6C5,
-  },
-  EmojiRange {
-    start: 0x1F6CC,
-    end: 0x1F6CC,
-  },
-  EmojiRange {
-    start: 0x1F6D0,
-    end: 0x1F6D2,
-  },
-  EmojiRange {
-    start: 0x1F6D5,
-    end: 0x1F6D7,
-  },
-  EmojiRange {
-    start: 0x1F6DC,
-    end: 0x1F6DF,
-  },
-  EmojiRange {
-    start: 0x1F6EB,
-    end: 0x1F6EC,
-  },
-  EmojiRange {
-    start: 0x1F6F4,
-    end: 0x1F6FC,
-  },
-  EmojiRange {
-    start: 0x1F7E0,
-    end: 0x1F7EB,
-  },
-  EmojiRange {
-    start: 0x1F7F0,
-    end: 0x1F7F0,
-  },
-  EmojiRange {
-    start: 0x1F90C,
-    end: 0x1F93A,
-  },
-  EmojiRange {
-    start: 0x1F93C,
-    end: 0x1F945,
-  },
-  EmojiRange {
-    start: 0x1F947,
-    end: 0x1F9FF,
-  },
-  EmojiRange {
-    start: 0x1FA70,
-    end: 0x1FA7C,
-  },
-  EmojiRange {
-    start: 0x1FA80,
-    end: 0x1FA88,
-  },
-  EmojiRange {
-    start: 0x1FA90,
-    end: 0x1FABD,
-  },
-  EmojiRange {
-    start: 0x1FABF,
-    end: 0x1FAC5,
-  },
-  EmojiRange {
-    start: 0x1FACE,
-    end: 0x1FADB,
-  },
-  EmojiRange {
-    start: 0x1FAE0,
-    end: 0x1FAE8,
-  },
-  EmojiRange {
-    start: 0x1FAF0,
-    end: 0x1FAF8,
-  },
+  EmojiRange { start: 0x231A, end: 0x231B },
+  EmojiRange { start: 0x23E9, end: 0x23EC },
+  EmojiRange { start: 0x23F0, end: 0x23F0 },
+  EmojiRange { start: 0x23F3, end: 0x23F3 },
+  EmojiRange { start: 0x25FD, end: 0x25FE },
+  EmojiRange { start: 0x2614, end: 0x2615 },
+  EmojiRange { start: 0x2648, end: 0x2653 },
+  EmojiRange { start: 0x267F, end: 0x267F },
+  EmojiRange { start: 0x2693, end: 0x2693 },
+  EmojiRange { start: 0x26A1, end: 0x26A1 },
+  EmojiRange { start: 0x26AA, end: 0x26AB },
+  EmojiRange { start: 0x26BD, end: 0x26BE },
+  EmojiRange { start: 0x26C4, end: 0x26C5 },
+  EmojiRange { start: 0x26CE, end: 0x26CE },
+  EmojiRange { start: 0x26D4, end: 0x26D4 },
+  EmojiRange { start: 0x26EA, end: 0x26EA },
+  EmojiRange { start: 0x26F2, end: 0x26F3 },
+  EmojiRange { start: 0x26F5, end: 0x26F5 },
+  EmojiRange { start: 0x26FA, end: 0x26FA },
+  EmojiRange { start: 0x26FD, end: 0x26FD },
+  EmojiRange { start: 0x2705, end: 0x2705 },
+  EmojiRange { start: 0x270A, end: 0x270B },
+  EmojiRange { start: 0x2728, end: 0x2728 },
+  EmojiRange { start: 0x274C, end: 0x274C },
+  EmojiRange { start: 0x274E, end: 0x274E },
+  EmojiRange { start: 0x2753, end: 0x2755 },
+  EmojiRange { start: 0x2757, end: 0x2757 },
+  EmojiRange { start: 0x2795, end: 0x2797 },
+  EmojiRange { start: 0x27B0, end: 0x27B0 },
+  EmojiRange { start: 0x27BF, end: 0x27BF },
+  EmojiRange { start: 0x2B1B, end: 0x2B1C },
+  EmojiRange { start: 0x2B50, end: 0x2B50 },
+  EmojiRange { start: 0x2B55, end: 0x2B55 },
+  EmojiRange { start: 0x1F004, end: 0x1F004 },
+  EmojiRange { start: 0x1F0CF, end: 0x1F0CF },
+  EmojiRange { start: 0x1F18E, end: 0x1F18E },
+  EmojiRange { start: 0x1F191, end: 0x1F19A },
+  EmojiRange { start: 0x1F1E6, end: 0x1F1FF },
+  EmojiRange { start: 0x1F201, end: 0x1F201 },
+  EmojiRange { start: 0x1F21A, end: 0x1F21A },
+  EmojiRange { start: 0x1F22F, end: 0x1F22F },
+  EmojiRange { start: 0x1F232, end: 0x1F236 },
+  EmojiRange { start: 0x1F238, end: 0x1F23A },
+  EmojiRange { start: 0x1F250, end: 0x1F251 },
+  EmojiRange { start: 0x1F300, end: 0x1F320 },
+  EmojiRange { start: 0x1F32D, end: 0x1F335 },
+  EmojiRange { start: 0x1F337, end: 0x1F37C },
+  EmojiRange { start: 0x1F37E, end: 0x1F393 },
+  EmojiRange { start: 0x1F3A0, end: 0x1F3CA },
+  EmojiRange { start: 0x1F3CF, end: 0x1F3D3 },
+  EmojiRange { start: 0x1F3E0, end: 0x1F3F0 },
+  EmojiRange { start: 0x1F3F4, end: 0x1F3F4 },
+  EmojiRange { start: 0x1F3F8, end: 0x1F43E },
+  EmojiRange { start: 0x1F440, end: 0x1F440 },
+  EmojiRange { start: 0x1F442, end: 0x1F4FC },
+  EmojiRange { start: 0x1F4FF, end: 0x1F53D },
+  EmojiRange { start: 0x1F54B, end: 0x1F54E },
+  EmojiRange { start: 0x1F550, end: 0x1F567 },
+  EmojiRange { start: 0x1F57A, end: 0x1F57A },
+  EmojiRange { start: 0x1F595, end: 0x1F596 },
+  EmojiRange { start: 0x1F5A4, end: 0x1F5A4 },
+  EmojiRange { start: 0x1F5FB, end: 0x1F64F },
+  EmojiRange { start: 0x1F680, end: 0x1F6C5 },
+  EmojiRange { start: 0x1F6CC, end: 0x1F6CC },
+  EmojiRange { start: 0x1F6D0, end: 0x1F6D2 },
+  EmojiRange { start: 0x1F6D5, end: 0x1F6D7 },
+  EmojiRange { start: 0x1F6DC, end: 0x1F6DF },
+  EmojiRange { start: 0x1F6EB, end: 0x1F6EC },
+  EmojiRange { start: 0x1F6F4, end: 0x1F6FC },
+  EmojiRange { start: 0x1F7E0, end: 0x1F7EB },
+  EmojiRange { start: 0x1F7F0, end: 0x1F7F0 },
+  EmojiRange { start: 0x1F90C, end: 0x1F93A },
+  EmojiRange { start: 0x1F93C, end: 0x1F945 },
+  EmojiRange { start: 0x1F947, end: 0x1F9FF },
+  EmojiRange { start: 0x1FA70, end: 0x1FA7C },
+  EmojiRange { start: 0x1FA80, end: 0x1FA88 },
+  EmojiRange { start: 0x1FA90, end: 0x1FABD },
+  EmojiRange { start: 0x1FABF, end: 0x1FAC5 },
+  EmojiRange { start: 0x1FACE, end: 0x1FADB },
+  EmojiRange { start: 0x1FAE0, end: 0x1FAE8 },
+  EmojiRange { start: 0x1FAF0, end: 0x1FAF8 },
 ];
 
-pub(crate) const EMOJI_MODIFIER_RANGES: &[EmojiRange] = &[EmojiRange {
-  start: 0x1F3FB,
-  end: 0x1F3FF,
-}];
+pub(crate) const EMOJI_MODIFIER_RANGES: &[EmojiRange] = &[
+  EmojiRange { start: 0x1F3FB, end: 0x1F3FF },
+];
 
 pub(crate) const EMOJI_MODIFIER_BASE_RANGES: &[EmojiRange] = &[
-  EmojiRange {
-    start: 0x261D,
-    end: 0x261D,
-  },
-  EmojiRange {
-    start: 0x26F9,
-    end: 0x26F9,
-  },
-  EmojiRange {
-    start: 0x270A,
-    end: 0x270D,
-  },
-  EmojiRange {
-    start: 0x1F385,
-    end: 0x1F385,
-  },
-  EmojiRange {
-    start: 0x1F3C2,
-    end: 0x1F3C4,
-  },
-  EmojiRange {
-    start: 0x1F3C7,
-    end: 0x1F3C7,
-  },
-  EmojiRange {
-    start: 0x1F3CA,
-    end: 0x1F3CC,
-  },
-  EmojiRange {
-    start: 0x1F442,
-    end: 0x1F443,
-  },
-  EmojiRange {
-    start: 0x1F446,
-    end: 0x1F450,
-  },
-  EmojiRange {
-    start: 0x1F466,
-    end: 0x1F478,
-  },
-  EmojiRange {
-    start: 0x1F47C,
-    end: 0x1F47C,
-  },
-  EmojiRange {
-    start: 0x1F481,
-    end: 0x1F483,
-  },
-  EmojiRange {
-    start: 0x1F485,
-    end: 0x1F487,
-  },
-  EmojiRange {
-    start: 0x1F48F,
-    end: 0x1F48F,
-  },
-  EmojiRange {
-    start: 0x1F491,
-    end: 0x1F491,
-  },
-  EmojiRange {
-    start: 0x1F4AA,
-    end: 0x1F4AA,
-  },
-  EmojiRange {
-    start: 0x1F574,
-    end: 0x1F575,
-  },
-  EmojiRange {
-    start: 0x1F57A,
-    end: 0x1F57A,
-  },
-  EmojiRange {
-    start: 0x1F590,
-    end: 0x1F590,
-  },
-  EmojiRange {
-    start: 0x1F595,
-    end: 0x1F596,
-  },
-  EmojiRange {
-    start: 0x1F645,
-    end: 0x1F647,
-  },
-  EmojiRange {
-    start: 0x1F64B,
-    end: 0x1F64F,
-  },
-  EmojiRange {
-    start: 0x1F6A3,
-    end: 0x1F6A3,
-  },
-  EmojiRange {
-    start: 0x1F6B4,
-    end: 0x1F6B6,
-  },
-  EmojiRange {
-    start: 0x1F6C0,
-    end: 0x1F6C0,
-  },
-  EmojiRange {
-    start: 0x1F6CC,
-    end: 0x1F6CC,
-  },
-  EmojiRange {
-    start: 0x1F90C,
-    end: 0x1F90C,
-  },
-  EmojiRange {
-    start: 0x1F90F,
-    end: 0x1F90F,
-  },
-  EmojiRange {
-    start: 0x1F918,
-    end: 0x1F91F,
-  },
-  EmojiRange {
-    start: 0x1F926,
-    end: 0x1F926,
-  },
-  EmojiRange {
-    start: 0x1F930,
-    end: 0x1F939,
-  },
-  EmojiRange {
-    start: 0x1F93C,
-    end: 0x1F93E,
-  },
-  EmojiRange {
-    start: 0x1F977,
-    end: 0x1F977,
-  },
-  EmojiRange {
-    start: 0x1F9B5,
-    end: 0x1F9B6,
-  },
-  EmojiRange {
-    start: 0x1F9B8,
-    end: 0x1F9B9,
-  },
-  EmojiRange {
-    start: 0x1F9BB,
-    end: 0x1F9BB,
-  },
-  EmojiRange {
-    start: 0x1F9CD,
-    end: 0x1F9CF,
-  },
-  EmojiRange {
-    start: 0x1F9D1,
-    end: 0x1F9DD,
-  },
-  EmojiRange {
-    start: 0x1FAC3,
-    end: 0x1FAC5,
-  },
-  EmojiRange {
-    start: 0x1FAF0,
-    end: 0x1FAF8,
-  },
+  EmojiRange { start: 0x261D, end: 0x261D },
+  EmojiRange { start: 0x26F9, end: 0x26F9 },
+  EmojiRange { start: 0x270A, end: 0x270D },
+  EmojiRange { start: 0x1F385, end: 0x1F385 },
+  EmojiRange { start: 0x1F3C2, end: 0x1F3C4 },
+  EmojiRange { start: 0x1F3C7, end: 0x1F3C7 },
+  EmojiRange { start: 0x1F3CA, end: 0x1F3CC },
+  EmojiRange { start: 0x1F442, end: 0x1F443 },
+  EmojiRange { start: 0x1F446, end: 0x1F450 },
+  EmojiRange { start: 0x1F466, end: 0x1F478 },
+  EmojiRange { start: 0x1F47C, end: 0x1F47C },
+  EmojiRange { start: 0x1F481, end: 0x1F483 },
+  EmojiRange { start: 0x1F485, end: 0x1F487 },
+  EmojiRange { start: 0x1F48F, end: 0x1F48F },
+  EmojiRange { start: 0x1F491, end: 0x1F491 },
+  EmojiRange { start: 0x1F4AA, end: 0x1F4AA },
+  EmojiRange { start: 0x1F574, end: 0x1F575 },
+  EmojiRange { start: 0x1F57A, end: 0x1F57A },
+  EmojiRange { start: 0x1F590, end: 0x1F590 },
+  EmojiRange { start: 0x1F595, end: 0x1F596 },
+  EmojiRange { start: 0x1F645, end: 0x1F647 },
+  EmojiRange { start: 0x1F64B, end: 0x1F64F },
+  EmojiRange { start: 0x1F6A3, end: 0x1F6A3 },
+  EmojiRange { start: 0x1F6B4, end: 0x1F6B6 },
+  EmojiRange { start: 0x1F6C0, end: 0x1F6C0 },
+  EmojiRange { start: 0x1F6CC, end: 0x1F6CC },
+  EmojiRange { start: 0x1F90C, end: 0x1F90C },
+  EmojiRange { start: 0x1F90F, end: 0x1F90F },
+  EmojiRange { start: 0x1F918, end: 0x1F91F },
+  EmojiRange { start: 0x1F926, end: 0x1F926 },
+  EmojiRange { start: 0x1F930, end: 0x1F939 },
+  EmojiRange { start: 0x1F93C, end: 0x1F93E },
+  EmojiRange { start: 0x1F977, end: 0x1F977 },
+  EmojiRange { start: 0x1F9B5, end: 0x1F9B6 },
+  EmojiRange { start: 0x1F9B8, end: 0x1F9B9 },
+  EmojiRange { start: 0x1F9BB, end: 0x1F9BB },
+  EmojiRange { start: 0x1F9CD, end: 0x1F9CF },
+  EmojiRange { start: 0x1F9D1, end: 0x1F9DD },
+  EmojiRange { start: 0x1FAC3, end: 0x1FAC5 },
+  EmojiRange { start: 0x1FAF0, end: 0x1FAF8 },
 ];
 
 pub(crate) const EMOJI_COMPONENT_RANGES: &[EmojiRange] = &[
-  EmojiRange {
-    start: 0x0023,
-    end: 0x0023,
-  },
-  EmojiRange {
-    start: 0x002A,
-    end: 0x002A,
-  },
-  EmojiRange {
-    start: 0x0030,
-    end: 0x0039,
-  },
-  EmojiRange {
-    start: 0x200D,
-    end: 0x200D,
-  },
-  EmojiRange {
-    start: 0x20E3,
-    end: 0x20E3,
-  },
-  EmojiRange {
-    start: 0xFE0F,
-    end: 0xFE0F,
-  },
-  EmojiRange {
-    start: 0x1F1E6,
-    end: 0x1F1FF,
-  },
-  EmojiRange {
-    start: 0x1F3FB,
-    end: 0x1F3FF,
-  },
-  EmojiRange {
-    start: 0x1F9B0,
-    end: 0x1F9B3,
-  },
-  EmojiRange {
-    start: 0xE0020,
-    end: 0xE007F,
-  },
+  EmojiRange { start: 0x0023, end: 0x0023 },
+  EmojiRange { start: 0x002A, end: 0x002A },
+  EmojiRange { start: 0x0030, end: 0x0039 },
+  EmojiRange { start: 0x200D, end: 0x200D },
+  EmojiRange { start: 0x20E3, end: 0x20E3 },
+  EmojiRange { start: 0xFE0F, end: 0xFE0F },
+  EmojiRange { start: 0x1F1E6, end: 0x1F1FF },
+  EmojiRange { start: 0x1F3FB, end: 0x1F3FF },
+  EmojiRange { start: 0x1F9B0, end: 0x1F9B3 },
+  EmojiRange { start: 0xE0020, end: 0xE007F },
 ];
 
 #[inline]
