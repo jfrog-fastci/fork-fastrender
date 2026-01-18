@@ -14,6 +14,8 @@ pub fn run_lint_no_merge_conflicts(repo_root: &Path, _args: LintNoMergeConflicts
   let mut cmd = Command::new("git");
   cmd.current_dir(repo_root);
   cmd.args([
+    "-c",
+    "grep.recurseSubmodules=false",
     "grep",
     "-n",
     "-I",

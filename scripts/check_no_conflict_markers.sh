@@ -80,7 +80,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
   )
   set +e
   git_matches="$(
-    git grep -nE "${conflict_re}" -- "${pathspecs[@]}"
+    git -c grep.recurseSubmodules=false grep -nE "${conflict_re}" -- "${pathspecs[@]}"
   )"
   status=$?
   set -e
@@ -133,7 +133,7 @@ fi
 if command -v git >/dev/null 2>&1 && [[ -e vendor/ecma-rs/.git ]]; then
   set +e
   ecma_rs_matches="$(
-    git -C vendor/ecma-rs grep -nE "${conflict_re}" -- \
+    git -c grep.recurseSubmodules=false -C vendor/ecma-rs grep -nE "${conflict_re}" -- \
       ':(glob)vm-js/src/**/*.rs' \
       ':(glob)parse-js/src/**/*.rs' \
       ':(glob)semantic-js/src/**/*.rs' \

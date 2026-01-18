@@ -93,7 +93,7 @@ if [[ "${use_git}" -eq 1 ]]; then
   )
 
   matches="$(
-    git grep -n -I \
+    git -c grep.recurseSubmodules=false grep -n -I \
       -e '^<<<<<<< ' \
       -e '^||||||| ' \
       -e '^=======[[:space:]]*$' \
@@ -242,7 +242,7 @@ fi
 if [[ "${scan_root}" == "." && -e vendor/ecma-rs/.git ]]; then
   set +e
   ecma_rs_matches="$(
-    git -C vendor/ecma-rs grep -n -I \
+    git -c grep.recurseSubmodules=false -C vendor/ecma-rs grep -n -I \
       -e '^<<<<<<< ' \
       -e '^||||||| ' \
       -e '^=======[[:space:]]*$' \
