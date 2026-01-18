@@ -503,15 +503,14 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     // Compile renderer binaries with a lightweight, sandbox-friendly feature set.
     //
     // Notes:
-    // - Avoid enabling `avif`/`renderer_minimal` here: pulling in `libaom-sys` can dominate clean build
-    //   time and cause `xtask refresh-progress-accuracy` to exceed the global 10-minute timeout in
-    //   agent/CI environments.
+    // - Keep `--no-default-features` to avoid pulling in large in-process networking stacks.
+    // - The fixture corpus includes AVIF images, so enable `avif` so renders match Chrome baselines.
     // - `direct_filesystem` is still needed for `file://` webfonts embedded in fixtures.
     // - `renderer_tools` disables subsystems irrelevant to offline fixture diffing (multiprocess, sandboxing).
     build_cmd.arg("--no-default-features");
     build_cmd.args([
       "--features",
-      "preserve3d_warp,direct_filesystem,renderer_tools",
+      "preserve3d_warp,avif,direct_filesystem,renderer_tools",
     ]);
     if !args.no_fastrender {
       build_cmd.args(["--bin", "render_fixtures"]);
