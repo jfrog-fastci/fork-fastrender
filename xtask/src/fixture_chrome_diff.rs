@@ -504,7 +504,8 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
     //
     // Notes:
     // - Keep `--no-default-features` to avoid pulling in large in-process networking stacks.
-    // - The fixture corpus includes AVIF images, so enable `avif` so renders match Chrome baselines.
+    // - The fixture corpus includes AVIF images, so enable `avif` so renders match Chrome baselines
+    //   (avoid false-positive diffs from missing image decodes).
     // - `direct_filesystem` is still needed for `file://` webfonts embedded in fixtures.
     // - `renderer_tools` disables subsystems irrelevant to offline fixture diffing (multiprocess, sandboxing).
     build_cmd.arg("--no-default-features");

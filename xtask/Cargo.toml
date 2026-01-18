@@ -31,6 +31,8 @@ full = [
   "dep:conformance-harness",
   "dep:fastrender",
   "dep:js-wpt-dom-runner",
+  # Ensure the WPT DOM runner can actually execute tests under the default `xtask` build.
+  "js-wpt-dom-runner/vmjs",
   "dep:webidl",
   "dep:globset",
   "dep:cssparser",
