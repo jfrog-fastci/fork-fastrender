@@ -7355,15 +7355,26 @@ p { color: red; }
     let CssRule::Style(rule) = &sheet.rules[0] else {
       panic!("expected style rule");
     };
-    assert_eq!(rule.declarations.len(), 1);
-    assert_eq!(rule.declarations[0].property.as_str(), "color");
-    assert_eq!(rule.nested_rules.len(), 1);
+    // The first rule item is a nested style rule, so any subsequent declarations are represented as
+    // a late declaration rule (to preserve the author stylesheet's source order).
+    assert!(
+      rule.declarations.is_empty(),
+      "expected no leading declarations before nested style rule"
+    );
+    assert_eq!(rule.nested_rules.len(), 2);
 
     let CssRule::Style(nested) = &rule.nested_rules[0] else {
       panic!("expected nested style rule");
     };
     assert_eq!(nested.declarations.len(), 1);
     assert_eq!(nested.declarations[0].property.as_str(), "color");
+
+    let CssRule::Style(late_decl_rule) = &rule.nested_rules[1] else {
+      panic!("expected late declaration style rule");
+    };
+    assert_eq!(late_decl_rule.selectors.to_css_string(), "div");
+    assert_eq!(late_decl_rule.declarations.len(), 1);
+    assert_eq!(late_decl_rule.declarations[0].property.as_str(), "color");
   }
 
   #[test]
