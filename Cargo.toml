@@ -332,36 +332,6 @@ path = "src/bin/macos_sandbox_probe.rs"
 test = false
 bench = false
 required-features = ["macos_sandbox_probe"]
-
-[[bin]]
-name = "compare_diff_reports"
-path = "src/bin/compare_diff_reports.rs"
-required-features = ["vmjs"]
-
-[[bin]]
-name = "fetch_and_render"
-path = "src/bin/fetch_and_render.rs"
-required-features = ["vmjs"]
-
-[[bin]]
-name = "inspect_frag"
-path = "src/bin/inspect_frag.rs"
-required-features = ["vmjs"]
-
-[[bin]]
-name = "pageset_progress"
-path = "src/bin/pageset_progress.rs"
-required-features = ["vmjs"]
-
-[[bin]]
-name = "render_pages"
-path = "src/bin/render_pages.rs"
-required-features = ["vmjs"]
-
-[[bin]]
-name = "ui_perf_smoke"
-path = "src/bin/ui_perf_smoke.rs"
-required-features = ["vmjs"]
 [target.'cfg(windows)'.dependencies]
 # Windows-only renderer sandboxing (AppContainer + restricted token + job objects).
 # Keep feature set narrow: only APIs used by `src/sandbox/windows.rs`.
