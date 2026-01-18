@@ -471,7 +471,6 @@ required-features = ["vmjs"]
 name = "inspect_frag"
 path = "src/bin/inspect_frag.rs"
 test = false
-required-features = ["vmjs"]
 
 [[bin]]
 name = "ui_perf_smoke"
